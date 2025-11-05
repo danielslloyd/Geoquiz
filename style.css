@@ -34,6 +34,79 @@ header h1 {
     opacity: 0.9;
 }
 
+/* Mode Selector */
+.mode-selector {
+    background: white;
+    border-radius: 15px;
+    padding: 40px 30px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    text-align: center;
+}
+
+.mode-selector h2 {
+    font-size: 2rem;
+    color: #667eea;
+    margin-bottom: 30px;
+}
+
+.mode-buttons {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.mode-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    border-radius: 15px;
+    padding: 30px 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.mode-btn:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.mode-btn:active {
+    transform: translateY(-2px);
+}
+
+.mode-btn .mode-icon {
+    font-size: 3rem;
+    display: block;
+}
+
+.mode-btn .mode-name {
+    font-size: 1.3rem;
+    font-weight: bold;
+    display: block;
+}
+
+.mode-btn .mode-desc {
+    font-size: 0.9rem;
+    opacity: 0.9;
+    display: block;
+}
+
+.mode-selector.hidden {
+    display: none;
+}
+
+.hidden {
+    display: none !important;
+}
+
 .game-info {
     background: white;
     border-radius: 15px;
@@ -339,6 +412,26 @@ header h1 {
 @media (max-width: 768px) {
     header h1 {
         font-size: 2rem;
+    }
+
+    .mode-selector h2 {
+        font-size: 1.5rem;
+    }
+
+    .mode-buttons {
+        grid-template-columns: 1fr;
+    }
+
+    .mode-btn {
+        padding: 25px 15px;
+    }
+
+    .mode-btn .mode-icon {
+        font-size: 2.5rem;
+    }
+
+    .mode-btn .mode-name {
+        font-size: 1.1rem;
     }
 
     .score-board {

@@ -15,7 +15,29 @@
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
 
-        <div class="game-info">
+        <!-- Mode Selector -->
+        <div class="mode-selector" id="mode-selector">
+            <h2>Select Quiz Mode</h2>
+            <div class="mode-buttons">
+                <button class="mode-btn" data-mode="countries">
+                    <span class="mode-icon">🌍</span>
+                    <span class="mode-name">Countries of the World</span>
+                    <span class="mode-desc">Quiz on countries, flags, and capitals</span>
+                </button>
+                <button class="mode-btn" data-mode="us-states">
+                    <span class="mode-icon">🗽</span>
+                    <span class="mode-name">US States</span>
+                    <span class="mode-desc">Quiz on the 50 United States</span>
+                </button>
+                <button class="mode-btn" data-mode="indian-states">
+                    <span class="mode-icon">🇮🇳</span>
+                    <span class="mode-name">Indian States</span>
+                    <span class="mode-desc">Quiz on states and union territories of India</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="game-info hidden" id="game-info">
             <div class="score-board">
                 <div class="score-item">
                     <span class="label">Score:</span>
@@ -28,7 +50,7 @@
             </div>
         </div>
 
-        <div class="question-container">
+        <div class="question-container hidden" id="question-container">
             <div class="question">
                 <h2 id="question-text">Find: <span id="country-name">Loading...</span></h2>
             </div>
@@ -38,20 +60,20 @@
             <div class="feedback" id="feedback"></div>
         </div>
 
-        <div class="multiple-choice-container" id="multiple-choice-container" style="display: none;">
+        <div class="multiple-choice-container hidden" id="multiple-choice-container">
             <div class="options-grid" id="options-grid"></div>
         </div>
 
-        <div class="globe-container" id="globe-container">
+        <div class="globe-container hidden" id="globe-container">
             <svg id="globe"></svg>
         </div>
 
-        <div class="controls">
+        <div class="controls hidden" id="controls">
             <button id="next-btn" class="btn" disabled>Next Question</button>
             <button id="restart-btn" class="btn secondary">Restart Game</button>
         </div>
 
-        <div class="instructions">
+        <div class="instructions hidden" id="instructions">
             <h3>How to Play</h3>
             <ul>
                 <li>Click and drag to rotate the globe</li>
