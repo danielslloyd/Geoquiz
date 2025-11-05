@@ -225,6 +225,117 @@ header h1 {
     margin-bottom: 8px;
 }
 
+/* Flag display styling */
+.flag-display {
+    margin: 20px auto;
+    text-align: center;
+    max-width: 400px;
+}
+
+.flag-display img {
+    width: 100%;
+    max-width: 300px;
+    height: auto;
+    border: 3px solid #667eea;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* Multiple choice container */
+.multiple-choice-container {
+    background: white;
+    border-radius: 15px;
+    padding: 25px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.options-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 15px;
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.option-btn {
+    padding: 20px;
+    font-size: 1rem;
+    font-weight: 600;
+    background: #f8f9fa;
+    border: 2px solid #e0e0e0;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    color: #333;
+    text-align: center;
+    min-height: 70px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.option-btn:hover {
+    background: #e9ecef;
+    border-color: #667eea;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.option-btn:active {
+    transform: translateY(0);
+}
+
+.option-btn.selected {
+    background: #2196F3;
+    color: white;
+    border-color: #1565c0;
+}
+
+.option-btn.correct {
+    background: #4CAF50;
+    color: white;
+    border-color: #2e7d32;
+    animation: correctPulse 0.5s ease;
+}
+
+.option-btn.incorrect {
+    background: #f44336;
+    color: white;
+    border-color: #c62828;
+    animation: shake 0.5s ease;
+}
+
+@keyframes correctPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-10px); }
+    75% { transform: translateX(10px); }
+}
+
+/* Highlighted country on globe for identify mode */
+.country.target {
+    fill: #FFD700 !important;
+    stroke: #FFA500 !important;
+    stroke-width: 2;
+    animation: glow 2s ease-in-out infinite;
+}
+
+@keyframes glow {
+    0%, 100% {
+        fill: #FFD700;
+        stroke: #FFA500;
+    }
+    50% {
+        fill: #FFA500;
+        stroke: #FFD700;
+    }
+}
+
 @media (max-width: 768px) {
     header h1 {
         font-size: 2rem;
@@ -245,5 +356,20 @@ header h1 {
 
     .btn {
         width: 100%;
+    }
+
+    .options-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .option-btn {
+        min-height: 60px;
+        padding: 15px;
+        font-size: 0.95rem;
+    }
+
+    .flag-display img {
+        max-width: 250px;
     }
 }

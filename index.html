@@ -30,12 +30,19 @@
 
         <div class="question-container">
             <div class="question">
-                <h2>Find: <span id="country-name">Loading...</span></h2>
+                <h2 id="question-text">Find: <span id="country-name">Loading...</span></h2>
+            </div>
+            <div class="flag-display" id="flag-display" style="display: none;">
+                <img id="flag-image" src="" alt="Country Flag" />
             </div>
             <div class="feedback" id="feedback"></div>
         </div>
 
-        <div class="globe-container">
+        <div class="multiple-choice-container" id="multiple-choice-container" style="display: none;">
+            <div class="options-grid" id="options-grid"></div>
+        </div>
+
+        <div class="globe-container" id="globe-container">
             <svg id="globe"></svg>
         </div>
 
@@ -48,9 +55,10 @@
             <h3>How to Play</h3>
             <ul>
                 <li>Click and drag to rotate the globe</li>
-                <li>Click on a country to select it</li>
-                <li>Get instant feedback on your answer</li>
-                <li>Try to get all 10 questions correct!</li>
+                <li>Answer 3 questions per country: location, flag, and capital</li>
+                <li>Sometimes you'll identify a highlighted country instead</li>
+                <li>Get instant feedback on your answers</li>
+                <li>Try to get a perfect score across all 10 countries!</li>
             </ul>
         </div>
     </div>

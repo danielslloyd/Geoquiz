@@ -6,7 +6,12 @@ let gameState = {
     targetCountry: null,
     countries: [],
     answeredCorrectly: false,
-    usedCountries: new Set()
+    usedCountries: new Set(),
+    questionType: null, // 'location', 'flag', 'capital', 'identify'
+    currentAnswer: null,
+    multipleChoiceOptions: [],
+    subQuestionIndex: 0, // 0: location, 1: flag, 2: capital
+    maxSubQuestions: 3
 };
 
 // Globe configuration
@@ -30,6 +35,444 @@ const quizCountries = [
     'Bangladesh', 'Myanmar', 'Malaysia', 'Singapore', 'Cuba',
     'Jamaica', 'Panama', 'Costa Rica', 'Dominican Republic', 'Guatemala'
 ];
+
+// Enhanced country data with capitals, flags, and similar countries for tricky distractors
+const countryData = {
+    'United States of America': {
+        code: 'us',
+        capital: 'Washington, D.C.',
+        similar: ['Canada', 'Brazil', 'Australia', 'Russia']
+    },
+    'Canada': {
+        code: 'ca',
+        capital: 'Ottawa',
+        similar: ['United States of America', 'Russia', 'Australia', 'Brazil']
+    },
+    'Mexico': {
+        code: 'mx',
+        capital: 'Mexico City',
+        similar: ['Colombia', 'Venezuela', 'Guatemala', 'Peru']
+    },
+    'Brazil': {
+        code: 'br',
+        capital: 'Brasília',
+        similar: ['Argentina', 'Colombia', 'Venezuela', 'Peru']
+    },
+    'Argentina': {
+        code: 'ar',
+        capital: 'Buenos Aires',
+        similar: ['Chile', 'Uruguay', 'Brazil', 'Paraguay']
+    },
+    'United Kingdom': {
+        code: 'gb',
+        capital: 'London',
+        similar: ['Ireland', 'Netherlands', 'Belgium', 'France']
+    },
+    'France': {
+        code: 'fr',
+        capital: 'Paris',
+        similar: ['Belgium', 'Switzerland', 'Spain', 'Italy']
+    },
+    'Germany': {
+        code: 'de',
+        capital: 'Berlin',
+        similar: ['Poland', 'Austria', 'Netherlands', 'Czechia']
+    },
+    'Spain': {
+        code: 'es',
+        capital: 'Madrid',
+        similar: ['Portugal', 'Italy', 'France', 'Morocco']
+    },
+    'Italy': {
+        code: 'it',
+        capital: 'Rome',
+        similar: ['Greece', 'Spain', 'Croatia', 'France']
+    },
+    'Russia': {
+        code: 'ru',
+        capital: 'Moscow',
+        similar: ['Ukraine', 'Kazakhstan', 'Belarus', 'Poland']
+    },
+    'China': {
+        code: 'cn',
+        capital: 'Beijing',
+        similar: ['Japan', 'South Korea', 'Mongolia', 'India']
+    },
+    'Japan': {
+        code: 'jp',
+        capital: 'Tokyo',
+        similar: ['South Korea', 'China', 'Philippines', 'Taiwan']
+    },
+    'India': {
+        code: 'in',
+        capital: 'New Delhi',
+        similar: ['Pakistan', 'Bangladesh', 'Nepal', 'Sri Lanka']
+    },
+    'Australia': {
+        code: 'au',
+        capital: 'Canberra',
+        similar: ['New Zealand', 'Indonesia', 'Papua New Guinea', 'United States of America']
+    },
+    'South Africa': {
+        code: 'za',
+        capital: 'Pretoria',
+        similar: ['Namibia', 'Botswana', 'Zimbabwe', 'Mozambique']
+    },
+    'Egypt': {
+        code: 'eg',
+        capital: 'Cairo',
+        similar: ['Libya', 'Sudan', 'Saudi Arabia', 'Jordan']
+    },
+    'Nigeria': {
+        code: 'ng',
+        capital: 'Abuja',
+        similar: ['Ghana', 'Cameroon', 'Niger', 'Benin']
+    },
+    'Saudi Arabia': {
+        code: 'sa',
+        capital: 'Riyadh',
+        similar: ['Yemen', 'Oman', 'Jordan', 'United Arab Emirates']
+    },
+    'Turkey': {
+        code: 'tr',
+        capital: 'Ankara',
+        similar: ['Greece', 'Iran', 'Syria', 'Iraq']
+    },
+    'Greece': {
+        code: 'gr',
+        capital: 'Athens',
+        similar: ['Turkey', 'Bulgaria', 'Italy', 'Albania']
+    },
+    'Norway': {
+        code: 'no',
+        capital: 'Oslo',
+        similar: ['Sweden', 'Finland', 'Denmark', 'Iceland']
+    },
+    'Sweden': {
+        code: 'se',
+        capital: 'Stockholm',
+        similar: ['Norway', 'Finland', 'Denmark', 'Poland']
+    },
+    'Poland': {
+        code: 'pl',
+        capital: 'Warsaw',
+        similar: ['Germany', 'Ukraine', 'Belarus', 'Czechia']
+    },
+    'Ukraine': {
+        code: 'ua',
+        capital: 'Kyiv',
+        similar: ['Poland', 'Russia', 'Belarus', 'Romania']
+    },
+    'South Korea': {
+        code: 'kr',
+        capital: 'Seoul',
+        similar: ['North Korea', 'Japan', 'China', 'Taiwan']
+    },
+    'Thailand': {
+        code: 'th',
+        capital: 'Bangkok',
+        similar: ['Myanmar', 'Vietnam', 'Cambodia', 'Laos']
+    },
+    'Vietnam': {
+        code: 'vn',
+        capital: 'Hanoi',
+        similar: ['Cambodia', 'Laos', 'Thailand', 'China']
+    },
+    'Indonesia': {
+        code: 'id',
+        capital: 'Jakarta',
+        similar: ['Malaysia', 'Philippines', 'Papua New Guinea', 'Thailand']
+    },
+    'Philippines': {
+        code: 'ph',
+        capital: 'Manila',
+        similar: ['Indonesia', 'Malaysia', 'Vietnam', 'Taiwan']
+    },
+    'New Zealand': {
+        code: 'nz',
+        capital: 'Wellington',
+        similar: ['Australia', 'Fiji', 'Papua New Guinea', 'United Kingdom']
+    },
+    'Chile': {
+        code: 'cl',
+        capital: 'Santiago',
+        similar: ['Argentina', 'Peru', 'Bolivia', 'Uruguay']
+    },
+    'Peru': {
+        code: 'pe',
+        capital: 'Lima',
+        similar: ['Ecuador', 'Colombia', 'Bolivia', 'Chile']
+    },
+    'Colombia': {
+        code: 'co',
+        capital: 'Bogotá',
+        similar: ['Venezuela', 'Ecuador', 'Peru', 'Panama']
+    },
+    'Venezuela': {
+        code: 've',
+        capital: 'Caracas',
+        similar: ['Colombia', 'Guyana', 'Trinidad and Tobago', 'Brazil']
+    },
+    'Portugal': {
+        code: 'pt',
+        capital: 'Lisbon',
+        similar: ['Spain', 'Brazil', 'Morocco', 'Italy']
+    },
+    'Netherlands': {
+        code: 'nl',
+        capital: 'Amsterdam',
+        similar: ['Belgium', 'Germany', 'Denmark', 'United Kingdom']
+    },
+    'Belgium': {
+        code: 'be',
+        capital: 'Brussels',
+        similar: ['Netherlands', 'Luxembourg', 'France', 'Germany']
+    },
+    'Switzerland': {
+        code: 'ch',
+        capital: 'Bern',
+        similar: ['Austria', 'Liechtenstein', 'Germany', 'Italy']
+    },
+    'Austria': {
+        code: 'at',
+        capital: 'Vienna',
+        similar: ['Switzerland', 'Germany', 'Hungary', 'Czechia']
+    },
+    'Denmark': {
+        code: 'dk',
+        capital: 'Copenhagen',
+        similar: ['Sweden', 'Norway', 'Netherlands', 'Germany']
+    },
+    'Finland': {
+        code: 'fi',
+        capital: 'Helsinki',
+        similar: ['Sweden', 'Norway', 'Estonia', 'Russia']
+    },
+    'Ireland': {
+        code: 'ie',
+        capital: 'Dublin',
+        similar: ['United Kingdom', 'Iceland', 'Norway', 'Scotland']
+    },
+    'Iceland': {
+        code: 'is',
+        capital: 'Reykjavik',
+        similar: ['Norway', 'Greenland', 'Ireland', 'Faroe Islands']
+    },
+    'Morocco': {
+        code: 'ma',
+        capital: 'Rabat',
+        similar: ['Algeria', 'Tunisia', 'Spain', 'Mauritania']
+    },
+    'Algeria': {
+        code: 'dz',
+        capital: 'Algiers',
+        similar: ['Morocco', 'Tunisia', 'Libya', 'Mali']
+    },
+    'Kenya': {
+        code: 'ke',
+        capital: 'Nairobi',
+        similar: ['Tanzania', 'Uganda', 'Ethiopia', 'Somalia']
+    },
+    'Ethiopia': {
+        code: 'et',
+        capital: 'Addis Ababa',
+        similar: ['Kenya', 'Somalia', 'Eritrea', 'Sudan']
+    },
+    'Iran': {
+        code: 'ir',
+        capital: 'Tehran',
+        similar: ['Iraq', 'Afghanistan', 'Pakistan', 'Turkey']
+    },
+    'Iraq': {
+        code: 'iq',
+        capital: 'Baghdad',
+        similar: ['Iran', 'Syria', 'Jordan', 'Kuwait']
+    },
+    'Pakistan': {
+        code: 'pk',
+        capital: 'Islamabad',
+        similar: ['India', 'Afghanistan', 'Iran', 'Bangladesh']
+    },
+    'Bangladesh': {
+        code: 'bd',
+        capital: 'Dhaka',
+        similar: ['India', 'Myanmar', 'Pakistan', 'Nepal']
+    },
+    'Myanmar': {
+        code: 'mm',
+        capital: 'Naypyidaw',
+        similar: ['Thailand', 'Bangladesh', 'Laos', 'India']
+    },
+    'Malaysia': {
+        code: 'my',
+        capital: 'Kuala Lumpur',
+        similar: ['Indonesia', 'Thailand', 'Singapore', 'Brunei']
+    },
+    'Singapore': {
+        code: 'sg',
+        capital: 'Singapore',
+        similar: ['Malaysia', 'Indonesia', 'Brunei', 'Hong Kong']
+    },
+    'Cuba': {
+        code: 'cu',
+        capital: 'Havana',
+        similar: ['Jamaica', 'Dominican Republic', 'Haiti', 'Bahamas']
+    },
+    'Jamaica': {
+        code: 'jm',
+        capital: 'Kingston',
+        similar: ['Cuba', 'Haiti', 'Dominican Republic', 'Bahamas']
+    },
+    'Panama': {
+        code: 'pa',
+        capital: 'Panama City',
+        similar: ['Costa Rica', 'Colombia', 'Nicaragua', 'Guatemala']
+    },
+    'Costa Rica': {
+        code: 'cr',
+        capital: 'San José',
+        similar: ['Panama', 'Nicaragua', 'Guatemala', 'Honduras']
+    },
+    'Dominican Republic': {
+        code: 'do',
+        capital: 'Santo Domingo',
+        similar: ['Haiti', 'Cuba', 'Jamaica', 'Puerto Rico']
+    },
+    'Guatemala': {
+        code: 'gt',
+        capital: 'Guatemala City',
+        similar: ['Mexico', 'Honduras', 'El Salvador', 'Belize']
+    }
+};
+
+// Helper function to get flag URL for a country
+function getFlagUrl(countryName) {
+    const data = countryData[countryName];
+    if (!data) return null;
+    return `https://flagcdn.com/${data.code}.svg`;
+}
+
+// Helper function to get capital for a country
+function getCapital(countryName) {
+    const data = countryData[countryName];
+    return data ? data.capital : null;
+}
+
+// Generate multiple choice options with tricky distractors
+function generateMultipleChoiceOptions(correctAnswer, answerType = 'country') {
+    const options = [correctAnswer];
+    const data = countryData[correctAnswer];
+
+    // Get similar countries for tricky distractors
+    let similarCountries = [];
+    if (data && data.similar) {
+        similarCountries = data.similar.filter(country => {
+            // Ensure the similar country is in our quiz countries list
+            return quizCountries.includes(country);
+        });
+    }
+
+    // Add at least one similar country if available
+    if (similarCountries.length > 0) {
+        const randomSimilar = similarCountries[Math.floor(Math.random() * similarCountries.length)];
+        options.push(randomSimilar);
+    }
+
+    // Fill remaining options with random countries
+    while (options.length < 4) {
+        const randomCountry = quizCountries[Math.floor(Math.random() * quizCountries.length)];
+        if (!options.includes(randomCountry)) {
+            options.push(randomCountry);
+        }
+    }
+
+    // For capital questions, return the capitals instead of country names
+    if (answerType === 'capital') {
+        return options.map(country => getCapital(country)).filter(cap => cap !== null);
+    }
+
+    // Shuffle the options
+    return shuffleArray(options);
+}
+
+// Helper function to shuffle an array
+function shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+// Render multiple choice options
+function renderMultipleChoice(options, correctAnswer) {
+    const container = document.getElementById('options-grid');
+    container.innerHTML = '';
+
+    options.forEach(option => {
+        const button = document.createElement('button');
+        button.className = 'option-btn';
+        button.textContent = option;
+        button.onclick = () => handleMultipleChoiceAnswer(option, correctAnswer, button);
+        container.appendChild(button);
+    });
+
+    // Show multiple choice container and hide globe for MC questions
+    document.getElementById('multiple-choice-container').style.display = 'block';
+    if (gameState.questionType !== 'location') {
+        document.getElementById('globe-container').style.display = 'none';
+    }
+}
+
+// Handle multiple choice answer
+function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
+    if (gameState.answeredCorrectly) return;
+
+    const isCorrect = selectedAnswer === correctAnswer;
+
+    // Visual feedback
+    button.classList.add('selected');
+
+    if (isCorrect) {
+        button.classList.add('correct');
+        handleCorrectAnswer(button);
+        // Highlight correct country on globe if applicable
+        if (gameState.questionType === 'identify') {
+            highlightCountryOnGlobe(gameState.targetCountry);
+        }
+    } else {
+        button.classList.add('incorrect');
+        handleIncorrectAnswer(button);
+        // Show correct answer after delay
+        setTimeout(() => {
+            const buttons = document.querySelectorAll('.option-btn');
+            buttons.forEach(btn => {
+                if (btn.textContent === correctAnswer) {
+                    btn.classList.add('correct');
+                }
+            });
+        }, 1000);
+    }
+}
+
+// Highlight country on globe
+function highlightCountryOnGlobe(countryName) {
+    const country = gameState.countries.find(c => c.properties.name === countryName);
+    if (!country) return;
+
+    countriesGroup.selectAll('path')
+        .filter(d => d.properties.name === countryName)
+        .classed('target', true);
+}
+
+// Clear multiple choice UI
+function clearMultipleChoice() {
+    document.getElementById('options-grid').innerHTML = '';
+    document.getElementById('multiple-choice-container').style.display = 'none';
+    document.getElementById('globe-container').style.display = 'block';
+    document.getElementById('flag-display').style.display = 'none';
+}
 
 // Initialize the game
 function initGame() {
@@ -172,6 +615,8 @@ function drawCountries() {
 
 // Handle country click
 function handleCountryClick(event, d) {
+    // Only allow clicking countries during location questions
+    if (gameState.questionType !== 'location') return;
     if (gameState.answeredCorrectly) return;
 
     const clickedCountry = d.properties.name;
@@ -193,14 +638,26 @@ function handleCorrectAnswer(element) {
     gameState.score++;
 
     // Update UI
-    d3.select(element).classed('selected', false).classed('target', true);
+    if (element && element.classed) {
+        d3.select(element).classed('selected', false).classed('target', true);
+    }
     document.getElementById('score').textContent = gameState.score;
 
     const feedback = document.getElementById('feedback');
     feedback.textContent = '✓ Correct! Well done!';
     feedback.className = 'feedback correct';
 
-    document.getElementById('next-btn').disabled = false;
+    // Auto-advance to next sub-question or enable next button
+    if (gameState.subQuestionIndex < gameState.maxSubQuestions - 1) {
+        // Automatically move to next sub-question after a short delay
+        setTimeout(() => {
+            gameState.subQuestionIndex++;
+            startNewQuestion();
+        }, 1500);
+    } else {
+        // All sub-questions complete, enable next question button
+        document.getElementById('next-btn').disabled = false;
+    }
 }
 
 // Handle incorrect answer
@@ -236,37 +693,118 @@ function startNewQuestion() {
         .classed('selected', false)
         .classed('incorrect', false);
 
+    // Clear multiple choice
+    clearMultipleChoice();
+
     // Check if game is over
     if (gameState.currentQuestion > gameState.totalQuestions) {
         endGame();
         return;
     }
 
-    // Get available countries that haven't been used
-    const availableCountries = quizCountries.filter(country => {
-        // Check if country exists in our data and hasn't been used
-        const exists = gameState.countries.some(c => c.properties.name === country);
-        return exists && !gameState.usedCountries.has(country);
-    });
+    // If starting a new country (subQuestionIndex === 0), select a new country
+    if (gameState.subQuestionIndex === 0) {
+        // Get available countries that haven't been used
+        const availableCountries = quizCountries.filter(country => {
+            // Check if country exists in our data and hasn't been used
+            const exists = gameState.countries.some(c => c.properties.name === country);
+            return exists && !gameState.usedCountries.has(country);
+        });
 
-    if (availableCountries.length === 0) {
-        // Reset used countries if we've gone through all of them
-        gameState.usedCountries.clear();
-        startNewQuestion();
-        return;
+        if (availableCountries.length === 0) {
+            // Reset used countries if we've gone through all of them
+            gameState.usedCountries.clear();
+            startNewQuestion();
+            return;
+        }
+
+        // Select random country
+        const randomIndex = Math.floor(Math.random() * availableCountries.length);
+        gameState.targetCountry = availableCountries[randomIndex];
+        gameState.usedCountries.add(gameState.targetCountry);
+
+        // Randomly decide question type for this country (70% normal, 30% identify mode)
+        if (Math.random() < 0.3) {
+            gameState.questionType = 'identify';
+        } else {
+            gameState.questionType = 'location';
+        }
     }
 
-    // Select random country
-    const randomIndex = Math.floor(Math.random() * availableCountries.length);
-    gameState.targetCountry = availableCountries[randomIndex];
-    gameState.usedCountries.add(gameState.targetCountry);
-
-    // Update UI
-    document.getElementById('country-name').textContent = gameState.targetCountry;
+    // Update question number display
     document.getElementById('current-question').textContent = gameState.currentQuestion;
 
-    // Rotate globe to show the target country (optional enhancement)
+    // Render the appropriate question based on subQuestionIndex
+    if (gameState.questionType === 'identify' && gameState.subQuestionIndex === 0) {
+        renderIdentifyQuestion();
+    } else if (gameState.subQuestionIndex === 0) {
+        renderLocationQuestion();
+    } else if (gameState.subQuestionIndex === 1) {
+        renderFlagQuestion();
+    } else if (gameState.subQuestionIndex === 2) {
+        renderCapitalQuestion();
+    }
+}
+
+// Render location question (original: find country on globe)
+function renderLocationQuestion() {
+    gameState.questionType = 'location';
+    document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
+    document.getElementById('globe-container').style.display = 'block';
+    document.getElementById('multiple-choice-container').style.display = 'none';
+    document.getElementById('flag-display').style.display = 'none';
+
+    // Rotate globe to show the target country
     rotateToCountry(gameState.targetCountry);
+}
+
+// Render flag question (identify the flag)
+function renderFlagQuestion() {
+    gameState.questionType = 'flag';
+    const flagUrl = getFlagUrl(gameState.targetCountry);
+
+    document.getElementById('question-text').innerHTML = `Which country does this flag belong to?`;
+    document.getElementById('flag-display').style.display = 'block';
+    document.getElementById('flag-image').src = flagUrl;
+    document.getElementById('globe-container').style.display = 'none';
+
+    // Generate multiple choice options
+    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'country');
+    renderMultipleChoice(options, gameState.targetCountry);
+}
+
+// Render capital question
+function renderCapitalQuestion() {
+    gameState.questionType = 'capital';
+    const correctCapital = getCapital(gameState.targetCountry);
+
+    document.getElementById('question-text').innerHTML = `What is the capital of <span id="country-name">${gameState.targetCountry}</span>?`;
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('globe-container').style.display = 'none';
+
+    // Generate multiple choice options with capitals
+    const countryOptions = generateMultipleChoiceOptions(gameState.targetCountry, 'country');
+    const capitalOptions = countryOptions.map(country => getCapital(country)).filter(cap => cap !== null);
+
+    renderMultipleChoice(capitalOptions, correctCapital);
+}
+
+// Render identify question (show country on globe, identify name)
+function renderIdentifyQuestion() {
+    gameState.questionType = 'identify';
+    document.getElementById('question-text').innerHTML = `Which country is highlighted?`;
+    document.getElementById('globe-container').style.display = 'block';
+    document.getElementById('flag-display').style.display = 'none';
+
+    // Highlight the country on the globe
+    highlightCountryOnGlobe(gameState.targetCountry);
+
+    // Rotate globe to show the target country
+    rotateToCountry(gameState.targetCountry);
+
+    // Generate multiple choice options
+    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'country');
+    renderMultipleChoice(options, gameState.targetCountry);
 }
 
 // Rotate globe to show target country
@@ -321,12 +859,14 @@ function dragEnd() {
 
 // End game
 function endGame() {
-    const percentage = Math.round((gameState.score / gameState.totalQuestions) * 100);
+    const maxScore = gameState.totalQuestions * gameState.maxSubQuestions;
+    const percentage = Math.round((gameState.score / maxScore) * 100);
 
-    document.getElementById('country-name').textContent = 'Game Over!';
+    document.getElementById('question-text').innerHTML = 'Game Over!';
+    clearMultipleChoice();
 
     const feedback = document.getElementById('feedback');
-    feedback.textContent = `You scored ${gameState.score}/${gameState.totalQuestions} (${percentage}%)`;
+    feedback.textContent = `You scored ${gameState.score}/${maxScore} (${percentage}%)`;
     feedback.className = percentage >= 70 ? 'feedback correct' : 'feedback incorrect';
 
     document.getElementById('next-btn').disabled = true;
@@ -341,7 +881,12 @@ function restartGame() {
         targetCountry: null,
         countries: gameState.countries, // Keep loaded countries
         answeredCorrectly: false,
-        usedCountries: new Set()
+        usedCountries: new Set(),
+        questionType: null,
+        currentAnswer: null,
+        multipleChoiceOptions: [],
+        subQuestionIndex: 0,
+        maxSubQuestions: 3
     };
 
     document.getElementById('score').textContent = '0';
@@ -353,6 +898,8 @@ function restartGame() {
 // Event listeners
 function setupEventListeners() {
     document.getElementById('next-btn').addEventListener('click', () => {
+        // Reset sub-question index and move to next country
+        gameState.subQuestionIndex = 0;
         gameState.currentQuestion++;
         startNewQuestion();
     });
