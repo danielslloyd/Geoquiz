@@ -1,0 +1,249 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+    color: #333;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+header {
+    text-align: center;
+    color: white;
+    margin-bottom: 30px;
+}
+
+header h1 {
+    font-size: 3rem;
+    margin-bottom: 10px;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.subtitle {
+    font-size: 1.2rem;
+    opacity: 0.9;
+}
+
+.game-info {
+    background: white;
+    border-radius: 15px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.score-board {
+    display: flex;
+    justify-content: space-around;
+    gap: 20px;
+}
+
+.score-item {
+    text-align: center;
+}
+
+.score-item .label {
+    display: block;
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 5px;
+}
+
+.score-item .value {
+    display: block;
+    font-size: 2rem;
+    font-weight: bold;
+    color: #667eea;
+}
+
+.question-container {
+    background: white;
+    border-radius: 15px;
+    padding: 25px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    text-align: center;
+}
+
+.question h2 {
+    font-size: 1.8rem;
+    color: #333;
+}
+
+#country-name {
+    color: #667eea;
+    font-weight: bold;
+}
+
+.feedback {
+    margin-top: 15px;
+    padding: 15px;
+    border-radius: 10px;
+    font-weight: bold;
+    font-size: 1.1rem;
+    min-height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+}
+
+.feedback.correct {
+    background: #d4edda;
+    color: #155724;
+    border: 2px solid #c3e6cb;
+}
+
+.feedback.incorrect {
+    background: #f8d7da;
+    color: #721c24;
+    border: 2px solid #f5c6cb;
+}
+
+.globe-container {
+    background: white;
+    border-radius: 15px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#globe {
+    width: 100%;
+    max-width: 800px;
+    height: 600px;
+    cursor: grab;
+}
+
+#globe:active {
+    cursor: grabbing;
+}
+
+.country {
+    fill: #e0e0e0;
+    stroke: #fff;
+    stroke-width: 0.5;
+    transition: fill 0.2s ease;
+    cursor: pointer;
+}
+
+.country:hover {
+    fill: #ffd700;
+}
+
+.country.target {
+    fill: #4CAF50;
+    stroke: #2e7d32;
+    stroke-width: 1;
+}
+
+.country.incorrect {
+    fill: #f44336;
+    stroke: #c62828;
+    stroke-width: 1;
+}
+
+.country.selected {
+    fill: #2196F3;
+    stroke: #1565c0;
+    stroke-width: 1.5;
+}
+
+.controls {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-bottom: 30px;
+}
+
+.btn {
+    padding: 15px 30px;
+    font-size: 1.1rem;
+    font-weight: bold;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn:not(:disabled):hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.btn:not(:disabled):active {
+    transform: translateY(0);
+}
+
+.btn:not(.secondary) {
+    background: #667eea;
+    color: white;
+}
+
+.btn.secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.instructions {
+    background: white;
+    border-radius: 15px;
+    padding: 25px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.instructions h3 {
+    margin-bottom: 15px;
+    color: #667eea;
+}
+
+.instructions ul {
+    list-style-position: inside;
+    line-height: 1.8;
+}
+
+.instructions li {
+    margin-bottom: 8px;
+}
+
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 2rem;
+    }
+
+    .score-board {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    #globe {
+        height: 400px;
+    }
+
+    .controls {
+        flex-direction: column;
+    }
+
+    .btn {
+        width: 100%;
+    }
+}

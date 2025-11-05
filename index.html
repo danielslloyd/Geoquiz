@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geoquiz - Interactive Geography Game</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/topojson.v3.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌍 Geoquiz</h1>
+            <p class="subtitle">Test your geography knowledge!</p>
+        </header>
+
+        <div class="game-info">
+            <div class="score-board">
+                <div class="score-item">
+                    <span class="label">Score:</span>
+                    <span class="value" id="score">0</span>
+                </div>
+                <div class="score-item">
+                    <span class="label">Question:</span>
+                    <span class="value"><span id="current-question">1</span>/<span id="total-questions">10</span></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="question-container">
+            <div class="question">
+                <h2>Find: <span id="country-name">Loading...</span></h2>
+            </div>
+            <div class="feedback" id="feedback"></div>
+        </div>
+
+        <div class="globe-container">
+            <svg id="globe"></svg>
+        </div>
+
+        <div class="controls">
+            <button id="next-btn" class="btn" disabled>Next Question</button>
+            <button id="restart-btn" class="btn secondary">Restart Game</button>
+        </div>
+
+        <div class="instructions">
+            <h3>How to Play</h3>
+            <ul>
+                <li>Click and drag to rotate the globe</li>
+                <li>Click on a country to select it</li>
+                <li>Get instant feedback on your answer</li>
+                <li>Try to get all 10 questions correct!</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

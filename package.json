@@ -1,0 +1,14 @@
+{
+  "name": "geoquiz",
+  "version": "1.0.0",
+  "description": "Interactive geography quiz game with a 3D globe",
+  "main": "index.html",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "dev": "python3 -m http.server 8000"
+  },
+  "keywords": ["geography", "quiz", "globe", "d3js", "game"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
