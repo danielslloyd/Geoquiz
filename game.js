@@ -17,46 +17,6 @@ let gameState = {
     currentQuizList: null // Will be set based on mode
 };
 
-// Quiz mode configurations
-const QUIZ_MODES = {
-    countries: {
-        name: 'Countries of the World',
-        quizList: quizCountries,
-        dataObj: countryData,
-        totalQuestions: 10,
-        useGlobe: true,
-        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
-        mapObject: 'countries',
-        hasFlags: true,
-        itemLabel: 'country',
-        itemLabelPlural: 'countries'
-    },
-    'us-states': {
-        name: 'US States',
-        quizList: usStates,
-        dataObj: usStateData,
-        totalQuestions: 10,
-        useGlobe: false,
-        mapUrl: 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json',
-        mapObject: 'states',
-        hasFlags: false,
-        itemLabel: 'state',
-        itemLabelPlural: 'states'
-    },
-    'indian-states': {
-        name: 'Indian States',
-        quizList: indianStates,
-        dataObj: indianStateData,
-        totalQuestions: 10,
-        useGlobe: false,
-        mapUrl: 'https://raw.githubusercontent.com/Subhash9325/GeoJson-Data-of-Indian-States/master/Indian_States',
-        mapObject: null, // Will use features directly
-        hasFlags: false,
-        itemLabel: 'state',
-        itemLabelPlural: 'states'
-    }
-};
-
 // Globe configuration
 const width = 800;
 const height = 600;
@@ -849,6 +809,46 @@ const indianStateData = {
         code: 'in-py',
         capital: 'Puducherry',
         similar: ['Tamil Nadu', 'Kerala', 'Karnataka', 'Andhra Pradesh']
+    }
+};
+
+// Quiz mode configurations
+const QUIZ_MODES = {
+    countries: {
+        name: 'Countries of the World',
+        quizList: quizCountries,
+        dataObj: countryData,
+        totalQuestions: 10,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: true,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries'
+    },
+    'us-states': {
+        name: 'US States',
+        quizList: usStates,
+        dataObj: usStateData,
+        totalQuestions: 10,
+        useGlobe: false,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json',
+        mapObject: 'states',
+        hasFlags: false,
+        itemLabel: 'state',
+        itemLabelPlural: 'states'
+    },
+    'indian-states': {
+        name: 'Indian States',
+        quizList: indianStates,
+        dataObj: indianStateData,
+        totalQuestions: 10,
+        useGlobe: false,
+        mapUrl: 'https://raw.githubusercontent.com/Subhash9325/GeoJson-Data-of-Indian-States/master/Indian_States',
+        mapObject: null, // Will use features directly
+        hasFlags: false,
+        itemLabel: 'state',
+        itemLabelPlural: 'states'
     }
 };
 
