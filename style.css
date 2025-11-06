@@ -537,3 +537,43 @@ header h1 {
         max-width: 200px;
     }
 }
+
+/* Name-all mode input styling */
+.name-all-input-container {
+    margin: 20px auto;
+    max-width: 600px;
+    display: flex;
+    justify-content: center;
+}
+
+.name-all-input {
+    width: 100%;
+    padding: 18px 25px;
+    font-size: 1.2rem;
+    border: 3px solid #667eea;
+    border-radius: 12px;
+    background: white;
+    color: #333;
+    font-family: inherit;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.2);
+}
+
+.name-all-input:focus {
+    outline: none;
+    border-color: #764ba2;
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    transform: translateY(-2px);
+}
+
+.name-all-input::placeholder {
+    color: #999;
+    font-style: italic;
+}
+
+@media (max-width: 768px) {
+    .name-all-input {
+        padding: 15px 20px;
+        font-size: 1rem;
+    }
+}
