@@ -7,14 +7,17 @@ let gameState = {
     countries: [],
     answeredCorrectly: false,
     usedCountries: new Set(),
-    questionType: null, // 'location', 'flag', 'capital', 'identify'
+    questionType: null, // 'location', 'flag', 'capital', 'identify', 'name-all'
     currentAnswer: null,
     multipleChoiceOptions: [],
     subQuestionIndex: 0, // 0: location, 1: flag, 2: capital
     maxSubQuestions: 3,
-    mode: 'countries', // 'countries', 'us-states', 'indian-states'
+    mode: 'countries', // 'countries', 'us-states', 'indian-states', 'name-all'
     currentDataObj: null, // Will be set based on mode
-    currentQuizList: null // Will be set based on mode
+    currentQuizList: null, // Will be set based on mode
+    foundCountries: new Set(), // For name-all mode
+    nameAllStartTime: null, // Track start time for name-all mode
+    nameAllGaveUp: false // Track if user gave up in name-all mode
 };
 
 // Globe configuration
@@ -866,6 +869,20 @@ const QUIZ_MODES = {
         itemLabelPlural: 'locations',
         autoRotate: true, // Auto-rotate for identify mode
         identifyOnly: true // Only show identify questions
+    },
+    'name-all': {
+        name: 'Name All Countries',
+        quizList: quizCountries,
+        dataObj: countryData,
+        totalQuestions: 1, // Single question mode
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        nameAllMode: true // Special mode for typing all countries
     }
 };
 
@@ -1331,6 +1348,13 @@ function handleIncorrectAnswer(element) {
 
 // Handle give up - reveal answer without awarding points
 function giveUp() {
+    // Special handling for name-all mode
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    if (modeConfig.nameAllMode) {
+        handleNameAllGiveUp();
+        return;
+    }
+
     if (gameState.answeredCorrectly) return; // Already answered correctly
 
     gameState.answeredCorrectly = true; // Mark as answered to prevent further input
@@ -1344,7 +1368,6 @@ function giveUp() {
         // Highlight the country on the map
         highlightCountryOnGlobe(gameState.targetCountry);
         // Rotate to show it if autoRotate is enabled
-        const modeConfig = QUIZ_MODES[gameState.mode];
         if (modeConfig.useGlobe && modeConfig.autoRotate) {
             rotateToCountry(gameState.targetCountry);
         }
@@ -1372,7 +1395,6 @@ function giveUp() {
     }
 
     // Determine max sub-questions based on mode
-    const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
     if (modeConfig.identifyOnly) {
         maxSub = 1;
@@ -1393,9 +1415,18 @@ function giveUp() {
 
 // Start a new question
 function startNewQuestion() {
+    // Check if this is name-all mode
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    if (modeConfig.nameAllMode) {
+        renderNameAllMode();
+        return;
+    }
+
     // Reset state
     gameState.answeredCorrectly = false;
     document.getElementById('next-btn').disabled = true;
+    document.getElementById('next-btn').style.display = 'inline-block';
+    document.getElementById('give-up-btn').style.display = 'inline-block';
 
     // Clear feedback
     const feedback = document.getElementById('feedback');
@@ -1410,6 +1441,12 @@ function startNewQuestion() {
 
     // Clear multiple choice
     clearMultipleChoice();
+
+    // Hide name-all input if exists
+    const inputContainer = document.getElementById('name-all-input-container');
+    if (inputContainer) {
+        inputContainer.style.display = 'none';
+    }
 
     // Check if game is over
     if (gameState.currentQuestion > gameState.totalQuestions) {
@@ -1451,7 +1488,6 @@ function startNewQuestion() {
     document.getElementById('current-question').textContent = gameState.currentQuestion;
 
     // Render the appropriate question based on subQuestionIndex
-    const modeConfig = QUIZ_MODES[gameState.mode];
     const hasFlags = modeConfig.hasFlags;
 
     if (modeConfig.identifyOnly) {
@@ -1594,6 +1630,209 @@ function renderIdentifyQuestion() {
     renderMultipleChoice(options, gameState.targetCountry);
 }
 
+// Render name-all mode question
+function renderNameAllMode() {
+    gameState.questionType = 'name-all';
+    gameState.foundCountries = new Set();
+    gameState.nameAllStartTime = Date.now();
+    gameState.nameAllGaveUp = false;
+
+    const totalCountries = gameState.currentQuizList.filter(item =>
+        gameState.countries.some(c => c.properties.name === item)
+    ).length;
+
+    document.getElementById('question-text').innerHTML = `Type all the countries! (<span id="found-count">0</span>/${totalCountries})`;
+    document.getElementById('globe-container').classList.remove('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+
+    // Create and show input field
+    createNameAllInput();
+
+    // Reset globe rotation
+    projection.rotate([0, 0]);
+    countriesGroup.selectAll('path')
+        .attr('d', path)
+        .classed('target', false)
+        .classed('incorrect', false)
+        .classed('selected', false);
+
+    // Update button states
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'inline-block';
+    document.getElementById('restart-btn').style.display = 'inline-block';
+}
+
+// Create input field for name-all mode
+function createNameAllInput() {
+    // Check if input already exists
+    let inputContainer = document.getElementById('name-all-input-container');
+    if (!inputContainer) {
+        inputContainer = document.createElement('div');
+        inputContainer.id = 'name-all-input-container';
+        inputContainer.className = 'name-all-input-container';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = 'name-all-input';
+        input.className = 'name-all-input';
+        input.placeholder = 'Type a country name...';
+        input.autocomplete = 'off';
+
+        inputContainer.appendChild(input);
+
+        // Insert after question container
+        const questionContainer = document.getElementById('question-container');
+        questionContainer.appendChild(inputContainer);
+
+        // Add event listener for real-time input
+        input.addEventListener('input', handleNameAllInput);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+            }
+        });
+    }
+
+    // Show and focus input
+    inputContainer.style.display = 'block';
+    document.getElementById('name-all-input').value = '';
+    document.getElementById('name-all-input').focus();
+}
+
+// Handle input changes in name-all mode
+function handleNameAllInput(event) {
+    if (gameState.nameAllGaveUp) return;
+
+    const input = event.target;
+    const inputValue = input.value.trim();
+
+    if (!inputValue) return;
+
+    // Normalize input for comparison (lowercase, remove extra spaces)
+    const normalizedInput = inputValue.toLowerCase().replace(/\s+/g, ' ');
+
+    // Check against all countries in the quiz list
+    for (const countryName of gameState.currentQuizList) {
+        const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ');
+
+        // Check if this country hasn't been found yet and matches input
+        if (!gameState.foundCountries.has(countryName) && normalizedCountryName === normalizedInput) {
+            // Found a match!
+            gameState.foundCountries.add(countryName);
+            gameState.score++;
+
+            // Highlight country on globe
+            highlightFoundCountry(countryName);
+
+            // Clear input
+            input.value = '';
+
+            // Update counter
+            updateFoundCounter();
+
+            // Check if all countries found
+            checkNameAllComplete();
+
+            return;
+        }
+    }
+}
+
+// Highlight a found country in name-all mode
+function highlightFoundCountry(countryName) {
+    countriesGroup.selectAll('path')
+        .filter(d => d.properties.name === countryName)
+        .classed('target', true)
+        .style('fill', '#4CAF50')
+        .style('stroke', '#2e7d32');
+}
+
+// Update the found counter display
+function updateFoundCounter() {
+    const totalCountries = gameState.currentQuizList.filter(item =>
+        gameState.countries.some(c => c.properties.name === item)
+    ).length;
+
+    document.getElementById('found-count').textContent = gameState.foundCountries.size;
+    document.getElementById('score').textContent = gameState.score;
+}
+
+// Check if all countries have been found
+function checkNameAllComplete() {
+    const totalCountries = gameState.currentQuizList.filter(item =>
+        gameState.countries.some(c => c.properties.name === item)
+    ).length;
+
+    if (gameState.foundCountries.size >= totalCountries) {
+        // All countries found!
+        const elapsedTime = Math.round((Date.now() - gameState.nameAllStartTime) / 1000);
+        const minutes = Math.floor(elapsedTime / 60);
+        const seconds = elapsedTime % 60;
+        const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+        const feedback = document.getElementById('feedback');
+        feedback.textContent = `🎉 Congratulations! You named all ${totalCountries} countries in ${timeStr}!`;
+        feedback.className = 'feedback correct';
+
+        // Hide input
+        const inputContainer = document.getElementById('name-all-input-container');
+        if (inputContainer) {
+            inputContainer.style.display = 'none';
+        }
+
+        // Update button states
+        document.getElementById('give-up-btn').style.display = 'none';
+    }
+}
+
+// Handle give up for name-all mode
+function handleNameAllGiveUp() {
+    gameState.nameAllGaveUp = true;
+
+    // Hide input
+    const inputContainer = document.getElementById('name-all-input-container');
+    if (inputContainer) {
+        inputContainer.style.display = 'none';
+    }
+
+    // Highlight all missed countries in red and create list
+    const missedCountries = [];
+    gameState.currentQuizList.forEach(countryName => {
+        const exists = gameState.countries.some(c => c.properties.name === countryName);
+        if (exists && !gameState.foundCountries.has(countryName)) {
+            missedCountries.push(countryName);
+
+            // Highlight in red
+            countriesGroup.selectAll('path')
+                .filter(d => d.properties.name === countryName)
+                .classed('incorrect', true)
+                .style('fill', '#f44336')
+                .style('stroke', '#c62828');
+        }
+    });
+
+    // Show feedback with missed countries
+    const totalCountries = gameState.currentQuizList.filter(item =>
+        gameState.countries.some(c => c.properties.name === item)
+    ).length;
+
+    const feedback = document.getElementById('feedback');
+    feedback.innerHTML = `
+        <div>
+            <p>You found ${gameState.foundCountries.size} out of ${totalCountries} countries.</p>
+            <p style="margin-top: 10px;"><strong>Missed countries:</strong></p>
+            <div style="max-height: 200px; overflow-y: auto; margin-top: 10px; text-align: left;">
+                ${missedCountries.sort().map(name => `<div style="padding: 3px 0;">• ${name}</div>`).join('')}
+            </div>
+        </div>
+    `;
+    feedback.className = 'feedback incorrect';
+
+    // Update button states
+    document.getElementById('give-up-btn').style.display = 'none';
+}
+
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
     const country = gameState.countries.find(c => c.properties.name === countryName);
@@ -1612,29 +1851,53 @@ function rotateToCountry(countryName) {
         });
 }
 
-// Drag functions
+// Enhanced drag functions for interactive rotations
 let isDragging = false;
 let dragStartPos = null;
+let dragStartRotation = null;
+let velocity = [0, 0];
+let lastDragPos = null;
+let lastDragTime = 0;
 
 function dragStart(event) {
     isDragging = true;
-    dragStartPos = { x: event.x, y: event.y };
-    rotation = { x: projection.rotate()[0], y: projection.rotate()[1] };
+    const rotate = projection.rotate();
+    dragStartRotation = [rotate[0], rotate[1], rotate[2] || 0];
+
+    const pointer = d3.pointer(event, svg.node());
+    dragStartPos = pointer;
+    lastDragPos = pointer;
+    lastDragTime = Date.now();
+    velocity = [0, 0];
 }
 
 function dragging(event) {
     if (!isDragging) return;
 
-    const dx = event.x - dragStartPos.x;
-    const dy = event.y - dragStartPos.y;
+    const pointer = d3.pointer(event, svg.node());
+    const currentTime = Date.now();
+    const dt = Math.max(currentTime - lastDragTime, 1);
 
-    const newRotation = [
-        rotation.x + dx * 0.5,
-        rotation.y - dy * 0.5
+    // Calculate delta
+    const dx = pointer[0] - dragStartPos[0];
+    const dy = pointer[1] - dragStartPos[1];
+
+    // Calculate velocity for momentum
+    velocity = [
+        (pointer[0] - lastDragPos[0]) / dt * 50,
+        (pointer[1] - lastDragPos[1]) / dt * 50
     ];
 
-    // Clamp latitude rotation
-    newRotation[1] = Math.max(-90, Math.min(90, newRotation[1]));
+    lastDragPos = pointer;
+    lastDragTime = currentTime;
+
+    // Calculate rotation based on drag
+    const rotationScale = 0.3;
+    const newRotation = [
+        dragStartRotation[0] + dx * rotationScale,
+        Math.max(-90, Math.min(90, dragStartRotation[1] - dy * rotationScale)),
+        dragStartRotation[2]
+    ];
 
     projection.rotate(newRotation);
     countriesGroup.selectAll('path').attr('d', path);
@@ -1642,6 +1905,43 @@ function dragging(event) {
 
 function dragEnd() {
     isDragging = false;
+
+    // Optional: Add momentum/inertia effect
+    const momentumThreshold = 0.5;
+    if (Math.abs(velocity[0]) > momentumThreshold || Math.abs(velocity[1]) > momentumThreshold) {
+        applyMomentum();
+    }
+}
+
+function applyMomentum() {
+    const decay = 0.92;
+    const minVelocity = 0.01;
+
+    function animate() {
+        if (isDragging) return; // Stop if user starts dragging again
+
+        // Apply velocity to rotation
+        const rotate = projection.rotate();
+        const newRotation = [
+            rotate[0] + velocity[0],
+            Math.max(-90, Math.min(90, rotate[1] + velocity[1])),
+            rotate[2]
+        ];
+
+        projection.rotate(newRotation);
+        countriesGroup.selectAll('path').attr('d', path);
+
+        // Decay velocity
+        velocity[0] *= decay;
+        velocity[1] *= decay;
+
+        // Continue animation if velocity is significant
+        if (Math.abs(velocity[0]) > minVelocity || Math.abs(velocity[1]) > minVelocity) {
+            requestAnimationFrame(animate);
+        }
+    }
+
+    requestAnimationFrame(animate);
 }
 
 // End game
@@ -1843,6 +2143,11 @@ function resetModeSelector() {
                 <span class="mode-icon">🔍</span>
                 <span class="mode-name">Identify Mode</span>
                 <span class="mode-desc">Identify highlighted locations on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="name-all">
+                <span class="mode-icon">⌨️</span>
+                <span class="mode-name">Name All Countries</span>
+                <span class="mode-desc">Type as many countries as you can!</span>
             </button>
         </div>
     `;
