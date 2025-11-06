@@ -824,7 +824,8 @@ const QUIZ_MODES = {
         mapObject: 'countries',
         hasFlags: true,
         itemLabel: 'country',
-        itemLabelPlural: 'countries'
+        itemLabelPlural: 'countries',
+        autoRotate: false // Don't auto-rotate to country
     },
     'us-states': {
         name: 'US States',
@@ -836,7 +837,8 @@ const QUIZ_MODES = {
         mapObject: 'states',
         hasFlags: false,
         itemLabel: 'state',
-        itemLabelPlural: 'states'
+        itemLabelPlural: 'states',
+        autoRotate: false
     },
     'indian-states': {
         name: 'Indian States',
@@ -848,7 +850,22 @@ const QUIZ_MODES = {
         mapObject: null, // Will use features directly
         hasFlags: false,
         itemLabel: 'state',
-        itemLabelPlural: 'states'
+        itemLabelPlural: 'states',
+        autoRotate: false
+    },
+    'identify': {
+        name: 'Identify Mode',
+        quizList: quizCountries, // Will be set dynamically
+        dataObj: countryData, // Will be set dynamically
+        totalQuestions: 10,
+        useGlobe: true, // Will be set dynamically
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json', // Will be set dynamically
+        mapObject: 'countries', // Will be set dynamically
+        hasFlags: false,
+        itemLabel: 'location',
+        itemLabelPlural: 'locations',
+        autoRotate: true, // Auto-rotate for identify mode
+        identifyOnly: true // Only show identify questions
     }
 };
 
@@ -976,7 +993,9 @@ function highlightCountryOnGlobe(countryName) {
 
 // Clear multiple choice UI
 function clearMultipleChoice() {
-    document.getElementById('options-grid').innerHTML = '';
+    const grid = document.getElementById('options-grid');
+    grid.innerHTML = '';
+    grid.className = 'options-grid'; // Reset to default class
     document.getElementById('multiple-choice-container').classList.add('hidden');
     document.getElementById('globe-container').classList.remove('hidden');
     document.getElementById('flag-display').style.display = 'none';
@@ -1069,6 +1088,30 @@ function setupGlobe() {
         .on('end', dragEnd);
 
     svg.call(drag);
+
+    // Add zoom behavior with scroll wheel
+    svg.on('wheel', function(event) {
+        event.preventDefault();
+
+        const delta = -event.deltaY;
+        const scale = projection.scale();
+        const newScale = scale + delta * 0.5;
+
+        // Set min and max scale limits
+        const minScale = 100;
+        const maxScale = 2000;
+
+        if (newScale >= minScale && newScale <= maxScale) {
+            projection.scale(newScale);
+            countriesGroup.selectAll('path').attr('d', path);
+
+            // Update ocean circle for globe view
+            if (QUIZ_MODES[gameState.mode].useGlobe) {
+                g.select('circle')
+                    .attr('r', newScale);
+            }
+        }
+    });
 }
 
 // Load map data based on current mode
@@ -1248,9 +1291,14 @@ function handleCorrectAnswer(element) {
     feedback.textContent = '✓ Correct! Well done!';
     feedback.className = 'feedback correct';
 
-    // Determine max sub-questions based on mode (2 if no flags, 3 if flags)
+    // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
-    const maxSub = modeConfig.hasFlags ? 3 : 2;
+    let maxSub;
+    if (modeConfig.identifyOnly) {
+        maxSub = 1; // Identify mode only has 1 question per item
+    } else {
+        maxSub = modeConfig.hasFlags ? 3 : 2; // 2 if no flags, 3 if flags
+    }
 
     // Auto-advance to next sub-question or enable next button
     if (gameState.subQuestionIndex < maxSub - 1) {
@@ -1279,6 +1327,68 @@ function handleIncorrectAnswer(element) {
         feedback.textContent = '';
         feedback.className = 'feedback';
     }, 1500);
+}
+
+// Handle give up - reveal answer without awarding points
+function giveUp() {
+    if (gameState.answeredCorrectly) return; // Already answered correctly
+
+    gameState.answeredCorrectly = true; // Mark as answered to prevent further input
+
+    const feedback = document.getElementById('feedback');
+    feedback.textContent = `The correct answer is: ${gameState.targetCountry}`;
+    feedback.className = 'feedback incorrect';
+
+    // Show the correct answer visually
+    if (gameState.questionType === 'location') {
+        // Highlight the country on the map
+        highlightCountryOnGlobe(gameState.targetCountry);
+        // Rotate to show it if autoRotate is enabled
+        const modeConfig = QUIZ_MODES[gameState.mode];
+        if (modeConfig.useGlobe && modeConfig.autoRotate) {
+            rotateToCountry(gameState.targetCountry);
+        }
+    } else if (gameState.questionType === 'flag') {
+        // Highlight correct flag
+        const flagOptions = document.querySelectorAll('.flag-option');
+        flagOptions.forEach(opt => {
+            const img = opt.querySelector('img');
+            if (img && img.src === getFlagUrl(gameState.targetCountry)) {
+                opt.classList.add('correct');
+            }
+        });
+    } else if (gameState.questionType === 'capital') {
+        // Highlight correct capital
+        const correctCapital = getCapital(gameState.targetCountry);
+        const buttons = document.querySelectorAll('.option-btn');
+        buttons.forEach(btn => {
+            if (btn.textContent === correctCapital) {
+                btn.classList.add('correct');
+            }
+        });
+    } else if (gameState.questionType === 'identify') {
+        // Already highlighted, just show in feedback
+        feedback.textContent = `The highlighted location is: ${gameState.targetCountry}`;
+    }
+
+    // Determine max sub-questions based on mode
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    let maxSub;
+    if (modeConfig.identifyOnly) {
+        maxSub = 1;
+    } else {
+        maxSub = modeConfig.hasFlags ? 3 : 2;
+    }
+
+    // Auto-advance or enable next button
+    if (gameState.subQuestionIndex < maxSub - 1) {
+        setTimeout(() => {
+            gameState.subQuestionIndex++;
+            startNewQuestion();
+        }, 2500);
+    } else {
+        document.getElementById('next-btn').disabled = false;
+    }
 }
 
 // Start a new question
@@ -1328,8 +1438,9 @@ function startNewQuestion() {
         gameState.targetCountry = availableItems[randomIndex];
         gameState.usedCountries.add(gameState.targetCountry);
 
-        // Randomly decide question type for this item (70% normal, 30% identify mode)
-        if (Math.random() < 0.3) {
+        // Check if this is identify-only mode
+        const modeConfig = QUIZ_MODES[gameState.mode];
+        if (modeConfig.identifyOnly) {
             gameState.questionType = 'identify';
         } else {
             gameState.questionType = 'location';
@@ -1343,7 +1454,8 @@ function startNewQuestion() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     const hasFlags = modeConfig.hasFlags;
 
-    if (gameState.questionType === 'identify' && gameState.subQuestionIndex === 0) {
+    if (modeConfig.identifyOnly) {
+        // Identify mode only shows identify questions
         renderIdentifyQuestion();
     } else if (gameState.subQuestionIndex === 0) {
         renderLocationQuestion();
@@ -1360,34 +1472,89 @@ function startNewQuestion() {
 // Render location question (original: find country/state on map)
 function renderLocationQuestion() {
     gameState.questionType = 'location';
-    const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    const itemLabel = modeConfig.itemLabel;
     document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
     document.getElementById('globe-container').classList.remove('hidden');
     document.getElementById('multiple-choice-container').classList.add('hidden');
     document.getElementById('flag-display').style.display = 'none';
 
-    // Rotate globe/map to show the target
-    if (QUIZ_MODES[gameState.mode].useGlobe) {
+    // Rotate globe/map to show the target only if autoRotate is enabled
+    if (modeConfig.useGlobe && modeConfig.autoRotate) {
         rotateToCountry(gameState.targetCountry);
-    } else {
-        // For regional maps, just ensure it's visible (already fitted in loadMapData)
+    } else if (modeConfig.useGlobe && !modeConfig.autoRotate) {
+        // Reset to 0,0 for countries mode
+        projection.rotate([0, 0]);
+        countriesGroup.selectAll('path').attr('d', path);
     }
+    // For regional maps, just ensure it's visible (already fitted in loadMapData)
 }
 
-// Render flag question (identify the flag)
+// Render flag question (show 4 flags and choose the correct one)
 function renderFlagQuestion() {
     gameState.questionType = 'flag';
-    const flagUrl = getFlagUrl(gameState.targetCountry);
     const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
 
-    document.getElementById('question-text').innerHTML = `Which ${itemLabel} does this flag belong to?`;
-    document.getElementById('flag-display').style.display = 'block';
-    document.getElementById('flag-image').src = flagUrl;
+    document.getElementById('question-text').innerHTML = `Which flag belongs to <span id="country-name">${gameState.targetCountry}</span>?`;
+    document.getElementById('flag-display').style.display = 'none';
     document.getElementById('globe-container').classList.add('hidden');
 
     // Generate multiple choice options
     const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
-    renderMultipleChoice(options, gameState.targetCountry);
+
+    // Render flag choices
+    renderFlagChoices(options, gameState.targetCountry);
+}
+
+// Render flag choices (4 flag images)
+function renderFlagChoices(options, correctAnswer) {
+    const container = document.getElementById('multiple-choice-container');
+    const grid = document.getElementById('options-grid');
+    grid.innerHTML = '';
+    grid.className = 'flag-options-grid';
+
+    options.forEach(option => {
+        const flagDiv = document.createElement('div');
+        flagDiv.className = 'flag-option';
+
+        const flagImg = document.createElement('img');
+        flagImg.src = getFlagUrl(option);
+        flagImg.alt = `Flag of ${option}`;
+
+        flagDiv.appendChild(flagImg);
+        flagDiv.onclick = () => handleFlagChoiceAnswer(option, correctAnswer, flagDiv);
+        grid.appendChild(flagDiv);
+    });
+
+    container.classList.remove('hidden');
+}
+
+// Handle flag choice answer
+function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
+    if (gameState.answeredCorrectly) return;
+
+    const isCorrect = selectedAnswer === correctAnswer;
+
+    // Visual feedback
+    element.classList.add('selected');
+
+    if (isCorrect) {
+        element.classList.add('correct');
+        handleCorrectAnswer(element);
+    } else {
+        element.classList.add('incorrect');
+        handleIncorrectAnswer(element);
+        // Show correct answer after delay
+        setTimeout(() => {
+            const flagOptions = document.querySelectorAll('.flag-option');
+            flagOptions.forEach(opt => {
+                const img = opt.querySelector('img');
+                if (img && img.src === getFlagUrl(correctAnswer)) {
+                    opt.classList.add('correct');
+                }
+            });
+        }, 1000);
+    }
 }
 
 // Render capital question
@@ -1480,7 +1647,12 @@ function dragEnd() {
 // End game
 function endGame() {
     const modeConfig = QUIZ_MODES[gameState.mode];
-    const maxSub = modeConfig.hasFlags ? 3 : 2;
+    let maxSub;
+    if (modeConfig.identifyOnly) {
+        maxSub = 1;
+    } else {
+        maxSub = modeConfig.hasFlags ? 3 : 2;
+    }
     const maxScore = gameState.totalQuestions * maxSub;
     const percentage = Math.round((gameState.score / maxScore) * 100);
 
@@ -1527,14 +1699,55 @@ function restartGame() {
 
 // Event listeners
 function setupEventListeners() {
-    // Mode selection
-    document.querySelectorAll('.mode-btn').forEach(btn => {
+    // Mode selection from main mode selector
+    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const mode = e.currentTarget.dataset.mode;
+            if (mode === 'states') {
+                // Show states sub-selector
+                document.getElementById('mode-selector').classList.add('hidden');
+                document.getElementById('states-selector').classList.remove('hidden');
+            } else if (mode === 'identify') {
+                // For identify mode, show a region selector first
+                showIdentifyModeSelector();
+            } else {
+                // Start game directly for countries mode
+                startGameWithMode(mode);
+            }
+        });
+    });
+
+    // States sub-mode selection
+    document.querySelectorAll('#states-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
             startGameWithMode(mode);
         });
     });
 
+    // Back button in states selector
+    document.getElementById('back-to-modes-btn').addEventListener('click', () => {
+        document.getElementById('states-selector').classList.add('hidden');
+        document.getElementById('mode-selector').classList.remove('hidden');
+    });
+
+    // Change mode button during game
+    document.getElementById('change-mode-btn').addEventListener('click', () => {
+        // Reset to mode selector
+        document.getElementById('game-info').classList.add('hidden');
+        document.getElementById('question-container').classList.add('hidden');
+        document.getElementById('controls').classList.add('hidden');
+        document.getElementById('instructions').classList.add('hidden');
+        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('mode-selector').classList.remove('hidden');
+        document.getElementById('states-selector').classList.add('hidden');
+
+        // Clear the SVG
+        d3.select('#globe').selectAll('*').remove();
+    });
+
+    // Next button
     document.getElementById('next-btn').addEventListener('click', () => {
         // Reset sub-question index and move to next item
         gameState.subQuestionIndex = 0;
@@ -1542,7 +1755,112 @@ function setupEventListeners() {
         startNewQuestion();
     });
 
+    // Give up button
+    document.getElementById('give-up-btn').addEventListener('click', giveUp);
+
+    // Restart button
     document.getElementById('restart-btn').addEventListener('click', restartGame);
+}
+
+// Show identify mode selector (choose region)
+function showIdentifyModeSelector() {
+    // Create a temporary selector for identify mode regions
+    const modeSelector = document.getElementById('mode-selector');
+    const html = `
+        <h2>Select Region for Identify Mode</h2>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-identify-region="countries">
+                <span class="mode-icon">🌍</span>
+                <span class="mode-name">World Countries</span>
+                <span class="mode-desc">Identify highlighted countries</span>
+            </button>
+            <button class="mode-btn" data-identify-region="us-states">
+                <span class="mode-icon">🗽</span>
+                <span class="mode-name">US States</span>
+                <span class="mode-desc">Identify highlighted US states</span>
+            </button>
+            <button class="mode-btn" data-identify-region="indian-states">
+                <span class="mode-icon">🇮🇳</span>
+                <span class="mode-name">Indian States</span>
+                <span class="mode-desc">Identify highlighted Indian states</span>
+            </button>
+        </div>
+        <button id="back-from-identify-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    modeSelector.innerHTML = html;
+
+    // Add event listeners for identify region buttons
+    document.querySelectorAll('[data-identify-region]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const region = e.currentTarget.dataset.identifyRegion;
+            startIdentifyMode(region);
+        });
+    });
+
+    // Back button
+    document.getElementById('back-from-identify-btn').addEventListener('click', () => {
+        resetModeSelector();
+    });
+}
+
+// Start identify mode with selected region
+function startIdentifyMode(region) {
+    // Configure identify mode with the selected region's data
+    const baseMode = region === 'countries' ? 'countries' : region;
+    const baseModeConfig = QUIZ_MODES[baseMode];
+
+    // Update identify mode configuration
+    QUIZ_MODES.identify.quizList = baseModeConfig.quizList;
+    QUIZ_MODES.identify.dataObj = baseModeConfig.dataObj;
+    QUIZ_MODES.identify.useGlobe = baseModeConfig.useGlobe;
+    QUIZ_MODES.identify.mapUrl = baseModeConfig.mapUrl;
+    QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
+    QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
+    QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
+
+    // Start game with identify mode
+    startGameWithMode('identify');
+}
+
+// Reset mode selector to original state
+function resetModeSelector() {
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.innerHTML = `
+        <h2>Select Quiz Mode</h2>
+        <div class="mode-buttons" id="mode-buttons">
+            <button class="mode-btn" data-mode="countries">
+                <span class="mode-icon">🌍</span>
+                <span class="mode-name">Countries of the World</span>
+                <span class="mode-desc">Quiz on countries, flags, and capitals</span>
+            </button>
+            <button class="mode-btn" data-mode="states">
+                <span class="mode-icon">🗺️</span>
+                <span class="mode-name">States</span>
+                <span class="mode-desc">Quiz on US and Indian states</span>
+            </button>
+            <button class="mode-btn" data-mode="identify">
+                <span class="mode-icon">🔍</span>
+                <span class="mode-name">Identify Mode</span>
+                <span class="mode-desc">Identify highlighted locations on the map</span>
+            </button>
+        </div>
+    `;
+
+    // Re-attach event listeners
+    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const mode = e.currentTarget.dataset.mode;
+            if (mode === 'states') {
+                document.getElementById('mode-selector').classList.add('hidden');
+                document.getElementById('states-selector').classList.remove('hidden');
+            } else if (mode === 'identify') {
+                showIdentifyModeSelector();
+            } else {
+                startGameWithMode(mode);
+            }
+        });
+    });
 }
 
 // Initialize when DOM is ready
