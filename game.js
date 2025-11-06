@@ -1291,18 +1291,8 @@ function handleCorrectAnswer(element) {
     feedback.textContent = '✓ Correct! Well done!';
     feedback.className = 'feedback correct';
 
-    // Zoom to the country for globe-based modes
-    const modeConfig = QUIZ_MODES[gameState.mode];
-    if (modeConfig.useGlobe) {
-        // Highlight the country on the map if not already visible
-        if (gameState.questionType !== 'location') {
-            highlightCountryOnGlobe(gameState.targetCountry);
-        }
-        // Zoom to the country
-        zoomToCountry(gameState.targetCountry);
-    }
-
     // Determine max sub-questions based on mode
+    const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
     if (modeConfig.identifyOnly) {
         maxSub = 1; // Identify mode only has 1 question per item
@@ -1619,55 +1609,6 @@ function rotateToCountry(countryName) {
                 projection.rotate(r(t));
                 countriesGroup.selectAll('path').attr('d', path);
             };
-        });
-}
-
-// Zoom to a country - rotate and zoom in on successful answer
-function zoomToCountry(countryName) {
-    const country = gameState.countries.find(c => c.properties.name === countryName);
-    if (!country) return;
-
-    const centroid = d3.geoCentroid(country);
-    const currentScale = projection.scale();
-    const targetScale = Math.min(600, 2000); // Zoom in to 600 or max limit
-    const modeConfig = QUIZ_MODES[gameState.mode];
-
-    d3.transition()
-        .duration(1000)
-        .tween('zoomToCountry', () => {
-            const rotateInterpolator = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
-            const scaleInterpolator = d3.interpolate(currentScale, targetScale);
-
-            return t => {
-                projection.rotate(rotateInterpolator(t));
-                projection.scale(scaleInterpolator(t));
-                countriesGroup.selectAll('path').attr('d', path);
-
-                // Update ocean circle for globe view
-                if (modeConfig.useGlobe) {
-                    g.select('circle').attr('r', scaleInterpolator(t));
-                }
-            };
-        })
-        .on('end', () => {
-            // Zoom back out after 2 seconds
-            setTimeout(() => {
-                d3.transition()
-                    .duration(1000)
-                    .tween('zoomOut', () => {
-                        const scaleInterpolator = d3.interpolate(projection.scale(), 280); // Back to default scale
-
-                        return t => {
-                            projection.scale(scaleInterpolator(t));
-                            countriesGroup.selectAll('path').attr('d', path);
-
-                            // Update ocean circle for globe view
-                            if (modeConfig.useGlobe) {
-                                g.select('circle').attr('r', scaleInterpolator(t));
-                            }
-                        };
-                    });
-            }, 2000);
         });
 }
 
