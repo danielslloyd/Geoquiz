@@ -18,12 +18,29 @@
         <!-- Mode Selector -->
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
-            <div class="mode-buttons">
+            <div class="mode-buttons" id="mode-buttons">
                 <button class="mode-btn" data-mode="countries">
                     <span class="mode-icon">🌍</span>
                     <span class="mode-name">Countries of the World</span>
                     <span class="mode-desc">Quiz on countries, flags, and capitals</span>
                 </button>
+                <button class="mode-btn" data-mode="states">
+                    <span class="mode-icon">🗺️</span>
+                    <span class="mode-name">States</span>
+                    <span class="mode-desc">Quiz on US and Indian states</span>
+                </button>
+                <button class="mode-btn" data-mode="identify">
+                    <span class="mode-icon">🔍</span>
+                    <span class="mode-name">Identify Mode</span>
+                    <span class="mode-desc">Identify highlighted locations on the map</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- States Sub-Mode Selector -->
+        <div class="mode-selector hidden" id="states-selector">
+            <h2>Select Region</h2>
+            <div class="mode-buttons">
                 <button class="mode-btn" data-mode="us-states">
                     <span class="mode-icon">🗽</span>
                     <span class="mode-name">US States</span>
@@ -35,6 +52,7 @@
                     <span class="mode-desc">Quiz on states and union territories of India</span>
                 </button>
             </div>
+            <button id="back-to-modes-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
         </div>
 
         <div class="game-info hidden" id="game-info">
@@ -46,6 +64,9 @@
                 <div class="score-item">
                     <span class="label">Question:</span>
                     <span class="value"><span id="current-question">1</span>/<span id="total-questions">10</span></span>
+                </div>
+                <div class="score-item">
+                    <button id="change-mode-btn" class="btn small">Change Mode</button>
                 </div>
             </div>
         </div>
@@ -70,6 +91,7 @@
 
         <div class="controls hidden" id="controls">
             <button id="next-btn" class="btn" disabled>Next Question</button>
+            <button id="give-up-btn" class="btn secondary">Give Up</button>
             <button id="restart-btn" class="btn secondary">Restart Game</button>
         </div>
 
