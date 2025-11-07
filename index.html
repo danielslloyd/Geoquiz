@@ -90,6 +90,37 @@
             <div class="options-grid" id="options-grid"></div>
         </div>
 
+        <!-- World Quiz Mode Layout: Globe + Side Panels -->
+        <div class="world-quiz-layout hidden" id="world-quiz-layout">
+            <div class="world-quiz-globe">
+                <svg id="globe-world"></svg>
+            </div>
+            <div class="world-quiz-panels">
+                <div class="world-quiz-panel-top" id="world-quiz-panel-top">
+                    <div class="question">
+                        <h2 id="flag-question-text"></h2>
+                    </div>
+                    <div class="flag-display" id="flag-display-side" style="display: none;">
+                        <img id="flag-image-side" src="" alt="Country Flag" />
+                    </div>
+                    <div class="multiple-choice-container" id="flag-choice-container" style="display: none;">
+                        <div class="options-grid" id="flag-options-grid"></div>
+                    </div>
+                    <div class="feedback" id="flag-feedback"></div>
+                </div>
+                <div class="world-quiz-panel-bottom" id="world-quiz-panel-bottom">
+                    <div class="question">
+                        <h2 id="capital-question-text"></h2>
+                    </div>
+                    <div class="multiple-choice-container" id="capital-choice-container" style="display: none;">
+                        <div class="options-grid" id="capital-options-grid"></div>
+                    </div>
+                    <div class="feedback" id="capital-feedback"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Standard Globe Container (for other modes) -->
         <div class="globe-container hidden" id="globe-container">
             <svg id="globe"></svg>
         </div>
