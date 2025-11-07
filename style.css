@@ -194,6 +194,10 @@ header h1 {
     align-items: center;
 }
 
+.map-container.hidden {
+    display: none !important;
+}
+
 #globe {
     width: 100%;
     max-width: 800px;
