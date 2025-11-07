@@ -76,11 +76,6 @@
             </div>
         </div>
 
-        <!-- World Quiz Question Bar (placed here for compact layout) -->
-        <div class="world-quiz-question-bar hidden" id="world-quiz-question-bar">
-            <h2 id="world-quiz-current-question"></h2>
-        </div>
-
         <div class="question-container hidden" id="question-container">
             <div class="question">
                 <h2 id="question-text">Find: <span id="country-name">Loading...</span></h2>
@@ -91,8 +86,18 @@
             <div class="feedback" id="feedback"></div>
         </div>
 
+        <!-- Map container for standard modes (identify, name-all) -->
+        <div class="map-container hidden" id="map-container">
+            <svg id="globe"></svg>
+        </div>
+
         <div class="multiple-choice-container hidden" id="multiple-choice-container">
             <div class="options-grid" id="options-grid"></div>
+        </div>
+
+        <!-- World Quiz Question Bar (placed below game-info for compact layout) -->
+        <div class="world-quiz-question-bar hidden" id="world-quiz-question-bar">
+            <h2 id="world-quiz-current-question"></h2>
         </div>
 
         <!-- World Quiz Mode Layout: Globe + Side Panels -->
