@@ -1479,37 +1479,38 @@ function handleCountryClick(event, d) {
 
     if (isCorrect) {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, highlight correct country and auto-advance
+            // For World Quiz Layout, show feedback in flag panel and auto-advance
             d3.select(event.target).classed('selected', false).classed('target', true);
             gameState.answeredCorrectly = true;
             gameState.score++;
             document.getElementById('score').textContent = gameState.score;
 
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✓ Correct! Well done!';
+            feedback.className = 'feedback correct';
+
             // Auto-advance to flag question after a short delay
             setTimeout(() => {
                 gameState.subQuestionIndex++;
                 startNewQuestion();
-            }, 800);
+            }, 1500);
         } else {
             handleCorrectAnswer(event.target);
         }
     } else {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, keep incorrect red, show correct, auto-advance
+            // For World Quiz Layout, show feedback in flag panel
             d3.select(event.target).classed('selected', false).classed('incorrect', true);
 
-            // Highlight the correct country
-            const correctCountry = gameState.countries.find(c => c.properties.name === gameState.targetCountry);
-            if (correctCountry) {
-                countriesGroup.selectAll('path')
-                    .filter(d => d.properties.name === gameState.targetCountry)
-                    .classed('target', true);
-            }
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✗ Incorrect. Try again!';
+            feedback.className = 'feedback incorrect';
 
-            // Auto-advance to flag question after showing correct answer
+            // Remove incorrect styling after a short delay
             setTimeout(() => {
-                gameState.subQuestionIndex++;
-                startNewQuestion();
+                d3.select(event.target).classed('incorrect', false);
+                feedback.textContent = '';
+                feedback.className = 'feedback';
             }, 1500);
         } else {
             handleIncorrectAnswer(event.target);
@@ -1658,13 +1659,10 @@ function startNewQuestion() {
     feedback.className = 'feedback';
 
     // Clear previous styling
-    // For World Quiz Layout, preserve country highlights during flag and capital questions
-    if (!modeConfig.useWorldQuizLayout || gameState.subQuestionIndex === 0) {
-        countriesGroup.selectAll('path')
-            .classed('target', false)
-            .classed('selected', false)
-            .classed('incorrect', false);
-    }
+    countriesGroup.selectAll('path')
+        .classed('target', false)
+        .classed('selected', false)
+        .classed('incorrect', false);
 
     // Clear multiple choice
     clearMultipleChoice();
@@ -1848,6 +1846,11 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
         element.classList.add('correct');
 
         if (modeConfig.useWorldQuizLayout) {
+            // Update feedback in flag panel
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✓ Correct! Well done!';
+            feedback.className = 'feedback correct';
+
             // Handle correct answer logic
             gameState.answeredCorrectly = true;
             gameState.score++;
@@ -1857,7 +1860,7 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             setTimeout(() => {
                 gameState.subQuestionIndex++;
                 startNewQuestion();
-            }, 800);
+            }, 1500);
         } else {
             handleCorrectAnswer(element);
         }
@@ -1865,19 +1868,16 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
         element.classList.add('incorrect');
 
         if (modeConfig.useWorldQuizLayout) {
-            // Show correct answer
-            const flagOptions = document.querySelectorAll('.flag-option');
-            flagOptions.forEach(opt => {
-                const img = opt.querySelector('img');
-                if (img && img.src === getFlagUrl(correctAnswer)) {
-                    opt.classList.add('correct');
-                }
-            });
+            // Update feedback in flag panel
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✗ Incorrect. Try again!';
+            feedback.className = 'feedback incorrect';
 
-            // Auto-advance to capital question after showing correct answer
+            // Remove incorrect styling after a short delay
             setTimeout(() => {
-                gameState.subQuestionIndex++;
-                startNewQuestion();
+                element.classList.remove('selected', 'incorrect');
+                feedback.textContent = '';
+                feedback.className = 'feedback';
             }, 1500);
         } else {
             handleIncorrectAnswer(element);
@@ -1945,6 +1945,11 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
     if (isCorrect) {
         element.classList.add('correct');
 
+        // Update feedback in capital panel
+        const feedback = document.getElementById('capital-feedback');
+        feedback.textContent = '✓ Correct! Well done!';
+        feedback.className = 'feedback correct';
+
         // Handle correct answer logic
         gameState.answeredCorrectly = true;
         gameState.score++;
@@ -1953,21 +1958,20 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
         // Enable next button after a short delay
         setTimeout(() => {
             document.getElementById('next-btn').disabled = false;
-        }, 800);
+        }, 1500);
     } else {
         element.classList.add('incorrect');
 
-        // Show correct answer
-        const capitalOptions = document.querySelectorAll('.option-btn');
-        capitalOptions.forEach(opt => {
-            if (opt.textContent === correctAnswer) {
-                opt.classList.add('correct');
-            }
-        });
+        // Update feedback in capital panel
+        const feedback = document.getElementById('capital-feedback');
+        feedback.textContent = '✗ Incorrect. Try again!';
+        feedback.className = 'feedback incorrect';
 
-        // Enable next button after showing correct answer
+        // Remove incorrect styling after a short delay
         setTimeout(() => {
-            document.getElementById('next-btn').disabled = false;
+            element.classList.remove('selected', 'incorrect');
+            feedback.textContent = '';
+            feedback.className = 'feedback';
         }, 1500);
     }
 }
