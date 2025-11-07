@@ -961,10 +961,10 @@ function renderMultipleChoice(options, correctAnswer) {
         container.appendChild(button);
     });
 
-    // Show multiple choice container and hide globe for MC questions
+    // Show multiple choice container and hide map for MC questions
     document.getElementById('multiple-choice-container').classList.remove('hidden');
     if (gameState.questionType !== 'location') {
-        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('map-container').classList.add('hidden');
     }
 }
 
@@ -1015,7 +1015,7 @@ function clearMultipleChoice() {
     grid.innerHTML = '';
     grid.className = 'options-grid'; // Reset to default class
     document.getElementById('multiple-choice-container').classList.add('hidden');
-    document.getElementById('globe-container').classList.remove('hidden');
+    document.getElementById('map-container').classList.remove('hidden');
     document.getElementById('flag-display').style.display = 'none';
 }
 
@@ -1124,13 +1124,15 @@ function setupGlobe() {
     // Group for countries
     countriesGroup = g.append('g');
 
-    // Add drag behavior
-    const drag = d3.drag()
-        .on('start', dragStart)
-        .on('drag', dragging)
-        .on('end', dragEnd);
+    // Add drag behavior only for globe modes (not for states)
+    if (modeConfig.useGlobe) {
+        const drag = d3.drag()
+            .on('start', dragStart)
+            .on('drag', dragging)
+            .on('end', dragEnd);
 
-    svg.call(drag);
+        svg.call(drag);
+    }
 
     // Add zoom behavior with scroll wheel
     svg.on('wheel', function(event) {
@@ -1751,7 +1753,7 @@ function renderLocationQuestion() {
     } else {
         // Standard layout
         document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
-        document.getElementById('globe-container').classList.remove('hidden');
+        document.getElementById('map-container').classList.remove('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
         document.getElementById('flag-display').style.display = 'none';
     }
@@ -1805,7 +1807,7 @@ function renderFlagQuestion() {
         // Standard layout
         document.getElementById('question-text').innerHTML = `Which flag belongs to <span id="country-name">${gameState.targetCountry}</span>?`;
         document.getElementById('flag-display').style.display = 'none';
-        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('map-container').classList.add('hidden');
 
         // Render flag choices
         renderFlagChoices(options, gameState.targetCountry);
@@ -1931,7 +1933,7 @@ function renderCapitalQuestion() {
         // Standard layout
         document.getElementById('question-text').innerHTML = `What is the capital of <span id="country-name">${gameState.targetCountry}</span>?`;
         document.getElementById('flag-display').style.display = 'none';
-        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('map-container').classList.add('hidden');
 
         renderMultipleChoice(capitalOptions, correctCapital);
     }
@@ -1961,7 +1963,16 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
 
         // Auto-advance to next country after a short delay
         setTimeout(() => {
-            document.getElementById('next-btn').disabled = false;
+            // Reset sub-question index and move to next country
+            gameState.subQuestionIndex = 0;
+            gameState.currentQuestion++;
+            if (gameState.currentQuestion <= gameState.totalQuestions) {
+                gameState.answeredCorrectly = false;
+                pickRandomCountry();
+                startNewQuestion();
+            } else {
+                endGame();
+            }
         }, 1500);
     } else {
         element.classList.add('incorrect');
@@ -1985,7 +1996,7 @@ function renderIdentifyQuestion() {
     gameState.questionType = 'identify';
     const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
     document.getElementById('question-text').innerHTML = `Which ${itemLabel} is highlighted?`;
-    document.getElementById('globe-container').classList.remove('hidden');
+    document.getElementById('map-container').classList.remove('hidden');
     document.getElementById('flag-display').style.display = 'none';
 
     // Highlight the item on the map
@@ -2013,7 +2024,7 @@ function renderNameAllMode() {
     ).length;
 
     document.getElementById('question-text').innerHTML = `Type all the countries! (<span id="found-count">0</span>/${totalCountries})`;
-    document.getElementById('globe-container').classList.remove('hidden');
+    document.getElementById('map-container').classList.remove('hidden');
     document.getElementById('flag-display').style.display = 'none';
     document.getElementById('multiple-choice-container').classList.add('hidden');
 
@@ -2432,9 +2443,10 @@ function setupEventListeners() {
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('controls').classList.add('hidden');
         document.getElementById('instructions').classList.add('hidden');
-        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('map-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
         document.getElementById('world-quiz-layout').classList.add('hidden');
+        document.getElementById('world-quiz-question-bar').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
         document.getElementById('states-selector').classList.add('hidden');
 
