@@ -828,7 +828,8 @@ const QUIZ_MODES = {
         hasFlags: true,
         itemLabel: 'country',
         itemLabelPlural: 'countries',
-        autoRotate: false // Don't auto-rotate to country
+        autoRotate: false, // Don't auto-rotate to country
+        useWorldQuizLayout: true // Use special 2/3 + 1/3 layout
     },
     'us-states': {
         name: 'US States',
@@ -1032,12 +1033,30 @@ function startGameWithMode(mode) {
     gameState.currentDataObj = modeConfig.dataObj;
     gameState.currentQuizList = modeConfig.quizList;
 
+    // Clear any previous game state messages
+    const feedback = document.getElementById('feedback');
+    feedback.textContent = '';
+    feedback.className = 'feedback';
+    document.getElementById('question-text').innerHTML = '';
+
     // Hide mode selector and show game elements
     document.getElementById('mode-selector').classList.add('hidden');
     document.getElementById('game-info').classList.remove('hidden');
-    document.getElementById('question-container').classList.remove('hidden');
     document.getElementById('controls').classList.remove('hidden');
     document.getElementById('instructions').classList.remove('hidden');
+
+    // Show appropriate layout based on mode
+    if (modeConfig.useWorldQuizLayout) {
+        // Use World Quiz Layout (globe left 2/3, questions right 1/3)
+        document.getElementById('world-quiz-layout').classList.remove('hidden');
+        document.getElementById('question-container').classList.add('hidden');
+        document.getElementById('globe-container').classList.add('hidden');
+        document.getElementById('multiple-choice-container').classList.add('hidden');
+    } else {
+        // Use standard layout
+        document.getElementById('question-container').classList.remove('hidden');
+        document.getElementById('world-quiz-layout').classList.add('hidden');
+    }
 
     // Setup visualization based on mode
     setupGlobe();
@@ -1048,7 +1067,13 @@ function startGameWithMode(mode) {
 function setupGlobe() {
     const modeConfig = QUIZ_MODES[gameState.mode];
 
-    svg = d3.select('#globe')
+    // Select the appropriate SVG element based on layout
+    const svgId = modeConfig.useWorldQuizLayout ? '#globe-world' : '#globe';
+
+    // Clear any existing content in the SVG
+    d3.select(svgId).selectAll('*').remove();
+
+    svg = d3.select(svgId)
         .attr('width', width)
         .attr('height', height);
 
@@ -1152,11 +1177,20 @@ function loadMapData() {
                     state.properties.name = getStateName(state.id);
                 });
 
-                // Fit projection to US
-                projection.fitSize([width, height], {
-                    type: 'FeatureCollection',
-                    features: gameState.countries
-                });
+                // Separate contiguous states from Alaska, Hawaii, and Puerto Rico
+                const nonContiguousStateIds = [2, 15, 72]; // Alaska=2, Hawaii=15, Puerto Rico=72
+                gameState.contiguousStates = gameState.countries.filter(s => !nonContiguousStateIds.includes(s.id));
+                gameState.alaskaState = gameState.countries.filter(s => s.id === 2);
+                gameState.hawaiiState = gameState.countries.filter(s => s.id === 15);
+                gameState.puertoRicoState = gameState.countries.filter(s => s.id === 72);
+
+                // Fit projection to contiguous US only
+                if (gameState.contiguousStates.length > 0) {
+                    projection.fitSize([width, height], {
+                        type: 'FeatureCollection',
+                        features: gameState.contiguousStates
+                    });
+                }
             } else if (gameState.mode === 'indian-states') {
                 // For Indian states, the data is already in GeoJSON format
                 if (data.features) {
@@ -1181,7 +1215,11 @@ function loadMapData() {
                 });
             }
 
-            drawCountries();
+            if (gameState.mode === 'us-states') {
+                drawUSStatesWithInlays();
+            } else {
+                drawCountries();
+            }
             startNewQuestion();
         })
         .catch(error => {
@@ -1274,12 +1312,165 @@ function drawCountries() {
         .on('click', handleCountryClick);
 }
 
+// Draw US states with inlays for Alaska, Hawaii, and Puerto Rico
+function drawUSStatesWithInlays() {
+    // Draw contiguous states
+    countriesGroup.selectAll('path.contiguous')
+        .data(gameState.contiguousStates)
+        .enter()
+        .append('path')
+        .attr('class', 'country contiguous')
+        .attr('d', path)
+        .on('click', handleCountryClick);
+
+    // Create inlay boxes
+    const inlayWidth = 120;
+    const inlayHeight = 80;
+    const inlayPadding = 10;
+    const inlayY = height - inlayHeight - inlayPadding;
+
+    // Alaska inlay (bottom-left)
+    if (gameState.alaskaState.length > 0) {
+        const alaskaGroup = g.append('g')
+            .attr('class', 'inlay-group alaska-inlay')
+            .attr('transform', `translate(${inlayPadding}, ${inlayY})`);
+
+        // Inlay box background
+        alaskaGroup.append('rect')
+            .attr('width', inlayWidth)
+            .attr('height', inlayHeight)
+            .attr('fill', '#f0f0f0')
+            .attr('stroke', '#999')
+            .attr('stroke-width', 2)
+            .attr('rx', 5);
+
+        // Create projection for Alaska
+        const alaskaProjection = d3.geoMercator()
+            .fitSize([inlayWidth - 10, inlayHeight - 20], {
+                type: 'FeatureCollection',
+                features: gameState.alaskaState
+            });
+        const alaskaPath = d3.geoPath().projection(alaskaProjection);
+
+        // Draw Alaska
+        alaskaGroup.selectAll('path.alaska')
+            .data(gameState.alaskaState)
+            .enter()
+            .append('path')
+            .attr('class', 'country alaska')
+            .attr('d', d => alaskaPath(d))
+            .attr('transform', 'translate(5, 15)')
+            .on('click', handleCountryClick);
+
+        // Label
+        alaskaGroup.append('text')
+            .attr('x', inlayWidth / 2)
+            .attr('y', 12)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '10px')
+            .attr('font-weight', 'bold')
+            .attr('fill', '#333')
+            .text('AK');
+    }
+
+    // Hawaii inlay (bottom-center)
+    if (gameState.hawaiiState.length > 0) {
+        const hawaiiX = (width - inlayWidth) / 2;
+        const hawaiiGroup = g.append('g')
+            .attr('class', 'inlay-group hawaii-inlay')
+            .attr('transform', `translate(${hawaiiX}, ${inlayY})`);
+
+        // Inlay box background
+        hawaiiGroup.append('rect')
+            .attr('width', inlayWidth)
+            .attr('height', inlayHeight)
+            .attr('fill', '#f0f0f0')
+            .attr('stroke', '#999')
+            .attr('stroke-width', 2)
+            .attr('rx', 5);
+
+        // Create projection for Hawaii
+        const hawaiiProjection = d3.geoMercator()
+            .fitSize([inlayWidth - 10, inlayHeight - 20], {
+                type: 'FeatureCollection',
+                features: gameState.hawaiiState
+            });
+        const hawaiiPath = d3.geoPath().projection(hawaiiProjection);
+
+        // Draw Hawaii
+        hawaiiGroup.selectAll('path.hawaii')
+            .data(gameState.hawaiiState)
+            .enter()
+            .append('path')
+            .attr('class', 'country hawaii')
+            .attr('d', d => hawaiiPath(d))
+            .attr('transform', 'translate(5, 15)')
+            .on('click', handleCountryClick);
+
+        // Label
+        hawaiiGroup.append('text')
+            .attr('x', inlayWidth / 2)
+            .attr('y', 12)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '10px')
+            .attr('font-weight', 'bold')
+            .attr('fill', '#333')
+            .text('HI');
+    }
+
+    // Puerto Rico inlay (bottom-right)
+    if (gameState.puertoRicoState.length > 0) {
+        const prX = width - inlayWidth - inlayPadding;
+        const prGroup = g.append('g')
+            .attr('class', 'inlay-group pr-inlay')
+            .attr('transform', `translate(${prX}, ${inlayY})`);
+
+        // Inlay box background
+        prGroup.append('rect')
+            .attr('width', inlayWidth)
+            .attr('height', inlayHeight)
+            .attr('fill', '#f0f0f0')
+            .attr('stroke', '#999')
+            .attr('stroke-width', 2)
+            .attr('rx', 5);
+
+        // Create projection for Puerto Rico
+        const prProjection = d3.geoMercator()
+            .fitSize([inlayWidth - 10, inlayHeight - 20], {
+                type: 'FeatureCollection',
+                features: gameState.puertoRicoState
+            });
+        const prPath = d3.geoPath().projection(prProjection);
+
+        // Draw Puerto Rico
+        prGroup.selectAll('path.pr')
+            .data(gameState.puertoRicoState)
+            .enter()
+            .append('path')
+            .attr('class', 'country pr')
+            .attr('d', d => prPath(d))
+            .attr('transform', 'translate(5, 15)')
+            .on('click', handleCountryClick);
+
+        // Label
+        prGroup.append('text')
+            .attr('x', inlayWidth / 2)
+            .attr('y', 12)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '10px')
+            .attr('font-weight', 'bold')
+            .attr('fill', '#333')
+            .text('PR');
+    }
+}
+
 // Handle country click
 function handleCountryClick(event, d) {
     // Only allow clicking countries during location questions
     if (gameState.questionType !== 'location') return;
     if (gameState.answeredCorrectly) return;
 
+    const modeConfig = QUIZ_MODES[gameState.mode];
     const clickedCountry = d.properties.name;
     const isCorrect = clickedCountry === gameState.targetCountry;
 
@@ -1287,9 +1478,43 @@ function handleCountryClick(event, d) {
     d3.select(event.target).classed('selected', true);
 
     if (isCorrect) {
-        handleCorrectAnswer(event.target);
+        if (modeConfig.useWorldQuizLayout) {
+            // For World Quiz Layout, show feedback in flag panel and auto-advance
+            d3.select(event.target).classed('selected', false).classed('target', true);
+            gameState.answeredCorrectly = true;
+            gameState.score++;
+            document.getElementById('score').textContent = gameState.score;
+
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✓ Correct! Well done!';
+            feedback.className = 'feedback correct';
+
+            // Auto-advance to flag question after a short delay
+            setTimeout(() => {
+                gameState.subQuestionIndex++;
+                startNewQuestion();
+            }, 1500);
+        } else {
+            handleCorrectAnswer(event.target);
+        }
     } else {
-        handleIncorrectAnswer(event.target);
+        if (modeConfig.useWorldQuizLayout) {
+            // For World Quiz Layout, show feedback in flag panel
+            d3.select(event.target).classed('selected', false).classed('incorrect', true);
+
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✗ Incorrect. Try again!';
+            feedback.className = 'feedback incorrect';
+
+            // Remove incorrect styling after a short delay
+            setTimeout(() => {
+                d3.select(event.target).classed('incorrect', false);
+                feedback.textContent = '';
+                feedback.className = 'feedback';
+            }, 1500);
+        } else {
+            handleIncorrectAnswer(event.target);
+        }
     }
 }
 
@@ -1510,10 +1735,24 @@ function renderLocationQuestion() {
     gameState.questionType = 'location';
     const modeConfig = QUIZ_MODES[gameState.mode];
     const itemLabel = modeConfig.itemLabel;
-    document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
-    document.getElementById('globe-container').classList.remove('hidden');
-    document.getElementById('multiple-choice-container').classList.add('hidden');
-    document.getElementById('flag-display').style.display = 'none';
+
+    if (modeConfig.useWorldQuizLayout) {
+        // For World Quiz Layout, show location prompt in top panel
+        document.getElementById('flag-question-text').innerHTML = `Click the globe to find: <strong>${gameState.targetCountry}</strong>`;
+        document.getElementById('flag-choice-container').style.display = 'none';
+        document.getElementById('flag-display-side').style.display = 'none';
+        document.getElementById('flag-feedback').textContent = '';
+        document.getElementById('flag-feedback').className = 'feedback';
+        document.getElementById('capital-question-text').innerHTML = '';
+        document.getElementById('capital-choice-container').style.display = 'none';
+        document.getElementById('capital-feedback').textContent = '';
+    } else {
+        // Standard layout
+        document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
+        document.getElementById('globe-container').classList.remove('hidden');
+        document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('flag-display').style.display = 'none';
+    }
 
     // Rotate globe/map to show the target only if autoRotate is enabled
     if (modeConfig.useGlobe && modeConfig.autoRotate) {
@@ -1529,17 +1768,45 @@ function renderLocationQuestion() {
 // Render flag question (show 4 flags and choose the correct one)
 function renderFlagQuestion() {
     gameState.questionType = 'flag';
-    const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
-
-    document.getElementById('question-text').innerHTML = `Which flag belongs to <span id="country-name">${gameState.targetCountry}</span>?`;
-    document.getElementById('flag-display').style.display = 'none';
-    document.getElementById('globe-container').classList.add('hidden');
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    const itemLabel = modeConfig.itemLabel;
 
     // Generate multiple choice options
     const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
 
-    // Render flag choices
-    renderFlagChoices(options, gameState.targetCountry);
+    if (modeConfig.useWorldQuizLayout) {
+        // For World Quiz Layout, show flag question in top panel
+        document.getElementById('flag-question-text').innerHTML = `Which flag belongs to <strong>${gameState.targetCountry}</strong>?`;
+        document.getElementById('flag-display-side').style.display = 'none';
+
+        // Render flag choices in the top panel
+        const grid = document.getElementById('flag-options-grid');
+        grid.innerHTML = '';
+        grid.className = 'flag-options-grid';
+
+        options.forEach(option => {
+            const flagDiv = document.createElement('div');
+            flagDiv.className = 'flag-option';
+
+            const flagImg = document.createElement('img');
+            flagImg.src = getFlagUrl(option);
+            flagImg.alt = `Flag of ${option}`;
+
+            flagDiv.appendChild(flagImg);
+            flagDiv.onclick = () => handleFlagChoiceAnswer(option, gameState.targetCountry, flagDiv);
+            grid.appendChild(flagDiv);
+        });
+
+        document.getElementById('flag-choice-container').style.display = 'block';
+    } else {
+        // Standard layout
+        document.getElementById('question-text').innerHTML = `Which flag belongs to <span id="country-name">${gameState.targetCountry}</span>?`;
+        document.getElementById('flag-display').style.display = 'none';
+        document.getElementById('globe-container').classList.add('hidden');
+
+        // Render flag choices
+        renderFlagChoices(options, gameState.targetCountry);
+    }
 }
 
 // Render flag choices (4 flag images)
@@ -1569,6 +1836,7 @@ function renderFlagChoices(options, correctAnswer) {
 function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
     if (gameState.answeredCorrectly) return;
 
+    const modeConfig = QUIZ_MODES[gameState.mode];
     const isCorrect = selectedAnswer === correctAnswer;
 
     // Visual feedback
@@ -1576,37 +1844,136 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
 
     if (isCorrect) {
         element.classList.add('correct');
-        handleCorrectAnswer(element);
+
+        if (modeConfig.useWorldQuizLayout) {
+            // Update feedback in flag panel
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✓ Correct! Well done!';
+            feedback.className = 'feedback correct';
+
+            // Handle correct answer logic
+            gameState.answeredCorrectly = true;
+            gameState.score++;
+            document.getElementById('score').textContent = gameState.score;
+
+            // Auto-advance to capital question after a short delay
+            setTimeout(() => {
+                gameState.subQuestionIndex++;
+                startNewQuestion();
+            }, 1500);
+        } else {
+            handleCorrectAnswer(element);
+        }
     } else {
         element.classList.add('incorrect');
-        handleIncorrectAnswer(element);
-        // Show correct answer after delay
-        setTimeout(() => {
-            const flagOptions = document.querySelectorAll('.flag-option');
-            flagOptions.forEach(opt => {
-                const img = opt.querySelector('img');
-                if (img && img.src === getFlagUrl(correctAnswer)) {
-                    opt.classList.add('correct');
-                }
-            });
-        }, 1000);
+
+        if (modeConfig.useWorldQuizLayout) {
+            // Update feedback in flag panel
+            const feedback = document.getElementById('flag-feedback');
+            feedback.textContent = '✗ Incorrect. Try again!';
+            feedback.className = 'feedback incorrect';
+
+            // Remove incorrect styling after a short delay
+            setTimeout(() => {
+                element.classList.remove('selected', 'incorrect');
+                feedback.textContent = '';
+                feedback.className = 'feedback';
+            }, 1500);
+        } else {
+            handleIncorrectAnswer(element);
+            // Show correct answer after delay
+            setTimeout(() => {
+                const flagOptions = document.querySelectorAll('.flag-option');
+                flagOptions.forEach(opt => {
+                    const img = opt.querySelector('img');
+                    if (img && img.src === getFlagUrl(correctAnswer)) {
+                        opt.classList.add('correct');
+                    }
+                });
+            }, 1000);
+        }
     }
 }
 
 // Render capital question
 function renderCapitalQuestion() {
     gameState.questionType = 'capital';
+    const modeConfig = QUIZ_MODES[gameState.mode];
     const correctCapital = getCapital(gameState.targetCountry);
-
-    document.getElementById('question-text').innerHTML = `What is the capital of <span id="country-name">${gameState.targetCountry}</span>?`;
-    document.getElementById('flag-display').style.display = 'none';
-    document.getElementById('globe-container').classList.add('hidden');
 
     // Generate multiple choice options with capitals
     const itemOptions = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
     const capitalOptions = itemOptions.map(item => getCapital(item)).filter(cap => cap !== null);
 
-    renderMultipleChoice(capitalOptions, correctCapital);
+    if (modeConfig.useWorldQuizLayout) {
+        // For World Quiz Layout, show capital question in bottom panel
+        document.getElementById('capital-question-text').innerHTML = `What is the capital of <strong>${gameState.targetCountry}</strong>?`;
+
+        // Render capital choices in the bottom panel
+        const grid = document.getElementById('capital-options-grid');
+        grid.innerHTML = '';
+        grid.className = 'options-grid';
+
+        capitalOptions.forEach(option => {
+            const button = document.createElement('button');
+            button.className = 'option-btn';
+            button.textContent = option;
+            button.onclick = () => handleCapitalChoiceAnswer(option, correctCapital, button);
+            grid.appendChild(button);
+        });
+
+        document.getElementById('capital-choice-container').style.display = 'block';
+    } else {
+        // Standard layout
+        document.getElementById('question-text').innerHTML = `What is the capital of <span id="country-name">${gameState.targetCountry}</span>?`;
+        document.getElementById('flag-display').style.display = 'none';
+        document.getElementById('globe-container').classList.add('hidden');
+
+        renderMultipleChoice(capitalOptions, correctCapital);
+    }
+}
+
+// Handle capital choice answer (for World Quiz Layout)
+function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
+    if (gameState.answeredCorrectly) return;
+
+    const isCorrect = selectedAnswer === correctAnswer;
+
+    // Visual feedback
+    element.classList.add('selected');
+
+    if (isCorrect) {
+        element.classList.add('correct');
+
+        // Update feedback in capital panel
+        const feedback = document.getElementById('capital-feedback');
+        feedback.textContent = '✓ Correct! Well done!';
+        feedback.className = 'feedback correct';
+
+        // Handle correct answer logic
+        gameState.answeredCorrectly = true;
+        gameState.score++;
+        document.getElementById('score').textContent = gameState.score;
+
+        // Enable next button after a short delay
+        setTimeout(() => {
+            document.getElementById('next-btn').disabled = false;
+        }, 1500);
+    } else {
+        element.classList.add('incorrect');
+
+        // Update feedback in capital panel
+        const feedback = document.getElementById('capital-feedback');
+        feedback.textContent = '✗ Incorrect. Try again!';
+        feedback.className = 'feedback incorrect';
+
+        // Remove incorrect styling after a short delay
+        setTimeout(() => {
+            element.classList.remove('selected', 'incorrect');
+            feedback.textContent = '';
+            feedback.className = 'feedback';
+        }, 1500);
+    }
 }
 
 // Render identify question (show country/state on map, identify name)
@@ -1651,11 +2018,17 @@ function renderNameAllMode() {
 
     // Reset globe rotation
     projection.rotate([0, 0]);
+
+    // Ensure all countries are visible with clear borders
     countriesGroup.selectAll('path')
         .attr('d', path)
         .classed('target', false)
         .classed('incorrect', false)
-        .classed('selected', false);
+        .classed('selected', false)
+        .style('fill', '#e0e0e0')  // Light gray fill for all countries
+        .style('stroke', '#fff')    // White borders
+        .style('stroke-width', '1') // Slightly thicker borders for visibility
+        .style('opacity', 1);       // Ensure full opacity
 
     // Update button states
     document.getElementById('next-btn').style.display = 'none';
@@ -2040,11 +2413,24 @@ function setupEventListeners() {
         document.getElementById('instructions').classList.add('hidden');
         document.getElementById('globe-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
         document.getElementById('states-selector').classList.add('hidden');
 
-        // Clear the SVG
+        // Clear game state messages
+        document.getElementById('question-text').innerHTML = '';
+        document.getElementById('feedback').textContent = '';
+        document.getElementById('feedback').className = 'feedback';
+        document.getElementById('flag-question-text').innerHTML = '';
+        document.getElementById('flag-feedback').textContent = '';
+        document.getElementById('flag-feedback').className = 'feedback';
+        document.getElementById('capital-question-text').innerHTML = '';
+        document.getElementById('capital-feedback').textContent = '';
+        document.getElementById('capital-feedback').className = 'feedback';
+
+        // Clear both SVGs
         d3.select('#globe').selectAll('*').remove();
+        d3.select('#globe-world').selectAll('*').remove();
     });
 
     // Next button
