@@ -2252,10 +2252,13 @@ function dragStart(event) {
 
 function dragging(event) {
     const p = d3.pointer(event, svg.node());
-    const v1 = versor.cartesian(projection.rotate(r0).invert(p));
+    // Temporarily set rotation to r0 to compute inverse (for sticky rotation)
+    projection.rotate(r0);
+    const v1 = versor.cartesian(projection.invert(p));
+    // Compute new rotation
     const q1 = versor.multiply(q0, versor.delta(v0, v1));
     const r1 = versor.rotation(q1);
-
+    // Apply new rotation
     projection.rotate(r1);
     countriesGroup.selectAll('path').attr('d', path);
 }
