@@ -1052,9 +1052,11 @@ function startGameWithMode(mode) {
         document.getElementById('world-quiz-question-bar').classList.remove('hidden');
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('map-container').classList.add('hidden');
     } else {
         // Use standard layout
         document.getElementById('question-container').classList.remove('hidden');
+        document.getElementById('map-container').classList.remove('hidden');
         document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
@@ -1968,7 +1970,6 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
             gameState.currentQuestion++;
             if (gameState.currentQuestion <= gameState.totalQuestions) {
                 gameState.answeredCorrectly = false;
-                pickRandomCountry();
                 startNewQuestion();
             } else {
                 endGame();
@@ -2264,74 +2265,6 @@ function dragEnd() {
 }
 
 // Versor helper functions for proper spherical rotation
-const versor = {
-    cartesian: function(e) {
-        const lambda = e[0] * Math.PI / 180;
-        const phi = e[1] * Math.PI / 180;
-        const cosPhi = Math.cos(phi);
-        return [cosPhi * Math.cos(lambda), cosPhi * Math.sin(lambda), Math.sin(phi)];
-    },
-
-    dot: function(a, b) {
-        let sum = 0;
-        for (let i = 0; i < 3; i++) sum += a[i] * b[i];
-        return sum;
-    },
-
-    cross: function(a, b) {
-        return [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0]
-        ];
-    },
-
-    delta: function(v0, v1) {
-        const w = this.cross(v0, v1);
-        const l = Math.sqrt(this.dot(w, w));
-        if (l === 0) return [1, 0, 0, 0];
-        const t = Math.acos(Math.max(-1, Math.min(1, this.dot(v0, v1)))) / 2;
-        const s = Math.sin(t);
-        return [Math.cos(t), w[2] / l * s, -w[1] / l * s, w[0] / l * s];
-    },
-
-    multiply: function(a, b) {
-        return [
-            a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
-            a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
-            a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
-            a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
-        ];
-    }
-};
-
-versor.rotation = function(q) {
-    return [
-        Math.atan2(2 * (q[0] * q[1] + q[2] * q[3]), 1 - 2 * (q[1] * q[1] + q[2] * q[2])) * 180 / Math.PI,
-        Math.asin(Math.max(-1, Math.min(1, 2 * (q[0] * q[2] - q[3] * q[1])))) * 180 / Math.PI,
-        Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) * 180 / Math.PI
-    ];
-};
-
-versor.call = versor;
-versor.call.bind = function(rotate) {
-    const radians = rotate.map(d => d * Math.PI / 180);
-    const cosPhi = Math.cos(radians[1]);
-    const sinPhi = Math.sin(radians[1]);
-    const cosLambda = Math.cos(radians[0]);
-    const sinLambda = Math.sin(radians[0]);
-    const cosGamma = Math.cos(radians[2]);
-    const sinGamma = Math.sin(radians[2]);
-
-    return [
-        cosGamma * cosPhi * cosLambda + sinGamma * sinLambda,
-        cosGamma * cosPhi * sinLambda - sinGamma * cosLambda,
-        cosGamma * sinPhi,
-        0
-    ];
-};
-
-// Initialize versor
 function versor(rotate) {
     const radians = rotate.map(d => d * Math.PI / 180);
     const cosPhi = Math.cos(radians[1] / 2);
@@ -2348,6 +2281,53 @@ function versor(rotate) {
         cosPhi * sinLambda
     ];
 }
+
+versor.cartesian = function(e) {
+    const lambda = e[0] * Math.PI / 180;
+    const phi = e[1] * Math.PI / 180;
+    const cosPhi = Math.cos(phi);
+    return [cosPhi * Math.cos(lambda), cosPhi * Math.sin(lambda), Math.sin(phi)];
+};
+
+versor.dot = function(a, b) {
+    let sum = 0;
+    for (let i = 0; i < 3; i++) sum += a[i] * b[i];
+    return sum;
+};
+
+versor.cross = function(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    ];
+};
+
+versor.delta = function(v0, v1) {
+    const w = versor.cross(v0, v1);
+    const l = Math.sqrt(versor.dot(w, w));
+    if (l === 0) return [1, 0, 0, 0];
+    const t = Math.acos(Math.max(-1, Math.min(1, versor.dot(v0, v1)))) / 2;
+    const s = Math.sin(t);
+    return [Math.cos(t), w[2] / l * s, -w[1] / l * s, w[0] / l * s];
+};
+
+versor.multiply = function(a, b) {
+    return [
+        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+        a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+        a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+        a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
+    ];
+};
+
+versor.rotation = function(q) {
+    return [
+        Math.atan2(2 * (q[0] * q[1] + q[2] * q[3]), 1 - 2 * (q[1] * q[1] + q[2] * q[2])) * 180 / Math.PI,
+        Math.asin(Math.max(-1, Math.min(1, 2 * (q[0] * q[2] - q[3] * q[1])))) * 180 / Math.PI,
+        Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) * 180 / Math.PI
+    ];
+};
 
 // End game
 function endGame() {
