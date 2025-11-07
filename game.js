@@ -1049,13 +1049,14 @@ function startGameWithMode(mode) {
     if (modeConfig.useWorldQuizLayout) {
         // Use World Quiz Layout (globe left 2/3, questions right 1/3)
         document.getElementById('world-quiz-layout').classList.remove('hidden');
+        document.getElementById('world-quiz-question-bar').classList.remove('hidden');
         document.getElementById('question-container').classList.add('hidden');
-        document.getElementById('globe-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
     } else {
         // Use standard layout
         document.getElementById('question-container').classList.remove('hidden');
         document.getElementById('world-quiz-layout').classList.add('hidden');
+        document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
 
     // Setup visualization based on mode
@@ -1739,8 +1740,9 @@ function renderLocationQuestion() {
     const itemLabel = modeConfig.itemLabel;
 
     if (modeConfig.useWorldQuizLayout) {
-        // For World Quiz Layout, show location prompt in top panel
-        document.getElementById('flag-question-text').innerHTML = `Click the globe to find: <strong>${gameState.targetCountry}</strong>`;
+        // For World Quiz Layout, show location prompt in question bar
+        document.getElementById('world-quiz-current-question').innerHTML = `Click the globe to find: <strong>${gameState.targetCountry}</strong>`;
+        document.getElementById('flag-question-text').innerHTML = '';
         document.getElementById('flag-choice-container').style.display = 'none';
         document.getElementById('flag-display-side').style.display = 'none';
         document.getElementById('flag-feedback').textContent = '';
@@ -1777,8 +1779,9 @@ function renderFlagQuestion() {
     const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
 
     if (modeConfig.useWorldQuizLayout) {
-        // For World Quiz Layout, show flag question in top panel
-        document.getElementById('flag-question-text').innerHTML = `Which flag belongs to <strong>${gameState.targetCountry}</strong>?`;
+        // For World Quiz Layout, show flag question in question bar
+        document.getElementById('world-quiz-current-question').innerHTML = `Which flag belongs to <strong>${gameState.targetCountry}</strong>?`;
+        document.getElementById('flag-question-text').innerHTML = '';
         document.getElementById('flag-display-side').style.display = 'none';
 
         // Render flag choices in the top panel
@@ -1906,8 +1909,9 @@ function renderCapitalQuestion() {
     const capitalOptions = itemOptions.map(item => getCapital(item)).filter(cap => cap !== null);
 
     if (modeConfig.useWorldQuizLayout) {
-        // For World Quiz Layout, show capital question in bottom panel
-        document.getElementById('capital-question-text').innerHTML = `What is the capital of <strong>${gameState.targetCountry}</strong>?`;
+        // For World Quiz Layout, show capital question in question bar
+        document.getElementById('world-quiz-current-question').innerHTML = `What is the capital of <strong>${gameState.targetCountry}</strong>?`;
+        document.getElementById('capital-question-text').innerHTML = '';
 
         // Render capital choices in the bottom panel
         const grid = document.getElementById('capital-options-grid');
@@ -1950,9 +1954,11 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
         gameState.score++;
         document.getElementById('score').textContent = gameState.score;
 
-        // Enable next button after a short delay
+        // Auto-advance to next country after a short delay
         setTimeout(() => {
-            document.getElementById('next-btn').disabled = false;
+            gameState.currentQuestion++;
+            gameState.subQuestionIndex = 0;
+            startNewQuestion();
         }, 800);
     } else {
         element.classList.add('incorrect');
@@ -1965,9 +1971,11 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
             }
         });
 
-        // Enable next button after showing correct answer
+        // Auto-advance to next country after showing correct answer
         setTimeout(() => {
-            document.getElementById('next-btn').disabled = false;
+            gameState.currentQuestion++;
+            gameState.subQuestionIndex = 0;
+            startNewQuestion();
         }, 1500);
     }
 }
@@ -2220,97 +2228,114 @@ function rotateToCountry(countryName) {
         });
 }
 
-// Enhanced drag functions for interactive rotations
-let isDragging = false;
-let dragStartPos = null;
-let dragStartRotation = null;
-let velocity = [0, 0];
-let lastDragPos = null;
-let lastDragTime = 0;
+// Enhanced drag functions for interactive rotations (versor-based)
+let v0, r0, q0;
 
 function dragStart(event) {
-    isDragging = true;
-    const rotate = projection.rotate();
-    dragStartRotation = [rotate[0], rotate[1], rotate[2] || 0];
-
-    const pointer = d3.pointer(event, svg.node());
-    dragStartPos = pointer;
-    lastDragPos = pointer;
-    lastDragTime = Date.now();
-    velocity = [0, 0];
+    const p = d3.pointer(event, svg.node());
+    v0 = versor.cartesian(projection.invert(p));
+    r0 = projection.rotate();
+    q0 = versor(r0);
 }
 
 function dragging(event) {
-    if (!isDragging) return;
+    const p = d3.pointer(event, svg.node());
+    const v1 = versor.cartesian(projection.rotate(r0).invert(p));
+    const q1 = versor.multiply(q0, versor.delta(v0, v1));
+    const r1 = versor.rotation(q1);
 
-    const pointer = d3.pointer(event, svg.node());
-    const currentTime = Date.now();
-    const dt = Math.max(currentTime - lastDragTime, 1);
-
-    // Calculate delta
-    const dx = pointer[0] - dragStartPos[0];
-    const dy = pointer[1] - dragStartPos[1];
-
-    // Calculate velocity for momentum
-    velocity = [
-        (pointer[0] - lastDragPos[0]) / dt * 50,
-        (pointer[1] - lastDragPos[1]) / dt * 50
-    ];
-
-    lastDragPos = pointer;
-    lastDragTime = currentTime;
-
-    // Calculate rotation based on drag
-    const rotationScale = 0.3;
-    const newRotation = [
-        dragStartRotation[0] + dx * rotationScale,
-        Math.max(-90, Math.min(90, dragStartRotation[1] - dy * rotationScale)),
-        dragStartRotation[2]
-    ];
-
-    projection.rotate(newRotation);
+    projection.rotate(r1);
     countriesGroup.selectAll('path').attr('d', path);
 }
 
 function dragEnd() {
-    isDragging = false;
-
-    // Optional: Add momentum/inertia effect
-    const momentumThreshold = 0.5;
-    if (Math.abs(velocity[0]) > momentumThreshold || Math.abs(velocity[1]) > momentumThreshold) {
-        applyMomentum();
-    }
+    // Drag ended
 }
 
-function applyMomentum() {
-    const decay = 0.92;
-    const minVelocity = 0.01;
+// Versor helper functions for proper spherical rotation
+const versor = {
+    cartesian: function(e) {
+        const lambda = e[0] * Math.PI / 180;
+        const phi = e[1] * Math.PI / 180;
+        const cosPhi = Math.cos(phi);
+        return [cosPhi * Math.cos(lambda), cosPhi * Math.sin(lambda), Math.sin(phi)];
+    },
 
-    function animate() {
-        if (isDragging) return; // Stop if user starts dragging again
+    dot: function(a, b) {
+        let sum = 0;
+        for (let i = 0; i < 3; i++) sum += a[i] * b[i];
+        return sum;
+    },
 
-        // Apply velocity to rotation
-        const rotate = projection.rotate();
-        const newRotation = [
-            rotate[0] + velocity[0],
-            Math.max(-90, Math.min(90, rotate[1] + velocity[1])),
-            rotate[2]
+    cross: function(a, b) {
+        return [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]
         ];
+    },
 
-        projection.rotate(newRotation);
-        countriesGroup.selectAll('path').attr('d', path);
+    delta: function(v0, v1) {
+        const w = this.cross(v0, v1);
+        const l = Math.sqrt(this.dot(w, w));
+        if (l === 0) return [1, 0, 0, 0];
+        const t = Math.acos(Math.max(-1, Math.min(1, this.dot(v0, v1)))) / 2;
+        const s = Math.sin(t);
+        return [Math.cos(t), w[2] / l * s, -w[1] / l * s, w[0] / l * s];
+    },
 
-        // Decay velocity
-        velocity[0] *= decay;
-        velocity[1] *= decay;
-
-        // Continue animation if velocity is significant
-        if (Math.abs(velocity[0]) > minVelocity || Math.abs(velocity[1]) > minVelocity) {
-            requestAnimationFrame(animate);
-        }
+    multiply: function(a, b) {
+        return [
+            a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+            a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+            a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+            a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
+        ];
     }
+};
 
-    requestAnimationFrame(animate);
+versor.rotation = function(q) {
+    return [
+        Math.atan2(2 * (q[0] * q[1] + q[2] * q[3]), 1 - 2 * (q[1] * q[1] + q[2] * q[2])) * 180 / Math.PI,
+        Math.asin(Math.max(-1, Math.min(1, 2 * (q[0] * q[2] - q[3] * q[1])))) * 180 / Math.PI,
+        Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) * 180 / Math.PI
+    ];
+};
+
+versor.call = versor;
+versor.call.bind = function(rotate) {
+    const radians = rotate.map(d => d * Math.PI / 180);
+    const cosPhi = Math.cos(radians[1]);
+    const sinPhi = Math.sin(radians[1]);
+    const cosLambda = Math.cos(radians[0]);
+    const sinLambda = Math.sin(radians[0]);
+    const cosGamma = Math.cos(radians[2]);
+    const sinGamma = Math.sin(radians[2]);
+
+    return [
+        cosGamma * cosPhi * cosLambda + sinGamma * sinLambda,
+        cosGamma * cosPhi * sinLambda - sinGamma * cosLambda,
+        cosGamma * sinPhi,
+        0
+    ];
+};
+
+// Initialize versor
+function versor(rotate) {
+    const radians = rotate.map(d => d * Math.PI / 180);
+    const cosPhi = Math.cos(radians[1] / 2);
+    const sinPhi = Math.sin(radians[1] / 2);
+    const cosLambda = Math.cos((radians[0] + radians[2]) / 2);
+    const sinLambda = Math.sin((radians[0] + radians[2]) / 2);
+    const cosGamma = Math.cos((radians[0] - radians[2]) / 2);
+    const sinGamma = Math.sin((radians[0] - radians[2]) / 2);
+
+    return [
+        cosPhi * cosLambda,
+        sinPhi * cosGamma,
+        sinPhi * sinGamma,
+        cosPhi * sinLambda
+    ];
 }
 
 // End game
