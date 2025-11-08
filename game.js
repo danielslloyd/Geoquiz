@@ -961,11 +961,8 @@ function renderMultipleChoice(options, correctAnswer) {
         container.appendChild(button);
     });
 
-    // Show multiple choice container and hide map for MC questions
+    // Show multiple choice container
     document.getElementById('multiple-choice-container').classList.remove('hidden');
-    if (gameState.questionType !== 'location') {
-        document.getElementById('map-container').classList.add('hidden');
-    }
 }
 
 // Handle multiple choice answer
@@ -1015,7 +1012,6 @@ function clearMultipleChoice() {
     grid.innerHTML = '';
     grid.className = 'options-grid'; // Reset to default class
     document.getElementById('multiple-choice-container').classList.add('hidden');
-    document.getElementById('map-container').classList.remove('hidden');
     document.getElementById('flag-display').style.display = 'none';
 }
 
@@ -1026,7 +1022,28 @@ function initGame() {
 
 // Start game with selected mode
 function startGameWithMode(mode) {
-    gameState.mode = mode;
+    // Reset all game state
+    gameState = {
+        score: 0,
+        currentQuestion: 1,
+        totalQuestions: 10,
+        targetCountry: null,
+        countries: [],
+        answeredCorrectly: false,
+        usedCountries: new Set(),
+        questionType: null,
+        currentAnswer: null,
+        multipleChoiceOptions: [],
+        subQuestionIndex: 0,
+        maxSubQuestions: 3,
+        mode: mode,
+        currentDataObj: null,
+        currentQuizList: null,
+        foundCountries: new Set(),
+        nameAllStartTime: null,
+        nameAllGaveUp: false
+    };
+
     const modeConfig = QUIZ_MODES[mode];
 
     // Set current data sources
@@ -1039,11 +1056,26 @@ function startGameWithMode(mode) {
     feedback.className = 'feedback';
     document.getElementById('question-text').innerHTML = '';
 
+    // Clear world quiz feedback
+    const flagFeedback = document.getElementById('flag-feedback');
+    if (flagFeedback) {
+        flagFeedback.textContent = '';
+        flagFeedback.className = 'feedback';
+    }
+    const capitalFeedback = document.getElementById('capital-feedback');
+    if (capitalFeedback) {
+        capitalFeedback.textContent = '';
+        capitalFeedback.className = 'feedback';
+    }
+
+    // Update score display
+    document.getElementById('score').textContent = '0';
+    document.getElementById('current-question').textContent = '1';
+
     // Hide mode selector and show game elements
     document.getElementById('mode-selector').classList.add('hidden');
     document.getElementById('game-info').classList.remove('hidden');
     document.getElementById('controls').classList.remove('hidden');
-    document.getElementById('instructions').classList.remove('hidden');
 
     // Show appropriate layout based on mode
     if (modeConfig.useWorldQuizLayout) {
@@ -1052,11 +1084,11 @@ function startGameWithMode(mode) {
         document.getElementById('world-quiz-question-bar').classList.remove('hidden');
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
-        document.getElementById('map-container').classList.add('hidden');
+        
     } else {
         // Use standard layout
         document.getElementById('question-container').classList.remove('hidden');
-        document.getElementById('map-container').classList.remove('hidden');
+        
         document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
@@ -1479,43 +1511,35 @@ function handleCountryClick(event, d) {
     const clickedCountry = d.properties.name;
     const isCorrect = clickedCountry === gameState.targetCountry;
 
-    // Visual feedback
-    d3.select(event.target).classed('selected', true);
-
     if (isCorrect) {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, show feedback in flag panel and auto-advance
-            d3.select(event.target).classed('selected', false).classed('target', true);
+            // For World Quiz Layout, color correct country bright green and auto-advance
+            d3.select(event.target).classed('target', true);
             gameState.answeredCorrectly = true;
             gameState.score++;
             document.getElementById('score').textContent = gameState.score;
 
-            const feedback = document.getElementById('flag-feedback');
-            feedback.textContent = '✓ Correct! Well done!';
-            feedback.className = 'feedback correct';
-
-            // Auto-advance to flag question after a short delay
-            setTimeout(() => {
-                gameState.subQuestionIndex++;
-                startNewQuestion();
-            }, 1500);
+            // Immediately advance to flag question
+            gameState.subQuestionIndex++;
+            startNewQuestion();
         } else {
             handleCorrectAnswer(event.target);
         }
     } else {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, show feedback in flag panel
-            d3.select(event.target).classed('selected', false).classed('incorrect', true);
+            // For World Quiz Layout, color incorrect country red instantly
+            d3.select(event.target).classed('incorrect', true);
 
-            const feedback = document.getElementById('flag-feedback');
-            feedback.textContent = '✗ Incorrect. Try again!';
-            feedback.className = 'feedback incorrect';
+            // Also show the correct country in muted green
+            countriesGroup.selectAll('path').each(function(countryData) {
+                if (countryData.properties.name === gameState.targetCountry) {
+                    d3.select(this).classed('target-muted', true);
+                }
+            });
 
             // Remove incorrect styling after a short delay
             setTimeout(() => {
                 d3.select(event.target).classed('incorrect', false);
-                feedback.textContent = '';
-                feedback.className = 'feedback';
             }, 1500);
         } else {
             handleIncorrectAnswer(event.target);
@@ -1534,10 +1558,6 @@ function handleCorrectAnswer(element) {
     }
     document.getElementById('score').textContent = gameState.score;
 
-    const feedback = document.getElementById('feedback');
-    feedback.textContent = '✓ Correct! Well done!';
-    feedback.className = 'feedback correct';
-
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
@@ -1547,13 +1567,11 @@ function handleCorrectAnswer(element) {
         maxSub = modeConfig.hasFlags ? 3 : 2; // 2 if no flags, 3 if flags
     }
 
-    // Auto-advance to next sub-question or enable next button
+    // Auto-advance to next sub-question or enable next button immediately
     if (gameState.subQuestionIndex < maxSub - 1) {
-        // Automatically move to next sub-question after a short delay
-        setTimeout(() => {
-            gameState.subQuestionIndex++;
-            startNewQuestion();
-        }, 1500);
+        // Automatically move to next sub-question immediately
+        gameState.subQuestionIndex++;
+        startNewQuestion();
     } else {
         // All sub-questions complete, enable next question button
         document.getElementById('next-btn').disabled = false;
@@ -1564,16 +1582,10 @@ function handleCorrectAnswer(element) {
 function handleIncorrectAnswer(element) {
     d3.select(element).classed('selected', false).classed('incorrect', true);
 
-    const feedback = document.getElementById('feedback');
-    feedback.textContent = '✗ Incorrect. Try again!';
-    feedback.className = 'feedback incorrect';
-
     // Remove incorrect styling after a short delay
     setTimeout(() => {
         d3.select(element).classed('incorrect', false);
-        feedback.textContent = '';
-        feedback.className = 'feedback';
-    }, 1500);
+    }, 800);
 }
 
 // Handle give up - reveal answer without awarding points
@@ -1666,6 +1678,7 @@ function startNewQuestion() {
     // Clear previous styling
     countriesGroup.selectAll('path')
         .classed('target', false)
+        .classed('target-muted', false)
         .classed('selected', false)
         .classed('incorrect', false);
 
@@ -1755,7 +1768,7 @@ function renderLocationQuestion() {
     } else {
         // Standard layout
         document.getElementById('question-text').innerHTML = `Find: <span id="country-name">${gameState.targetCountry}</span>`;
-        document.getElementById('map-container').classList.remove('hidden');
+        
         document.getElementById('multiple-choice-container').classList.add('hidden');
         document.getElementById('flag-display').style.display = 'none';
     }
@@ -1809,7 +1822,7 @@ function renderFlagQuestion() {
         // Standard layout
         document.getElementById('question-text').innerHTML = `Which flag belongs to <span id="country-name">${gameState.targetCountry}</span>?`;
         document.getElementById('flag-display').style.display = 'none';
-        document.getElementById('map-container').classList.add('hidden');
+        
 
         // Render flag choices
         renderFlagChoices(options, gameState.targetCountry);
@@ -1853,21 +1866,14 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
         element.classList.add('correct');
 
         if (modeConfig.useWorldQuizLayout) {
-            // Update feedback in flag panel
-            const feedback = document.getElementById('flag-feedback');
-            feedback.textContent = '✓ Correct! Well done!';
-            feedback.className = 'feedback correct';
-
             // Handle correct answer logic
             gameState.answeredCorrectly = true;
             gameState.score++;
             document.getElementById('score').textContent = gameState.score;
 
-            // Auto-advance to capital question after a short delay
-            setTimeout(() => {
-                gameState.subQuestionIndex++;
-                startNewQuestion();
-            }, 1500);
+            // Auto-advance to capital question immediately
+            gameState.subQuestionIndex++;
+            startNewQuestion();
         } else {
             handleCorrectAnswer(element);
         }
@@ -1875,17 +1881,10 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
         element.classList.add('incorrect');
 
         if (modeConfig.useWorldQuizLayout) {
-            // Update feedback in flag panel
-            const feedback = document.getElementById('flag-feedback');
-            feedback.textContent = '✗ Incorrect. Try again!';
-            feedback.className = 'feedback incorrect';
-
             // Remove incorrect styling after a short delay
             setTimeout(() => {
                 element.classList.remove('selected', 'incorrect');
-                feedback.textContent = '';
-                feedback.className = 'feedback';
-            }, 1500);
+            }, 800);
         } else {
             handleIncorrectAnswer(element);
             // Show correct answer after delay
@@ -1935,7 +1934,7 @@ function renderCapitalQuestion() {
         // Standard layout
         document.getElementById('question-text').innerHTML = `What is the capital of <span id="country-name">${gameState.targetCountry}</span>?`;
         document.getElementById('flag-display').style.display = 'none';
-        document.getElementById('map-container').classList.add('hidden');
+        
 
         renderMultipleChoice(capitalOptions, correctCapital);
     }
@@ -1953,42 +1952,28 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
     if (isCorrect) {
         element.classList.add('correct');
 
-        // Update feedback in capital panel
-        const feedback = document.getElementById('capital-feedback');
-        feedback.textContent = '✓ Correct! Well done!';
-        feedback.className = 'feedback correct';
-
         // Handle correct answer logic
         gameState.answeredCorrectly = true;
         gameState.score++;
         document.getElementById('score').textContent = gameState.score;
 
-        // Auto-advance to next country after a short delay
-        setTimeout(() => {
-            // Reset sub-question index and move to next country
-            gameState.subQuestionIndex = 0;
-            gameState.currentQuestion++;
-            if (gameState.currentQuestion <= gameState.totalQuestions) {
-                gameState.answeredCorrectly = false;
-                startNewQuestion();
-            } else {
-                endGame();
-            }
-        }, 1500);
+        // Auto-advance to next country immediately
+        // Reset sub-question index and move to next country
+        gameState.subQuestionIndex = 0;
+        gameState.currentQuestion++;
+        if (gameState.currentQuestion <= gameState.totalQuestions) {
+            gameState.answeredCorrectly = false;
+            startNewQuestion();
+        } else {
+            endGame();
+        }
     } else {
         element.classList.add('incorrect');
-
-        // Update feedback in capital panel
-        const feedback = document.getElementById('capital-feedback');
-        feedback.textContent = '✗ Incorrect. Try again!';
-        feedback.className = 'feedback incorrect';
 
         // Remove incorrect styling after a short delay
         setTimeout(() => {
             element.classList.remove('selected', 'incorrect');
-            feedback.textContent = '';
-            feedback.className = 'feedback';
-        }, 1500);
+        }, 800);
     }
 }
 
@@ -1997,7 +1982,7 @@ function renderIdentifyQuestion() {
     gameState.questionType = 'identify';
     const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
     document.getElementById('question-text').innerHTML = `Which ${itemLabel} is highlighted?`;
-    document.getElementById('map-container').classList.remove('hidden');
+    
     document.getElementById('flag-display').style.display = 'none';
 
     // Highlight the item on the map
@@ -2025,7 +2010,7 @@ function renderNameAllMode() {
     ).length;
 
     document.getElementById('question-text').innerHTML = `Type all the countries! (<span id="found-count">0</span>/${totalCountries})`;
-    document.getElementById('map-container').classList.remove('hidden');
+    
     document.getElementById('flag-display').style.display = 'none';
     document.getElementById('multiple-choice-container').classList.add('hidden');
 
@@ -2258,8 +2243,9 @@ function dragging(event) {
     // Compute new rotation
     const q1 = versor.multiply(q0, versor.delta(v0, v1));
     const r1 = versor.rotation(q1);
-    // Apply new rotation
-    projection.rotate(r1);
+    // Constrain rotation to keep North always up (only allow longitude changes)
+    // Set latitude (phi) and gamma to 0 to prevent tilting
+    projection.rotate([r1[0], 0, 0]);
     countriesGroup.selectAll('path').attr('d', path);
 }
 
@@ -2426,7 +2412,7 @@ function setupEventListeners() {
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('controls').classList.add('hidden');
         document.getElementById('instructions').classList.add('hidden');
-        document.getElementById('map-container').classList.add('hidden');
+        
         document.getElementById('multiple-choice-container').classList.add('hidden');
         document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
