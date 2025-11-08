@@ -227,6 +227,12 @@ header h1 {
     stroke-width: 1;
 }
 
+.country.target-muted {
+    fill: #81C784;
+    stroke: #66BB6A;
+    stroke-width: 1;
+}
+
 .country.incorrect {
     fill: #f44336;
     stroke: #c62828;
@@ -639,33 +645,35 @@ header h1 {
 
 .world-quiz-panel-top,
 .world-quiz-panel-bottom {
-    flex: 1;
+    flex: 0 0 auto;
     background: #f8f9fa;
     border-radius: 10px;
-    padding: 20px;
+    padding: 15px;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
 }
 
 .world-quiz-panel-top .question h2,
 .world-quiz-panel-bottom .question h2 {
-    font-size: 1.3rem;
+    font-size: 1.1rem;
     color: #667eea;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     text-align: center;
 }
 
 .world-quiz-panel-top .flag-display,
 .world-quiz-panel-bottom .flag-display {
-    margin: 15px 0;
+    margin: 8px 0;
     text-align: center;
 }
 
 .world-quiz-panel-top .flag-display img,
 .world-quiz-panel-bottom .flag-display img {
     max-width: 100%;
+    max-height: 100px;
+    width: auto;
     height: auto;
     border-radius: 8px;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
@@ -684,8 +692,15 @@ header h1 {
 .world-quiz-panel-bottom .options-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 10px;
-    margin-top: 10px;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.world-quiz-panel-top .option-btn,
+.world-quiz-panel-bottom .option-btn {
+    padding: 12px;
+    font-size: 0.9rem;
+    min-height: 45px;
 }
 
 /* Responsive adjustments for World Quiz layout */
