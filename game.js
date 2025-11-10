@@ -17,7 +17,9 @@ let gameState = {
     currentQuizList: null, // Will be set based on mode
     foundCountries: new Set(), // For name-all mode
     nameAllStartTime: null, // Track start time for name-all mode
-    nameAllGaveUp: false // Track if user gave up in name-all mode
+    nameAllGaveUp: false, // Track if user gave up in name-all mode
+    scrollLocked: false, // Lock scrolling during quiz animations
+    guessedThisQuestion: false // Track if a guess has been made for current question
 };
 
 // Globe configuration
@@ -1168,20 +1170,44 @@ function setupGlobe() {
         svg.call(drag);
     }
 
-    // Add zoom behavior with scroll wheel
+    // Add zoom behavior with scroll wheel (Jason Davies style)
     svg.on('wheel', function(event) {
+        // Don't allow scrolling if locked
+        if (gameState.scrollLocked) {
+            event.preventDefault();
+            return;
+        }
+
         event.preventDefault();
 
-        const delta = -event.deltaY;
+        const delta = -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
         const scale = projection.scale();
-        const newScale = scale + delta * 0.5;
+        const k = Math.pow(2, delta);
+        const newScale = scale * k;
 
         // Set min and max scale limits
         const minScale = 100;
         const maxScale = 2000;
 
         if (newScale >= minScale && newScale <= maxScale) {
+            // Get mouse position for zoom-to-point behavior
+            const mouse = d3.pointer(event, svg.node());
+            const mouseGeo = projection.invert(mouse);
+
             projection.scale(newScale);
+
+            // Adjust rotation to zoom towards mouse position
+            if (mouseGeo && !isNaN(mouseGeo[0]) && !isNaN(mouseGeo[1])) {
+                const mousePx = projection(mouseGeo);
+                if (mousePx) {
+                    const dx = mousePx[0] - mouse[0];
+                    const dy = mousePx[1] - mouse[1];
+                    const rotation = projection.rotate();
+                    const k = 75 / scale;
+                    projection.rotate([rotation[0] + dx * k, rotation[1] - dy * k, rotation[2]]);
+                }
+            }
+
             countriesGroup.selectAll('path').attr('d', path);
 
             // Update ocean circle for globe view
@@ -1507,42 +1533,63 @@ function handleCountryClick(event, d) {
     if (gameState.questionType !== 'location') return;
     if (gameState.answeredCorrectly) return;
 
+    // Only allow ONE click per question
+    if (gameState.guessedThisQuestion) return;
+
+    gameState.guessedThisQuestion = true;
+    gameState.scrollLocked = true; // Lock scrolling during animation
+
     const modeConfig = QUIZ_MODES[gameState.mode];
     const clickedCountry = d.properties.name;
     const isCorrect = clickedCountry === gameState.targetCountry;
 
     if (isCorrect) {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, color correct country bright green and auto-advance
+            // For World Quiz Layout, color correct country bright green and zoom to it
             d3.select(event.target).classed('target', true);
             gameState.answeredCorrectly = true;
             gameState.score++;
             document.getElementById('score').textContent = gameState.score;
 
-            // Immediately advance to flag question
-            gameState.subQuestionIndex++;
-            startNewQuestion();
+            // Zoom to correct country, then advance
+            zoomAndRotateToCountry(gameState.targetCountry, 800).then(() => {
+                // Keep scrolling locked until next question
+                setTimeout(() => {
+                    gameState.subQuestionIndex++;
+                    startNewQuestion();
+                }, 500);
+            });
         } else {
             handleCorrectAnswer(event.target);
+            gameState.scrollLocked = false;
         }
     } else {
         if (modeConfig.useWorldQuizLayout) {
             // For World Quiz Layout, color incorrect country red instantly
-            d3.select(event.target).classed('incorrect', true);
+            const incorrectElement = d3.select(event.target);
+            incorrectElement.classed('incorrect', true);
 
-            // Also show the correct country in muted green
-            countriesGroup.selectAll('path').each(function(countryData) {
-                if (countryData.properties.name === gameState.targetCountry) {
-                    d3.select(this).classed('target-muted', true);
-                }
+            // Zoom to incorrect country and hold for 0.1s
+            zoomAndRotateToCountry(clickedCountry, 600).then(() => {
+                return new Promise(resolve => setTimeout(resolve, 100));
+            }).then(() => {
+                // Find and highlight the correct country in green
+                countriesGroup.selectAll('path').each(function(countryData) {
+                    if (countryData.properties.name === gameState.targetCountry) {
+                        d3.select(this).classed('target', true);
+                    }
+                });
+
+                // Zoom to correct country
+                return zoomAndRotateToCountry(gameState.targetCountry, 800);
+            }).then(() => {
+                // Keep both highlights and lock scrolling until next question
+                // The incorrect country stays red, correct stays green
+                // Scrolling remains locked until startNewQuestion is called
             });
-
-            // Remove incorrect styling after a short delay
-            setTimeout(() => {
-                d3.select(event.target).classed('incorrect', false);
-            }, 1500);
         } else {
             handleIncorrectAnswer(event.target);
+            gameState.scrollLocked = false;
         }
     }
 }
@@ -1666,6 +1713,8 @@ function startNewQuestion() {
 
     // Reset state
     gameState.answeredCorrectly = false;
+    gameState.guessedThisQuestion = false;
+    gameState.scrollLocked = false;
     document.getElementById('next-btn').disabled = true;
     document.getElementById('next-btn').style.display = 'inline-block';
     document.getElementById('give-up-btn').style.display = 'inline-block';
@@ -2225,10 +2274,42 @@ function rotateToCountry(countryName) {
         });
 }
 
+// Zoom and rotate to show target country (for quiz feedback)
+function zoomAndRotateToCountry(countryName, duration = 800) {
+    const country = gameState.countries.find(c => c.properties.name === countryName);
+    if (!country) return Promise.resolve();
+
+    const centroid = d3.geoCentroid(country);
+    const modeConfig = QUIZ_MODES[gameState.mode];
+
+    return new Promise(resolve => {
+        d3.transition()
+            .duration(duration)
+            .tween('zoom-rotate', () => {
+                const r = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
+                const s = d3.interpolate(projection.scale(), 400); // Zoom in a bit
+                return t => {
+                    projection.rotate(r(t));
+                    projection.scale(s(t));
+                    countriesGroup.selectAll('path').attr('d', path);
+
+                    // Update ocean circle for globe view
+                    if (modeConfig.useGlobe) {
+                        g.select('circle').attr('r', s(t));
+                    }
+                };
+            })
+            .on('end', resolve);
+    });
+}
+
 // Enhanced drag functions for interactive rotations (versor-based)
 let v0, r0, q0;
 
 function dragStart(event) {
+    // Don't allow dragging if scrolling is locked
+    if (gameState.scrollLocked) return;
+
     const p = d3.pointer(event, svg.node());
     v0 = versor.cartesian(projection.invert(p));
     r0 = projection.rotate();
@@ -2236,6 +2317,9 @@ function dragStart(event) {
 }
 
 function dragging(event) {
+    // Don't allow dragging if scrolling is locked
+    if (gameState.scrollLocked) return;
+
     const p = d3.pointer(event, svg.node());
     // Temporarily set rotation to r0 to compute inverse (for sticky rotation)
     projection.rotate(r0);
