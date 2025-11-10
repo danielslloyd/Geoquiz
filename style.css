@@ -588,10 +588,46 @@ header h1 {
 
 /* Name-all mode input styling */
 .name-all-input-container {
-    margin: 20px auto;
+    margin: 10px auto;
     max-width: 600px;
     display: flex;
     justify-content: center;
+}
+
+/* Name-all mode compact layout */
+.name-all-mode .question-container {
+    padding: 15px 20px;
+    margin-bottom: 10px;
+}
+
+.name-all-mode .question h2 {
+    font-size: 1.3rem;
+    margin-bottom: 0;
+}
+
+.name-all-mode .name-all-input {
+    padding: 12px 20px;
+    font-size: 1rem;
+}
+
+.name-all-mode .map-container {
+    height: calc(100vh - 320px);
+    min-height: 400px;
+}
+
+.name-all-mode #globe {
+    height: 100%;
+    max-height: none;
+}
+
+/* Compact game info for name-all mode */
+.name-all-mode .game-info {
+    padding: 10px 15px;
+    margin-bottom: 10px;
+}
+
+.name-all-mode .score-item .value {
+    font-size: 1.5rem;
 }
 
 .name-all-input {
