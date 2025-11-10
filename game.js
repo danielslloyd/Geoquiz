@@ -1074,8 +1074,10 @@ function startGameWithMode(mode) {
     document.getElementById('score').textContent = '0';
     document.getElementById('current-question').textContent = '1';
 
-    // Hide mode selector and show game elements
+    // Hide mode selector and show game elements with mode icon bar
     document.getElementById('mode-selector').classList.add('hidden');
+    document.getElementById('states-selector').classList.add('hidden');
+    document.getElementById('mode-icon-bar').style.display = 'flex';
     document.getElementById('game-info').classList.remove('hidden');
     document.getElementById('controls').classList.remove('hidden');
 
@@ -1589,7 +1591,23 @@ function handleCountryClick(event, d) {
             });
         } else {
             handleIncorrectAnswer(event.target);
-            gameState.scrollLocked = false;
+
+            // Auto-advance to next sub-question even on incorrect answer
+            const modeConfig = QUIZ_MODES[gameState.mode];
+            const maxSub = modeConfig.hasFlags ? 3 : 2;
+
+            if (gameState.subQuestionIndex < maxSub - 1) {
+                // Wait a bit to show the incorrect feedback, then advance
+                setTimeout(() => {
+                    gameState.subQuestionIndex++;
+                    gameState.scrollLocked = false;
+                    startNewQuestion();
+                }, 1000);
+            } else {
+                // All sub-questions complete, enable next question button
+                gameState.scrollLocked = false;
+                document.getElementById('next-btn').disabled = false;
+            }
         }
     }
 }
@@ -2310,7 +2328,7 @@ function dragStart(event) {
     // Don't allow dragging if scrolling is locked
     if (gameState.scrollLocked) return;
 
-    const p = d3.pointer(event, svg.node());
+    const p = d3.pointer(event, this);
     v0 = versor.cartesian(projection.invert(p));
     r0 = projection.rotate();
     q0 = versor(r0);
@@ -2320,7 +2338,7 @@ function dragging(event) {
     // Don't allow dragging if scrolling is locked
     if (gameState.scrollLocked) return;
 
-    const p = d3.pointer(event, svg.node());
+    const p = d3.pointer(event, this);
     // Temporarily set rotation to r0 to compute inverse (for sticky rotation)
     projection.rotate(r0);
     const v1 = versor.cartesian(projection.invert(p));
@@ -2465,6 +2483,7 @@ function setupEventListeners() {
                 // Show states sub-selector
                 document.getElementById('mode-selector').classList.add('hidden');
                 document.getElementById('states-selector').classList.remove('hidden');
+                document.getElementById('mode-icon-bar').style.display = 'none';
             } else if (mode === 'identify') {
                 // For identify mode, show a region selector first
                 showIdentifyModeSelector();
@@ -2487,36 +2506,33 @@ function setupEventListeners() {
     document.getElementById('back-to-modes-btn').addEventListener('click', () => {
         document.getElementById('states-selector').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
+        document.getElementById('mode-icon-bar').style.display = 'none';
     });
 
-    // Change mode button during game
-    document.getElementById('change-mode-btn').addEventListener('click', () => {
-        // Reset to mode selector
-        document.getElementById('game-info').classList.add('hidden');
-        document.getElementById('question-container').classList.add('hidden');
-        document.getElementById('controls').classList.add('hidden');
-        document.getElementById('instructions').classList.add('hidden');
-        
-        document.getElementById('multiple-choice-container').classList.add('hidden');
-        document.getElementById('world-quiz-layout').classList.add('hidden');
-        document.getElementById('world-quiz-question-bar').classList.add('hidden');
-        document.getElementById('mode-selector').classList.remove('hidden');
-        document.getElementById('states-selector').classList.add('hidden');
+    // Mode icon bar - always visible during game
+    document.querySelectorAll('.mode-icon-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const mode = e.currentTarget.dataset.mode;
 
-        // Clear game state messages
-        document.getElementById('question-text').innerHTML = '';
-        document.getElementById('feedback').textContent = '';
-        document.getElementById('feedback').className = 'feedback';
-        document.getElementById('flag-question-text').innerHTML = '';
-        document.getElementById('flag-feedback').textContent = '';
-        document.getElementById('flag-feedback').className = 'feedback';
-        document.getElementById('capital-question-text').innerHTML = '';
-        document.getElementById('capital-feedback').textContent = '';
-        document.getElementById('capital-feedback').className = 'feedback';
+            // Clear both SVGs before starting new mode
+            d3.select('#globe').selectAll('*').remove();
+            d3.select('#globe-world').selectAll('*').remove();
 
-        // Clear both SVGs
-        d3.select('#globe').selectAll('*').remove();
-        d3.select('#globe-world').selectAll('*').remove();
+            // Hide all game elements before starting fresh
+            document.getElementById('game-info').classList.add('hidden');
+            document.getElementById('question-container').classList.add('hidden');
+            document.getElementById('controls').classList.add('hidden');
+            document.getElementById('multiple-choice-container').classList.add('hidden');
+            document.getElementById('world-quiz-layout').classList.add('hidden');
+            document.getElementById('world-quiz-question-bar').classList.add('hidden');
+
+            // Start the selected mode with a clean slate
+            if (mode === 'identify') {
+                showIdentifyModeSelector();
+            } else {
+                startGameWithMode(mode);
+            }
+        });
     });
 
     // Next button
@@ -2536,6 +2552,9 @@ function setupEventListeners() {
 
 // Show identify mode selector (choose region)
 function showIdentifyModeSelector() {
+    // Hide mode icon bar when showing selector
+    document.getElementById('mode-icon-bar').style.display = 'none';
+
     // Create a temporary selector for identify mode regions
     const modeSelector = document.getElementById('mode-selector');
     const html = `

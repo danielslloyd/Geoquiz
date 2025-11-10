@@ -16,6 +16,15 @@
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
 
+        <!-- Always-visible mode icon bar -->
+        <div class="mode-icon-bar" id="mode-icon-bar" style="display: none;">
+            <button class="mode-icon-btn" data-mode="countries" title="Countries of the World">🌍</button>
+            <button class="mode-icon-btn" data-mode="us-states" title="US States">🗽</button>
+            <button class="mode-icon-btn" data-mode="indian-states" title="Indian States">🇮🇳</button>
+            <button class="mode-icon-btn" data-mode="identify" title="Identify Mode">🔍</button>
+            <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries">⌨️</button>
+        </div>
+
         <!-- Mode Selector -->
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
@@ -70,9 +79,6 @@
                 <div class="score-item">
                     <span class="label">Question:</span>
                     <span class="value"><span id="current-question">1</span>/<span id="total-questions">10</span></span>
-                </div>
-                <div class="score-item">
-                    <button id="change-mode-btn" class="btn small">Change Mode</button>
                 </div>
             </div>
         </div>
