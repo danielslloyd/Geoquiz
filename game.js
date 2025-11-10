@@ -1732,6 +1732,15 @@ function startNewQuestion() {
         return;
     }
 
+    // Remove name-all-mode class if it exists
+    document.querySelector('.container').classList.remove('name-all-mode');
+
+    // Show question counter again (might have been hidden by name-all mode)
+    const questionCounter = document.querySelector('.score-item:has(#current-question)');
+    if (questionCounter) {
+        questionCounter.style.display = '';
+    }
+
     // Reset state
     gameState.answeredCorrectly = false;
     gameState.guessedThisQuestion = false;
@@ -1745,12 +1754,14 @@ function startNewQuestion() {
     feedback.textContent = '';
     feedback.className = 'feedback';
 
-    // Clear previous styling
-    countriesGroup.selectAll('path')
-        .classed('target', false)
-        .classed('target-muted', false)
-        .classed('selected', false)
-        .classed('incorrect', false);
+    // Clear previous styling (only for non-World Quiz Layout or when starting new country)
+    if (!modeConfig.useWorldQuizLayout || gameState.subQuestionIndex === 0) {
+        countriesGroup.selectAll('path')
+            .classed('target', false)
+            .classed('target-muted', false)
+            .classed('selected', false)
+            .classed('incorrect', false);
+    }
 
     // Clear multiple choice
     clearMultipleChoice();
@@ -1846,11 +1857,12 @@ function renderLocationQuestion() {
     // Rotate globe/map to show the target only if autoRotate is enabled
     if (modeConfig.useGlobe && modeConfig.autoRotate) {
         rotateToCountry(gameState.targetCountry);
-    } else if (modeConfig.useGlobe && !modeConfig.autoRotate) {
-        // Reset to 0,0 for countries mode
+    } else if (modeConfig.useGlobe && !modeConfig.autoRotate && !modeConfig.useWorldQuizLayout) {
+        // Reset to 0,0 for modes that need it (but not World Quiz Layout)
         projection.rotate([0, 0]);
         countriesGroup.selectAll('path').attr('d', path);
     }
+    // For World Quiz Layout, maintain current rotation/zoom between questions
     // For regional maps, just ensure it's visible (already fitted in loadMapData)
 }
 
@@ -1868,6 +1880,11 @@ function renderFlagQuestion() {
         document.getElementById('world-quiz-current-question').innerHTML = `Which flag belongs to <strong>${gameState.targetCountry}</strong>?`;
         document.getElementById('flag-question-text').innerHTML = '';
         document.getElementById('flag-display-side').style.display = 'none';
+
+        // Keep the target country highlighted with muted color
+        countriesGroup.selectAll('path')
+            .filter(d => d.properties.name === gameState.targetCountry)
+            .classed('target-muted', true);
 
         // Render flag choices in the top panel
         const grid = document.getElementById('flag-options-grid');
@@ -1986,6 +2003,11 @@ function renderCapitalQuestion() {
         document.getElementById('world-quiz-current-question').innerHTML = `What is the capital of <strong>${gameState.targetCountry}</strong>?`;
         document.getElementById('capital-question-text').innerHTML = '';
 
+        // Keep the target country highlighted with muted color
+        countriesGroup.selectAll('path')
+            .filter(d => d.properties.name === gameState.targetCountry)
+            .classed('target-muted', true);
+
         // Render capital choices in the bottom panel
         const grid = document.getElementById('capital-options-grid');
         grid.innerHTML = '';
@@ -2075,12 +2097,21 @@ function renderNameAllMode() {
     gameState.nameAllStartTime = Date.now();
     gameState.nameAllGaveUp = false;
 
+    // Add name-all-mode class to container for styling
+    document.querySelector('.container').classList.add('name-all-mode');
+
     const totalCountries = gameState.currentQuizList.filter(item =>
         gameState.countries.some(c => c.properties.name === item)
     ).length;
 
-    document.getElementById('question-text').innerHTML = `Type all the countries! (<span id="found-count">0</span>/${totalCountries})`;
-    
+    // Hide question counter for name-all mode
+    const questionCounter = document.querySelector('.score-item:has(#current-question)');
+    if (questionCounter) {
+        questionCounter.style.display = 'none';
+    }
+
+    document.getElementById('question-text').innerHTML = `Type all the countries! Score: <span id="score-inline">${gameState.score}</span> | Found: <span id="found-count">0</span>/${totalCountries}`;
+
     document.getElementById('flag-display').style.display = 'none';
     document.getElementById('multiple-choice-container').classList.add('hidden');
 
@@ -2190,6 +2221,9 @@ function highlightFoundCountry(countryName) {
         .classed('target', true)
         .style('fill', '#4CAF50')
         .style('stroke', '#2e7d32');
+
+    // Smoothly zoom to the country
+    zoomAndRotateToCountry(countryName, 600);
 }
 
 // Update the found counter display
@@ -2200,6 +2234,12 @@ function updateFoundCounter() {
 
     document.getElementById('found-count').textContent = gameState.foundCountries.size;
     document.getElementById('score').textContent = gameState.score;
+
+    // Update inline score if it exists
+    const scoreInline = document.getElementById('score-inline');
+    if (scoreInline) {
+        scoreInline.textContent = gameState.score;
+    }
 }
 
 // Check if all countries have been found
