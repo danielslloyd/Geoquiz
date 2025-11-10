@@ -1088,11 +1088,13 @@ function startGameWithMode(mode) {
         document.getElementById('world-quiz-question-bar').classList.remove('hidden');
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('multiple-choice-container').classList.add('hidden');
-        
+        document.getElementById('map-container').classList.add('hidden');
+
     } else {
         // Use standard layout
         document.getElementById('question-container').classList.remove('hidden');
-        
+        document.getElementById('map-container').classList.remove('hidden');
+
         document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
@@ -1227,14 +1229,15 @@ function loadMapData() {
 
     d3.json(modeConfig.mapUrl)
         .then(data => {
-            if (gameState.mode === 'countries') {
+            // Check mapObject to determine how to process the data
+            if (modeConfig.mapObject === 'countries') {
                 gameState.countries = topojson.feature(data, data.objects.countries).features;
 
                 // Add country names
                 gameState.countries.forEach(country => {
                     country.properties.name = getCountryName(country.id);
                 });
-            } else if (gameState.mode === 'us-states') {
+            } else if (modeConfig.mapObject === 'states') {
                 gameState.countries = topojson.feature(data, data.objects.states).features;
 
                 // Map state IDs to names
@@ -1256,8 +1259,8 @@ function loadMapData() {
                         features: gameState.contiguousStates
                     });
                 }
-            } else if (gameState.mode === 'indian-states') {
-                // For Indian states, the data is already in GeoJSON format
+            } else if (modeConfig.mapObject === null) {
+                // For maps with null mapObject (like Indian states), data is already in GeoJSON format
                 if (data.features) {
                     gameState.countries = data.features;
                 } else {
@@ -1280,7 +1283,7 @@ function loadMapData() {
                 });
             }
 
-            if (gameState.mode === 'us-states') {
+            if (modeConfig.mapObject === 'states') {
                 drawUSStatesWithInlays();
             } else {
                 drawCountries();
