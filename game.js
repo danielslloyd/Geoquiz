@@ -1860,6 +1860,7 @@ function renderLocationQuestion() {
     } else if (modeConfig.useGlobe && !modeConfig.autoRotate && !modeConfig.useWorldQuizLayout) {
         // Reset to 0,0 for modes that need it (but not World Quiz Layout)
         projection.rotate([0, 0]);
+        r_unconstrained = null;  // Reset quaternion state
         countriesGroup.selectAll('path').attr('d', path);
     }
     // For World Quiz Layout, maintain current rotation/zoom between questions
@@ -2120,6 +2121,7 @@ function renderNameAllMode() {
 
     // Reset globe rotation
     projection.rotate([0, 0]);
+    r_unconstrained = null;  // Reset quaternion state
 
     // Ensure all countries are visible with clear borders
     countriesGroup.selectAll('path')
@@ -2366,15 +2368,18 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
 
 // Enhanced drag functions for interactive rotations (versor-based)
 let v0, r0, q0;
+let r_unconstrained = null;  // Track unconstrained rotation for quaternion continuity
 
 function dragStart(event) {
     // Don't allow dragging if scrolling is locked
     if (gameState.scrollLocked) return;
 
     const p = d3.pointer(event, this);
-    v0 = versor.cartesian(projection.invert(p));
     r0 = projection.rotate();
-    q0 = versor(r0);
+    v0 = versor.cartesian(projection.invert(p));
+    // Use unconstrained rotation if available to maintain quaternion continuity
+    // Otherwise use current rotation (first drag or after reset)
+    q0 = r_unconstrained ? versor(r_unconstrained) : versor(r0);
 }
 
 function dragging(event) {
@@ -2388,6 +2393,10 @@ function dragging(event) {
     // Compute new rotation
     const q1 = versor.multiply(q0, versor.delta(v0, v1));
     const r1 = versor.rotation(q1);
+
+    // Save unconstrained rotation for next drag to maintain quaternion continuity
+    r_unconstrained = r1;
+
     // Constrain rotation to keep North always up (only allow longitude changes)
     // Set latitude (phi) and gamma to 0 to prevent tilting
     projection.rotate([r1[0], 0, 0]);
@@ -2395,7 +2404,7 @@ function dragging(event) {
 }
 
 function dragEnd() {
-    // Drag ended
+    // Drag ended, r_unconstrained is preserved for next drag
 }
 
 // Versor helper functions for proper spherical rotation
