@@ -28,7 +28,7 @@ const height = 600;
 let projection, path, svg, g, countriesGroup;
 let rotation = { x: 0, y: 0 };
 
-// List of countries for the quiz (common, recognizable countries)
+// List of countries for the quiz (comprehensive list of 195 recognized countries)
 const quizCountries = [
     'United States of America', 'Canada', 'Mexico', 'Brazil', 'Argentina',
     'United Kingdom', 'France', 'Germany', 'Spain', 'Italy', 'Russia',
@@ -41,7 +41,33 @@ const quizCountries = [
     'Finland', 'Ireland', 'Iceland', 'Morocco', 'Algeria',
     'Kenya', 'Ethiopia', 'Iran', 'Iraq', 'Pakistan',
     'Bangladesh', 'Myanmar', 'Malaysia', 'Singapore', 'Cuba',
-    'Jamaica', 'Panama', 'Costa Rica', 'Dominican Republic', 'Guatemala'
+    'Jamaica', 'Panama', 'Costa Rica', 'Dominican Republic', 'Guatemala',
+    // Additional countries
+    'Afghanistan', 'Albania', 'Angola', 'Antigua and Barbuda', 'Armenia',
+    'Azerbaijan', 'Bahamas', 'Bahrain', 'Barbados', 'Belarus',
+    'Belize', 'Benin', 'Bhutan', 'Bolivia', 'Bosnia and Herzegovina',
+    'Botswana', 'Brunei', 'Bulgaria', 'Burkina Faso', 'Burundi',
+    'Cambodia', 'Cameroon', 'Cape Verde', 'Central African Republic', 'Chad',
+    'Comoros', 'Republic of the Congo', 'Democratic Republic of the Congo', 'Croatia', 'Cyprus',
+    'Czechia', 'Djibouti', 'Dominica', 'Ecuador', 'El Salvador',
+    'Equatorial Guinea', 'Eritrea', 'Estonia', 'Eswatini', 'Fiji',
+    'Gabon', 'Gambia', 'Georgia', 'Ghana', 'Grenada',
+    'Guinea', 'Guinea-Bissau', 'Guyana', 'Haiti', 'Honduras',
+    'Hungary', 'Jordan', 'Kazakhstan', 'Kiribati', 'Kuwait',
+    'Kyrgyzstan', 'Laos', 'Latvia', 'Lebanon', 'Lesotho',
+    'Liberia', 'Libya', 'Liechtenstein', 'Lithuania', 'Luxembourg',
+    'Madagascar', 'Malawi', 'Maldives', 'Mali', 'Malta',
+    'Mauritania', 'Mauritius', 'Micronesia', 'Moldova', 'Monaco',
+    'Mongolia', 'Montenegro', 'Mozambique', 'Namibia', 'Nauru',
+    'Nepal', 'Nicaragua', 'Niger', 'North Korea', 'North Macedonia',
+    'Oman', 'Palestine', 'Papua New Guinea', 'Paraguay', 'Qatar',
+    'Romania', 'Rwanda', 'Samoa', 'San Marino', 'Sao Tome and Principe',
+    'Senegal', 'Serbia', 'Seychelles', 'Sierra Leone', 'Slovakia',
+    'Slovenia', 'Solomon Islands', 'Somalia', 'South Sudan', 'Sri Lanka',
+    'Sudan', 'Suriname', 'Syria', 'Tajikistan', 'Tanzania',
+    'East Timor', 'Togo', 'Tonga', 'Trinidad and Tobago', 'Tunisia',
+    'Turkmenistan', 'Tuvalu', 'Uganda', 'United Arab Emirates', 'Uruguay',
+    'Uzbekistan', 'Vanuatu', 'Vatican City', 'Yemen', 'Zambia', 'Zimbabwe'
 ];
 
 // Enhanced country data with capitals, flags, and similar countries for tricky distractors
@@ -49,307 +75,1311 @@ const countryData = {
     'United States of America': {
         code: 'us',
         capital: 'Washington, D.C.',
+        capitalCoords: [38.9072, -77.0369],
+        population: 331893745,
         similar: ['Canada', 'Brazil', 'Australia', 'Russia']
     },
     'Canada': {
         code: 'ca',
         capital: 'Ottawa',
+        capitalCoords: [45.4215, -75.6972],
+        population: 38246108,
         similar: ['United States of America', 'Russia', 'Australia', 'Brazil']
     },
     'Mexico': {
         code: 'mx',
         capital: 'Mexico City',
+        capitalCoords: [19.4326, -99.1332],
+        population: 128455567,
         similar: ['Colombia', 'Venezuela', 'Guatemala', 'Peru']
     },
     'Brazil': {
         code: 'br',
         capital: 'Brasília',
+        capitalCoords: [-15.8267, -47.9218],
+        population: 214326223,
         similar: ['Argentina', 'Colombia', 'Venezuela', 'Peru']
     },
     'Argentina': {
         code: 'ar',
         capital: 'Buenos Aires',
+        capitalCoords: [-34.6037, -58.3816],
+        population: 45510318,
         similar: ['Chile', 'Uruguay', 'Brazil', 'Paraguay']
     },
     'United Kingdom': {
         code: 'gb',
         capital: 'London',
+        capitalCoords: [51.5074, -0.1278],
+        population: 67886004,
         similar: ['Ireland', 'Netherlands', 'Belgium', 'France']
     },
     'France': {
         code: 'fr',
         capital: 'Paris',
+        capitalCoords: [48.8566, 2.3522],
+        population: 65584518,
         similar: ['Belgium', 'Switzerland', 'Spain', 'Italy']
     },
     'Germany': {
         code: 'de',
         capital: 'Berlin',
+        capitalCoords: [52.5200, 13.4050],
+        population: 83369843,
         similar: ['Poland', 'Austria', 'Netherlands', 'Czechia']
     },
     'Spain': {
         code: 'es',
         capital: 'Madrid',
+        capitalCoords: [40.4168, -3.7038],
+        population: 47432805,
         similar: ['Portugal', 'Italy', 'France', 'Morocco']
     },
     'Italy': {
         code: 'it',
         capital: 'Rome',
+        capitalCoords: [41.9028, 12.4964],
+        population: 60262770,
         similar: ['Greece', 'Spain', 'Croatia', 'France']
     },
     'Russia': {
         code: 'ru',
         capital: 'Moscow',
+        capitalCoords: [55.7558, 37.6173],
+        population: 145617329,
         similar: ['Ukraine', 'Kazakhstan', 'Belarus', 'Poland']
     },
     'China': {
         code: 'cn',
         capital: 'Beijing',
+        capitalCoords: [39.9042, 116.4074],
+        population: 1416096094,
         similar: ['Japan', 'South Korea', 'Mongolia', 'India']
     },
     'Japan': {
         code: 'jp',
         capital: 'Tokyo',
+        capitalCoords: [35.6762, 139.6503],
+        population: 125681593,
         similar: ['South Korea', 'China', 'Philippines', 'Taiwan']
     },
     'India': {
         code: 'in',
         capital: 'New Delhi',
+        capitalCoords: [28.6139, 77.2090],
+        population: 1463865525,
         similar: ['Pakistan', 'Bangladesh', 'Nepal', 'Sri Lanka']
     },
     'Australia': {
         code: 'au',
         capital: 'Canberra',
+        capitalCoords: [-35.2809, 149.1300],
+        population: 25921089,
         similar: ['New Zealand', 'Indonesia', 'Papua New Guinea', 'United States of America']
     },
     'South Africa': {
         code: 'za',
         capital: 'Pretoria',
+        capitalCoords: [-25.7479, 28.2293],
+        population: 60041996,
         similar: ['Namibia', 'Botswana', 'Zimbabwe', 'Mozambique']
     },
     'Egypt': {
         code: 'eg',
         capital: 'Cairo',
+        capitalCoords: [30.0444, 31.2357],
+        population: 109262178,
         similar: ['Libya', 'Sudan', 'Saudi Arabia', 'Jordan']
     },
     'Nigeria': {
         code: 'ng',
         capital: 'Abuja',
+        capitalCoords: [9.0765, 7.3986],
+        population: 218541212,
         similar: ['Ghana', 'Cameroon', 'Niger', 'Benin']
     },
     'Saudi Arabia': {
         code: 'sa',
         capital: 'Riyadh',
+        capitalCoords: [24.7136, 46.6753],
+        population: 35844909,
         similar: ['Yemen', 'Oman', 'Jordan', 'United Arab Emirates']
     },
     'Turkey': {
         code: 'tr',
         capital: 'Ankara',
+        capitalCoords: [39.9334, 32.8597],
+        population: 85042736,
         similar: ['Greece', 'Iran', 'Syria', 'Iraq']
     },
     'Greece': {
         code: 'gr',
         capital: 'Athens',
+        capitalCoords: [37.9838, 23.7275],
+        population: 10641221,
         similar: ['Turkey', 'Bulgaria', 'Italy', 'Albania']
     },
     'Norway': {
         code: 'no',
         capital: 'Oslo',
+        capitalCoords: [59.9139, 10.7522],
+        population: 5511370,
         similar: ['Sweden', 'Finland', 'Denmark', 'Iceland']
     },
     'Sweden': {
         code: 'se',
         capital: 'Stockholm',
+        capitalCoords: [59.3293, 18.0686],
+        population: 10549109,
         similar: ['Norway', 'Finland', 'Denmark', 'Poland']
     },
     'Poland': {
         code: 'pl',
         capital: 'Warsaw',
+        capitalCoords: [52.2297, 21.0122],
+        population: 37798267,
         similar: ['Germany', 'Ukraine', 'Belarus', 'Czechia']
     },
     'Ukraine': {
         code: 'ua',
         capital: 'Kyiv',
+        capitalCoords: [50.4501, 30.5234],
+        population: 43531422,
         similar: ['Poland', 'Russia', 'Belarus', 'Romania']
     },
     'South Korea': {
         code: 'kr',
         capital: 'Seoul',
+        capitalCoords: [37.5665, 126.9780],
+        population: 51784059,
         similar: ['North Korea', 'Japan', 'China', 'Taiwan']
     },
     'Thailand': {
         code: 'th',
         capital: 'Bangkok',
+        capitalCoords: [13.7563, 100.5018],
+        population: 69950850,
         similar: ['Myanmar', 'Vietnam', 'Cambodia', 'Laos']
     },
     'Vietnam': {
         code: 'vn',
         capital: 'Hanoi',
+        capitalCoords: [21.0285, 105.8542],
+        population: 98186856,
         similar: ['Cambodia', 'Laos', 'Thailand', 'China']
     },
     'Indonesia': {
         code: 'id',
         capital: 'Jakarta',
+        capitalCoords: [-6.2088, 106.8456],
+        population: 275773800,
         similar: ['Malaysia', 'Philippines', 'Papua New Guinea', 'Thailand']
     },
     'Philippines': {
         code: 'ph',
         capital: 'Manila',
+        capitalCoords: [14.5995, 120.9842],
+        population: 113880328,
         similar: ['Indonesia', 'Malaysia', 'Vietnam', 'Taiwan']
     },
     'New Zealand': {
         code: 'nz',
         capital: 'Wellington',
+        capitalCoords: [-41.2865, 174.7762],
+        population: 5122600,
         similar: ['Australia', 'Fiji', 'Papua New Guinea', 'United Kingdom']
     },
     'Chile': {
         code: 'cl',
         capital: 'Santiago',
+        capitalCoords: [-33.4489, -70.6693],
+        population: 19458310,
         similar: ['Argentina', 'Peru', 'Bolivia', 'Uruguay']
     },
     'Peru': {
         code: 'pe',
         capital: 'Lima',
+        capitalCoords: [-12.0464, -77.0428],
+        population: 33715471,
         similar: ['Ecuador', 'Colombia', 'Bolivia', 'Chile']
     },
     'Colombia': {
         code: 'co',
         capital: 'Bogotá',
+        capitalCoords: [4.7110, -74.0721],
+        population: 51516562,
         similar: ['Venezuela', 'Ecuador', 'Peru', 'Panama']
     },
     'Venezuela': {
         code: 've',
         capital: 'Caracas',
+        capitalCoords: [10.4806, -66.9036],
+        population: 28301696,
         similar: ['Colombia', 'Guyana', 'Trinidad and Tobago', 'Brazil']
     },
     'Portugal': {
         code: 'pt',
         capital: 'Lisbon',
+        capitalCoords: [38.7223, -9.1393],
+        population: 10305564,
         similar: ['Spain', 'Brazil', 'Morocco', 'Italy']
     },
     'Netherlands': {
         code: 'nl',
         capital: 'Amsterdam',
+        capitalCoords: [52.3676, 4.9041],
+        population: 17533405,
         similar: ['Belgium', 'Germany', 'Denmark', 'United Kingdom']
     },
     'Belgium': {
         code: 'be',
         capital: 'Brussels',
+        capitalCoords: [50.8503, 4.3517],
+        population: 11611419,
         similar: ['Netherlands', 'Luxembourg', 'France', 'Germany']
     },
     'Switzerland': {
         code: 'ch',
         capital: 'Bern',
+        capitalCoords: [46.9480, 7.4474],
+        population: 8740472,
         similar: ['Austria', 'Liechtenstein', 'Germany', 'Italy']
     },
     'Austria': {
         code: 'at',
         capital: 'Vienna',
+        capitalCoords: [48.2082, 16.3738],
+        population: 8917205,
         similar: ['Switzerland', 'Germany', 'Hungary', 'Czechia']
     },
     'Denmark': {
         code: 'dk',
         capital: 'Copenhagen',
+        capitalCoords: [55.6761, 12.5683],
+        population: 5854240,
         similar: ['Sweden', 'Norway', 'Netherlands', 'Germany']
     },
     'Finland': {
         code: 'fi',
         capital: 'Helsinki',
+        capitalCoords: [60.1695, 24.9354],
+        population: 5540718,
         similar: ['Sweden', 'Norway', 'Estonia', 'Russia']
     },
     'Ireland': {
         code: 'ie',
         capital: 'Dublin',
+        capitalCoords: [53.3498, -6.2603],
+        population: 5023109,
         similar: ['United Kingdom', 'Iceland', 'Norway', 'Scotland']
     },
     'Iceland': {
         code: 'is',
         capital: 'Reykjavik',
+        capitalCoords: [64.1466, -21.9426],
+        population: 372899,
         similar: ['Norway', 'Greenland', 'Ireland', 'Faroe Islands']
     },
     'Morocco': {
         code: 'ma',
         capital: 'Rabat',
+        capitalCoords: [34.0209, -6.8416],
+        population: 37457971,
         similar: ['Algeria', 'Tunisia', 'Spain', 'Mauritania']
     },
     'Algeria': {
         code: 'dz',
         capital: 'Algiers',
+        capitalCoords: [36.7538, 3.0588],
+        population: 44903225,
         similar: ['Morocco', 'Tunisia', 'Libya', 'Mali']
     },
     'Kenya': {
         code: 'ke',
         capital: 'Nairobi',
+        capitalCoords: [-1.2864, 36.8172],
+        population: 54027487,
         similar: ['Tanzania', 'Uganda', 'Ethiopia', 'Somalia']
     },
     'Ethiopia': {
         code: 'et',
         capital: 'Addis Ababa',
+        capitalCoords: [9.0320, 38.7469],
+        population: 120812698,
         similar: ['Kenya', 'Somalia', 'Eritrea', 'Sudan']
     },
     'Iran': {
         code: 'ir',
         capital: 'Tehran',
+        capitalCoords: [35.6892, 51.3890],
+        population: 87923432,
         similar: ['Iraq', 'Afghanistan', 'Pakistan', 'Turkey']
     },
     'Iraq': {
         code: 'iq',
         capital: 'Baghdad',
+        capitalCoords: [33.3128, 44.3615],
+        population: 43533592,
         similar: ['Iran', 'Syria', 'Jordan', 'Kuwait']
     },
     'Pakistan': {
         code: 'pk',
         capital: 'Islamabad',
+        capitalCoords: [33.6844, 73.0479],
+        population: 231402117,
         similar: ['India', 'Afghanistan', 'Iran', 'Bangladesh']
     },
     'Bangladesh': {
         code: 'bd',
         capital: 'Dhaka',
+        capitalCoords: [23.8103, 90.4125],
+        population: 169356251,
         similar: ['India', 'Myanmar', 'Pakistan', 'Nepal']
     },
     'Myanmar': {
         code: 'mm',
         capital: 'Naypyidaw',
+        capitalCoords: [19.7633, 96.0785],
+        population: 54179306,
         similar: ['Thailand', 'Bangladesh', 'Laos', 'India']
     },
     'Malaysia': {
         code: 'my',
         capital: 'Kuala Lumpur',
+        capitalCoords: [3.1390, 101.6869],
+        population: 33199993,
         similar: ['Indonesia', 'Thailand', 'Singapore', 'Brunei']
     },
     'Singapore': {
         code: 'sg',
         capital: 'Singapore',
+        capitalCoords: [1.3521, 103.8198],
+        population: 5453600,
         similar: ['Malaysia', 'Indonesia', 'Brunei', 'Hong Kong']
     },
     'Cuba': {
         code: 'cu',
         capital: 'Havana',
+        capitalCoords: [23.1136, -82.3666],
+        population: 11256372,
         similar: ['Jamaica', 'Dominican Republic', 'Haiti', 'Bahamas']
     },
     'Jamaica': {
         code: 'jm',
         capital: 'Kingston',
+        capitalCoords: [18.0179, -76.8099],
+        population: 2827377,
         similar: ['Cuba', 'Haiti', 'Dominican Republic', 'Bahamas']
     },
     'Panama': {
         code: 'pa',
         capital: 'Panama City',
+        capitalCoords: [8.9824, -79.5199],
+        population: 4408581,
         similar: ['Costa Rica', 'Colombia', 'Nicaragua', 'Guatemala']
     },
     'Costa Rica': {
         code: 'cr',
         capital: 'San José',
+        capitalCoords: [9.9281, -84.0907],
+        population: 5139052,
         similar: ['Panama', 'Nicaragua', 'Guatemala', 'Honduras']
     },
     'Dominican Republic': {
         code: 'do',
         capital: 'Santo Domingo',
+        capitalCoords: [18.4861, -69.9312],
+        population: 11056370,
         similar: ['Haiti', 'Cuba', 'Jamaica', 'Puerto Rico']
     },
     'Guatemala': {
         code: 'gt',
         capital: 'Guatemala City',
+        capitalCoords: [14.6349, -90.5069],
+        population: 17109746,
         similar: ['Mexico', 'Honduras', 'El Salvador', 'Belize']
+    },
+    'Afghanistan': {
+        code: 'af',
+        capital: 'Kabul',
+        capitalCoords: [34.5553, 69.2075],
+        population: 40218234,
+        similar: ['Pakistan', 'Iran', 'Tajikistan', 'Uzbekistan']
+    },
+    'Albania': {
+        code: 'al',
+        capital: 'Tirana',
+        capitalCoords: [41.3275, 19.8187],
+        population: 2872933,
+        similar: ['Greece', 'North Macedonia', 'Montenegro', 'Kosovo']
+    },
+    'Angola': {
+        code: 'ao',
+        capital: 'Luanda',
+        capitalCoords: [-8.8383, 13.2344],
+        population: 34503774,
+        similar: ['Democratic Republic of the Congo', 'Zambia', 'Namibia', 'Republic of the Congo']
+    },
+    'Antigua and Barbuda': {
+        code: 'ag',
+        capital: 'Saint John\'s',
+        capitalCoords: [17.1274, -61.8468],
+        population: 99509,
+        similar: ['Saint Kitts and Nevis', 'Dominica', 'Barbados', 'Saint Lucia']
+    },
+    'Armenia': {
+        code: 'am',
+        capital: 'Yerevan',
+        capitalCoords: [40.1792, 44.4991],
+        population: 2790974,
+        similar: ['Georgia', 'Azerbaijan', 'Turkey', 'Iran']
+    },
+    'Azerbaijan': {
+        code: 'az',
+        capital: 'Baku',
+        capitalCoords: [40.4093, 49.8671],
+        population: 10358074,
+        similar: ['Armenia', 'Georgia', 'Iran', 'Russia']
+    },
+    'Bahamas': {
+        code: 'bs',
+        capital: 'Nassau',
+        capitalCoords: [25.0343, -77.3963],
+        population: 407906,
+        similar: ['Cuba', 'Haiti', 'Jamaica', 'Turks and Caicos']
+    },
+    'Bahrain': {
+        code: 'bh',
+        capital: 'Manama',
+        capitalCoords: [26.2285, 50.5860],
+        population: 1472233,
+        similar: ['Qatar', 'Kuwait', 'United Arab Emirates', 'Saudi Arabia']
+    },
+    'Barbados': {
+        code: 'bb',
+        capital: 'Bridgetown',
+        capitalCoords: [13.0969, -59.6145],
+        population: 287025,
+        similar: ['Trinidad and Tobago', 'Saint Lucia', 'Grenada', 'Saint Vincent and the Grenadines']
+    },
+    'Belarus': {
+        code: 'by',
+        capital: 'Minsk',
+        capitalCoords: [53.9045, 27.5615],
+        population: 9534954,
+        similar: ['Ukraine', 'Russia', 'Poland', 'Lithuania']
+    },
+    'Belize': {
+        code: 'bz',
+        capital: 'Belmopan',
+        capitalCoords: [17.2510, -88.7590],
+        population: 405633,
+        similar: ['Guatemala', 'Mexico', 'Honduras', 'El Salvador']
+    },
+    'Benin': {
+        code: 'bj',
+        capital: 'Porto-Novo',
+        capitalCoords: [6.4969, 2.6289],
+        population: 12996895,
+        similar: ['Togo', 'Nigeria', 'Burkina Faso', 'Niger']
+    },
+    'Bhutan': {
+        code: 'bt',
+        capital: 'Thimphu',
+        capitalCoords: [27.4728, 89.6393],
+        population: 777486,
+        similar: ['Nepal', 'India', 'Bangladesh', 'Myanmar']
+    },
+    'Bolivia': {
+        code: 'bo',
+        capital: 'La Paz',
+        capitalCoords: [-16.5000, -68.1500],
+        population: 12079472,
+        similar: ['Peru', 'Brazil', 'Paraguay', 'Chile']
+    },
+    'Bosnia and Herzegovina': {
+        code: 'ba',
+        capital: 'Sarajevo',
+        capitalCoords: [43.8486, 18.3564],
+        population: 3270943,
+        similar: ['Serbia', 'Croatia', 'Montenegro', 'North Macedonia']
+    },
+    'Botswana': {
+        code: 'bw',
+        capital: 'Gaborone',
+        capitalCoords: [-24.6282, 25.9231],
+        population: 2588423,
+        similar: ['South Africa', 'Namibia', 'Zimbabwe', 'Zambia']
+    },
+    'Brunei': {
+        code: 'bn',
+        capital: 'Bandar Seri Begawan',
+        capitalCoords: [4.9031, 114.9398],
+        population: 445373,
+        similar: ['Malaysia', 'Singapore', 'Indonesia', 'Philippines']
+    },
+    'Bulgaria': {
+        code: 'bg',
+        capital: 'Sofia',
+        capitalCoords: [42.6977, 23.3219],
+        population: 6885868,
+        similar: ['Romania', 'Greece', 'Serbia', 'North Macedonia']
+    },
+    'Burkina Faso': {
+        code: 'bf',
+        capital: 'Ouagadougou',
+        capitalCoords: [12.3714, -1.5197],
+        population: 22100683,
+        similar: ['Mali', 'Niger', 'Benin', 'Ivory Coast']
+    },
+    'Burundi': {
+        code: 'bi',
+        capital: 'Gitega',
+        capitalCoords: [-3.4264, 29.9306],
+        population: 12551213,
+        similar: ['Rwanda', 'Tanzania', 'Democratic Republic of the Congo', 'Uganda']
+    },
+    'Cambodia': {
+        code: 'kh',
+        capital: 'Phnom Penh',
+        capitalCoords: [11.5564, 104.9282],
+        population: 16767842,
+        similar: ['Thailand', 'Vietnam', 'Laos', 'Myanmar']
+    },
+    'Cameroon': {
+        code: 'cm',
+        capital: 'Yaoundé',
+        capitalCoords: [3.8480, 11.5021],
+        population: 27914536,
+        similar: ['Nigeria', 'Chad', 'Central African Republic', 'Gabon']
+    },
+    'Cape Verde': {
+        code: 'cv',
+        capital: 'Praia',
+        capitalCoords: [14.9331, -23.5133],
+        population: 587925,
+        similar: ['Senegal', 'Mauritania', 'Gambia', 'Guinea-Bissau']
+    },
+    'Central African Republic': {
+        code: 'cf',
+        capital: 'Bangui',
+        capitalCoords: [4.3947, 18.5582],
+        population: 5579144,
+        similar: ['Chad', 'Sudan', 'Democratic Republic of the Congo', 'Cameroon']
+    },
+    'Chad': {
+        code: 'td',
+        capital: 'N\'Djamena',
+        capitalCoords: [12.1348, 15.0557],
+        population: 17723315,
+        similar: ['Sudan', 'Central African Republic', 'Niger', 'Libya']
+    },
+    'Comoros': {
+        code: 'km',
+        capital: 'Moroni',
+        capitalCoords: [-11.7172, 43.2473],
+        population: 888451,
+        similar: ['Madagascar', 'Mozambique', 'Tanzania', 'Seychelles']
+    },
+    'Republic of the Congo': {
+        code: 'cg',
+        capital: 'Brazzaville',
+        capitalCoords: [-4.2634, 15.2429],
+        population: 5835806,
+        similar: ['Democratic Republic of the Congo', 'Gabon', 'Cameroon', 'Angola']
+    },
+    'Democratic Republic of the Congo': {
+        code: 'cd',
+        capital: 'Kinshasa',
+        capitalCoords: [-4.3276, 15.3136],
+        population: 99010212,
+        similar: ['Republic of the Congo', 'Angola', 'Zambia', 'Tanzania']
+    },
+    'Croatia': {
+        code: 'hr',
+        capital: 'Zagreb',
+        capitalCoords: [45.8150, 15.9819],
+        population: 3871833,
+        similar: ['Slovenia', 'Bosnia and Herzegovina', 'Serbia', 'Hungary']
+    },
+    'Cyprus': {
+        code: 'cy',
+        capital: 'Nicosia',
+        capitalCoords: [35.1856, 33.3823],
+        population: 1251488,
+        similar: ['Greece', 'Turkey', 'Lebanon', 'Syria']
+    },
+    'Czechia': {
+        code: 'cz',
+        capital: 'Prague',
+        capitalCoords: [50.0755, 14.4378],
+        population: 10495295,
+        similar: ['Slovakia', 'Poland', 'Germany', 'Austria']
+    },
+    'Djibouti': {
+        code: 'dj',
+        capital: 'Djibouti',
+        capitalCoords: [11.8251, 42.5903],
+        population: 1105557,
+        similar: ['Eritrea', 'Ethiopia', 'Somalia', 'Yemen']
+    },
+    'Dominica': {
+        code: 'dm',
+        capital: 'Roseau',
+        capitalCoords: [15.3017, -61.3870],
+        population: 72412,
+        similar: ['Saint Lucia', 'Martinique', 'Guadeloupe', 'Antigua and Barbuda']
+    },
+    'Ecuador': {
+        code: 'ec',
+        capital: 'Quito',
+        capitalCoords: [-0.1807, -78.4678],
+        population: 18001000,
+        similar: ['Colombia', 'Peru', 'Brazil', 'Venezuela']
+    },
+    'El Salvador': {
+        code: 'sv',
+        capital: 'San Salvador',
+        capitalCoords: [13.6929, -89.2182],
+        population: 6336392,
+        similar: ['Guatemala', 'Honduras', 'Nicaragua', 'Belize']
+    },
+    'Equatorial Guinea': {
+        code: 'gq',
+        capital: 'Malabo',
+        capitalCoords: [3.7504, 8.7371],
+        population: 1674908,
+        similar: ['Gabon', 'Cameroon', 'Sao Tome and Principe', 'Nigeria']
+    },
+    'Eritrea': {
+        code: 'er',
+        capital: 'Asmara',
+        capitalCoords: [15.3229, 38.9251],
+        population: 3684032,
+        similar: ['Ethiopia', 'Djibouti', 'Sudan', 'Yemen']
+    },
+    'Estonia': {
+        code: 'ee',
+        capital: 'Tallinn',
+        capitalCoords: [59.4370, 24.7536],
+        population: 1326062,
+        similar: ['Latvia', 'Lithuania', 'Finland', 'Russia']
+    },
+    'Eswatini': {
+        code: 'sz',
+        capital: 'Mbabane',
+        capitalCoords: [-26.3054, 31.1367],
+        population: 1192271,
+        similar: ['South Africa', 'Lesotho', 'Mozambique', 'Zimbabwe']
+    },
+    'Fiji': {
+        code: 'fj',
+        capital: 'Suva',
+        capitalCoords: [-18.1416, 178.4419],
+        population: 924610,
+        similar: ['Vanuatu', 'Tonga', 'Samoa', 'New Zealand']
+    },
+    'Gabon': {
+        code: 'ga',
+        capital: 'Libreville',
+        capitalCoords: [0.4162, 9.4673],
+        population: 2341179,
+        similar: ['Republic of the Congo', 'Cameroon', 'Equatorial Guinea', 'Central African Republic']
+    },
+    'Gambia': {
+        code: 'gm',
+        capital: 'Banjul',
+        capitalCoords: [13.4549, -16.5790],
+        population: 2639916,
+        similar: ['Senegal', 'Guinea-Bissau', 'Guinea', 'Mauritania']
+    },
+    'Georgia': {
+        code: 'ge',
+        capital: 'Tbilisi',
+        capitalCoords: [41.7151, 44.8271],
+        population: 3728573,
+        similar: ['Armenia', 'Azerbaijan', 'Turkey', 'Russia']
+    },
+    'Ghana': {
+        code: 'gh',
+        capital: 'Accra',
+        capitalCoords: [5.6037, -0.1870],
+        population: 33475870,
+        similar: ['Ivory Coast', 'Togo', 'Burkina Faso', 'Benin']
+    },
+    'Grenada': {
+        code: 'gd',
+        capital: 'Saint George\'s',
+        capitalCoords: [12.0561, -61.7486],
+        population: 124610,
+        similar: ['Trinidad and Tobago', 'Saint Vincent and the Grenadines', 'Barbados', 'Saint Lucia']
+    },
+    'Guinea': {
+        code: 'gn',
+        capital: 'Conakry',
+        capitalCoords: [9.6412, -13.5784],
+        population: 13859341,
+        similar: ['Guinea-Bissau', 'Sierra Leone', 'Liberia', 'Ivory Coast']
+    },
+    'Guinea-Bissau': {
+        code: 'gw',
+        capital: 'Bissau',
+        capitalCoords: [11.8636, -15.5982],
+        population: 2085534,
+        similar: ['Guinea', 'Senegal', 'Gambia', 'Sierra Leone']
+    },
+    'Guyana': {
+        code: 'gy',
+        capital: 'Georgetown',
+        capitalCoords: [6.8013, -58.1551],
+        population: 804567,
+        similar: ['Suriname', 'Venezuela', 'Brazil', 'Trinidad and Tobago']
+    },
+    'Haiti': {
+        code: 'ht',
+        capital: 'Port-au-Prince',
+        capitalCoords: [18.5944, -72.3074],
+        population: 11584996,
+        similar: ['Dominican Republic', 'Cuba', 'Jamaica', 'Bahamas']
+    },
+    'Honduras': {
+        code: 'hn',
+        capital: 'Tegucigalpa',
+        capitalCoords: [14.0723, -87.1921],
+        population: 10278345,
+        similar: ['Nicaragua', 'El Salvador', 'Guatemala', 'Belize']
+    },
+    'Hungary': {
+        code: 'hu',
+        capital: 'Budapest',
+        capitalCoords: [47.4979, 19.0402],
+        population: 9597085,
+        similar: ['Austria', 'Slovakia', 'Romania', 'Serbia']
+    },
+    'Jordan': {
+        code: 'jo',
+        capital: 'Amman',
+        capitalCoords: [31.9454, 35.9284],
+        population: 11148278,
+        similar: ['Syria', 'Iraq', 'Saudi Arabia', 'Israel']
+    },
+    'Kazakhstan': {
+        code: 'kz',
+        capital: 'Nur-Sultan',
+        capitalCoords: [51.1605, 71.4704],
+        population: 19372481,
+        similar: ['Russia', 'Uzbekistan', 'Kyrgyzstan', 'China']
+    },
+    'Kiribati': {
+        code: 'ki',
+        capital: 'Tarawa',
+        capitalCoords: [1.3382, 173.0176],
+        population: 128874,
+        similar: ['Nauru', 'Tuvalu', 'Marshall Islands', 'Micronesia']
+    },
+    'Kuwait': {
+        code: 'kw',
+        capital: 'Kuwait City',
+        capitalCoords: [29.3759, 47.9774],
+        population: 4250114,
+        similar: ['Iraq', 'Saudi Arabia', 'Bahrain', 'Qatar']
+    },
+    'Kyrgyzstan': {
+        code: 'kg',
+        capital: 'Bishkek',
+        capitalCoords: [42.8746, 74.5698],
+        population: 6735347,
+        similar: ['Kazakhstan', 'Uzbekistan', 'Tajikistan', 'China']
+    },
+    'Laos': {
+        code: 'la',
+        capital: 'Vientiane',
+        capitalCoords: [17.9757, 102.6331],
+        population: 7529475,
+        similar: ['Thailand', 'Vietnam', 'Cambodia', 'Myanmar']
+    },
+    'Latvia': {
+        code: 'lv',
+        capital: 'Riga',
+        capitalCoords: [56.9496, 24.1052],
+        population: 1884490,
+        similar: ['Estonia', 'Lithuania', 'Belarus', 'Russia']
+    },
+    'Lebanon': {
+        code: 'lb',
+        capital: 'Beirut',
+        capitalCoords: [33.8886, 35.4955],
+        population: 6825442,
+        similar: ['Syria', 'Israel', 'Cyprus', 'Jordan']
+    },
+    'Lesotho': {
+        code: 'ls',
+        capital: 'Maseru',
+        capitalCoords: [-29.3167, 27.4833],
+        population: 2305825,
+        similar: ['South Africa', 'Eswatini', 'Botswana', 'Zimbabwe']
+    },
+    'Liberia': {
+        code: 'lr',
+        capital: 'Monrovia',
+        capitalCoords: [6.3156, -10.8074],
+        population: 5302681,
+        similar: ['Sierra Leone', 'Guinea', 'Ivory Coast', 'Guinea-Bissau']
+    },
+    'Libya': {
+        code: 'ly',
+        capital: 'Tripoli',
+        capitalCoords: [32.8872, 13.1913],
+        population: 6958538,
+        similar: ['Egypt', 'Tunisia', 'Algeria', 'Chad']
+    },
+    'Liechtenstein': {
+        code: 'li',
+        capital: 'Vaduz',
+        capitalCoords: [47.1410, 9.5209],
+        population: 39327,
+        similar: ['Switzerland', 'Austria', 'Luxembourg', 'Monaco']
+    },
+    'Lithuania': {
+        code: 'lt',
+        capital: 'Vilnius',
+        capitalCoords: [54.6872, 25.2797],
+        population: 2795680,
+        similar: ['Latvia', 'Belarus', 'Poland', 'Russia']
+    },
+    'Luxembourg': {
+        code: 'lu',
+        capital: 'Luxembourg',
+        capitalCoords: [49.6116, 6.1319],
+        population: 640064,
+        similar: ['Belgium', 'Germany', 'France', 'Netherlands']
+    },
+    'Madagascar': {
+        code: 'mg',
+        capital: 'Antananarivo',
+        capitalCoords: [-18.8792, 47.5079],
+        population: 29611714,
+        similar: ['Mozambique', 'Comoros', 'Mauritius', 'Tanzania']
+    },
+    'Malawi': {
+        code: 'mw',
+        capital: 'Lilongwe',
+        capitalCoords: [-13.9626, 33.7741],
+        population: 20405317,
+        similar: ['Mozambique', 'Zambia', 'Tanzania', 'Zimbabwe']
+    },
+    'Maldives': {
+        code: 'mv',
+        capital: 'Malé',
+        capitalCoords: [4.1755, 73.5093],
+        population: 523787,
+        similar: ['Sri Lanka', 'India', 'Seychelles', 'Mauritius']
+    },
+    'Mali': {
+        code: 'ml',
+        capital: 'Bamako',
+        capitalCoords: [12.6392, -8.0029],
+        population: 22593590,
+        similar: ['Mauritania', 'Senegal', 'Guinea', 'Burkina Faso']
+    },
+    'Malta': {
+        code: 'mt',
+        capital: 'Valletta',
+        capitalCoords: [35.8989, 14.5146],
+        population: 525285,
+        similar: ['Cyprus', 'Italy', 'Tunisia', 'Greece']
+    },
+    'Mauritania': {
+        code: 'mr',
+        capital: 'Nouakchott',
+        capitalCoords: [18.0735, -15.9582],
+        population: 4736139,
+        similar: ['Mali', 'Senegal', 'Western Sahara', 'Algeria']
+    },
+    'Mauritius': {
+        code: 'mu',
+        capital: 'Port Louis',
+        capitalCoords: [-20.1609, 57.5012],
+        population: 1266334,
+        similar: ['Madagascar', 'Seychelles', 'Comoros', 'Reunion']
+    },
+    'Micronesia': {
+        code: 'fm',
+        capital: 'Palikir',
+        capitalCoords: [6.9178, 158.1850],
+        population: 115021,
+        similar: ['Palau', 'Marshall Islands', 'Kiribati', 'Papua New Guinea']
+    },
+    'Moldova': {
+        code: 'md',
+        capital: 'Chișinău',
+        capitalCoords: [47.0105, 28.8638],
+        population: 2597100,
+        similar: ['Romania', 'Ukraine', 'Belarus', 'Hungary']
+    },
+    'Monaco': {
+        code: 'mc',
+        capital: 'Monaco',
+        capitalCoords: [43.7384, 7.4246],
+        population: 39244,
+        similar: ['Liechtenstein', 'Vatican City', 'San Marino', 'Luxembourg']
+    },
+    'Mongolia': {
+        code: 'mn',
+        capital: 'Ulaanbaatar',
+        capitalCoords: [47.8864, 106.9057],
+        population: 3398366,
+        similar: ['China', 'Russia', 'Kazakhstan', 'Kyrgyzstan']
+    },
+    'Montenegro': {
+        code: 'me',
+        capital: 'Podgorica',
+        capitalCoords: [42.4304, 19.2594],
+        population: 627809,
+        similar: ['Serbia', 'Bosnia and Herzegovina', 'Albania', 'Croatia']
+    },
+    'Mozambique': {
+        code: 'mz',
+        capital: 'Maputo',
+        capitalCoords: [-25.9692, 32.5732],
+        population: 32969518,
+        similar: ['Tanzania', 'Malawi', 'Zimbabwe', 'South Africa']
+    },
+    'Namibia': {
+        code: 'na',
+        capital: 'Windhoek',
+        capitalCoords: [-22.5609, 17.0658],
+        population: 2567012,
+        similar: ['Botswana', 'South Africa', 'Angola', 'Zambia']
+    },
+    'Nauru': {
+        code: 'nr',
+        capital: 'Yaren',
+        capitalCoords: [-0.5477, 166.9209],
+        population: 12668,
+        similar: ['Kiribati', 'Tuvalu', 'Marshall Islands', 'Palau']
+    },
+    'Nepal': {
+        code: 'np',
+        capital: 'Kathmandu',
+        capitalCoords: [27.7172, 85.3240],
+        population: 30034989,
+        similar: ['India', 'China', 'Bhutan', 'Bangladesh']
+    },
+    'Nicaragua': {
+        code: 'ni',
+        capital: 'Managua',
+        capitalCoords: [12.1150, -86.2362],
+        population: 6948392,
+        similar: ['Honduras', 'Costa Rica', 'El Salvador', 'Panama']
+    },
+    'Niger': {
+        code: 'ne',
+        capital: 'Niamey',
+        capitalCoords: [13.5116, 2.1254],
+        population: 26207977,
+        similar: ['Nigeria', 'Chad', 'Mali', 'Burkina Faso']
+    },
+    'North Korea': {
+        code: 'kp',
+        capital: 'Pyongyang',
+        capitalCoords: [39.0392, 125.7625],
+        population: 25990679,
+        similar: ['South Korea', 'China', 'Russia', 'Japan']
+    },
+    'North Macedonia': {
+        code: 'mk',
+        capital: 'Skopje',
+        capitalCoords: [41.9973, 21.4280],
+        population: 2085051,
+        similar: ['Greece', 'Bulgaria', 'Albania', 'Serbia']
+    },
+    'Oman': {
+        code: 'om',
+        capital: 'Muscat',
+        capitalCoords: [23.6100, 58.5400],
+        population: 5223375,
+        similar: ['United Arab Emirates', 'Yemen', 'Saudi Arabia', 'Iran']
+    },
+    'Palestine': {
+        code: 'ps',
+        capital: 'Ramallah',
+        capitalCoords: [31.9073, 35.2044],
+        population: 5250072,
+        similar: ['Israel', 'Jordan', 'Lebanon', 'Syria']
+    },
+    'Papua New Guinea': {
+        code: 'pg',
+        capital: 'Port Moresby',
+        capitalCoords: [-9.4438, 147.1803],
+        population: 9949437,
+        similar: ['Indonesia', 'Australia', 'Solomon Islands', 'Fiji']
+    },
+    'Paraguay': {
+        code: 'py',
+        capital: 'Asunción',
+        capitalCoords: [-25.2637, -57.5759],
+        population: 6780744,
+        similar: ['Bolivia', 'Argentina', 'Brazil', 'Uruguay']
+    },
+    'Qatar': {
+        code: 'qa',
+        capital: 'Doha',
+        capitalCoords: [25.2854, 51.5310],
+        population: 2688235,
+        similar: ['Bahrain', 'United Arab Emirates', 'Saudi Arabia', 'Kuwait']
+    },
+    'Romania': {
+        code: 'ro',
+        capital: 'Bucharest',
+        capitalCoords: [44.4268, 26.1025],
+        population: 19053815,
+        similar: ['Hungary', 'Bulgaria', 'Serbia', 'Moldova']
+    },
+    'Rwanda': {
+        code: 'rw',
+        capital: 'Kigali',
+        capitalCoords: [-1.9536, 30.0606],
+        population: 13600464,
+        similar: ['Burundi', 'Uganda', 'Tanzania', 'Democratic Republic of the Congo']
+    },
+    'Samoa': {
+        code: 'ws',
+        capital: 'Apia',
+        capitalCoords: [-13.8314, -171.7518],
+        population: 221050,
+        similar: ['Tonga', 'Fiji', 'Tuvalu', 'Kiribati']
+    },
+    'San Marino': {
+        code: 'sm',
+        capital: 'San Marino',
+        capitalCoords: [43.9424, 12.4578],
+        population: 33938,
+        similar: ['Vatican City', 'Monaco', 'Liechtenstein', 'Italy']
+    },
+    'Sao Tome and Principe': {
+        code: 'st',
+        capital: 'São Tomé',
+        capitalCoords: [0.3365, 6.7273],
+        population: 227380,
+        similar: ['Equatorial Guinea', 'Gabon', 'Cape Verde', 'Comoros']
+    },
+    'Senegal': {
+        code: 'sn',
+        capital: 'Dakar',
+        capitalCoords: [14.7167, -17.4677],
+        population: 17316449,
+        similar: ['Mauritania', 'Mali', 'Guinea', 'Gambia']
+    },
+    'Serbia': {
+        code: 'rs',
+        capital: 'Belgrade',
+        capitalCoords: [44.7866, 20.4489],
+        population: 6834326,
+        similar: ['Bosnia and Herzegovina', 'Hungary', 'Romania', 'Croatia']
+    },
+    'Seychelles': {
+        code: 'sc',
+        capital: 'Victoria',
+        capitalCoords: [-4.6191, 55.4513],
+        population: 119773,
+        similar: ['Mauritius', 'Comoros', 'Madagascar', 'Maldives']
+    },
+    'Sierra Leone': {
+        code: 'sl',
+        capital: 'Freetown',
+        capitalCoords: [8.4657, -13.2317],
+        population: 8420641,
+        similar: ['Liberia', 'Guinea', 'Guinea-Bissau', 'Ivory Coast']
+    },
+    'Slovakia': {
+        code: 'sk',
+        capital: 'Bratislava',
+        capitalCoords: [48.1486, 17.1077],
+        population: 5447622,
+        similar: ['Czechia', 'Poland', 'Hungary', 'Austria']
+    },
+    'Slovenia': {
+        code: 'si',
+        capital: 'Ljubljana',
+        capitalCoords: [46.0569, 14.5058],
+        population: 2108708,
+        similar: ['Croatia', 'Austria', 'Italy', 'Hungary']
+    },
+    'Solomon Islands': {
+        code: 'sb',
+        capital: 'Honiara',
+        capitalCoords: [-9.4456, 159.9729],
+        population: 707851,
+        similar: ['Papua New Guinea', 'Vanuatu', 'Fiji', 'New Caledonia']
+    },
+    'Somalia': {
+        code: 'so',
+        capital: 'Mogadishu',
+        capitalCoords: [2.0469, 45.3182],
+        population: 17065581,
+        similar: ['Ethiopia', 'Kenya', 'Djibouti', 'Eritrea']
+    },
+    'South Sudan': {
+        code: 'ss',
+        capital: 'Juba',
+        capitalCoords: [4.8517, 31.5825],
+        population: 11381378,
+        similar: ['Sudan', 'Ethiopia', 'Uganda', 'Kenya']
+    },
+    'Sri Lanka': {
+        code: 'lk',
+        capital: 'Sri Jayawardenepura Kotte',
+        capitalCoords: [6.9271, 79.8612],
+        population: 21919000,
+        similar: ['India', 'Maldives', 'Bangladesh', 'Myanmar']
+    },
+    'Sudan': {
+        code: 'sd',
+        capital: 'Khartoum',
+        capitalCoords: [15.5007, 32.5599],
+        population: 45657202,
+        similar: ['Egypt', 'Chad', 'Ethiopia', 'South Sudan']
+    },
+    'Suriname': {
+        code: 'sr',
+        capital: 'Paramaribo',
+        capitalCoords: [5.8520, -55.2038],
+        population: 612985,
+        similar: ['Guyana', 'French Guiana', 'Brazil', 'Venezuela']
+    },
+    'Syria': {
+        code: 'sy',
+        capital: 'Damascus',
+        capitalCoords: [33.5138, 36.2765],
+        population: 21324367,
+        similar: ['Turkey', 'Iraq', 'Lebanon', 'Jordan']
+    },
+    'Tajikistan': {
+        code: 'tj',
+        capital: 'Dushanbe',
+        capitalCoords: [38.5598, 68.7738],
+        population: 9952787,
+        similar: ['Uzbekistan', 'Kyrgyzstan', 'Afghanistan', 'China']
+    },
+    'Tanzania': {
+        code: 'tz',
+        capital: 'Dodoma',
+        capitalCoords: [-6.1630, 35.7516],
+        population: 63588334,
+        similar: ['Kenya', 'Uganda', 'Rwanda', 'Mozambique']
+    },
+    'East Timor': {
+        code: 'tl',
+        capital: 'Dili',
+        capitalCoords: [-8.5569, 125.5603],
+        population: 1343873,
+        similar: ['Indonesia', 'Papua New Guinea', 'Philippines', 'Australia']
+    },
+    'Togo': {
+        code: 'tg',
+        capital: 'Lomé',
+        capitalCoords: [6.1256, 1.2315],
+        population: 8644829,
+        similar: ['Benin', 'Ghana', 'Burkina Faso', 'Ivory Coast']
+    },
+    'Tonga': {
+        code: 'to',
+        capital: 'Nuku\'alofa',
+        capitalCoords: [-21.1393, -175.2018],
+        population: 106017,
+        similar: ['Fiji', 'Samoa', 'Vanuatu', 'New Zealand']
+    },
+    'Trinidad and Tobago': {
+        code: 'tt',
+        capital: 'Port of Spain',
+        capitalCoords: [10.6596, -61.5089],
+        population: 1525663,
+        similar: ['Venezuela', 'Grenada', 'Barbados', 'Guyana']
+    },
+    'Tunisia': {
+        code: 'tn',
+        capital: 'Tunis',
+        capitalCoords: [36.8065, 10.1815],
+        population: 12046656,
+        similar: ['Libya', 'Algeria', 'Morocco', 'Egypt']
+    },
+    'Turkmenistan': {
+        code: 'tm',
+        capital: 'Ashgabat',
+        capitalCoords: [37.9601, 58.3261],
+        population: 6341855,
+        similar: ['Uzbekistan', 'Kazakhstan', 'Iran', 'Afghanistan']
+    },
+    'Tuvalu': {
+        code: 'tv',
+        capital: 'Funafuti',
+        capitalCoords: [-8.5211, 179.1962],
+        population: 11204,
+        similar: ['Kiribati', 'Nauru', 'Fiji', 'Samoa']
+    },
+    'Uganda': {
+        code: 'ug',
+        capital: 'Kampala',
+        capitalCoords: [0.3476, 32.5825],
+        population: 47249585,
+        similar: ['Kenya', 'Tanzania', 'Rwanda', 'Democratic Republic of the Congo']
+    },
+    'United Arab Emirates': {
+        code: 'ae',
+        capital: 'Abu Dhabi',
+        capitalCoords: [24.4539, 54.3773],
+        population: 9890400,
+        similar: ['Saudi Arabia', 'Oman', 'Qatar', 'Bahrain']
+    },
+    'Uruguay': {
+        code: 'uy',
+        capital: 'Montevideo',
+        capitalCoords: [-34.9011, -56.1645],
+        population: 3422794,
+        similar: ['Argentina', 'Brazil', 'Paraguay', 'Chile']
+    },
+    'Uzbekistan': {
+        code: 'uz',
+        capital: 'Tashkent',
+        capitalCoords: [41.2995, 69.2401],
+        population: 34627652,
+        similar: ['Kazakhstan', 'Kyrgyzstan', 'Tajikistan', 'Turkmenistan']
+    },
+    'Vanuatu': {
+        code: 'vu',
+        capital: 'Port Vila',
+        capitalCoords: [-17.7333, 168.3273],
+        population: 319137,
+        similar: ['Fiji', 'Solomon Islands', 'New Caledonia', 'Tonga']
+    },
+    'Vatican City': {
+        code: 'va',
+        capital: 'Vatican City',
+        capitalCoords: [41.9029, 12.4534],
+        population: 825,
+        similar: ['San Marino', 'Monaco', 'Liechtenstein', 'Italy']
+    },
+    'Yemen': {
+        code: 'ye',
+        capital: 'Sana\'a',
+        capitalCoords: [15.3694, 44.1910],
+        population: 30490639,
+        similar: ['Saudi Arabia', 'Oman', 'Eritrea', 'Djibouti']
+    },
+    'Zambia': {
+        code: 'zm',
+        capital: 'Lusaka',
+        capitalCoords: [-15.3875, 28.3228],
+        population: 19473125,
+        similar: ['Zimbabwe', 'Mozambique', 'Malawi', 'Tanzania']
+    },
+    'Zimbabwe': {
+        code: 'zw',
+        capital: 'Harare',
+        capitalCoords: [-17.8252, 31.0335],
+        population: 16320537,
+        similar: ['Zambia', 'Mozambique', 'South Africa', 'Botswana']
     }
 };
 
@@ -817,6 +1847,261 @@ const indianStateData = {
     }
 };
 
+// GERMAN STATES (Bundesländer)
+const germanStates = [
+    'Baden-Württemberg', 'Bayern', 'Berlin', 'Brandenburg', 'Bremen',
+    'Hamburg', 'Hessen', 'Mecklenburg-Vorpommern', 'Niedersachsen', 'Nordrhein-Westfalen',
+    'Rheinland-Pfalz', 'Saarland', 'Sachsen', 'Sachsen-Anhalt', 'Schleswig-Holstein', 'Thüringen'
+];
+
+const germanStateData = {
+    'Baden-Württemberg': {
+        code: 'de-bw',
+        capital: 'Stuttgart',
+        similar: ['Bayern', 'Hessen', 'Rheinland-Pfalz', 'Saarland']
+    },
+    'Bayern': {
+        code: 'de-by',
+        capital: 'München',
+        similar: ['Baden-Württemberg', 'Hessen', 'Thüringen', 'Sachsen']
+    },
+    'Berlin': {
+        code: 'de-be',
+        capital: 'Berlin',
+        similar: ['Brandenburg', 'Sachsen', 'Hamburg', 'Bremen']
+    },
+    'Brandenburg': {
+        code: 'de-bb',
+        capital: 'Potsdam',
+        similar: ['Berlin', 'Sachsen', 'Sachsen-Anhalt', 'Mecklenburg-Vorpommern']
+    },
+    'Bremen': {
+        code: 'de-hb',
+        capital: 'Bremen',
+        similar: ['Hamburg', 'Niedersachsen', 'Schleswig-Holstein', 'Berlin']
+    },
+    'Hamburg': {
+        code: 'de-hh',
+        capital: 'Hamburg',
+        similar: ['Bremen', 'Schleswig-Holstein', 'Niedersachsen', 'Berlin']
+    },
+    'Hessen': {
+        code: 'de-he',
+        capital: 'Wiesbaden',
+        similar: ['Nordrhein-Westfalen', 'Bayern', 'Baden-Württemberg', 'Rheinland-Pfalz']
+    },
+    'Mecklenburg-Vorpommern': {
+        code: 'de-mv',
+        capital: 'Schwerin',
+        similar: ['Schleswig-Holstein', 'Brandenburg', 'Niedersachsen', 'Sachsen-Anhalt']
+    },
+    'Niedersachsen': {
+        code: 'de-ni',
+        capital: 'Hannover',
+        similar: ['Nordrhein-Westfalen', 'Bremen', 'Hamburg', 'Schleswig-Holstein']
+    },
+    'Nordrhein-Westfalen': {
+        code: 'de-nw',
+        capital: 'Düsseldorf',
+        similar: ['Niedersachsen', 'Hessen', 'Rheinland-Pfalz', 'Bremen']
+    },
+    'Rheinland-Pfalz': {
+        code: 'de-rp',
+        capital: 'Mainz',
+        similar: ['Hessen', 'Nordrhein-Westfalen', 'Saarland', 'Baden-Württemberg']
+    },
+    'Saarland': {
+        code: 'de-sl',
+        capital: 'Saarbrücken',
+        similar: ['Rheinland-Pfalz', 'Baden-Württemberg', 'Hessen', 'Nordrhein-Westfalen']
+    },
+    'Sachsen': {
+        code: 'de-sn',
+        capital: 'Dresden',
+        similar: ['Thüringen', 'Sachsen-Anhalt', 'Brandenburg', 'Bayern']
+    },
+    'Sachsen-Anhalt': {
+        code: 'de-st',
+        capital: 'Magdeburg',
+        similar: ['Sachsen', 'Thüringen', 'Brandenburg', 'Niedersachsen']
+    },
+    'Schleswig-Holstein': {
+        code: 'de-sh',
+        capital: 'Kiel',
+        similar: ['Hamburg', 'Mecklenburg-Vorpommern', 'Niedersachsen', 'Bremen']
+    },
+    'Thüringen': {
+        code: 'de-th',
+        capital: 'Erfurt',
+        similar: ['Sachsen', 'Sachsen-Anhalt', 'Bayern', 'Hessen']
+    }
+};
+
+// ==================== ORDERING & SORTING UTILITIES ====================
+
+// Modular scoring function for pair-wise ordering
+// Returns a score based on how many pairs of items are in the correct relative order
+function calculatePairwiseScore(userOrder, correctOrder, getValueFn = null) {
+    if (userOrder.length !== correctOrder.length) {
+        console.error('User order and correct order must have the same length');
+        return 0;
+    }
+
+    // Create a map of item to its correct index
+    const correctIndexMap = new Map();
+    correctOrder.forEach((item, index) => {
+        correctIndexMap.set(item, index);
+    });
+
+    // Count correct pairs
+    let correctPairs = 0;
+    let totalPairs = 0;
+
+    // Check every pair (i, j) where i < j
+    for (let i = 0; i < userOrder.length - 1; i++) {
+        for (let j = i + 1; j < userOrder.length; j++) {
+            const item1 = userOrder[i];
+            const item2 = userOrder[j];
+
+            const correctIndex1 = correctIndexMap.get(item1);
+            const correctIndex2 = correctIndexMap.get(item2);
+
+            // Check if the relative order is correct
+            if (correctIndex1 < correctIndex2) {
+                correctPairs++;
+            }
+            totalPairs++;
+        }
+    }
+
+    // Return percentage of correct pairs
+    return Math.round((correctPairs / totalPairs) * 100);
+}
+
+// Reusable drag-to-reorder component
+class DragToReorder {
+    constructor(containerElement, items, options = {}) {
+        this.container = containerElement;
+        this.items = items;  // Array of {id, content, data}
+        this.options = {
+            onOrderChange: options.onOrderChange || (() => {}),
+            itemClass: options.itemClass || 'draggable-item',
+            dragClass: options.dragClass || 'dragging',
+            overClass: options.overClass || 'drag-over',
+            ...options
+        };
+
+        this.draggedElement = null;
+        this.init();
+    }
+
+    init() {
+        this.render();
+        this.attachEventListeners();
+    }
+
+    render() {
+        this.container.innerHTML = '';
+        this.items.forEach((item, index) => {
+            const element = document.createElement('div');
+            element.className = this.options.itemClass;
+            element.draggable = true;
+            element.dataset.itemId = item.id;
+            element.dataset.index = index;
+
+            if (typeof item.content === 'string') {
+                element.innerHTML = item.content;
+            } else {
+                element.appendChild(item.content);
+            }
+
+            this.container.appendChild(element);
+        });
+    }
+
+    attachEventListeners() {
+        const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
+
+        elements.forEach(element => {
+            element.addEventListener('dragstart', (e) => this.handleDragStart(e));
+            element.addEventListener('dragover', (e) => this.handleDragOver(e));
+            element.addEventListener('drop', (e) => this.handleDrop(e));
+            element.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            element.addEventListener('dragenter', (e) => this.handleDragEnter(e));
+            element.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+        });
+    }
+
+    handleDragStart(e) {
+        this.draggedElement = e.target;
+        e.target.classList.add(this.options.dragClass);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', e.target.innerHTML);
+    }
+
+    handleDragOver(e) {
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+        e.dataTransfer.dropEffect = 'move';
+        return false;
+    }
+
+    handleDragEnter(e) {
+        if (e.target.classList.contains(this.options.itemClass)) {
+            e.target.classList.add(this.options.overClass);
+        }
+    }
+
+    handleDragLeave(e) {
+        if (e.target.classList.contains(this.options.itemClass)) {
+            e.target.classList.remove(this.options.overClass);
+        }
+    }
+
+    handleDrop(e) {
+        if (e.stopPropagation) {
+            e.stopPropagation();
+        }
+        e.preventDefault();
+
+        if (this.draggedElement !== e.target && e.target.classList.contains(this.options.itemClass)) {
+            // Reorder items array
+            const draggedIndex = parseInt(this.draggedElement.dataset.index);
+            const targetIndex = parseInt(e.target.dataset.index);
+
+            // Move the item
+            const temp = this.items[draggedIndex];
+            this.items.splice(draggedIndex, 1);
+            this.items.splice(targetIndex, 0, temp);
+
+            // Re-render
+            this.render();
+            this.attachEventListeners();
+
+            // Callback
+            this.options.onOrderChange(this.getCurrentOrder());
+        }
+
+        e.target.classList.remove(this.options.overClass);
+        return false;
+    }
+
+    handleDragEnd(e) {
+        e.target.classList.remove(this.options.dragClass);
+        const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
+        elements.forEach(el => el.classList.remove(this.options.overClass));
+    }
+
+    getCurrentOrder() {
+        return this.items.map(item => item.id);
+    }
+
+    getItems() {
+        return this.items;
+    }
+}
+
 // Quiz mode configurations
 const QUIZ_MODES = {
     countries: {
@@ -886,6 +2171,32 @@ const QUIZ_MODES = {
         itemLabelPlural: 'countries',
         autoRotate: false,
         nameAllMode: true // Special mode for typing all countries
+    },
+    'german-states': {
+        name: 'German States',
+        quizList: germanStates,
+        dataObj: germanStateData,
+        totalQuestions: 10,
+        useGlobe: false,
+        mapUrl: 'https://raw.githubusercontent.com/deldersveld/topojson/master/countries/germany/germany-states.json',
+        mapObject: 'states',
+        hasFlags: false,
+        itemLabel: 'state',
+        itemLabelPlural: 'states',
+        autoRotate: false
+    },
+    'population-order': {
+        name: 'Order by Population',
+        quizList: quizCountries,
+        dataObj: countryData,
+        totalQuestions: 10,
+        useGlobe: false,
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        orderingMode: true, // Special mode for ordering
+        orderingCriteria: 'population'
     }
 };
 
@@ -1643,6 +2954,11 @@ function handleCorrectAnswer(element) {
     } else {
         // All sub-questions complete, enable next question button
         document.getElementById('next-btn').disabled = false;
+
+        // Draw capital star if this is a globe mode with capitals
+        if (modeConfig.useGlobe && gameState.targetCountry) {
+            drawCapitalStar(gameState.targetCountry);
+        }
     }
 }
 
@@ -1729,6 +3045,12 @@ function startNewQuestion() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     if (modeConfig.nameAllMode) {
         renderNameAllMode();
+        return;
+    }
+
+    // Check if this is ordering mode (population ordering)
+    if (modeConfig.orderingMode) {
+        renderOrderingMode();
         return;
     }
 
@@ -2319,6 +3641,217 @@ function handleNameAllGiveUp() {
     document.getElementById('give-up-btn').style.display = 'none';
 }
 
+// ==================== POPULATION ORDERING MODE ====================
+
+// Render population ordering mode
+function renderOrderingMode() {
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    const criteria = modeConfig.orderingCriteria; // 'population'
+
+    // Hide map-related elements
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+
+    // Show question container
+    document.getElementById('question-container').classList.remove('hidden');
+
+    // Select 5 random countries with population data
+    const countriesWithData = gameState.currentQuizList.filter(country => {
+        const data = gameState.currentDataObj[country];
+        return data && data[criteria];
+    });
+
+    // Randomly select 5 countries
+    const shuffled = shuffleArray([...countriesWithData]);
+    const selectedCountries = shuffled.slice(0, 5);
+
+    // Store the correct order (by population, descending)
+    const correctOrder = [...selectedCountries].sort((a, b) => {
+        const popA = gameState.currentDataObj[a][criteria];
+        const popB = gameState.currentDataObj[b][criteria];
+        return popB - popA; // Descending order
+    });
+
+    gameState.correctOrder = correctOrder;
+    gameState.currentCountries = selectedCountries;
+
+    // Create question text
+    document.getElementById('question-text').innerHTML = `
+        <strong>Drag to order these countries by population</strong><br>
+        <small>(Highest to Lowest)</small>
+    `;
+
+    // Create ordering container
+    let orderingContainer = document.getElementById('ordering-container');
+    if (!orderingContainer) {
+        orderingContainer = document.createElement('div');
+        orderingContainer.id = 'ordering-container';
+        orderingContainer.className = 'ordering-container';
+        document.getElementById('question-container').appendChild(orderingContainer);
+    }
+
+    // Clear container
+    orderingContainer.innerHTML = '';
+
+    // Create draggable items with flag
+    const items = selectedCountries.map(country => {
+        const data = gameState.currentDataObj[country];
+        const flagUrl = getFlagUrl(country);
+        return {
+            id: country,
+            content: `
+                <div class="country-bubble">
+                    <img src="${flagUrl}" alt="${country}" class="bubble-flag">
+                    <span class="bubble-name">${country}</span>
+                </div>
+            `,
+            data: data
+        };
+    });
+
+    // Initialize drag-to-reorder
+    if (gameState.dragInstance) {
+        gameState.dragInstance.items = items;
+        gameState.dragInstance.render();
+        gameState.dragInstance.attachEventListeners();
+    } else {
+        gameState.dragInstance = new DragToReorder(orderingContainer, items, {
+            itemClass: 'draggable-item',
+            dragClass: 'dragging',
+            overClass: 'drag-over'
+        });
+    }
+
+    // Update button states
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+
+    // Create submit button
+    let submitBtn = document.getElementById('submit-order-btn');
+    if (!submitBtn) {
+        submitBtn = document.createElement('button');
+        submitBtn.id = 'submit-order-btn';
+        submitBtn.className = 'btn';
+        submitBtn.textContent = 'Submit Answer';
+        submitBtn.onclick = checkOrderingAnswer;
+        document.getElementById('controls').appendChild(submitBtn);
+    }
+    submitBtn.style.display = 'inline-block';
+    submitBtn.disabled = false;
+}
+
+// Check ordering answer
+function checkOrderingAnswer() {
+    const userOrder = gameState.dragInstance.getCurrentOrder();
+    const correctOrder = gameState.correctOrder;
+
+    // Calculate score using pair-wise comparison
+    const score = calculatePairwiseScore(userOrder, correctOrder);
+
+    // Update game score (convert percentage to points out of 10)
+    const points = Math.round(score / 10);
+    gameState.score += points;
+    document.getElementById('score').textContent = gameState.score;
+
+    // Show feedback
+    const feedback = document.getElementById('feedback');
+
+    // Display correct order with populations
+    let correctOrderHTML = '<div class="correct-order"><strong>Correct Order:</strong><ol>';
+    correctOrder.forEach(country => {
+        const pop = gameState.currentDataObj[country].population;
+        const formattedPop = pop.toLocaleString();
+        correctOrderHTML += `<li>${country}: <strong>${formattedPop}</strong></li>`;
+    });
+    correctOrderHTML += '</ol></div>';
+
+    if (score === 100) {
+        feedback.innerHTML = `<div class="feedback correct">
+            Perfect! 🎉 You got 100% of pairs in the correct order! (+${points} points)
+        </div>${correctOrderHTML}`;
+    } else if (score >= 70) {
+        feedback.innerHTML = `<div class="feedback partial">
+            Good! You got ${score}% of pairs in the correct order. (+${points} points)
+        </div>${correctOrderHTML}`;
+    } else {
+        feedback.innerHTML = `<div class="feedback incorrect">
+            You got ${score}% of pairs in the correct order. (+${points} points)
+        </div>${correctOrderHTML}`;
+    }
+
+    // Disable submit button
+    document.getElementById('submit-order-btn').disabled = true;
+
+    // Show next button
+    document.getElementById('next-btn').style.display = 'inline-block';
+    document.getElementById('next-btn').disabled = false;
+
+    // Move to next question
+    gameState.currentQuestion++;
+}
+
+// ==================== CAPITAL CITY STARS ====================
+
+// Draw capital city stars on globe after correct answer
+function drawCapitalStar(countryName) {
+    const countryInfo = gameState.currentDataObj[countryName];
+    if (!countryInfo || !countryInfo.capitalCoords) return;
+
+    const [lat, lon] = countryInfo.capitalCoords;
+    const coords = [lon, lat]; // D3 uses [longitude, latitude]
+
+    // Check if the point is visible on the current globe rotation
+    const projected = projection(coords);
+    if (!projected) return; // Point is on the back of the globe
+
+    // Create or select the stars group
+    let starsGroup = g.select('.capital-stars');
+    if (starsGroup.empty()) {
+        starsGroup = g.append('g').attr('class', 'capital-stars');
+    }
+
+    // Add a star marker
+    starsGroup.append('path')
+        .attr('d', d3.symbol().type(d3.symbolStar).size(80))
+        .attr('transform', `translate(${projected[0]}, ${projected[1]})`)
+        .attr('fill', '#FFD700')
+        .attr('stroke', '#FFA500')
+        .attr('stroke-width', 1.5)
+        .attr('class', 'capital-star')
+        .append('title')
+        .text(`${countryInfo.capital} (capital of ${countryName})`);
+}
+
+// Update capital stars positions when globe rotates
+function updateCapitalStars() {
+    const starsGroup = g.select('.capital-stars');
+    if (starsGroup.empty()) return;
+
+    starsGroup.selectAll('.capital-star').each(function() {
+        const star = d3.select(this);
+        const title = star.select('title').text();
+        // Extract country name from title
+        const match = title.match(/\(capital of (.+)\)/);
+        if (!match) return;
+
+        const countryName = match[1];
+        const countryInfo = gameState.currentDataObj[countryName];
+        if (!countryInfo || !countryInfo.capitalCoords) return;
+
+        const [lat, lon] = countryInfo.capitalCoords;
+        const coords = [lon, lat];
+        const projected = projection(coords);
+
+        if (projected) {
+            star.attr('transform', `translate(${projected[0]}, ${projected[1]})`);
+            star.style('opacity', 1);
+        } else {
+            // Hide star if it's on the back of the globe
+            star.style('opacity', 0);
+        }
+    });
+}
+
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
     const country = gameState.countries.find(c => c.properties.name === countryName);
@@ -2401,6 +3934,9 @@ function dragging(event) {
     // Set latitude (phi) and gamma to 0 to prevent tilting
     projection.rotate([r1[0], 0, 0]);
     countriesGroup.selectAll('path').attr('d', path);
+
+    // Update capital stars positions
+    updateCapitalStars();
 }
 
 function dragEnd() {
