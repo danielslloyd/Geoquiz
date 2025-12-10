@@ -2411,8 +2411,13 @@ function startGameWithMode(mode) {
     }
 
     // Setup visualization based on mode
-    setupGlobe();
-    loadMapData();
+    // Skip map loading for ordering modes (they don't use maps)
+    if (modeConfig.orderingMode) {
+        startNewQuestion();
+    } else {
+        setupGlobe();
+        loadMapData();
+    }
 }
 
 // Set up the globe SVG and projection
@@ -2505,31 +2510,85 @@ function setupGlobe() {
         const maxScale = 2000;
 
         if (newScale >= minScale && newScale <= maxScale) {
-            // Get mouse position for zoom-to-point behavior
-            const mouse = d3.pointer(event, svg.node());
-            const mouseGeo = projection.invert(mouse);
+            const modeConfig = QUIZ_MODES[gameState.mode];
 
-            projection.scale(newScale);
+            if (modeConfig.useGlobe) {
+                // Globe mode: zoom towards mouse position using rotation
+                const mouse = d3.pointer(event, svg.node());
+                const mouseGeo = projection.invert(mouse);
 
-            // Adjust rotation to zoom towards mouse position
-            if (mouseGeo && !isNaN(mouseGeo[0]) && !isNaN(mouseGeo[1])) {
-                const mousePx = projection(mouseGeo);
-                if (mousePx) {
-                    const dx = mousePx[0] - mouse[0];
-                    const dy = mousePx[1] - mouse[1];
-                    const rotation = projection.rotate();
-                    const k = 75 / scale;
-                    projection.rotate([rotation[0] + dx * k, rotation[1] - dy * k, rotation[2]]);
+                projection.scale(newScale);
+
+                // Adjust rotation to zoom towards mouse position
+                if (mouseGeo && !isNaN(mouseGeo[0]) && !isNaN(mouseGeo[1])) {
+                    const mousePx = projection(mouseGeo);
+                    if (mousePx) {
+                        const dx = mousePx[0] - mouse[0];
+                        const dy = mousePx[1] - mouse[1];
+                        const rotation = projection.rotate();
+                        const k = 75 / scale;
+                        projection.rotate([rotation[0] + dx * k, rotation[1] - dy * k, rotation[2]]);
+                    }
+                }
+
+                // Update ocean circle for globe view
+                g.select('circle').attr('r', newScale);
+            } else {
+                // States mode: zoom centered on closest state to cursor
+                const mouse = d3.pointer(event, svg.node());
+                const mouseGeo = projection.invert(mouse);
+
+                // Find the state under the cursor or closest to it
+                let targetState = null;
+                if (mouseGeo && !isNaN(mouseGeo[0]) && !isNaN(mouseGeo[1]) && gameState.countries) {
+                    // First, try to find a state that contains the mouse point
+                    for (const state of gameState.countries) {
+                        if (d3.geoContains(state, mouseGeo)) {
+                            targetState = state;
+                            break;
+                        }
+                    }
+
+                    // If no state contains the mouse (outside bounds), find the closest state
+                    if (!targetState && gameState.countries.length > 0) {
+                        let minDist = Infinity;
+                        for (const state of gameState.countries) {
+                            const centroid = d3.geoCentroid(state);
+                            const dist = Math.sqrt(
+                                Math.pow(centroid[0] - mouseGeo[0], 2) +
+                                Math.pow(centroid[1] - mouseGeo[1], 2)
+                            );
+                            if (dist < minDist) {
+                                minDist = dist;
+                                targetState = state;
+                            }
+                        }
+                    }
+                }
+
+                // Zoom centered on the target state's centroid
+                if (targetState) {
+                    const centroid = d3.geoCentroid(targetState);
+                    const centroidPx = projection(centroid);
+
+                    projection.scale(newScale);
+
+                    // Adjust translate to keep centroid at the same screen position
+                    const newCentroidPx = projection(centroid);
+                    if (centroidPx && newCentroidPx) {
+                        const translate = projection.translate();
+                        projection.translate([
+                            translate[0] + (centroidPx[0] - newCentroidPx[0]),
+                            translate[1] + (centroidPx[1] - newCentroidPx[1])
+                        ]);
+                    }
+                } else {
+                    // Fallback: just scale without repositioning
+                    projection.scale(newScale);
                 }
             }
 
             countriesGroup.selectAll('path').attr('d', path);
-
-            // Update ocean circle for globe view
-            if (QUIZ_MODES[gameState.mode].useGlobe) {
-                g.select('circle')
-                    .attr('r', newScale);
-            }
         }
     });
 }
@@ -3930,9 +3989,11 @@ function dragging(event) {
     // Save unconstrained rotation for next drag to maintain quaternion continuity
     r_unconstrained = r1;
 
-    // Constrain rotation to keep North always up (only allow longitude changes)
-    // Set latitude (phi) and gamma to 0 to prevent tilting
-    projection.rotate([r1[0], 0, 0]);
+    // Constrain rotation to prevent going upside down
+    // Allow both longitude and latitude changes, but limit latitude to prevent flipping
+    // Limit latitude to [-85, 85] degrees (similar to web maps)
+    const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
+    projection.rotate([r1[0], constrainedLat, 0]);
     countriesGroup.selectAll('path').attr('d', path);
 
     // Update capital stars positions
@@ -4145,6 +4206,7 @@ function showIdentifyModeSelector() {
 
     // Create a temporary selector for identify mode regions
     const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
     const html = `
         <h2>Select Region for Identify Mode</h2>
         <div class="mode-buttons">
