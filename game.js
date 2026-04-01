@@ -2644,15 +2644,17 @@ function loadMapData() {
                 });
 
                 // Separate contiguous states from Alaska, Hawaii, and Puerto Rico
+                // Use +s.id to coerce to number (us-atlas IDs may come as strings)
                 const nonContiguousStateIds = [2, 15, 72]; // Alaska=2, Hawaii=15, Puerto Rico=72
-                gameState.contiguousStates = gameState.countries.filter(s => !nonContiguousStateIds.includes(s.id));
-                gameState.alaskaState = gameState.countries.filter(s => s.id === 2);
-                gameState.hawaiiState = gameState.countries.filter(s => s.id === 15);
-                gameState.puertoRicoState = gameState.countries.filter(s => s.id === 72);
+                gameState.contiguousStates = gameState.countries.filter(s => !nonContiguousStateIds.includes(+s.id));
+                gameState.alaskaState = gameState.countries.filter(s => +s.id === 2);
+                gameState.hawaiiState = gameState.countries.filter(s => +s.id === 15);
+                gameState.puertoRicoState = gameState.countries.filter(s => +s.id === 72);
 
-                // Fit projection to contiguous US only
+                // Fit projection to contiguous US only, leaving room at the bottom for inlays
+                const inlayAreaHeight = 100; // reserved pixels for inlay strip
                 if (gameState.contiguousStates.length > 0) {
-                    projection.fitSize([width, height], {
+                    projection.fitSize([width, height - inlayAreaHeight], {
                         type: 'FeatureCollection',
                         features: gameState.contiguousStates
                     });
@@ -2797,11 +2799,11 @@ function drawUSStatesWithInlays() {
         .attr('fill', 'none').attr('stroke', 'red').attr('stroke-width', 3)
         .attr('stroke-dasharray', '6,3').attr('class', 'debug-box');
 
-    // Create inlay boxes
+    // Create inlay boxes in the reserved bottom strip (100px)
     const inlayWidth = 120;
     const inlayHeight = 80;
     const inlayPadding = 10;
-    const inlayY = height - inlayHeight - inlayPadding;
+    const inlayY = height - 100 + (100 - inlayHeight) / 2; // centered in the 100px strip
 
     // Alaska inlay (bottom-left)
     if (gameState.alaskaState.length > 0) {
