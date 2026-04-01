@@ -2124,6 +2124,7 @@ const QUIZ_MODES = {
         dataObj: usStateData,
         totalQuestions: 10,
         useGlobe: false,
+        useAlbersUsa: true,
         mapUrl: 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json',
         mapObject: 'states',
         hasFlags: false,
@@ -2468,8 +2469,11 @@ function setupGlobe() {
             .scale(280)
             .translate([width / 2, height / 2])
             .clipAngle(90);
+    } else if (modeConfig.useAlbersUsa) {
+        // Albers USA composite projection — AK and HI insets are built in
+        projection = d3.geoAlbersUsaPr();
     } else {
-        // Mercator projection for regional maps
+        // Mercator projection for regional maps (India, Germany, etc.)
         projection = d3.geoMercator()
             .center([0, 0])
             .scale(1)
@@ -2637,29 +2641,14 @@ function loadMapData() {
                 });
             } else if (modeConfig.mapObject === 'states') {
                 gameState.countries = topojson.feature(data, data.objects.states).features;
-
-                // Map state IDs to names
                 gameState.countries.forEach(state => {
                     state.properties.name = getStateName(state.id);
                 });
-
-                // Separate contiguous states from Alaska, Hawaii, and all island territories
-                // Use +s.id to coerce to number (us-atlas IDs may come as strings)
-                // Excluded: AK=2, HI=15, AS=60, Guam=66, CNMI=69, PR=72, USVI=78
-                const nonContiguousStateIds = [2, 15, 60, 66, 69, 72, 78];
-                gameState.contiguousStates = gameState.countries.filter(s => !nonContiguousStateIds.includes(+s.id));
-                gameState.alaskaState = gameState.countries.filter(s => +s.id === 2);
-                gameState.hawaiiState = gameState.countries.filter(s => +s.id === 15);
-                gameState.puertoRicoState = gameState.countries.filter(s => +s.id === 72);
-
-                // Fit projection to contiguous US only, leaving room at the bottom for inlays
-                const inlayAreaHeight = 100; // reserved pixels for inlay strip
-                if (gameState.contiguousStates.length > 0) {
-                    projection.fitSize([width, height - inlayAreaHeight], {
-                        type: 'FeatureCollection',
-                        features: gameState.contiguousStates
-                    });
-                }
+                // geoAlbersUsaPr handles AK/HI insets; fitSize scales the whole composite
+                projection.fitSize([width, height], {
+                    type: 'FeatureCollection',
+                    features: gameState.countries
+                });
             } else if (modeConfig.mapObject === null) {
                 // For maps with null mapObject (like Indian states), data is already in GeoJSON format
                 if (data.features) {
@@ -2684,11 +2673,7 @@ function loadMapData() {
                 });
             }
 
-            if (modeConfig.mapObject === 'states') {
-                drawUSStatesWithInlays();
-            } else {
-                drawCountries();
-            }
+            drawCountries();
             startNewQuestion();
         })
         .catch(error => {
@@ -2781,8 +2766,8 @@ function drawCountries() {
         .on('click', handleCountryClick);
 }
 
-// Draw US states with inlays for Alaska, Hawaii, and Puerto Rico
-function drawUSStatesWithInlays() {
+// (drawUSStatesWithInlays removed — replaced by d3.geoAlbersUsaPr composite projection)
+function drawUSStatesWithInlays_UNUSED() {
     // Draw contiguous states
     countriesGroup.selectAll('path.contiguous')
         .data(gameState.contiguousStates)
