@@ -2643,9 +2643,10 @@ function loadMapData() {
                     state.properties.name = getStateName(state.id);
                 });
 
-                // Separate contiguous states from Alaska, Hawaii, and Puerto Rico
+                // Separate contiguous states from Alaska, Hawaii, and all island territories
                 // Use +s.id to coerce to number (us-atlas IDs may come as strings)
-                const nonContiguousStateIds = [2, 15, 72]; // Alaska=2, Hawaii=15, Puerto Rico=72
+                // Excluded: AK=2, HI=15, AS=60, Guam=66, CNMI=69, PR=72, USVI=78
+                const nonContiguousStateIds = [2, 15, 60, 66, 69, 72, 78];
                 gameState.contiguousStates = gameState.countries.filter(s => !nonContiguousStateIds.includes(+s.id));
                 gameState.alaskaState = gameState.countries.filter(s => +s.id === 2);
                 gameState.hawaiiState = gameState.countries.filter(s => +s.id === 15);
@@ -2820,12 +2821,28 @@ function drawUSStatesWithInlays() {
             .attr('stroke-width', 3)
             .attr('rx', 5);
 
-        // Create projection for Alaska
-        const alaskaProjection = d3.geoMercator()
-            .fitSize([inlayWidth - 10, inlayHeight - 20], {
-                type: 'FeatureCollection',
-                features: gameState.alaskaState
-            });
+        // Create projection for Alaska.
+        // Alaska's Aleutians cross the antimeridian, so Mercator fitSize produces a
+        // world-spanning bounding box. Use a rotated conic projection centered on Alaska
+        // and fitExtent to the known geographic bounds instead.
+        // Bbox (user-supplied): -179.136,51.229 → 179.774,71.352
+        const akBboxPoly = {
+            type: 'Feature',
+            geometry: {
+                type: 'Polygon',
+                coordinates: [[
+                    [-179.13657211802118, 51.229087747767466],
+                    [ 179.77488070600702, 51.229087747767466],
+                    [ 179.77488070600702, 71.352561],
+                    [-179.13657211802118, 71.352561],
+                    [-179.13657211802118, 51.229087747767466]
+                ]]
+            }
+        };
+        const alaskaProjection = d3.geoConicEqualArea()
+            .parallels([55, 65])
+            .rotate([154, 0])
+            .fitExtent([[5, 15], [inlayWidth - 5, inlayHeight - 5]], akBboxPoly);
         const alaskaPath = d3.geoPath().projection(alaskaProjection);
 
         // Draw Alaska
