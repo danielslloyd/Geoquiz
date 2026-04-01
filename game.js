@@ -2993,17 +2993,20 @@ function handleCountryClick(event, d) {
         } else {
             handleIncorrectAnswer(event.target);
 
+            // Highlight the correct answer in green
+            highlightCountryOnGlobe(gameState.targetCountry);
+
             // Auto-advance to next sub-question even on incorrect answer
             const modeConfig = QUIZ_MODES[gameState.mode];
             const maxSub = (modeConfig.identifyOnly || modeConfig.mysteryFlagMode) ? 1 : (modeConfig.hasFlags ? 3 : 2);
 
             if (gameState.subQuestionIndex < maxSub - 1) {
-                // Wait a bit to show the incorrect feedback, then advance
+                // Show correct (green) and incorrect (red) for 750ms, then advance
                 setTimeout(() => {
                     gameState.subQuestionIndex++;
                     gameState.scrollLocked = false;
                     startNewQuestion();
-                }, 1000);
+                }, 750);
             } else {
                 // All sub-questions complete, enable next question button
                 gameState.scrollLocked = false;
@@ -3195,6 +3198,11 @@ function startNewQuestion() {
         countriesGroup.selectAll('path')
             .classed('target', false)
             .classed('target-muted', false)
+            .classed('selected', false)
+            .classed('incorrect', false);
+    } else if (gameState.subQuestionIndex > 0 && !modeConfig.useWorldQuizLayout) {
+        // For follow-up questions in non-world-quiz modes, only clear incorrect/selected but keep target highlighted
+        countriesGroup.selectAll('path')
             .classed('selected', false)
             .classed('incorrect', false);
     }
