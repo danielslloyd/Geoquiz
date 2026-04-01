@@ -2197,6 +2197,34 @@ const QUIZ_MODES = {
         autoRotate: false,
         orderingMode: true, // Special mode for ordering
         orderingCriteria: 'population'
+    },
+    'mystery-flag': {
+        name: 'Mystery Flag',
+        quizList: quizCountries,
+        dataObj: countryData,
+        totalQuestions: 10,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: true,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        mysteryFlagMode: true // Show flag, click globe to find country
+    },
+    'capitals-race': {
+        name: 'Capitals Race',
+        quizList: quizCountries,
+        dataObj: countryData,
+        totalQuestions: 10,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: true,
+        capitalsRaceMode: true // Show country on globe, type the capital
     }
 };
 
@@ -2904,8 +2932,8 @@ function drawUSStatesWithInlays() {
 
 // Handle country click
 function handleCountryClick(event, d) {
-    // Only allow clicking countries during location questions
-    if (gameState.questionType !== 'location') return;
+    // Only allow clicking countries during location or mystery-flag questions
+    if (gameState.questionType !== 'location' && gameState.questionType !== 'mystery-flag') return;
     if (gameState.answeredCorrectly) return;
 
     // Only allow ONE click per question
@@ -2967,7 +2995,7 @@ function handleCountryClick(event, d) {
 
             // Auto-advance to next sub-question even on incorrect answer
             const modeConfig = QUIZ_MODES[gameState.mode];
-            const maxSub = modeConfig.hasFlags ? 3 : 2;
+            const maxSub = (modeConfig.identifyOnly || modeConfig.mysteryFlagMode) ? 1 : (modeConfig.hasFlags ? 3 : 2);
 
             if (gameState.subQuestionIndex < maxSub - 1) {
                 // Wait a bit to show the incorrect feedback, then advance
@@ -2980,6 +3008,14 @@ function handleCountryClick(event, d) {
                 // All sub-questions complete, enable next question button
                 gameState.scrollLocked = false;
                 document.getElementById('next-btn').disabled = false;
+
+                // For mystery-flag mode, reveal the correct country after an incorrect guess
+                if (modeConfig.mysteryFlagMode) {
+                    setTimeout(() => {
+                        highlightCountryOnGlobe(gameState.targetCountry);
+                        rotateToCountry(gameState.targetCountry);
+                    }, 500);
+                }
             }
         }
     }
@@ -2999,8 +3035,8 @@ function handleCorrectAnswer(element) {
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
-    if (modeConfig.identifyOnly) {
-        maxSub = 1; // Identify mode only has 1 question per item
+    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode) {
+        maxSub = 1; // Single-question-per-country modes
     } else {
         maxSub = modeConfig.hasFlags ? 3 : 2; // 2 if no flags, 3 if flags
     }
@@ -3037,6 +3073,20 @@ function giveUp() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     if (modeConfig.nameAllMode) {
         handleNameAllGiveUp();
+        return;
+    }
+
+    // Special handling for capitals-race mode
+    if (modeConfig.capitalsRaceMode) {
+        if (gameState.answeredCorrectly) return;
+        gameState.answeredCorrectly = true;
+        const correctCapital = getCapital(gameState.targetCountry);
+        const feedback = document.getElementById('feedback');
+        feedback.textContent = `The capital of ${gameState.targetCountry} is: ${correctCapital}`;
+        feedback.className = 'feedback incorrect';
+        const capitalsInput = document.getElementById('capitals-race-input');
+        if (capitalsInput) capitalsInput.disabled = true;
+        document.getElementById('next-btn').disabled = false;
         return;
     }
 
@@ -3077,11 +3127,16 @@ function giveUp() {
     } else if (gameState.questionType === 'identify') {
         // Already highlighted, just show in feedback
         feedback.textContent = `The highlighted location is: ${gameState.targetCountry}`;
+    } else if (gameState.questionType === 'mystery-flag') {
+        // Reveal and rotate to the correct country
+        highlightCountryOnGlobe(gameState.targetCountry);
+        rotateToCountry(gameState.targetCountry);
+        feedback.textContent = `The flag belongs to: ${gameState.targetCountry}`;
     }
 
     // Determine max sub-questions based on mode
     let maxSub;
-    if (modeConfig.identifyOnly) {
+    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode) {
         maxSub = 1;
     } else {
         maxSub = modeConfig.hasFlags ? 3 : 2;
@@ -3153,6 +3208,12 @@ function startNewQuestion() {
         inputContainer.style.display = 'none';
     }
 
+    // Hide capitals-race input if exists
+    const capitalsRaceInputContainer = document.getElementById('capitals-race-input-container');
+    if (capitalsRaceInputContainer) {
+        capitalsRaceInputContainer.style.display = 'none';
+    }
+
     // Check if game is over
     if (gameState.currentQuestion > gameState.totalQuestions) {
         endGame();
@@ -3184,6 +3245,10 @@ function startNewQuestion() {
         const modeConfig = QUIZ_MODES[gameState.mode];
         if (modeConfig.identifyOnly) {
             gameState.questionType = 'identify';
+        } else if (modeConfig.mysteryFlagMode) {
+            gameState.questionType = 'mystery-flag';
+        } else if (modeConfig.capitalsRaceMode) {
+            gameState.questionType = 'capitals-race';
         } else {
             gameState.questionType = 'location';
         }
@@ -3198,6 +3263,10 @@ function startNewQuestion() {
     if (modeConfig.identifyOnly) {
         // Identify mode only shows identify questions
         renderIdentifyQuestion();
+    } else if (modeConfig.mysteryFlagMode) {
+        renderMysteryFlagQuestion();
+    } else if (modeConfig.capitalsRaceMode) {
+        renderCapitalsRaceQuestion();
     } else if (gameState.subQuestionIndex === 0) {
         renderLocationQuestion();
     } else if (gameState.subQuestionIndex === 1 && hasFlags) {
@@ -3700,6 +3769,106 @@ function handleNameAllGiveUp() {
     document.getElementById('give-up-btn').style.display = 'none';
 }
 
+// ==================== MYSTERY FLAG MODE ====================
+
+// Render mystery flag question (show flag, click globe to find country)
+function renderMysteryFlagQuestion() {
+    gameState.questionType = 'mystery-flag';
+    const flagUrl = getFlagUrl(gameState.targetCountry);
+
+    document.getElementById('question-text').innerHTML = `Which country does this flag belong to? <span style="font-size:0.8em;color:#888;">Find it on the globe!</span>`;
+
+    // Show flag prominently
+    const flagDisplay = document.getElementById('flag-display');
+    const flagImg = document.getElementById('flag-image');
+    flagImg.src = flagUrl;
+    flagImg.alt = 'Mystery Flag';
+    flagDisplay.style.display = 'block';
+
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+}
+
+// ==================== CAPITALS RACE MODE ====================
+
+// Render capitals race question (highlight country on globe, type the capital)
+function renderCapitalsRaceQuestion() {
+    gameState.questionType = 'capitals-race';
+
+    document.getElementById('question-text').innerHTML = `What is the capital of <strong>${gameState.targetCountry}</strong>?`;
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+
+    // Highlight country and rotate to it
+    highlightCountryOnGlobe(gameState.targetCountry);
+    rotateToCountry(gameState.targetCountry);
+
+    // Show input
+    createCapitalsRaceInput();
+}
+
+// Create input field for capitals race mode
+function createCapitalsRaceInput() {
+    let inputContainer = document.getElementById('capitals-race-input-container');
+    if (!inputContainer) {
+        inputContainer = document.createElement('div');
+        inputContainer.id = 'capitals-race-input-container';
+        inputContainer.className = 'name-all-input-container';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = 'capitals-race-input';
+        input.className = 'name-all-input';
+        input.placeholder = 'Type the capital city...';
+        input.autocomplete = 'off';
+
+        inputContainer.appendChild(input);
+
+        const questionContainer = document.getElementById('question-container');
+        questionContainer.appendChild(inputContainer);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleCapitalsRaceSubmit();
+            }
+        });
+    }
+
+    inputContainer.style.display = 'block';
+    const input = document.getElementById('capitals-race-input');
+    input.value = '';
+    input.disabled = false;
+    input.focus();
+}
+
+// Handle capitals race answer submission
+function handleCapitalsRaceSubmit() {
+    if (gameState.answeredCorrectly) return;
+
+    const input = document.getElementById('capitals-race-input');
+    const typed = input.value.trim();
+    if (!typed) return;
+
+    const correctCapital = getCapital(gameState.targetCountry);
+    const isCorrect = typed.toLowerCase() === correctCapital.toLowerCase();
+
+    const feedback = document.getElementById('feedback');
+    input.disabled = true;
+    gameState.answeredCorrectly = true;
+
+    if (isCorrect) {
+        gameState.score++;
+        document.getElementById('score').textContent = gameState.score;
+        feedback.textContent = `Correct! ${correctCapital} is the capital of ${gameState.targetCountry}.`;
+        feedback.className = 'feedback correct';
+    } else {
+        feedback.textContent = `Incorrect. The capital of ${gameState.targetCountry} is ${correctCapital}.`;
+        feedback.className = 'feedback incorrect';
+    }
+
+    document.getElementById('next-btn').disabled = false;
+}
+
 // ==================== POPULATION ORDERING MODE ====================
 
 // Render population ordering mode
@@ -4073,7 +4242,7 @@ versor.rotation = function(q) {
 function endGame() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
-    if (modeConfig.identifyOnly) {
+    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode) {
         maxSub = 1;
     } else {
         maxSub = modeConfig.hasFlags ? 3 : 2;
@@ -4289,6 +4458,21 @@ function resetModeSelector() {
                 <span class="mode-icon">⌨️</span>
                 <span class="mode-name">Name All Countries</span>
                 <span class="mode-desc">Type as many countries as you can!</span>
+            </button>
+            <button class="mode-btn" data-mode="population-order">
+                <span class="mode-icon">📊</span>
+                <span class="mode-name">Order by Population</span>
+                <span class="mode-desc">Drag countries to order them by population</span>
+            </button>
+            <button class="mode-btn" data-mode="mystery-flag">
+                <span class="mode-icon">🚩</span>
+                <span class="mode-name">Mystery Flag</span>
+                <span class="mode-desc">See the flag, find the country on the globe</span>
+            </button>
+            <button class="mode-btn" data-mode="capitals-race">
+                <span class="mode-icon">🏛️</span>
+                <span class="mode-name">Capitals Race</span>
+                <span class="mode-desc">Type the capital of each highlighted country</span>
             </button>
         </div>
     `;
