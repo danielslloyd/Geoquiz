@@ -2789,6 +2789,14 @@ function drawUSStatesWithInlays() {
         .attr('d', path)
         .on('click', handleCountryClick);
 
+    // DEBUG: red border around contiguous 48 bounds
+    const cb = path.bounds({ type: 'FeatureCollection', features: gameState.contiguousStates });
+    g.append('rect')
+        .attr('x', cb[0][0]).attr('y', cb[0][1])
+        .attr('width', cb[1][0] - cb[0][0]).attr('height', cb[1][1] - cb[0][1])
+        .attr('fill', 'none').attr('stroke', 'red').attr('stroke-width', 3)
+        .attr('stroke-dasharray', '6,3').attr('class', 'debug-box');
+
     // Create inlay boxes
     const inlayWidth = 120;
     const inlayHeight = 80;
@@ -2806,8 +2814,8 @@ function drawUSStatesWithInlays() {
             .attr('width', inlayWidth)
             .attr('height', inlayHeight)
             .attr('fill', '#f0f0f0')
-            .attr('stroke', '#999')
-            .attr('stroke-width', 2)
+            .attr('stroke', 'blue')
+            .attr('stroke-width', 3)
             .attr('rx', 5);
 
         // Create projection for Alaska
@@ -2851,8 +2859,8 @@ function drawUSStatesWithInlays() {
             .attr('width', inlayWidth)
             .attr('height', inlayHeight)
             .attr('fill', '#f0f0f0')
-            .attr('stroke', '#999')
-            .attr('stroke-width', 2)
+            .attr('stroke', 'green')
+            .attr('stroke-width', 3)
             .attr('rx', 5);
 
         // Create projection for Hawaii
@@ -2896,8 +2904,8 @@ function drawUSStatesWithInlays() {
             .attr('width', inlayWidth)
             .attr('height', inlayHeight)
             .attr('fill', '#f0f0f0')
-            .attr('stroke', '#999')
-            .attr('stroke-width', 2)
+            .attr('stroke', 'magenta')
+            .attr('stroke-width', 3)
             .attr('rx', 5);
 
         // Create projection for Puerto Rico
