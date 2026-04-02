@@ -2769,6 +2769,7 @@ function setupGlobe() {
             }
 
             countriesGroup.selectAll('path').attr('d', path);
+            updateCapitalStars();
         }
     });
 }
@@ -4263,6 +4264,7 @@ function rotateToCountry(countryName) {
             return t => {
                 projection.rotate(r(t));
                 countriesGroup.selectAll('path').attr('d', path);
+                updateCapitalStars();
             };
         });
 }
@@ -4285,6 +4287,7 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
                     projection.rotate(r(t));
                     projection.scale(s(t));
                     countriesGroup.selectAll('path').attr('d', path);
+                    updateCapitalStars();
 
                     // Update ocean circle for globe view
                     if (modeConfig.useGlobe) {
@@ -4298,7 +4301,6 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
 
 // Enhanced drag functions for interactive rotations (versor-based)
 let v0, r0, q0;
-let r_unconstrained = null;  // Track unconstrained rotation for quaternion continuity
 
 function dragStart(event) {
     // Don't allow dragging if scrolling is locked
@@ -4307,9 +4309,7 @@ function dragStart(event) {
     const p = d3.pointer(event, this);
     r0 = projection.rotate();
     v0 = versor.cartesian(projection.invert(p));
-    // Use unconstrained rotation if available to maintain quaternion continuity
-    // Otherwise use current rotation (first drag or after reset)
-    q0 = r_unconstrained ? versor(r_unconstrained) : versor(r0);
+    q0 = versor(r0);
 }
 
 function dragging(event) {
@@ -4324,12 +4324,7 @@ function dragging(event) {
     const q1 = versor.multiply(q0, versor.delta(v0, v1));
     const r1 = versor.rotation(q1);
 
-    // Save unconstrained rotation for next drag to maintain quaternion continuity
-    r_unconstrained = r1;
-
-    // Constrain rotation to prevent going upside down
-    // Allow both longitude and latitude changes, but limit latitude to prevent flipping
-    // Limit latitude to [-85, 85] degrees (similar to web maps)
+    // Constrain latitude to prevent flipping upside down
     const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
     projection.rotate([r1[0], constrainedLat, 0]);
     countriesGroup.selectAll('path').attr('d', path);
@@ -4339,7 +4334,6 @@ function dragging(event) {
 }
 
 function dragEnd() {
-    // Drag ended, r_unconstrained is preserved for next drag
 }
 
 // Versor helper functions for proper spherical rotation
