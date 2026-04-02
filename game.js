@@ -1396,7 +1396,8 @@ const usStates = [
     'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio',
     'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina',
     'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont',
-    'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'
+    'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming',
+    'Puerto Rico'
 ];
 
 const usStateData = {
@@ -1649,6 +1650,11 @@ const usStateData = {
         code: 'us-wy',
         capital: 'Cheyenne',
         similar: ['Montana', 'Colorado', 'Idaho', 'Utah']
+    },
+    'Puerto Rico': {
+        code: 'us-pr',
+        capital: 'San Juan',
+        similar: ['Hawaii', 'Florida', 'Virgin Islands', 'Guam']
     }
 };
 
@@ -2453,6 +2459,148 @@ function startGameWithMode(mode) {
     }
 }
 
+// Custom AlbersUSA composite projection that includes a Puerto Rico inset.
+// Based on https://observablehq.com/@d3/u-s-map-with-puerto-rico
+function geoAlbersUsaPr() {
+    const ε = 1e-6;
+
+    const lower48   = d3.geoAlbers();
+    const alaska    = d3.geoConicEqualArea().rotate([154, 0]).center([-2,   58.5]).parallels([55, 65]);
+    const hawaii    = d3.geoConicEqualArea().rotate([157, 0]).center([-3,   19.9]).parallels([ 8, 18]);
+    const puertoRico= d3.geoConicEqualArea().rotate([ 66, 0]).center([ 0,   18  ]).parallels([ 8, 18]);
+
+    // pointStream pattern: calling a sub-projection's stream with this sink lets us
+    // test whether a lat/lon falls inside that sub-projection's clipExtent.
+    let point;
+    const pointStream = { point(x, y) { point = [x, y]; } };
+    let lower48Point, alaskaPoint, hawaiiPoint, puertoRicoPoint;
+
+    let cache, cacheStream;
+
+    function multiplex(streams) {
+        const n = streams.length;
+        return {
+            point(x, y)     { for (let i = 0; i < n; i++) streams[i].point(x, y); },
+            sphere()         { for (let i = 0; i < n; i++) streams[i].sphere(); },
+            lineStart()      { for (let i = 0; i < n; i++) streams[i].lineStart(); },
+            lineEnd()        { for (let i = 0; i < n; i++) streams[i].lineEnd(); },
+            polygonStart()   { for (let i = 0; i < n; i++) streams[i].polygonStart(); },
+            polygonEnd()     { for (let i = 0; i < n; i++) streams[i].polygonEnd(); }
+        };
+    }
+
+    function reset() { cache = cacheStream = null; return albersUsaPr; }
+
+    // The projection callable: routes a [lon,lat] to the correct inset.
+    function albersUsaPr(coordinates) {
+        const x = coordinates[0], y = coordinates[1];
+        return (point = null,
+            (lower48Point.point(x, y),    point) ||
+            (alaskaPoint.point(x, y),     point) ||
+            (hawaiiPoint.point(x, y),     point) ||
+            (puertoRicoPoint.point(x, y), point));
+    }
+
+    albersUsaPr.invert = function(coordinates) {
+        const k = lower48.scale();
+        const t = lower48.translate();
+        const x = (coordinates[0] - t[0]) / k;
+        const y = (coordinates[1] - t[1]) / k;
+        return (y >= 0.120 && y < 0.234 && x >= -0.425 && x < -0.214 ? alaska
+              : y >= 0.166 && y < 0.234 && x >= -0.214 && x < -0.115 ? hawaii
+              : y >= 0.166 && y < 0.234 && x >=  0.320 && x <  0.380 ? puertoRico
+              : lower48).invert(coordinates);
+    };
+
+    albersUsaPr.stream = function(output) {
+        if (cache && cacheStream === output) return cache;
+        cache = multiplex([
+            lower48.stream(output),
+            alaska.stream(output),
+            hawaii.stream(output),
+            puertoRico.stream(output)
+        ]);
+        cacheStream = output;
+        return cache;
+    };
+
+    albersUsaPr.precision = function(_) {
+        if (!arguments.length) return lower48.precision();
+        lower48.precision(_); alaska.precision(_); hawaii.precision(_); puertoRico.precision(_);
+        return reset();
+    };
+
+    albersUsaPr.scale = function(_) {
+        if (!arguments.length) return lower48.scale();
+        const k = +_;
+        lower48.scale(k);
+        alaska.scale(k * 0.35);
+        hawaii.scale(k);
+        puertoRico.scale(k * 1.5);
+        return albersUsaPr.translate(lower48.translate());
+    };
+
+    albersUsaPr.translate = function(_) {
+        if (!arguments.length) return lower48.translate();
+        const k = lower48.scale();
+        const x = +_[0], y = +_[1];
+
+        lower48Point = lower48
+            .translate([x, y])
+            .clipExtent([[x - 0.455*k + ε, y - 0.238*k + ε], [x + 0.455*k - ε, y + 0.238*k - ε]])
+            .stream(pointStream);
+
+        alaskaPoint = alaska
+            .translate([x - 0.307*k, y + 0.201*k])
+            .clipExtent([[x - 0.425*k + ε, y + 0.120*k + ε], [x - 0.214*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        hawaiiPoint = hawaii
+            .translate([x - 0.205*k, y + 0.212*k])
+            .clipExtent([[x - 0.214*k + ε, y + 0.166*k + ε], [x - 0.115*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        puertoRicoPoint = puertoRico
+            .translate([x + 0.350*k, y + 0.212*k])
+            .clipExtent([[x + 0.320*k + ε, y + 0.166*k + ε], [x + 0.380*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        return reset();
+    };
+
+    albersUsaPr.fitExtent = function(extent, object) {
+        const w = extent[1][0] - extent[0][0];
+        const h = extent[1][1] - extent[0][1];
+
+        // Reset to reference scale/translate so sub-projection clipExtents are well-defined
+        albersUsaPr.scale(150).translate([0, 0]);
+
+        // Compute the bounding box of all projected features
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        d3.geoStream(object, albersUsaPr.stream({
+            point(x, y) {
+                if (x < x0) x0 = x; if (x > x1) x1 = x;
+                if (y < y0) y0 = y; if (y > y1) y1 = y;
+            },
+            lineStart(){}, lineEnd(){}, polygonStart(){}, polygonEnd(){}, sphere(){}
+        }));
+
+        if (x1 < x0) return albersUsaPr; // nothing projected
+
+        const k = 0.95 * Math.min(w / (x1 - x0), h / (y1 - y0));
+        const tx = +extent[0][0] + (w - k * (x1 + x0)) / 2;
+        const ty = +extent[0][1] + (h - k * (y1 + y0)) / 2;
+        return albersUsaPr.scale(k * 150).translate([tx, ty]);
+    };
+
+    albersUsaPr.fitSize = function(size, object) {
+        return albersUsaPr.fitExtent([[0, 0], size], object);
+    };
+
+    // Initialise at default scale with a placeholder translate so pointStreams are created
+    return albersUsaPr.scale(1070).translate([480, 300]);
+}
+
 // Set up the globe SVG and projection
 function setupGlobe() {
     const modeConfig = QUIZ_MODES[gameState.mode];
@@ -2474,8 +2622,8 @@ function setupGlobe() {
             .translate([width / 2, height / 2])
             .clipAngle(90);
     } else if (modeConfig.useAlbersUsa) {
-        // Albers USA composite projection — AK and HI insets are built in
-        projection = d3.geoAlbersUsaPr();
+        // Custom composite projection with AK, HI, and PR insets
+        projection = geoAlbersUsaPr();
     } else {
         // Mercator projection for regional maps (India, Germany, etc.)
         projection = d3.geoMercator()
@@ -2754,7 +2902,8 @@ function getStateName(id) {
         35: 'New Mexico', 36: 'New York', 37: 'North Carolina', 38: 'North Dakota', 39: 'Ohio',
         40: 'Oklahoma', 41: 'Oregon', 42: 'Pennsylvania', 44: 'Rhode Island', 45: 'South Carolina',
         46: 'South Dakota', 47: 'Tennessee', 48: 'Texas', 49: 'Utah', 50: 'Vermont',
-        51: 'Virginia', 53: 'Washington', 54: 'West Virginia', 55: 'Wisconsin', 56: 'Wyoming'
+        51: 'Virginia', 53: 'Washington', 54: 'West Virginia', 55: 'Wisconsin', 56: 'Wyoming',
+        72: 'Puerto Rico'
     };
 
     return stateNames[id] || `State ${id}`;
