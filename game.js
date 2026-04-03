@@ -4338,19 +4338,18 @@ function dragEnd() {
 
 // Versor helper functions for proper spherical rotation
 function versor(rotate) {
-    const radians = rotate.map(d => d * Math.PI / 180);
-    const cosPhi = Math.cos(radians[1] / 2);
-    const sinPhi = Math.sin(radians[1] / 2);
-    const cosLambda = Math.cos((radians[0] + radians[2]) / 2);
-    const sinLambda = Math.sin((radians[0] + radians[2]) / 2);
-    const cosGamma = Math.cos((radians[0] - radians[2]) / 2);
-    const sinGamma = Math.sin((radians[0] - radians[2]) / 2);
-
+    // Matches d3/versor: Euler [λ, φ, γ] → unit quaternion [w, x, y, z]
+    const l = rotate[0] * Math.PI / 360;
+    const p = rotate[1] * Math.PI / 360;
+    const g = (rotate[2] || 0) * Math.PI / 360;
+    const sl = Math.sin(l), cl = Math.cos(l);
+    const sp = Math.sin(p), cp = Math.cos(p);
+    const sg = Math.sin(g), cg = Math.cos(g);
     return [
-        cosPhi * cosLambda,
-        sinPhi * cosGamma,
-        sinPhi * sinGamma,
-        cosPhi * sinLambda
+        cl * cp * cg + sl * sp * sg,
+        sl * cp * cg - cl * sp * sg,
+        cl * sp * cg + sl * cp * sg,
+        cl * cp * sg - sl * sp * cg
     ];
 }
 
@@ -4378,10 +4377,10 @@ versor.cross = function(a, b) {
 versor.delta = function(v0, v1) {
     const w = versor.cross(v0, v1);
     const l = Math.sqrt(versor.dot(w, w));
-    if (l === 0) return [1, 0, 0, 0];
-    const t = Math.acos(Math.max(-1, Math.min(1, versor.dot(v0, v1)))) / 2;
-    const s = Math.sin(t);
-    return [Math.cos(t), w[2] / l * s, -w[1] / l * s, w[0] / l * s];
+    if (!l) return [1, 0, 0, 0];
+    const t = Math.acos(Math.max(-1, Math.min(1, versor.dot(v0, v1))));
+    const s = Math.sin(t / 2) / l;
+    return [Math.cos(t / 2), w[0] * s, w[1] * s, w[2] * s];
 };
 
 versor.multiply = function(a, b) {
@@ -4394,10 +4393,11 @@ versor.multiply = function(a, b) {
 };
 
 versor.rotation = function(q) {
+    // Matches d3/versor: unit quaternion [w, x, y, z] → Euler [λ, φ, γ]
     return [
-        Math.atan2(2 * (q[0] * q[1] + q[2] * q[3]), 1 - 2 * (q[1] * q[1] + q[2] * q[2])) * 180 / Math.PI,
+        Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) * 180 / Math.PI,
         Math.asin(Math.max(-1, Math.min(1, 2 * (q[0] * q[2] - q[3] * q[1])))) * 180 / Math.PI,
-        Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) * 180 / Math.PI
+        Math.atan2(2 * (q[0] * q[1] + q[2] * q[3]), 1 - 2 * (q[1] * q[1] + q[2] * q[2])) * 180 / Math.PI
     ];
 };
 
