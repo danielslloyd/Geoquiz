@@ -310,9 +310,9 @@ header h1 {
 
 #globe {
     width: 100%;
-    max-width: 800px;
-    height: 600px;
+    height: auto;
     cursor: grab;
+    touch-action: none;
 }
 
 #globe:active {
@@ -577,10 +577,6 @@ header h1 {
         gap: 10px;
     }
 
-    #globe {
-        height: 400px;
-    }
-
     .controls {
         flex-direction: column;
     }
@@ -701,13 +697,7 @@ header h1 {
 }
 
 .name-all-mode .map-container {
-    height: calc(100vh - 320px);
-    min-height: 400px;
-}
-
-.name-all-mode #globe {
-    height: 100%;
-    max-height: none;
+    min-height: 300px;
 }
 
 /* Compact game info for name-all mode */
@@ -791,9 +781,9 @@ header h1 {
 
 #globe-world {
     width: 100%;
-    max-width: 100%;
-    height: 600px;
+    height: auto;
     cursor: grab;
+    touch-action: none;
 }
 
 #globe-world:active {
@@ -875,11 +865,6 @@ header h1 {
 
     .world-quiz-globe {
         flex: none;
-        height: 400px;
-    }
-
-    #globe-world {
-        height: 400px;
     }
 
     .world-quiz-panels {

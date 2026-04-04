@@ -2661,8 +2661,11 @@ function setupGlobe() {
     d3.select(svgId).selectAll('*').remove();
 
     svg = d3.select(svgId)
-        .attr('width', width)
-        .attr('height', height);
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .style('width', '100%')
+        .style('height', 'auto')
+        .style('touch-action', 'none');
 
     if (modeConfig.useGlobe) {
         // Orthographic projection for globe view
@@ -2823,6 +2826,111 @@ function setupGlobe() {
             }
 
             countriesGroup.selectAll('path').attr('d', path);
+        }
+    });
+
+    // Touch support: pinch-to-zoom and single-finger drag
+    let touchState = { lastDist: null, lastCenter: null, dragging: false, moved: false, startPos: null };
+
+    function touchDist(touches) {
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function svgPoint(touch) {
+        const rect = svg.node().getBoundingClientRect();
+        const scaleX = width / rect.width;
+        const scaleY = height / rect.height;
+        return [(touch.clientX - rect.left) * scaleX, (touch.clientY - rect.top) * scaleY];
+    }
+
+    svg.node().addEventListener('touchstart', function(e) {
+        if (gameState.scrollLocked) return;
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            touchState.lastDist = touchDist(e.touches);
+            touchState.dragging = false;
+        } else if (e.touches.length === 1) {
+            touchState.dragging = true;
+            touchState.moved = false;
+            touchState.lastCenter = null;
+            touchState.startPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            const p = svgPoint(e.touches[0]);
+            r0 = projection.rotate();
+            v0 = versor.cartesian(projection.invert(p));
+            q0 = versor(r_unconstrained || r0);
+        }
+    }, { passive: false });
+
+    svg.node().addEventListener('touchmove', function(e) {
+        if (gameState.scrollLocked) return;
+        e.preventDefault();
+        if (e.touches.length === 2) {
+            // Pinch zoom
+            const dist = touchDist(e.touches);
+            if (touchState.lastDist) {
+                const k = dist / touchState.lastDist;
+                const scale = projection.scale();
+                const newScale = scale * k;
+                const minScale = gameState.initialScale || 100;
+                const maxScale = 2000;
+                if (newScale >= minScale && newScale <= maxScale) {
+                    projection.scale(newScale);
+                    if (QUIZ_MODES[gameState.mode].useGlobe) {
+                        g.select('circle').attr('r', newScale);
+                    }
+                    countriesGroup.selectAll('path').attr('d', path);
+                    updateCapitalStars();
+                }
+            }
+            touchState.lastDist = dist;
+        } else if (e.touches.length === 1 && touchState.dragging) {
+            // Check if finger has moved enough to count as a drag (not a tap)
+            if (touchState.startPos) {
+                const dx = e.touches[0].clientX - touchState.startPos.x;
+                const dy = e.touches[0].clientY - touchState.startPos.y;
+                if (Math.sqrt(dx * dx + dy * dy) > 8) touchState.moved = true;
+            }
+            if (!touchState.moved) return;
+
+            const p = svgPoint(e.touches[0]);
+            const mc = QUIZ_MODES[gameState.mode];
+            if (mc.useGlobe) {
+                projection.rotate(r0);
+                const v1 = versor.cartesian(projection.invert(p));
+                const q1 = versor.multiply(q0, versor.delta(v0, v1));
+                const r1 = versor.rotation(q1);
+                r_unconstrained = r1;
+                const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
+                projection.rotate([r1[0], constrainedLat, gammaLocked ? 0 : r1[2]]);
+            } else {
+                // Flat map pan
+                if (touchState.lastCenter) {
+                    const pdx = p[0] - touchState.lastCenter[0];
+                    const pdy = p[1] - touchState.lastCenter[1];
+                    const t = projection.translate();
+                    projection.translate([t[0] + pdx, t[1] + pdy]);
+                }
+            }
+            touchState.lastCenter = p;
+            countriesGroup.selectAll('path').attr('d', path);
+            updateCapitalStars();
+        }
+    }, { passive: false });
+
+    svg.node().addEventListener('touchend', function(e) {
+        if (e.touches.length < 2) touchState.lastDist = null;
+        if (e.touches.length === 0) {
+            // If it was a tap (no significant movement), simulate a click
+            if (!touchState.moved && touchState.startPos) {
+                const target = document.elementFromPoint(touchState.startPos.x, touchState.startPos.y);
+                if (target) target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            }
+            touchState.dragging = false;
+            touchState.moved = false;
+            touchState.lastCenter = null;
+            touchState.startPos = null;
         }
     });
 }
