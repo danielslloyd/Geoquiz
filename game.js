@@ -2179,8 +2179,8 @@ const QUIZ_MODES = {
         dataObj: germanStateData,
         totalQuestions: 10,
         useGlobe: false,
-        mapUrl: 'https://raw.githubusercontent.com/deldersveld/topojson/master/countries/germany/germany-states.json',
-        mapObject: 'states',
+        mapUrl: '4_niedrig.geo.json',
+        mapObject: null,
         hasFlags: false,
         itemLabel: 'state',
         itemLabelPlural: 'states',
@@ -2421,6 +2421,10 @@ function startGameWithMode(mode) {
     document.getElementById('game-info').classList.remove('hidden');
     document.getElementById('controls').classList.remove('hidden');
 
+    // Show gamma lock toggle only for globe modes
+    const gammaToggle = document.getElementById('gamma-lock-toggle');
+    gammaToggle.style.display = modeConfig.useGlobe ? '' : 'none';
+
     // Show appropriate layout based on mode
     if (modeConfig.useWorldQuizLayout) {
         // Use World Quiz Layout (globe left 2/3, questions right 1/3)
@@ -2560,6 +2564,7 @@ function setupGlobe() {
                         const rotation = projection.rotate();
                         const k = 75 / scale;
                         projection.rotate([rotation[0] + dx * k, rotation[1] - dy * k, rotation[2]]);
+                        r_unconstrained = projection.rotate().slice();
                     }
                 }
 
@@ -3328,9 +3333,9 @@ function renderLocationQuestion() {
     if (modeConfig.useGlobe && modeConfig.autoRotate) {
         rotateToCountry(gameState.targetCountry);
     } else if (modeConfig.useGlobe && !modeConfig.autoRotate && !modeConfig.useWorldQuizLayout) {
-        // Reset to 0,0 for modes that need it (but not World Quiz Layout)
-        projection.rotate([0, 0]);
-        r_unconstrained = null;  // Reset quaternion state
+        // Reset to 0,0,0 for modes that need it (but not World Quiz Layout)
+        projection.rotate([0, 0, 0]);
+        r_unconstrained = [0, 0, 0];
         countriesGroup.selectAll('path').attr('d', path);
     }
     // For World Quiz Layout, maintain current rotation/zoom between questions
@@ -3590,8 +3595,8 @@ function renderNameAllMode() {
     createNameAllInput();
 
     // Reset globe rotation
-    projection.rotate([0, 0]);
-    r_unconstrained = null;  // Reset quaternion state
+    projection.rotate([0, 0, 0]);
+    r_unconstrained = [0, 0, 0];
 
     // Ensure all countries are visible with clear borders
     countriesGroup.selectAll('path')
@@ -4115,6 +4120,9 @@ function rotateToCountry(countryName) {
                 projection.rotate(r(t));
                 countriesGroup.selectAll('path').attr('d', path);
             };
+        })
+        .on('end', () => {
+            r_unconstrained = projection.rotate().slice();
         });
 }
 
@@ -4143,13 +4151,17 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
                     }
                 };
             })
-            .on('end', resolve);
+            .on('end', () => {
+                r_unconstrained = projection.rotate().slice();
+                resolve();
+            });
     });
 }
 
 // Enhanced drag functions for interactive rotations (versor-based)
 let v0, r0, q0;
 let r_unconstrained = null;  // Track unconstrained rotation for quaternion continuity
+let gammaLocked = true;  // When true, gamma (tilt/roll) is locked to 0
 
 function dragStart(event) {
     // Don't allow dragging if scrolling is locked
@@ -4158,9 +4170,7 @@ function dragStart(event) {
     const p = d3.pointer(event, this);
     r0 = projection.rotate();
     v0 = versor.cartesian(projection.invert(p));
-    // Use unconstrained rotation if available to maintain quaternion continuity
-    // Otherwise use current rotation (first drag or after reset)
-    q0 = r_unconstrained ? versor(r_unconstrained) : versor(r0);
+    q0 = versor(r_unconstrained || r0);
 }
 
 function dragging(event) {
@@ -4182,7 +4192,7 @@ function dragging(event) {
     // Allow both longitude and latitude changes, but limit latitude to prevent flipping
     // Limit latitude to [-85, 85] degrees (similar to web maps)
     const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
-    projection.rotate([r1[0], constrainedLat, 0]);
+    projection.rotate([r1[0], constrainedLat, gammaLocked ? 0 : r1[2]]);
     countriesGroup.selectAll('path').attr('d', path);
 
     // Update capital stars positions
@@ -4194,20 +4204,16 @@ function dragEnd() {
 }
 
 // Versor helper functions for proper spherical rotation
-function versor(rotate) {
-    const radians = rotate.map(d => d * Math.PI / 180);
-    const cosPhi = Math.cos(radians[1] / 2);
-    const sinPhi = Math.sin(radians[1] / 2);
-    const cosLambda = Math.cos((radians[0] + radians[2]) / 2);
-    const sinLambda = Math.sin((radians[0] + radians[2]) / 2);
-    const cosGamma = Math.cos((radians[0] - radians[2]) / 2);
-    const sinGamma = Math.sin((radians[0] - radians[2]) / 2);
-
+// Based on Fil's versor package (canonical D3 implementation)
+function versor(e) {
+    var l = e[0] / 2 * Math.PI / 180, sl = Math.sin(l), cl = Math.cos(l);
+    var p = e[1] / 2 * Math.PI / 180, sp = Math.sin(p), cp = Math.cos(p);
+    var g = e[2] / 2 * Math.PI / 180, sg = Math.sin(g), cg = Math.cos(g);
     return [
-        cosPhi * cosLambda,
-        sinPhi * cosGamma,
-        sinPhi * sinGamma,
-        cosPhi * sinLambda
+        cl * cp * cg + sl * sp * sg,
+        sl * cp * cg - cl * sp * sg,
+        cl * sp * cg + sl * cp * sg,
+        cl * cp * sg - sl * sp * cg
     ];
 }
 
@@ -4233,12 +4239,11 @@ versor.cross = function(a, b) {
 };
 
 versor.delta = function(v0, v1) {
-    const w = versor.cross(v0, v1);
-    const l = Math.sqrt(versor.dot(w, w));
-    if (l === 0) return [1, 0, 0, 0];
-    const t = Math.acos(Math.max(-1, Math.min(1, versor.dot(v0, v1)))) / 2;
-    const s = Math.sin(t);
-    return [Math.cos(t), w[2] / l * s, -w[1] / l * s, w[0] / l * s];
+    var w = versor.cross(v0, v1), l = Math.sqrt(versor.dot(w, w));
+    if (!l) return [1, 0, 0, 0];
+    var t = Math.acos(Math.max(-1, Math.min(1, versor.dot(v0, v1))));
+    var s = Math.sin(t) / l;
+    return [Math.cos(t), w[2] * s, -w[1] * s, w[0] * s];
 };
 
 versor.multiply = function(a, b) {
@@ -4386,6 +4391,19 @@ function setupEventListeners() {
 
     // Restart button
     document.getElementById('restart-btn').addEventListener('click', restartGame);
+
+    // Gamma lock toggle
+    document.getElementById('gamma-lock-toggle').addEventListener('click', function() {
+        gammaLocked = !gammaLocked;
+        this.textContent = gammaLocked ? 'Tilt: Locked' : 'Tilt: Free';
+        if (gammaLocked) {
+            const r = projection.rotate();
+            projection.rotate([r[0], r[1], 0]);
+            r_unconstrained = [r[0], r[1], 0];
+            countriesGroup.selectAll('path').attr('d', path);
+            updateCapitalStars();
+        }
+    });
 }
 
 // Show identify mode selector (choose region)
