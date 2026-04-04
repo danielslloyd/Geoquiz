@@ -22,6 +22,16 @@ let gameState = {
     guessedThisQuestion: false // Track if a guess has been made for current question
 };
 
+// Sync score display between game-info panel and top bar
+function syncScoreDisplay() {
+    const si = document.getElementById('score-inline');
+    const qi = document.getElementById('question-inline');
+    const ti = document.getElementById('total-inline');
+    if (si) si.textContent = gameState.score;
+    if (qi) qi.textContent = gameState.currentQuestion;
+    if (ti) ti.textContent = gameState.totalQuestions;
+}
+
 // Globe configuration
 const width = 800;
 const height = 600;
@@ -1943,6 +1953,32 @@ const germanStateData = {
     }
 };
 
+// UK constituent countries
+const ukCountries = ['England', 'Scotland', 'Wales', 'Northern Ireland'];
+
+const ukCountryData = {
+    'England': {
+        code: 'gb-eng',
+        capital: 'London',
+        similar: ['Scotland', 'Wales', 'Northern Ireland']
+    },
+    'Scotland': {
+        code: 'gb-sct',
+        capital: 'Edinburgh',
+        similar: ['England', 'Wales', 'Northern Ireland']
+    },
+    'Wales': {
+        code: 'gb-wls',
+        capital: 'Cardiff',
+        similar: ['England', 'Scotland', 'Northern Ireland']
+    },
+    'Northern Ireland': {
+        code: 'gb-nir',
+        capital: 'Belfast',
+        similar: ['England', 'Scotland', 'Wales']
+    }
+};
+
 // ==================== ORDERING & SORTING UTILITIES ====================
 
 // Modular scoring function for pair-wise ordering
@@ -2192,6 +2228,19 @@ const QUIZ_MODES = {
         itemLabelPlural: 'states',
         autoRotate: false
     },
+    'uk-states': {
+        name: 'UK Countries',
+        quizList: ukCountries,
+        dataObj: ukCountryData,
+        totalQuestions: 4,
+        useGlobe: false,
+        mapUrl: 'uk-countries.geo.json',
+        mapObject: null,
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false
+    },
     'population-order': {
         name: 'Order by Population',
         quizList: quizCountries,
@@ -2371,10 +2420,11 @@ function initGame() {
 // Start game with selected mode
 function startGameWithMode(mode) {
     // Reset all game state
+    const modeConfig = QUIZ_MODES[mode];
     gameState = {
         score: 0,
         currentQuestion: 1,
-        totalQuestions: 10,
+        totalQuestions: modeConfig.totalQuestions,
         targetCountry: null,
         countries: [],
         answeredCorrectly: false,
@@ -2391,8 +2441,6 @@ function startGameWithMode(mode) {
         nameAllStartTime: null,
         nameAllGaveUp: false
     };
-
-    const modeConfig = QUIZ_MODES[mode];
 
     // Set current data sources
     gameState.currentDataObj = modeConfig.dataObj;
@@ -2417,15 +2465,16 @@ function startGameWithMode(mode) {
     }
 
     // Update score display
-    document.getElementById('score').textContent = '0';
+    document.getElementById('score').textContent = '0'; syncScoreDisplay();
     document.getElementById('current-question').textContent = '1';
 
-    // Hide mode selector and show game elements with mode icon bar
+    // Hide mode selector and show game elements with top bar
     document.getElementById('mode-selector').classList.add('hidden');
     document.getElementById('states-selector').classList.add('hidden');
-    document.getElementById('mode-icon-bar').style.display = 'flex';
-    document.getElementById('game-info').classList.remove('hidden');
+    document.getElementById('landing-header').style.display = 'none';
+    document.getElementById('top-bar').style.display = '';
     document.getElementById('controls').classList.remove('hidden');
+    syncScoreDisplay();
 
     // Show gamma lock toggle only for globe modes
     const gammaToggle = document.getElementById('gamma-lock-toggle');
@@ -2618,7 +2667,7 @@ function setupGlobe() {
     if (modeConfig.useGlobe) {
         // Orthographic projection for globe view
         projection = d3.geoOrthographic()
-            .scale(280)
+            .scale(Math.min(width, height) / 2 - 10)
             .translate([width / 2, height / 2])
             .clipAngle(90);
     } else if (modeConfig.useAlbersUsa) {
@@ -2689,8 +2738,8 @@ function setupGlobe() {
         const k = Math.pow(2, delta);
         const newScale = scale * k;
 
-        // Set min and max scale limits
-        const minScale = 100;
+        // Set min and max scale limits (don't zoom out beyond starting view)
+        const minScale = gameState.initialScale || 100;
         const maxScale = 2000;
 
         if (newScale >= minScale && newScale <= maxScale) {
@@ -2816,10 +2865,12 @@ function loadMapData() {
                         state.properties.name = state.properties.st_nm;
                     } else if (state.properties.NAME_1) {
                         state.properties.name = state.properties.NAME_1;
+                    } else if (state.properties.CTRY21NM) {
+                        state.properties.name = state.properties.CTRY21NM;
                     }
                 });
 
-                // Fit projection to India
+                // Fit projection to data
                 projection.fitSize([width, height], {
                     type: 'FeatureCollection',
                     features: gameState.countries
@@ -2827,6 +2878,7 @@ function loadMapData() {
             }
 
             drawCountries();
+            gameState.initialScale = projection.scale();
             startNewQuestion();
         })
         .catch(error => {
@@ -3118,7 +3170,7 @@ function handleCountryClick(event, d) {
             d3.select(event.target).classed('target', true);
             gameState.answeredCorrectly = true;
             gameState.score++;
-            document.getElementById('score').textContent = gameState.score;
+            document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
             // Zoom to correct country, then advance
             zoomAndRotateToCountry(gameState.targetCountry, 800).then(() => {
@@ -3199,7 +3251,7 @@ function handleCorrectAnswer(element) {
     if (element && element.classed) {
         d3.select(element).classed('selected', false).classed('target', true);
     }
-    document.getElementById('score').textContent = gameState.score;
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
@@ -3429,7 +3481,7 @@ function startNewQuestion() {
     }
 
     // Update question number display
-    document.getElementById('current-question').textContent = gameState.currentQuestion;
+    document.getElementById('current-question').textContent = gameState.currentQuestion; syncScoreDisplay();
 
     // Render the appropriate question based on subQuestionIndex
     const hasFlags = modeConfig.hasFlags;
@@ -3581,7 +3633,7 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             // Handle correct answer logic
             gameState.answeredCorrectly = true;
             gameState.score++;
-            document.getElementById('score').textContent = gameState.score;
+            document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
             // Auto-advance to capital question immediately
             gameState.subQuestionIndex++;
@@ -3672,7 +3724,7 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
         // Handle correct answer logic
         gameState.answeredCorrectly = true;
         gameState.score++;
-        document.getElementById('score').textContent = gameState.score;
+        document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
         // Auto-advance to next country immediately
         // Reset sub-question index and move to next country
@@ -3859,13 +3911,7 @@ function updateFoundCounter() {
     ).length;
 
     document.getElementById('found-count').textContent = gameState.foundCountries.size;
-    document.getElementById('score').textContent = gameState.score;
-
-    // Update inline score if it exists
-    const scoreInline = document.getElementById('score-inline');
-    if (scoreInline) {
-        scoreInline.textContent = gameState.score;
-    }
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 }
 
 // Check if all countries have been found
@@ -4032,7 +4078,7 @@ function handleCapitalsRaceSubmit() {
 
     if (isCorrect) {
         gameState.score++;
-        document.getElementById('score').textContent = gameState.score;
+        document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
         feedback.textContent = `Correct! ${correctCapital} is the capital of ${gameState.targetCountry}.`;
         feedback.className = 'feedback correct';
     } else {
@@ -4153,7 +4199,7 @@ function checkOrderingAnswer() {
     // Update game score (convert percentage to points out of 10)
     const points = Math.round(score / 10);
     gameState.score += points;
-    document.getElementById('score').textContent = gameState.score;
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
     // Show feedback
     const feedback = document.getElementById('feedback');
@@ -4440,11 +4486,12 @@ function restartGame() {
     const currentDataObj = gameState.currentDataObj;
     const currentQuizList = gameState.currentQuizList;
     const countries = gameState.countries;
+    const prevTotal = gameState.totalQuestions;
 
     gameState = {
         score: 0,
         currentQuestion: 1,
-        totalQuestions: 10,
+        totalQuestions: prevTotal,
         targetCountry: null,
         countries: countries, // Keep loaded map data
         answeredCorrectly: false,
@@ -4459,7 +4506,7 @@ function restartGame() {
         currentQuizList: currentQuizList
     };
 
-    document.getElementById('score').textContent = '0';
+    document.getElementById('score').textContent = '0'; syncScoreDisplay();
     document.getElementById('current-question').textContent = '1';
 
     startNewQuestion();
@@ -4471,16 +4518,11 @@ function setupEventListeners() {
     document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            if (mode === 'states') {
-                // Show states sub-selector
-                document.getElementById('mode-selector').classList.add('hidden');
-                document.getElementById('states-selector').classList.remove('hidden');
-                document.getElementById('mode-icon-bar').style.display = 'none';
+            if (mode === 'find') {
+                showFindModeSelector();
             } else if (mode === 'identify') {
-                // For identify mode, show a region selector first
                 showIdentifyModeSelector();
             } else {
-                // Start game directly for countries mode
                 startGameWithMode(mode);
             }
         });
@@ -4498,32 +4540,70 @@ function setupEventListeners() {
     document.getElementById('back-to-modes-btn').addEventListener('click', () => {
         document.getElementById('states-selector').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
-        document.getElementById('mode-icon-bar').style.display = 'none';
     });
 
-    // Mode icon bar - always visible during game
-    document.querySelectorAll('.mode-icon-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
+    // Helper to switch modes from the top bar
+    function switchToMode(mode) {
+        d3.select('#globe').selectAll('*').remove();
+        d3.select('#globe-world').selectAll('*').remove();
+        document.getElementById('game-info').classList.add('hidden');
+        document.getElementById('question-container').classList.add('hidden');
+        document.getElementById('controls').classList.add('hidden');
+        document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('world-quiz-layout').classList.add('hidden');
+        document.getElementById('world-quiz-question-bar').classList.add('hidden');
+        startGameWithMode(mode);
+    }
 
-            // Clear both SVGs before starting new mode
+    // Top bar dropdown toggles
+    function closeAllDropdowns() {
+        document.querySelectorAll('.icon-dropdown').forEach(d => d.classList.remove('open'));
+    }
+
+    document.getElementById('find-mode-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dd = document.getElementById('find-dropdown');
+        const wasOpen = dd.classList.contains('open');
+        closeAllDropdowns();
+        if (!wasOpen) dd.classList.add('open');
+    });
+
+    document.getElementById('identify-mode-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dd = document.getElementById('identify-dropdown');
+        const wasOpen = dd.classList.contains('open');
+        closeAllDropdowns();
+        if (!wasOpen) dd.classList.add('open');
+    });
+
+    document.addEventListener('click', () => closeAllDropdowns());
+
+    // Find dropdown items
+    document.querySelectorAll('#find-dropdown .dropdown-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeAllDropdowns();
+            switchToMode(e.currentTarget.dataset.mode);
+        });
+    });
+
+    // Identify dropdown items
+    document.querySelectorAll('#identify-dropdown .dropdown-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeAllDropdowns();
+            const region = e.currentTarget.dataset.identifyRegion;
             d3.select('#globe').selectAll('*').remove();
             d3.select('#globe-world').selectAll('*').remove();
+            startIdentifyMode(region);
+        });
+    });
 
-            // Hide all game elements before starting fresh
-            document.getElementById('game-info').classList.add('hidden');
-            document.getElementById('question-container').classList.add('hidden');
-            document.getElementById('controls').classList.add('hidden');
-            document.getElementById('multiple-choice-container').classList.add('hidden');
-            document.getElementById('world-quiz-layout').classList.add('hidden');
-            document.getElementById('world-quiz-question-bar').classList.add('hidden');
-
-            // Start the selected mode with a clean slate
-            if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else {
-                startGameWithMode(mode);
-            }
+    // Direct mode icon buttons (name-all, population-order, mystery-flag, capitals-race)
+    document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const mode = e.currentTarget.dataset.mode;
+            if (mode) switchToMode(mode);
         });
     });
 
@@ -4555,10 +4635,60 @@ function setupEventListeners() {
     });
 }
 
+// Show find mode selector (choose region)
+function showFindModeSelector() {
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Find on the Map</h2>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-mode="countries">
+                <span class="mode-icon">🌍</span>
+                <span class="mode-name">World</span>
+                <span class="mode-desc">Find countries on the globe</span>
+            </button>
+            <button class="mode-btn" data-mode="us-states">
+                <span class="mode-icon">🇺🇸</span>
+                <span class="mode-name">USA</span>
+                <span class="mode-desc">Find US states on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="indian-states">
+                <span class="mode-icon">🇮🇳</span>
+                <span class="mode-name">India</span>
+                <span class="mode-desc">Find Indian states on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="german-states">
+                <span class="mode-icon">🇩🇪</span>
+                <span class="mode-name">Germany</span>
+                <span class="mode-desc">Find German Bundesländer on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="uk-states">
+                <span class="mode-icon">🇬🇧</span>
+                <span class="mode-name">UK</span>
+                <span class="mode-desc">Find UK countries on the map</span>
+            </button>
+        </div>
+        <button id="back-from-find-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            startGameWithMode(e.currentTarget.dataset.mode);
+        });
+    });
+
+    document.getElementById('back-from-find-btn').addEventListener('click', () => {
+        resetModeSelector();
+    });
+}
+
 // Show identify mode selector (choose region)
 function showIdentifyModeSelector() {
-    // Hide mode icon bar when showing selector
-    document.getElementById('mode-icon-bar').style.display = 'none';
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
 
     // Create a temporary selector for identify mode regions
     const modeSelector = document.getElementById('mode-selector');
@@ -4572,7 +4702,7 @@ function showIdentifyModeSelector() {
                 <span class="mode-desc">Identify highlighted countries</span>
             </button>
             <button class="mode-btn" data-identify-region="us-states">
-                <span class="mode-icon">🗽</span>
+                <span class="mode-icon">🇺🇸</span>
                 <span class="mode-name">US States</span>
                 <span class="mode-desc">Identify highlighted US states</span>
             </button>
@@ -4580,6 +4710,16 @@ function showIdentifyModeSelector() {
                 <span class="mode-icon">🇮🇳</span>
                 <span class="mode-name">Indian States</span>
                 <span class="mode-desc">Identify highlighted Indian states</span>
+            </button>
+            <button class="mode-btn" data-identify-region="german-states">
+                <span class="mode-icon">🇩🇪</span>
+                <span class="mode-name">German States</span>
+                <span class="mode-desc">Identify highlighted German Bundesländer</span>
+            </button>
+            <button class="mode-btn" data-identify-region="uk-states">
+                <span class="mode-icon">🇬🇧</span>
+                <span class="mode-name">UK Countries</span>
+                <span class="mode-desc">Identify highlighted UK countries</span>
             </button>
         </div>
         <button id="back-from-identify-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
@@ -4611,10 +4751,12 @@ function startIdentifyMode(region) {
     QUIZ_MODES.identify.quizList = baseModeConfig.quizList;
     QUIZ_MODES.identify.dataObj = baseModeConfig.dataObj;
     QUIZ_MODES.identify.useGlobe = baseModeConfig.useGlobe;
+    QUIZ_MODES.identify.useAlbersUsa = baseModeConfig.useAlbersUsa || false;
     QUIZ_MODES.identify.mapUrl = baseModeConfig.mapUrl;
     QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
     QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
     QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
+    QUIZ_MODES.identify.totalQuestions = Math.min(10, baseModeConfig.quizList.length);
 
     // Start game with identify mode
     startGameWithMode('identify');
@@ -4626,18 +4768,13 @@ function resetModeSelector() {
     modeSelector.innerHTML = `
         <h2>Select Quiz Mode</h2>
         <div class="mode-buttons" id="mode-buttons">
-            <button class="mode-btn" data-mode="countries">
-                <span class="mode-icon">🌍</span>
-                <span class="mode-name">Countries of the World</span>
-                <span class="mode-desc">Quiz on countries, flags, and capitals</span>
-            </button>
-            <button class="mode-btn" data-mode="states">
-                <span class="mode-icon">🗺️</span>
-                <span class="mode-name">States</span>
-                <span class="mode-desc">Quiz on US and Indian states</span>
+            <button class="mode-btn" data-mode="find">
+                <span class="mode-icon">🔍</span>
+                <span class="mode-name">Find on the Map</span>
+                <span class="mode-desc">Find countries or states on the globe/map</span>
             </button>
             <button class="mode-btn" data-mode="identify">
-                <span class="mode-icon">🔍</span>
+                <span class="mode-icon">❓</span>
                 <span class="mode-name">Identify Mode</span>
                 <span class="mode-desc">Identify highlighted locations on the map</span>
             </button>
@@ -4668,9 +4805,8 @@ function resetModeSelector() {
     document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            if (mode === 'states') {
-                document.getElementById('mode-selector').classList.add('hidden');
-                document.getElementById('states-selector').classList.remove('hidden');
+            if (mode === 'find') {
+                showFindModeSelector();
             } else if (mode === 'identify') {
                 showIdentifyModeSelector();
             } else {

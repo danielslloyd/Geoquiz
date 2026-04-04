@@ -34,42 +34,114 @@ header h1 {
     opacity: 0.9;
 }
 
-/* Mode Icon Bar - Always visible during game */
-.mode-icon-bar {
+/* Top Bar - Single thin bar during game */
+.top-bar {
     background: white;
-    border-radius: 15px;
-    padding: 15px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    padding: 6px 15px;
+    margin-bottom: 12px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
     display: flex;
-    justify-content: center;
-    gap: 15px;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
 }
 
+.top-bar-title {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: #667eea;
+    white-space: nowrap;
+}
+
+.top-bar-modes {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.top-bar-score {
+    display: flex;
+    gap: 10px;
+    font-weight: bold;
+    color: #667eea;
+    white-space: nowrap;
+    font-size: 0.95rem;
+}
+
+.score-compact {
+    white-space: nowrap;
+}
+
+/* Mode icon buttons (compact for top bar) */
 .mode-icon-btn {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     border: none;
-    border-radius: 12px;
-    padding: 15px 20px;
+    border-radius: 8px;
+    padding: 6px 10px;
     cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-    font-size: 2rem;
-    min-width: 70px;
-    min-height: 70px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    font-size: 1.3rem;
+    min-width: 40px;
+    min-height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
 .mode-icon-btn:hover {
-    transform: translateY(-3px) scale(1.05);
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
 .mode-icon-btn:active {
-    transform: translateY(-1px) scale(1.02);
+    transform: translateY(0) scale(1.02);
+}
+
+/* Icon group with dropdown */
+.icon-group {
+    position: relative;
+    display: inline-flex;
+}
+
+.icon-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
+    padding: 6px;
+    z-index: 1000;
+    min-width: 130px;
+    margin-top: 4px;
+}
+
+.icon-dropdown.open {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.dropdown-item {
+    background: none;
+    border: none;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    border-radius: 6px;
+    text-align: left;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.dropdown-item:hover {
+    background: linear-gradient(135deg, #667eea22, #764ba222);
 }
 
 /* Mode Selector */
@@ -460,6 +532,24 @@ header h1 {
 @media (max-width: 768px) {
     header h1 {
         font-size: 2rem;
+    }
+
+    .top-bar {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        padding: 6px 10px;
+    }
+
+    .top-bar-title {
+        font-size: 0.95rem;
+    }
+
+    .mode-icon-btn {
+        min-width: 34px;
+        min-height: 34px;
+        font-size: 1.1rem;
+        padding: 4px 8px;
     }
 
     .mode-selector h2 {

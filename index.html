@@ -11,40 +11,58 @@
 </head>
 <body>
     <div class="container">
-        <header>
+        <!-- Thin top bar: title + mode icons + score (visible during game) -->
+        <div class="top-bar" id="top-bar" style="display: none;">
+            <span class="top-bar-title">🌍 Geoquiz</span>
+            <div class="top-bar-modes" id="mode-icon-bar">
+                <div class="icon-group">
+                    <button class="mode-icon-btn" id="find-mode-btn" title="Find on the map">🔍</button>
+                    <div class="icon-dropdown" id="find-dropdown">
+                        <button class="dropdown-item" data-mode="countries">🌍 World</button>
+                        <button class="dropdown-item" data-mode="us-states">🇺🇸 USA</button>
+                        <button class="dropdown-item" data-mode="indian-states">🇮🇳 India</button>
+                        <button class="dropdown-item" data-mode="german-states">🇩🇪 Germany</button>
+                        <button class="dropdown-item" data-mode="uk-states">🇬🇧 UK</button>
+                    </div>
+                </div>
+                <div class="icon-group">
+                    <button class="mode-icon-btn" id="identify-mode-btn" title="Identify Mode">❓</button>
+                    <div class="icon-dropdown" id="identify-dropdown">
+                        <button class="dropdown-item" data-identify-region="countries">🌍 World</button>
+                        <button class="dropdown-item" data-identify-region="us-states">🇺🇸 USA</button>
+                        <button class="dropdown-item" data-identify-region="indian-states">🇮🇳 India</button>
+                        <button class="dropdown-item" data-identify-region="german-states">🇩🇪 Germany</button>
+                        <button class="dropdown-item" data-identify-region="uk-states">🇬🇧 UK</button>
+                    </div>
+                </div>
+                <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries">⌨️</button>
+                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population">📊</button>
+                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag">🚩</button>
+                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race">🏛️</button>
+            </div>
+            <div class="top-bar-score" id="top-bar-score">
+                <span class="score-compact"><span id="score-inline">0</span> pts</span>
+                <span class="score-compact">Q<span id="question-inline">1</span>/<span id="total-inline">10</span></span>
+            </div>
+        </div>
+
+        <!-- Landing header (only shown on mode select screen) -->
+        <header id="landing-header">
             <h1>🌍 Geoquiz</h1>
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
-
-        <!-- Always-visible mode icon bar -->
-        <div class="mode-icon-bar" id="mode-icon-bar" style="display: none;">
-            <button class="mode-icon-btn" data-mode="countries" title="Countries of the World">🌍</button>
-            <button class="mode-icon-btn" data-mode="us-states" title="US States">🗽</button>
-            <button class="mode-icon-btn" data-mode="indian-states" title="Indian States">🇮🇳</button>
-            <button class="mode-icon-btn" data-mode="german-states" title="German States">🇩🇪</button>
-            <button class="mode-icon-btn" data-mode="identify" title="Identify Mode">🔍</button>
-            <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries">⌨️</button>
-            <button class="mode-icon-btn" data-mode="population-order" title="Order by Population">📊</button>
-            <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag">🚩</button>
-            <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race">🏛️</button>
-        </div>
 
         <!-- Mode Selector -->
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
-                <button class="mode-btn" data-mode="countries">
-                    <span class="mode-icon">🌍</span>
-                    <span class="mode-name">Countries of the World</span>
-                    <span class="mode-desc">Quiz on countries, flags, and capitals</span>
-                </button>
-                <button class="mode-btn" data-mode="states">
-                    <span class="mode-icon">🗺️</span>
-                    <span class="mode-name">States</span>
-                    <span class="mode-desc">Quiz on US and Indian states</span>
+                <button class="mode-btn" data-mode="find">
+                    <span class="mode-icon">🔍</span>
+                    <span class="mode-name">Find on the Map</span>
+                    <span class="mode-desc">Find countries or states on the globe/map</span>
                 </button>
                 <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon">🔍</span>
+                    <span class="mode-icon">❓</span>
                     <span class="mode-name">Identify Mode</span>
                     <span class="mode-desc">Identify highlighted locations on the map</span>
                 </button>
@@ -71,12 +89,12 @@
             </div>
         </div>
 
-        <!-- States Sub-Mode Selector -->
+        <!-- States Sub-Mode Selector (no longer used but kept for back-compat) -->
         <div class="mode-selector hidden" id="states-selector">
             <h2>Select Region</h2>
             <div class="mode-buttons">
                 <button class="mode-btn" data-mode="us-states">
-                    <span class="mode-icon">🗽</span>
+                    <span class="mode-icon">🇺🇸</span>
                     <span class="mode-name">US States</span>
                     <span class="mode-desc">Quiz on the 50 United States</span>
                 </button>
@@ -89,6 +107,11 @@
                     <span class="mode-icon">🇩🇪</span>
                     <span class="mode-name">German States</span>
                     <span class="mode-desc">Quiz on the 16 Bundesländer of Germany</span>
+                </button>
+                <button class="mode-btn" data-mode="uk-states">
+                    <span class="mode-icon">🇬🇧</span>
+                    <span class="mode-name">UK Countries</span>
+                    <span class="mode-desc">Quiz on England, Scotland, Wales & N. Ireland</span>
                 </button>
             </div>
             <button id="back-to-modes-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
@@ -167,8 +190,6 @@
             <button id="restart-btn" class="btn secondary">Restart Game</button>
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
         </div>
-
-        <!-- Instructions removed -->
     </div>
 
     <script src="game.js"></script>
