@@ -2830,7 +2830,7 @@ function setupGlobe() {
     });
 
     // Touch support: pinch-to-zoom and single-finger drag
-    let touchState = { lastDist: null, lastCenter: null, dragging: false, moved: false, startPos: null };
+    let touchState = { lastDist: null, lastCenter: null, dragging: false, moved: false, startPos: null, wasPinch: false };
 
     function touchDist(touches) {
         const dx = touches[0].clientX - touches[1].clientX;
@@ -2851,7 +2851,8 @@ function setupGlobe() {
             e.preventDefault();
             touchState.lastDist = touchDist(e.touches);
             touchState.dragging = false;
-        } else if (e.touches.length === 1) {
+            touchState.wasPinch = true;
+        } else if (e.touches.length === 1 && !touchState.wasPinch) {
             touchState.dragging = true;
             touchState.moved = false;
             touchState.lastCenter = null;
@@ -2922,13 +2923,14 @@ function setupGlobe() {
     svg.node().addEventListener('touchend', function(e) {
         if (e.touches.length < 2) touchState.lastDist = null;
         if (e.touches.length === 0) {
-            // If it was a tap (no significant movement), simulate a click
-            if (!touchState.moved && touchState.startPos) {
+            // If it was a clean single-finger tap (no drag, no pinch), simulate a click
+            if (!touchState.moved && !touchState.wasPinch && touchState.startPos) {
                 const target = document.elementFromPoint(touchState.startPos.x, touchState.startPos.y);
                 if (target) target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
             }
             touchState.dragging = false;
             touchState.moved = false;
+            touchState.wasPinch = false;
             touchState.lastCenter = null;
             touchState.startPos = null;
         }
@@ -3312,9 +3314,11 @@ function handleCountryClick(event, d) {
                 // Zoom to correct country
                 return zoomAndRotateToCountry(gameState.targetCountry, 800);
             }).then(() => {
-                // Keep both highlights and lock scrolling until next question
-                // The incorrect country stays red, correct stays green
-                // Scrolling remains locked until startNewQuestion is called
+                // Advance to next sub-question after showing the correct answer
+                setTimeout(() => {
+                    gameState.subQuestionIndex++;
+                    startNewQuestion();
+                }, 500);
             });
         } else {
             handleIncorrectAnswer(event.target);
