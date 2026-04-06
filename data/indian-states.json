@@ -1,0 +1,182 @@
+{
+    "Andhra Pradesh": {
+        "code": "in-ap",
+        "capital": "Amaravati",
+        "similar": ["Telangana", "Karnataka", "Tamil Nadu", "Odisha"]
+    },
+    "Arunachal Pradesh": {
+        "code": "in-ar",
+        "capital": "Itanagar",
+        "similar": ["Assam", "Nagaland", "Manipur", "Meghalaya"]
+    },
+    "Assam": {
+        "code": "in-as",
+        "capital": "Dispur",
+        "similar": ["Meghalaya", "Arunachal Pradesh", "Nagaland", "Mizoram"]
+    },
+    "Bihar": {
+        "code": "in-br",
+        "capital": "Patna",
+        "similar": ["Jharkhand", "Uttar Pradesh", "West Bengal", "Madhya Pradesh"]
+    },
+    "Chhattisgarh": {
+        "code": "in-ct",
+        "capital": "Raipur",
+        "similar": ["Madhya Pradesh", "Maharashtra", "Odisha", "Jharkhand"]
+    },
+    "Goa": {
+        "code": "in-ga",
+        "capital": "Panaji",
+        "similar": ["Maharashtra", "Karnataka", "Kerala", "Tamil Nadu"]
+    },
+    "Gujarat": {
+        "code": "in-gj",
+        "capital": "Gandhinagar",
+        "similar": ["Rajasthan", "Maharashtra", "Madhya Pradesh", "Dadra and Nagar Haveli and Daman and Diu"]
+    },
+    "Haryana": {
+        "code": "in-hr",
+        "capital": "Chandigarh",
+        "similar": ["Punjab", "Delhi", "Uttar Pradesh", "Rajasthan"]
+    },
+    "Himachal Pradesh": {
+        "code": "in-hp",
+        "capital": "Shimla",
+        "similar": ["Punjab", "Uttarakhand", "Haryana", "Jammu and Kashmir"]
+    },
+    "Jharkhand": {
+        "code": "in-jh",
+        "capital": "Ranchi",
+        "similar": ["Bihar", "West Bengal", "Odisha", "Chhattisgarh"]
+    },
+    "Karnataka": {
+        "code": "in-ka",
+        "capital": "Bengaluru",
+        "similar": ["Maharashtra", "Goa", "Kerala", "Tamil Nadu"]
+    },
+    "Kerala": {
+        "code": "in-kl",
+        "capital": "Thiruvananthapuram",
+        "similar": ["Tamil Nadu", "Karnataka", "Goa", "Lakshadweep"]
+    },
+    "Madhya Pradesh": {
+        "code": "in-mp",
+        "capital": "Bhopal",
+        "similar": ["Uttar Pradesh", "Chhattisgarh", "Maharashtra", "Rajasthan"]
+    },
+    "Maharashtra": {
+        "code": "in-mh",
+        "capital": "Mumbai",
+        "similar": ["Gujarat", "Madhya Pradesh", "Karnataka", "Goa"]
+    },
+    "Manipur": {
+        "code": "in-mn",
+        "capital": "Imphal",
+        "similar": ["Nagaland", "Mizoram", "Assam", "Tripura"]
+    },
+    "Meghalaya": {
+        "code": "in-ml",
+        "capital": "Shillong",
+        "similar": ["Assam", "Tripura", "Mizoram", "Arunachal Pradesh"]
+    },
+    "Mizoram": {
+        "code": "in-mz",
+        "capital": "Aizawl",
+        "similar": ["Manipur", "Tripura", "Assam", "Meghalaya"]
+    },
+    "Nagaland": {
+        "code": "in-nl",
+        "capital": "Kohima",
+        "similar": ["Manipur", "Assam", "Arunachal Pradesh", "Mizoram"]
+    },
+    "Odisha": {
+        "code": "in-or",
+        "capital": "Bhubaneswar",
+        "similar": ["West Bengal", "Jharkhand", "Chhattisgarh", "Andhra Pradesh"]
+    },
+    "Punjab": {
+        "code": "in-pb",
+        "capital": "Chandigarh",
+        "similar": ["Haryana", "Himachal Pradesh", "Jammu and Kashmir", "Rajasthan"]
+    },
+    "Rajasthan": {
+        "code": "in-rj",
+        "capital": "Jaipur",
+        "similar": ["Gujarat", "Madhya Pradesh", "Uttar Pradesh", "Haryana"]
+    },
+    "Sikkim": {
+        "code": "in-sk",
+        "capital": "Gangtok",
+        "similar": ["West Bengal", "Assam", "Arunachal Pradesh", "Meghalaya"]
+    },
+    "Tamil Nadu": {
+        "code": "in-tn",
+        "capital": "Chennai",
+        "similar": ["Kerala", "Karnataka", "Andhra Pradesh", "Puducherry"]
+    },
+    "Telangana": {
+        "code": "in-tg",
+        "capital": "Hyderabad",
+        "similar": ["Andhra Pradesh", "Maharashtra", "Karnataka", "Chhattisgarh"]
+    },
+    "Tripura": {
+        "code": "in-tr",
+        "capital": "Agartala",
+        "similar": ["Mizoram", "Assam", "Meghalaya", "Manipur"]
+    },
+    "Uttar Pradesh": {
+        "code": "in-up",
+        "capital": "Lucknow",
+        "similar": ["Madhya Pradesh", "Bihar", "Uttarakhand", "Haryana"]
+    },
+    "Uttarakhand": {
+        "code": "in-ut",
+        "capital": "Dehradun",
+        "similar": ["Uttar Pradesh", "Himachal Pradesh", "Haryana", "Delhi"]
+    },
+    "West Bengal": {
+        "code": "in-wb",
+        "capital": "Kolkata",
+        "similar": ["Bihar", "Jharkhand", "Odisha", "Sikkim"]
+    },
+    "Andaman and Nicobar Islands": {
+        "code": "in-an",
+        "capital": "Port Blair",
+        "similar": ["Tamil Nadu", "Kerala", "West Bengal", "Lakshadweep"]
+    },
+    "Chandigarh": {
+        "code": "in-ch",
+        "capital": "Chandigarh",
+        "similar": ["Punjab", "Haryana", "Himachal Pradesh", "Delhi"]
+    },
+    "Dadra and Nagar Haveli and Daman and Diu": {
+        "code": "in-dn",
+        "capital": "Daman",
+        "similar": ["Gujarat", "Maharashtra", "Goa", "Rajasthan"]
+    },
+    "Delhi": {
+        "code": "in-dl",
+        "capital": "New Delhi",
+        "similar": ["Haryana", "Uttar Pradesh", "Punjab", "Chandigarh"]
+    },
+    "Jammu and Kashmir": {
+        "code": "in-jk",
+        "capital": "Srinagar",
+        "similar": ["Ladakh", "Himachal Pradesh", "Punjab", "Uttarakhand"]
+    },
+    "Ladakh": {
+        "code": "in-la",
+        "capital": "Leh",
+        "similar": ["Jammu and Kashmir", "Himachal Pradesh", "Uttarakhand", "Sikkim"]
+    },
+    "Lakshadweep": {
+        "code": "in-ld",
+        "capital": "Kavaratti",
+        "similar": ["Kerala", "Goa", "Tamil Nadu", "Andaman and Nicobar Islands"]
+    },
+    "Puducherry": {
+        "code": "in-py",
+        "capital": "Puducherry",
+        "similar": ["Tamil Nadu", "Kerala", "Karnataka", "Andhra Pradesh"]
+    }
+}

@@ -1,0 +1,82 @@
+{
+    "Baden-Württemberg": {
+        "code": "de-bw",
+        "capital": "Stuttgart",
+        "similar": ["Bayern", "Hessen", "Rheinland-Pfalz", "Saarland"]
+    },
+    "Bayern": {
+        "code": "de-by",
+        "capital": "München",
+        "similar": ["Baden-Württemberg", "Hessen", "Thüringen", "Sachsen"]
+    },
+    "Berlin": {
+        "code": "de-be",
+        "capital": "Berlin",
+        "similar": ["Brandenburg", "Sachsen", "Hamburg", "Bremen"]
+    },
+    "Brandenburg": {
+        "code": "de-bb",
+        "capital": "Potsdam",
+        "similar": ["Berlin", "Sachsen", "Sachsen-Anhalt", "Mecklenburg-Vorpommern"]
+    },
+    "Bremen": {
+        "code": "de-hb",
+        "capital": "Bremen",
+        "similar": ["Hamburg", "Niedersachsen", "Schleswig-Holstein", "Berlin"]
+    },
+    "Hamburg": {
+        "code": "de-hh",
+        "capital": "Hamburg",
+        "similar": ["Bremen", "Schleswig-Holstein", "Niedersachsen", "Berlin"]
+    },
+    "Hessen": {
+        "code": "de-he",
+        "capital": "Wiesbaden",
+        "similar": ["Nordrhein-Westfalen", "Bayern", "Baden-Württemberg", "Rheinland-Pfalz"]
+    },
+    "Mecklenburg-Vorpommern": {
+        "code": "de-mv",
+        "capital": "Schwerin",
+        "similar": ["Schleswig-Holstein", "Brandenburg", "Niedersachsen", "Sachsen-Anhalt"]
+    },
+    "Niedersachsen": {
+        "code": "de-ni",
+        "capital": "Hannover",
+        "similar": ["Nordrhein-Westfalen", "Bremen", "Hamburg", "Schleswig-Holstein"]
+    },
+    "Nordrhein-Westfalen": {
+        "code": "de-nw",
+        "capital": "Düsseldorf",
+        "similar": ["Niedersachsen", "Hessen", "Rheinland-Pfalz", "Bremen"]
+    },
+    "Rheinland-Pfalz": {
+        "code": "de-rp",
+        "capital": "Mainz",
+        "similar": ["Hessen", "Nordrhein-Westfalen", "Saarland", "Baden-Württemberg"]
+    },
+    "Saarland": {
+        "code": "de-sl",
+        "capital": "Saarbrücken",
+        "similar": ["Rheinland-Pfalz", "Baden-Württemberg", "Hessen", "Nordrhein-Westfalen"]
+    },
+    "Sachsen": {
+        "code": "de-sn",
+        "capital": "Dresden",
+        "similar": ["Thüringen", "Sachsen-Anhalt", "Brandenburg", "Bayern"]
+    },
+    "Sachsen-Anhalt": {
+        "code": "de-st",
+        "capital": "Magdeburg",
+        "similar": ["Sachsen", "Thüringen", "Brandenburg", "Niedersachsen"]
+    },
+    "Schleswig-Holstein": {
+        "code": "de-sh",
+        "capital": "Kiel",
+        "similar": ["Hamburg", "Mecklenburg-Vorpommern", "Niedersachsen", "Bremen"]
+    },
+    "Thüringen": {
+        "code": "de-th",
+        "capital": "Erfurt",
+        "similar": ["Sachsen", "Sachsen-Anhalt", "Bayern", "Hessen"]
+    }
+}
