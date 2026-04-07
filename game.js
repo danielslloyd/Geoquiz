@@ -4351,9 +4351,8 @@ function checkOrderingAnswer() {
     gameState.currentQuestion++;
 }
 
-// ==================== CAPITAL CITY STARS ====================
+// ==================== GLOBE ROTATION ====================
 
-// Draw capital city stars on globe after correct answer
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
     const country = gameState.countries.find(c => c.properties.name === countryName);
