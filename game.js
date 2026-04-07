@@ -723,7 +723,7 @@ function setupGlobe() {
             .clipAngle(90);
     } else if (modeConfig.useAlbersUsa) {
         // Albers USA composite projection — AK and HI insets are built in
-        projection = d3.geoAlbersUsaPr();
+        projection = d3.geoAlbersUsa();
     } else {
         // Mercator projection for regional maps (India, Germany, etc.)
         projection = d3.geoMercator()
@@ -897,7 +897,7 @@ function loadMapData() {
                 gameState.countries.forEach(state => {
                     state.properties.name = getStateName(state.id);
                 });
-                // geoAlbersUsaPr handles AK/HI insets; fitSize scales the whole composite
+                // geoAlbersUsa handles AK/HI insets; fitSize scales the whole composite
                 projection.fitSize([width, height], {
                     type: 'FeatureCollection',
                     features: gameState.countries
@@ -1019,7 +1019,7 @@ function drawCountries() {
         .on('click', handleCountryClick);
 }
 
-// (drawUSStatesWithInlays removed — replaced by d3.geoAlbersUsaPr composite projection)
+// (drawUSStatesWithInlays removed — replaced by d3.geoAlbersUsa composite projection)
 function drawUSStatesWithInlays_UNUSED() {
     // Draw contiguous states
     countriesGroup.selectAll('path.contiguous')
