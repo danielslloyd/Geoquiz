@@ -102,7 +102,10 @@
             "UK",
             "Great Britain",
             "Britain",
-            "England"
+            "England",
+            "Scotland",
+            "Wales",
+            "Northern Ireland"
         ]
     },
     "France": {
@@ -311,7 +314,9 @@
             "Jordan",
             "United Arab Emirates"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Saudi Arabia"
+        ]
     },
     "Turkey": {
         "code": "tr",
@@ -427,8 +432,9 @@
         ],
         "alternateNames": [
             "Korea",
-            "Korea South",
-            "SK"
+            "South Korea",
+            "SK",
+            "Korea South"
         ]
     },
     "Thailand": {
@@ -511,7 +517,10 @@
             "Papua New Guinea",
             "United Kingdom"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Aotearoa",
+            "NZ"
+        ]
     },
     "Chile": {
         "code": "cl",
@@ -608,7 +617,8 @@
             "United Kingdom"
         ],
         "alternateNames": [
-            "Holland"
+            "Holland",
+            "The Netherlands"
         ]
     },
     "Belgium": {
@@ -1061,7 +1071,9 @@
             "Barbados",
             "Saint Lucia"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Antigua"
+        ]
     },
     "Armenia": {
         "code": "am",
@@ -1238,7 +1250,8 @@
             "North Macedonia"
         ],
         "alternateNames": [
-            "Bosnia"
+            "Bosnia",
+            "Bosnia-Herzegovina"
         ]
     },
     "Botswana": {
@@ -1432,7 +1445,8 @@
             "Angola"
         ],
         "alternateNames": [
-            "Congo"
+            "Congo",
+            "Congo Brazzaville"
         ]
     },
     "Democratic Republic of the Congo": {
@@ -1451,7 +1465,8 @@
         ],
         "alternateNames": [
             "DRC",
-            "Congo"
+            "Congo",
+            "Congo Kinshasa"
         ]
     },
     "Croatia": {
@@ -2353,7 +2368,9 @@
             "Japan"
         ],
         "alternateNames": [
-            "Korea North"
+            "Korea North",
+            "Democratic People's Republic of Korea",
+            "DPRK"
         ]
     },
     "North Macedonia": {
@@ -2403,7 +2420,8 @@
             "Syria"
         ],
         "alternateNames": [
-            "Palestinian Territories"
+            "Palestinian Territories",
+            "State of Palestine"
         ]
     },
     "Papua New Guinea": {
@@ -2420,7 +2438,9 @@
             "Solomon Islands",
             "Fiji"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "PNG"
+        ]
     },
     "Paraguay": {
         "code": "py",
@@ -2532,7 +2552,9 @@
             "Cape Verde",
             "Comoros"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "São Tomé and Príncipe"
+        ]
     },
     "Senegal": {
         "code": "sn",
@@ -2789,7 +2811,8 @@
             "Australia"
         ],
         "alternateNames": [
-            "Timor-Leste"
+            "Timor-Leste",
+            "Timor Leste"
         ]
     },
     "Togo": {
@@ -2838,7 +2861,9 @@
             "Barbados",
             "Guyana"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Trinidad"
+        ]
     },
     "Tunisia": {
         "code": "tn",
@@ -2918,7 +2943,9 @@
             "Qatar",
             "Bahrain"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "UAE"
+        ]
     },
     "Uruguay": {
         "code": "uy",

@@ -163,8 +163,11 @@ const germanStateAltNames = {
 
 function addAlternateNames(data, altNamesMap) {
   for (const [key, value] of Object.entries(data)) {
-    if (!value.alternateNames) {
-      value.alternateNames = altNamesMap[key] || [];
+    // Always set alternateNames, preferring the map if available
+    if (altNamesMap[key]) {
+      value.alternateNames = altNamesMap[key];
+    } else if (!value.alternateNames) {
+      value.alternateNames = [];
     }
   }
   return data;

@@ -8,7 +8,9 @@
             "Tennessee",
             "Florida"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "AL"
+        ]
     },
     "Alaska": {
         "code": "us-ak",
@@ -19,7 +21,9 @@
             "Wyoming",
             "Hawaii"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "AK"
+        ]
     },
     "Arizona": {
         "code": "us-az",
@@ -30,7 +34,9 @@
             "Utah",
             "California"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "AZ"
+        ]
     },
     "Arkansas": {
         "code": "us-ar",
@@ -41,7 +47,9 @@
             "Oklahoma",
             "Tennessee"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "AR"
+        ]
     },
     "California": {
         "code": "us-ca",
@@ -52,7 +60,9 @@
             "Arizona",
             "Washington"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "CA"
+        ]
     },
     "Colorado": {
         "code": "us-co",
@@ -63,7 +73,9 @@
             "New Mexico",
             "Kansas"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "CO"
+        ]
     },
     "Connecticut": {
         "code": "us-ct",
@@ -74,7 +86,9 @@
             "New York",
             "New Jersey"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "CT"
+        ]
     },
     "Delaware": {
         "code": "us-de",
@@ -85,7 +99,9 @@
             "Pennsylvania",
             "Rhode Island"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "DE"
+        ]
     },
     "Florida": {
         "code": "us-fl",
@@ -96,7 +112,9 @@
             "Louisiana",
             "South Carolina"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "FL"
+        ]
     },
     "Georgia": {
         "code": "us-ga",
@@ -107,7 +125,9 @@
             "Alabama",
             "Tennessee"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "GA"
+        ]
     },
     "Hawaii": {
         "code": "us-hi",
@@ -118,7 +138,9 @@
             "Florida",
             "Washington"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "HI"
+        ]
     },
     "Idaho": {
         "code": "us-id",
@@ -129,7 +151,9 @@
             "Utah",
             "Washington"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "ID"
+        ]
     },
     "Illinois": {
         "code": "us-il",
@@ -140,7 +164,9 @@
             "Iowa",
             "Missouri"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "IL"
+        ]
     },
     "Indiana": {
         "code": "us-in",
@@ -151,7 +177,9 @@
             "Michigan",
             "Kentucky"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "IN"
+        ]
     },
     "Iowa": {
         "code": "us-ia",
@@ -162,7 +190,9 @@
             "Missouri",
             "Minnesota"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "IA"
+        ]
     },
     "Kansas": {
         "code": "us-ks",
@@ -173,7 +203,9 @@
             "Missouri",
             "Colorado"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "KS"
+        ]
     },
     "Kentucky": {
         "code": "us-ky",
@@ -184,7 +216,9 @@
             "West Virginia",
             "Indiana"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "KY"
+        ]
     },
     "Louisiana": {
         "code": "us-la",
@@ -195,7 +229,9 @@
             "Mississippi",
             "Florida"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "LA"
+        ]
     },
     "Maine": {
         "code": "us-me",
@@ -206,7 +242,9 @@
             "Massachusetts",
             "New York"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "ME"
+        ]
     },
     "Maryland": {
         "code": "us-md",
@@ -217,7 +255,9 @@
             "Pennsylvania",
             "West Virginia"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MD"
+        ]
     },
     "Massachusetts": {
         "code": "us-ma",
@@ -228,7 +268,9 @@
             "New Hampshire",
             "Vermont"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MA"
+        ]
     },
     "Michigan": {
         "code": "us-mi",
@@ -239,7 +281,9 @@
             "Indiana",
             "Minnesota"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MI"
+        ]
     },
     "Minnesota": {
         "code": "us-mn",
@@ -250,7 +294,9 @@
             "South Dakota",
             "Iowa"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MN"
+        ]
     },
     "Mississippi": {
         "code": "us-ms",
@@ -261,7 +307,9 @@
             "Tennessee",
             "Arkansas"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MS"
+        ]
     },
     "Missouri": {
         "code": "us-mo",
@@ -272,7 +320,9 @@
             "Kansas",
             "Iowa"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MO"
+        ]
     },
     "Montana": {
         "code": "us-mt",
@@ -283,7 +333,9 @@
             "North Dakota",
             "South Dakota"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "MT"
+        ]
     },
     "Nebraska": {
         "code": "us-ne",
@@ -294,7 +346,9 @@
             "South Dakota",
             "Colorado"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NE"
+        ]
     },
     "Nevada": {
         "code": "us-nv",
@@ -305,7 +359,9 @@
             "Arizona",
             "Oregon"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NV"
+        ]
     },
     "New Hampshire": {
         "code": "us-nh",
@@ -316,7 +372,9 @@
             "Massachusetts",
             "Rhode Island"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NH"
+        ]
     },
     "New Jersey": {
         "code": "us-nj",
@@ -327,7 +385,9 @@
             "Delaware",
             "Connecticut"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NJ"
+        ]
     },
     "New Mexico": {
         "code": "us-nm",
@@ -338,7 +398,9 @@
             "Colorado",
             "Oklahoma"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NM"
+        ]
     },
     "New York": {
         "code": "us-ny",
@@ -349,7 +411,9 @@
             "Massachusetts",
             "Connecticut"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NY"
+        ]
     },
     "North Carolina": {
         "code": "us-nc",
@@ -360,7 +424,9 @@
             "Tennessee",
             "Georgia"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "NC"
+        ]
     },
     "North Dakota": {
         "code": "us-nd",
@@ -371,7 +437,9 @@
             "Minnesota",
             "Nebraska"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "ND"
+        ]
     },
     "Ohio": {
         "code": "us-oh",
@@ -382,7 +450,9 @@
             "Indiana",
             "Kentucky"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "OH"
+        ]
     },
     "Oklahoma": {
         "code": "us-ok",
@@ -393,7 +463,9 @@
             "Arkansas",
             "New Mexico"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "OK"
+        ]
     },
     "Oregon": {
         "code": "us-or",
@@ -404,7 +476,9 @@
             "Idaho",
             "Nevada"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "OR"
+        ]
     },
     "Pennsylvania": {
         "code": "us-pa",
@@ -415,7 +489,9 @@
             "New Jersey",
             "Maryland"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "PA"
+        ]
     },
     "Rhode Island": {
         "code": "us-ri",
@@ -426,7 +502,9 @@
             "New Hampshire",
             "Delaware"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "RI"
+        ]
     },
     "South Carolina": {
         "code": "us-sc",
@@ -437,7 +515,9 @@
             "Virginia",
             "Florida"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "SC"
+        ]
     },
     "South Dakota": {
         "code": "us-sd",
@@ -448,7 +528,9 @@
             "Montana",
             "Wyoming"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "SD"
+        ]
     },
     "Tennessee": {
         "code": "us-tn",
@@ -459,7 +541,9 @@
             "Mississippi",
             "Arkansas"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "TN"
+        ]
     },
     "Texas": {
         "code": "us-tx",
@@ -470,7 +554,9 @@
             "Louisiana",
             "Arkansas"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "TX"
+        ]
     },
     "Utah": {
         "code": "us-ut",
@@ -481,7 +567,9 @@
             "Wyoming",
             "Idaho"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "UT"
+        ]
     },
     "Vermont": {
         "code": "us-vt",
@@ -492,7 +580,9 @@
             "Massachusetts",
             "Maine"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "VT"
+        ]
     },
     "Virginia": {
         "code": "us-va",
@@ -503,7 +593,9 @@
             "West Virginia",
             "Kentucky"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "VA"
+        ]
     },
     "Washington": {
         "code": "us-wa",
@@ -514,7 +606,9 @@
             "California",
             "Montana"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "WA"
+        ]
     },
     "West Virginia": {
         "code": "us-wv",
@@ -525,7 +619,9 @@
             "Ohio",
             "Pennsylvania"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "WV"
+        ]
     },
     "Wisconsin": {
         "code": "us-wi",
@@ -536,7 +632,9 @@
             "Illinois",
             "Iowa"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "WI"
+        ]
     },
     "Wyoming": {
         "code": "us-wy",
@@ -547,6 +645,8 @@
             "Idaho",
             "Utah"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "WY"
+        ]
     }
 }

@@ -206,7 +206,9 @@
             "Chhattisgarh",
             "Andhra Pradesh"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Orissa"
+        ]
     },
     "Punjab": {
         "code": "in-pb",
@@ -283,7 +285,9 @@
             "Uttarakhand",
             "Haryana"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "UP"
+        ]
     },
     "Uttarakhand": {
         "code": "in-ut",
@@ -294,7 +298,9 @@
             "Haryana",
             "Delhi"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Uttaranchal"
+        ]
     },
     "West Bengal": {
         "code": "in-wb",
@@ -305,7 +311,9 @@
             "Odisha",
             "Sikkim"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Bengal"
+        ]
     },
     "Andaman and Nicobar Islands": {
         "code": "in-an",
@@ -316,7 +324,9 @@
             "West Bengal",
             "Lakshadweep"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Andaman"
+        ]
     },
     "Chandigarh": {
         "code": "in-ch",
@@ -360,7 +370,10 @@
             "Punjab",
             "Uttarakhand"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "J&K",
+            "Jammu Kashmir"
+        ]
     },
     "Ladakh": {
         "code": "in-la",
@@ -393,6 +406,8 @@
             "Karnataka",
             "Andhra Pradesh"
         ],
-        "alternateNames": []
+        "alternateNames": [
+            "Pondicherry"
+        ]
     }
 }
