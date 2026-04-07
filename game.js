@@ -61,7 +61,9 @@ async function initializeGameData() {
     return true;
   } catch (error) {
     console.error('Failed to load game data:', error);
-    alert('Error loading game data. Please refresh the page.');
+    const errorMsg = `Error loading game data: ${error.message}\n\nPlease refresh the page.`;
+    console.error(errorMsg);
+    alert(errorMsg);
     return false;
   }
 }
