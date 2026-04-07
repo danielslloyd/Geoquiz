@@ -2,81 +2,179 @@
     "Baden-Württemberg": {
         "code": "de-bw",
         "capital": "Stuttgart",
-        "similar": ["Bayern", "Hessen", "Rheinland-Pfalz", "Saarland"]
+        "similar": [
+            "Bayern",
+            "Hessen",
+            "Rheinland-Pfalz",
+            "Saarland"
+        ],
+        "alternateNames": [
+            "Baden Württemberg"
+        ]
     },
     "Bayern": {
         "code": "de-by",
         "capital": "München",
-        "similar": ["Baden-Württemberg", "Hessen", "Thüringen", "Sachsen"]
+        "similar": [
+            "Baden-Württemberg",
+            "Hessen",
+            "Thüringen",
+            "Sachsen"
+        ],
+        "alternateNames": []
     },
     "Berlin": {
         "code": "de-be",
         "capital": "Berlin",
-        "similar": ["Brandenburg", "Sachsen", "Hamburg", "Bremen"]
+        "similar": [
+            "Brandenburg",
+            "Sachsen",
+            "Hamburg",
+            "Bremen"
+        ],
+        "alternateNames": []
     },
     "Brandenburg": {
         "code": "de-bb",
         "capital": "Potsdam",
-        "similar": ["Berlin", "Sachsen", "Sachsen-Anhalt", "Mecklenburg-Vorpommern"]
+        "similar": [
+            "Berlin",
+            "Sachsen",
+            "Sachsen-Anhalt",
+            "Mecklenburg-Vorpommern"
+        ],
+        "alternateNames": []
     },
     "Bremen": {
         "code": "de-hb",
         "capital": "Bremen",
-        "similar": ["Hamburg", "Niedersachsen", "Schleswig-Holstein", "Berlin"]
+        "similar": [
+            "Hamburg",
+            "Niedersachsen",
+            "Schleswig-Holstein",
+            "Berlin"
+        ],
+        "alternateNames": []
     },
     "Hamburg": {
         "code": "de-hh",
         "capital": "Hamburg",
-        "similar": ["Bremen", "Schleswig-Holstein", "Niedersachsen", "Berlin"]
+        "similar": [
+            "Bremen",
+            "Schleswig-Holstein",
+            "Niedersachsen",
+            "Berlin"
+        ],
+        "alternateNames": []
     },
     "Hessen": {
         "code": "de-he",
         "capital": "Wiesbaden",
-        "similar": ["Nordrhein-Westfalen", "Bayern", "Baden-Württemberg", "Rheinland-Pfalz"]
+        "similar": [
+            "Nordrhein-Westfalen",
+            "Bayern",
+            "Baden-Württemberg",
+            "Rheinland-Pfalz"
+        ],
+        "alternateNames": []
     },
     "Mecklenburg-Vorpommern": {
         "code": "de-mv",
         "capital": "Schwerin",
-        "similar": ["Schleswig-Holstein", "Brandenburg", "Niedersachsen", "Sachsen-Anhalt"]
+        "similar": [
+            "Schleswig-Holstein",
+            "Brandenburg",
+            "Niedersachsen",
+            "Sachsen-Anhalt"
+        ],
+        "alternateNames": []
     },
     "Niedersachsen": {
         "code": "de-ni",
         "capital": "Hannover",
-        "similar": ["Nordrhein-Westfalen", "Bremen", "Hamburg", "Schleswig-Holstein"]
+        "similar": [
+            "Nordrhein-Westfalen",
+            "Bremen",
+            "Hamburg",
+            "Schleswig-Holstein"
+        ],
+        "alternateNames": []
     },
     "Nordrhein-Westfalen": {
         "code": "de-nw",
         "capital": "Düsseldorf",
-        "similar": ["Niedersachsen", "Hessen", "Rheinland-Pfalz", "Bremen"]
+        "similar": [
+            "Niedersachsen",
+            "Hessen",
+            "Rheinland-Pfalz",
+            "Bremen"
+        ],
+        "alternateNames": []
     },
     "Rheinland-Pfalz": {
         "code": "de-rp",
         "capital": "Mainz",
-        "similar": ["Hessen", "Nordrhein-Westfalen", "Saarland", "Baden-Württemberg"]
+        "similar": [
+            "Hessen",
+            "Nordrhein-Westfalen",
+            "Saarland",
+            "Baden-Württemberg"
+        ],
+        "alternateNames": []
     },
     "Saarland": {
         "code": "de-sl",
         "capital": "Saarbrücken",
-        "similar": ["Rheinland-Pfalz", "Baden-Württemberg", "Hessen", "Nordrhein-Westfalen"]
+        "similar": [
+            "Rheinland-Pfalz",
+            "Baden-Württemberg",
+            "Hessen",
+            "Nordrhein-Westfalen"
+        ],
+        "alternateNames": []
     },
     "Sachsen": {
         "code": "de-sn",
         "capital": "Dresden",
-        "similar": ["Thüringen", "Sachsen-Anhalt", "Brandenburg", "Bayern"]
+        "similar": [
+            "Thüringen",
+            "Sachsen-Anhalt",
+            "Brandenburg",
+            "Bayern"
+        ],
+        "alternateNames": []
     },
     "Sachsen-Anhalt": {
         "code": "de-st",
         "capital": "Magdeburg",
-        "similar": ["Sachsen", "Thüringen", "Brandenburg", "Niedersachsen"]
+        "similar": [
+            "Sachsen",
+            "Thüringen",
+            "Brandenburg",
+            "Niedersachsen"
+        ],
+        "alternateNames": []
     },
     "Schleswig-Holstein": {
         "code": "de-sh",
         "capital": "Kiel",
-        "similar": ["Hamburg", "Mecklenburg-Vorpommern", "Niedersachsen", "Bremen"]
+        "similar": [
+            "Hamburg",
+            "Mecklenburg-Vorpommern",
+            "Niedersachsen",
+            "Bremen"
+        ],
+        "alternateNames": []
     },
     "Thüringen": {
         "code": "de-th",
         "capital": "Erfurt",
-        "similar": ["Sachsen", "Sachsen-Anhalt", "Bayern", "Hessen"]
+        "similar": [
+            "Sachsen",
+            "Sachsen-Anhalt",
+            "Bayern",
+            "Hessen"
+        ],
+        "alternateNames": []
     }
 }

@@ -1874,29 +1874,46 @@ function handleNameAllInput(event) {
 
     // Check against all countries in the quiz list
     for (const countryName of gameState.currentQuizList) {
-        const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ');
+        const countryData = gameState.currentDataObj[countryName];
+        if (!gameState.foundCountries.has(countryName)) {
+            // Check exact match
+            const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ');
+            if (normalizedCountryName === normalizedInput) {
+                foundCountryMatch(countryName, input);
+                return;
+            }
 
-        // Check if this country hasn't been found yet and matches input
-        if (!gameState.foundCountries.has(countryName) && normalizedCountryName === normalizedInput) {
-            // Found a match!
-            gameState.foundCountries.add(countryName);
-            gameState.score++;
-
-            // Highlight country on globe
-            highlightFoundCountry(countryName);
-
-            // Clear input
-            input.value = '';
-
-            // Update counter
-            updateFoundCounter();
-
-            // Check if all countries found
-            checkNameAllComplete();
-
-            return;
+            // Check alternate names if available
+            if (countryData && countryData.alternateNames && Array.isArray(countryData.alternateNames)) {
+                for (const altName of countryData.alternateNames) {
+                    const normalizedAltName = altName.toLowerCase().replace(/\s+/g, ' ');
+                    if (normalizedAltName === normalizedInput) {
+                        foundCountryMatch(countryName, input);
+                        return;
+                    }
+                }
+            }
         }
     }
+}
+
+// Helper function for found country match
+function foundCountryMatch(countryName, inputElement) {
+    // Found a match!
+    gameState.foundCountries.add(countryName);
+    gameState.score++;
+
+    // Highlight country on globe
+    highlightFoundCountry(countryName);
+
+    // Clear input
+    inputElement.value = '';
+
+    // Update counter
+    updateFoundCounter();
+
+    // Check if all countries found
+    checkNameAllComplete();
 }
 
 // Highlight a found country in name-all mode
