@@ -445,7 +445,7 @@ const QUIZ_MODES = {
 function getFlagUrl(itemName) {
     const data = gameState.currentDataObj[itemName];
     if (!data) return null;
-    return `https://flagpedia.net/data/flags/w580/${data.code.toLowerCase()}.png`;
+    return `https://flagcdn.com/${data.code}.svg`;
 }
 
 // Helper function to get capital for a country/state
@@ -2145,6 +2145,10 @@ function handleCapitalsRaceSubmit() {
     if (!typed) return;
 
     const correctCapital = getCapital(gameState.targetCountry);
+    if (!correctCapital) {
+        console.error(`No capital data found for ${gameState.targetCountry}`);
+        return;
+    }
     const isCorrect = typed.toLowerCase() === correctCapital.toLowerCase();
 
     const feedback = document.getElementById('feedback');
