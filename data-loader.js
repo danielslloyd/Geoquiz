@@ -60,6 +60,156 @@ function validateData(name, data) {
 }
 
 /**
+ * Validate data consistency across maps and lists
+ * @param {Object} allData - All loaded data objects
+ * @param {Object} quizLists - Quiz lists for each region
+ * @param {Object} geoJsonData - GeoJSON features for each region
+ */
+function validateDataConsistency(allData, quizLists, geoJsonData) {
+    const mismatches = {
+        missingInData: [],      // Items in quiz list but not in data object
+        missingInQuizList: [],  // Items in data but not in quiz list
+        missingInGeoJson: [],   // Items in quiz list but not in GeoJSON
+        missingInData_Geo: [],  // Items in GeoJSON but not in data object
+        extraInGeoJson: []      // Items in GeoJSON but not in quiz list
+    };
+
+    // Check countries data
+    if (quizLists.countries && allData.countryData) {
+        const dataKeys = new Set(Object.keys(allData.countryData));
+        const quizSet = new Set(quizLists.countries);
+        const geoNames = new Set(geoJsonData.world?.map(f => f.properties?.name) || []);
+
+        // Check quiz list against data
+        for (const item of quizSet) {
+            if (!dataKeys.has(item)) {
+                mismatches.missingInData.push(`countries: "${item}" in quiz list but not in countryData`);
+            }
+        }
+
+        // Check data against quiz list
+        for (const item of dataKeys) {
+            if (!quizSet.has(item)) {
+                mismatches.missingInQuizList.push(`countries: "${item}" in countryData but not in quiz list`);
+            }
+        }
+
+        // Check GeoJSON against quiz list
+        for (const geoItem of geoNames) {
+            if (geoItem && !quizSet.has(geoItem)) {
+                mismatches.extraInGeoJson.push(`countries: "${geoItem}" in GeoJSON but not in quiz list`);
+            }
+            if (geoItem && !dataKeys.has(geoItem)) {
+                mismatches.missingInData_Geo.push(`countries: "${geoItem}" in GeoJSON but not in countryData`);
+            }
+        }
+
+        for (const item of quizSet) {
+            if (!geoNames.has(item)) {
+                mismatches.missingInGeoJson.push(`countries: "${item}" in quiz list but not in GeoJSON`);
+            }
+        }
+    }
+
+    // Check US states
+    if (quizLists.usStates && allData.usStateData) {
+        const dataKeys = new Set(Object.keys(allData.usStateData));
+        const quizSet = new Set(quizLists.usStates);
+
+        for (const item of quizSet) {
+            if (!dataKeys.has(item)) {
+                mismatches.missingInData.push(`us-states: "${item}" in quiz list but not in usStateData`);
+            }
+        }
+
+        for (const item of dataKeys) {
+            if (!quizSet.has(item)) {
+                mismatches.missingInQuizList.push(`us-states: "${item}" in usStateData but not in quiz list`);
+            }
+        }
+    }
+
+    // Check Indian states
+    if (quizLists.indianStates && allData.indianStateData) {
+        const dataKeys = new Set(Object.keys(allData.indianStateData));
+        const quizSet = new Set(quizLists.indianStates);
+
+        for (const item of quizSet) {
+            if (!dataKeys.has(item)) {
+                mismatches.missingInData.push(`indian-states: "${item}" in quiz list but not in indianStateData`);
+            }
+        }
+
+        for (const item of dataKeys) {
+            if (!quizSet.has(item)) {
+                mismatches.missingInQuizList.push(`indian-states: "${item}" in indianStateData but not in quiz list`);
+            }
+        }
+    }
+
+    // Check German states
+    if (quizLists.germanStates && allData.germanStateData) {
+        const dataKeys = new Set(Object.keys(allData.germanStateData));
+        const quizSet = new Set(quizLists.germanStates);
+
+        for (const item of quizSet) {
+            if (!dataKeys.has(item)) {
+                mismatches.missingInData.push(`german-states: "${item}" in quiz list but not in germanStateData`);
+            }
+        }
+
+        for (const item of dataKeys) {
+            if (!quizSet.has(item)) {
+                mismatches.missingInQuizList.push(`german-states: "${item}" in germanStateData but not in quiz list`);
+            }
+        }
+    }
+
+    // Check UK countries
+    if (quizLists.ukCountries && allData.ukCountryData) {
+        const dataKeys = new Set(Object.keys(allData.ukCountryData));
+        const quizSet = new Set(quizLists.ukCountries);
+
+        for (const item of quizSet) {
+            if (!dataKeys.has(item)) {
+                mismatches.missingInData.push(`uk-countries: "${item}" in quiz list but not in ukCountryData`);
+            }
+        }
+
+        for (const item of dataKeys) {
+            if (!quizSet.has(item)) {
+                mismatches.missingInQuizList.push(`uk-countries: "${item}" in ukCountryData but not in quiz list`);
+            }
+        }
+    }
+
+    // Log mismatches if any found
+    const totalMismatches = Object.values(mismatches).reduce((sum, arr) => sum + arr.length, 0);
+    if (totalMismatches > 0) {
+        console.warn('⚠️ Data consistency mismatches found:');
+        if (mismatches.missingInData.length > 0) {
+            console.warn('Missing in data objects:', mismatches.missingInData);
+        }
+        if (mismatches.missingInQuizList.length > 0) {
+            console.warn('Missing in quiz lists:', mismatches.missingInQuizList);
+        }
+        if (mismatches.missingInGeoJson.length > 0) {
+            console.warn('Missing in GeoJSON:', mismatches.missingInGeoJson);
+        }
+        if (mismatches.missingInData_Geo.length > 0) {
+            console.warn('Missing in data (from GeoJSON):', mismatches.missingInData_Geo);
+        }
+        if (mismatches.extraInGeoJson.length > 0) {
+            console.warn('Extra in GeoJSON:', mismatches.extraInGeoJson);
+        }
+    } else {
+        console.log('✓ Data consistency validation passed');
+    }
+
+    return mismatches;
+}
+
+/**
  * Load data from JSON file
  * @param {string} filename - Filename relative to /data folder
  * @returns {Promise<Object>} - Validated data object
@@ -118,7 +268,16 @@ async function loadAllData() {
     }
 }
 
+/**
+ * Validate consistency between data, quiz lists, and maps
+ * This should be called with the loaded data and quiz lists
+ */
+function validateConsistency(allData, quizLists, geoJsonData) {
+    return validateDataConsistency(allData, quizLists, geoJsonData);
+}
+
 // Export for use in the game
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { loadData, loadAllData, validateData };
+    module.exports = { loadData, loadAllData, validateData, validateConsistency };
 }
+
