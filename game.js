@@ -22,6 +22,16 @@ let gameState = {
     guessedThisQuestion: false // Track if a guess has been made for current question
 };
 
+// Sync score display between game-info panel and top bar
+function syncScoreDisplay() {
+    const si = document.getElementById('score-inline');
+    const qi = document.getElementById('question-inline');
+    const ti = document.getElementById('total-inline');
+    if (si) si.textContent = gameState.score;
+    if (qi) qi.textContent = gameState.currentQuestion;
+    if (ti) ti.textContent = gameState.totalQuestions;
+}
+
 // Globe configuration
 const width = 800;
 const height = 600;
@@ -1396,7 +1406,8 @@ const usStates = [
     'New Mexico', 'New York', 'North Carolina', 'North Dakota', 'Ohio',
     'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island', 'South Carolina',
     'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont',
-    'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'
+    'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming',
+    'Puerto Rico'
 ];
 
 const usStateData = {
@@ -1649,6 +1660,11 @@ const usStateData = {
         code: 'us-wy',
         capital: 'Cheyenne',
         similar: ['Montana', 'Colorado', 'Idaho', 'Utah']
+    },
+    'Puerto Rico': {
+        code: 'us-pr',
+        capital: 'San Juan',
+        similar: ['Hawaii', 'Florida', 'Virgin Islands', 'Guam']
     }
 };
 
@@ -1937,6 +1953,32 @@ const germanStateData = {
     }
 };
 
+// UK constituent countries
+const ukCountries = ['England', 'Scotland', 'Wales', 'Northern Ireland'];
+
+const ukCountryData = {
+    'England': {
+        code: 'gb-eng',
+        capital: 'London',
+        similar: ['Scotland', 'Wales', 'Northern Ireland']
+    },
+    'Scotland': {
+        code: 'gb-sct',
+        capital: 'Edinburgh',
+        similar: ['England', 'Wales', 'Northern Ireland']
+    },
+    'Wales': {
+        code: 'gb-wls',
+        capital: 'Cardiff',
+        similar: ['England', 'Scotland', 'Northern Ireland']
+    },
+    'Northern Ireland': {
+        code: 'gb-nir',
+        capital: 'Belfast',
+        similar: ['England', 'Scotland', 'Wales']
+    }
+};
+
 // ==================== ORDERING & SORTING UTILITIES ====================
 
 // Modular scoring function for pair-wise ordering
@@ -2186,6 +2228,19 @@ const QUIZ_MODES = {
         itemLabelPlural: 'states',
         autoRotate: false
     },
+    'uk-states': {
+        name: 'UK Countries',
+        quizList: ukCountries,
+        dataObj: ukCountryData,
+        totalQuestions: 4,
+        useGlobe: false,
+        mapUrl: 'uk-countries.geo.json',
+        mapObject: null,
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false
+    },
     'population-order': {
         name: 'Order by Population',
         quizList: quizCountries,
@@ -2365,10 +2420,11 @@ function initGame() {
 // Start game with selected mode
 function startGameWithMode(mode) {
     // Reset all game state
+    const modeConfig = QUIZ_MODES[mode];
     gameState = {
         score: 0,
         currentQuestion: 1,
-        totalQuestions: 10,
+        totalQuestions: modeConfig.totalQuestions,
         targetCountry: null,
         countries: [],
         answeredCorrectly: false,
@@ -2385,8 +2441,6 @@ function startGameWithMode(mode) {
         nameAllStartTime: null,
         nameAllGaveUp: false
     };
-
-    const modeConfig = QUIZ_MODES[mode];
 
     // Set current data sources
     gameState.currentDataObj = modeConfig.dataObj;
@@ -2411,15 +2465,16 @@ function startGameWithMode(mode) {
     }
 
     // Update score display
-    document.getElementById('score').textContent = '0';
+    document.getElementById('score').textContent = '0'; syncScoreDisplay();
     document.getElementById('current-question').textContent = '1';
 
-    // Hide mode selector and show game elements with mode icon bar
+    // Hide mode selector and show game elements with top bar
     document.getElementById('mode-selector').classList.add('hidden');
     document.getElementById('states-selector').classList.add('hidden');
-    document.getElementById('mode-icon-bar').style.display = 'flex';
-    document.getElementById('game-info').classList.remove('hidden');
+    document.getElementById('landing-header').style.display = 'none';
+    document.getElementById('top-bar').style.display = '';
     document.getElementById('controls').classList.remove('hidden');
+    syncScoreDisplay();
 
     // Show gamma lock toggle only for globe modes
     const gammaToggle = document.getElementById('gamma-lock-toggle');
@@ -2453,6 +2508,148 @@ function startGameWithMode(mode) {
     }
 }
 
+// Custom AlbersUSA composite projection that includes a Puerto Rico inset.
+// Based on https://observablehq.com/@d3/u-s-map-with-puerto-rico
+function geoAlbersUsaPr() {
+    const ε = 1e-6;
+
+    const lower48   = d3.geoAlbers();
+    const alaska    = d3.geoConicEqualArea().rotate([154, 0]).center([-2,   58.5]).parallels([55, 65]);
+    const hawaii    = d3.geoConicEqualArea().rotate([157, 0]).center([-3,   19.9]).parallels([ 8, 18]);
+    const puertoRico= d3.geoConicEqualArea().rotate([ 66, 0]).center([ 0,   18  ]).parallels([ 8, 18]);
+
+    // pointStream pattern: calling a sub-projection's stream with this sink lets us
+    // test whether a lat/lon falls inside that sub-projection's clipExtent.
+    let point;
+    const pointStream = { point(x, y) { point = [x, y]; } };
+    let lower48Point, alaskaPoint, hawaiiPoint, puertoRicoPoint;
+
+    let cache, cacheStream;
+
+    function multiplex(streams) {
+        const n = streams.length;
+        return {
+            point(x, y)     { for (let i = 0; i < n; i++) streams[i].point(x, y); },
+            sphere()         { for (let i = 0; i < n; i++) streams[i].sphere(); },
+            lineStart()      { for (let i = 0; i < n; i++) streams[i].lineStart(); },
+            lineEnd()        { for (let i = 0; i < n; i++) streams[i].lineEnd(); },
+            polygonStart()   { for (let i = 0; i < n; i++) streams[i].polygonStart(); },
+            polygonEnd()     { for (let i = 0; i < n; i++) streams[i].polygonEnd(); }
+        };
+    }
+
+    function reset() { cache = cacheStream = null; return albersUsaPr; }
+
+    // The projection callable: routes a [lon,lat] to the correct inset.
+    function albersUsaPr(coordinates) {
+        const x = coordinates[0], y = coordinates[1];
+        return (point = null,
+            (lower48Point.point(x, y),    point) ||
+            (alaskaPoint.point(x, y),     point) ||
+            (hawaiiPoint.point(x, y),     point) ||
+            (puertoRicoPoint.point(x, y), point));
+    }
+
+    albersUsaPr.invert = function(coordinates) {
+        const k = lower48.scale();
+        const t = lower48.translate();
+        const x = (coordinates[0] - t[0]) / k;
+        const y = (coordinates[1] - t[1]) / k;
+        return (y >= 0.120 && y < 0.234 && x >= -0.425 && x < -0.214 ? alaska
+              : y >= 0.166 && y < 0.234 && x >= -0.214 && x < -0.115 ? hawaii
+              : y >= 0.166 && y < 0.234 && x >=  0.320 && x <  0.380 ? puertoRico
+              : lower48).invert(coordinates);
+    };
+
+    albersUsaPr.stream = function(output) {
+        if (cache && cacheStream === output) return cache;
+        cache = multiplex([
+            lower48.stream(output),
+            alaska.stream(output),
+            hawaii.stream(output),
+            puertoRico.stream(output)
+        ]);
+        cacheStream = output;
+        return cache;
+    };
+
+    albersUsaPr.precision = function(_) {
+        if (!arguments.length) return lower48.precision();
+        lower48.precision(_); alaska.precision(_); hawaii.precision(_); puertoRico.precision(_);
+        return reset();
+    };
+
+    albersUsaPr.scale = function(_) {
+        if (!arguments.length) return lower48.scale();
+        const k = +_;
+        lower48.scale(k);
+        alaska.scale(k * 0.35);
+        hawaii.scale(k);
+        puertoRico.scale(k * 1.5);
+        return albersUsaPr.translate(lower48.translate());
+    };
+
+    albersUsaPr.translate = function(_) {
+        if (!arguments.length) return lower48.translate();
+        const k = lower48.scale();
+        const x = +_[0], y = +_[1];
+
+        lower48Point = lower48
+            .translate([x, y])
+            .clipExtent([[x - 0.455*k + ε, y - 0.238*k + ε], [x + 0.455*k - ε, y + 0.238*k - ε]])
+            .stream(pointStream);
+
+        alaskaPoint = alaska
+            .translate([x - 0.307*k, y + 0.201*k])
+            .clipExtent([[x - 0.425*k + ε, y + 0.120*k + ε], [x - 0.214*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        hawaiiPoint = hawaii
+            .translate([x - 0.205*k, y + 0.212*k])
+            .clipExtent([[x - 0.214*k + ε, y + 0.166*k + ε], [x - 0.115*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        puertoRicoPoint = puertoRico
+            .translate([x + 0.350*k, y + 0.212*k])
+            .clipExtent([[x + 0.320*k + ε, y + 0.166*k + ε], [x + 0.380*k - ε, y + 0.234*k - ε]])
+            .stream(pointStream);
+
+        return reset();
+    };
+
+    albersUsaPr.fitExtent = function(extent, object) {
+        const w = extent[1][0] - extent[0][0];
+        const h = extent[1][1] - extent[0][1];
+
+        // Reset to reference scale/translate so sub-projection clipExtents are well-defined
+        albersUsaPr.scale(150).translate([0, 0]);
+
+        // Compute the bounding box of all projected features
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        d3.geoStream(object, albersUsaPr.stream({
+            point(x, y) {
+                if (x < x0) x0 = x; if (x > x1) x1 = x;
+                if (y < y0) y0 = y; if (y > y1) y1 = y;
+            },
+            lineStart(){}, lineEnd(){}, polygonStart(){}, polygonEnd(){}, sphere(){}
+        }));
+
+        if (x1 < x0) return albersUsaPr; // nothing projected
+
+        const k = 0.95 * Math.min(w / (x1 - x0), h / (y1 - y0));
+        const tx = +extent[0][0] + (w - k * (x1 + x0)) / 2;
+        const ty = +extent[0][1] + (h - k * (y1 + y0)) / 2;
+        return albersUsaPr.scale(k * 150).translate([tx, ty]);
+    };
+
+    albersUsaPr.fitSize = function(size, object) {
+        return albersUsaPr.fitExtent([[0, 0], size], object);
+    };
+
+    // Initialise at default scale with a placeholder translate so pointStreams are created
+    return albersUsaPr.scale(1070).translate([480, 300]);
+}
+
 // Set up the globe SVG and projection
 function setupGlobe() {
     const modeConfig = QUIZ_MODES[gameState.mode];
@@ -2464,18 +2661,21 @@ function setupGlobe() {
     d3.select(svgId).selectAll('*').remove();
 
     svg = d3.select(svgId)
-        .attr('width', width)
-        .attr('height', height);
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .style('width', '100%')
+        .style('height', 'auto')
+        .style('touch-action', 'none');
 
     if (modeConfig.useGlobe) {
         // Orthographic projection for globe view
         projection = d3.geoOrthographic()
-            .scale(280)
+            .scale(Math.min(width, height) / 2 - 10)
             .translate([width / 2, height / 2])
             .clipAngle(90);
     } else if (modeConfig.useAlbersUsa) {
-        // Albers USA composite projection — AK and HI insets are built in
-        projection = d3.geoAlbersUsaPr();
+        // Custom composite projection with AK, HI, and PR insets
+        projection = geoAlbersUsaPr();
     } else {
         // Mercator projection for regional maps (India, Germany, etc.)
         projection = d3.geoMercator()
@@ -2541,8 +2741,8 @@ function setupGlobe() {
         const k = Math.pow(2, delta);
         const newScale = scale * k;
 
-        // Set min and max scale limits
-        const minScale = 100;
+        // Set min and max scale limits (don't zoom out beyond starting view)
+        const minScale = gameState.initialScale || 100;
         const maxScale = 2000;
 
         if (newScale >= minScale && newScale <= maxScale) {
@@ -2628,6 +2828,113 @@ function setupGlobe() {
             countriesGroup.selectAll('path').attr('d', path);
         }
     });
+
+    // Touch support: pinch-to-zoom and single-finger drag
+    let touchState = { lastDist: null, lastCenter: null, dragging: false, moved: false, startPos: null, wasPinch: false };
+
+    function touchDist(touches) {
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function svgPoint(touch) {
+        const rect = svg.node().getBoundingClientRect();
+        const scaleX = width / rect.width;
+        const scaleY = height / rect.height;
+        return [(touch.clientX - rect.left) * scaleX, (touch.clientY - rect.top) * scaleY];
+    }
+
+    svg.node().addEventListener('touchstart', function(e) {
+        if (gameState.scrollLocked) return;
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            touchState.lastDist = touchDist(e.touches);
+            touchState.dragging = false;
+            touchState.wasPinch = true;
+        } else if (e.touches.length === 1 && !touchState.wasPinch) {
+            touchState.dragging = true;
+            touchState.moved = false;
+            touchState.lastCenter = null;
+            touchState.startPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            const p = svgPoint(e.touches[0]);
+            r0 = projection.rotate();
+            v0 = versor.cartesian(projection.invert(p));
+            q0 = versor(r_unconstrained || r0);
+        }
+    }, { passive: false });
+
+    svg.node().addEventListener('touchmove', function(e) {
+        if (gameState.scrollLocked) return;
+        e.preventDefault();
+        if (e.touches.length === 2) {
+            // Pinch zoom
+            const dist = touchDist(e.touches);
+            if (touchState.lastDist) {
+                const k = dist / touchState.lastDist;
+                const scale = projection.scale();
+                const newScale = scale * k;
+                const minScale = gameState.initialScale || 100;
+                const maxScale = 2000;
+                if (newScale >= minScale && newScale <= maxScale) {
+                    projection.scale(newScale);
+                    if (QUIZ_MODES[gameState.mode].useGlobe) {
+                        g.select('circle').attr('r', newScale);
+                    }
+                    countriesGroup.selectAll('path').attr('d', path);
+                    updateCapitalStars();
+                }
+            }
+            touchState.lastDist = dist;
+        } else if (e.touches.length === 1 && touchState.dragging) {
+            // Check if finger has moved enough to count as a drag (not a tap)
+            if (touchState.startPos) {
+                const dx = e.touches[0].clientX - touchState.startPos.x;
+                const dy = e.touches[0].clientY - touchState.startPos.y;
+                if (Math.sqrt(dx * dx + dy * dy) > 8) touchState.moved = true;
+            }
+            if (!touchState.moved) return;
+
+            const p = svgPoint(e.touches[0]);
+            const mc = QUIZ_MODES[gameState.mode];
+            if (mc.useGlobe) {
+                projection.rotate(r0);
+                const v1 = versor.cartesian(projection.invert(p));
+                const q1 = versor.multiply(q0, versor.delta(v0, v1));
+                const r1 = versor.rotation(q1);
+                r_unconstrained = r1;
+                const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
+                projection.rotate([r1[0], constrainedLat, gammaLocked ? 0 : r1[2]]);
+            } else {
+                // Flat map pan
+                if (touchState.lastCenter) {
+                    const pdx = p[0] - touchState.lastCenter[0];
+                    const pdy = p[1] - touchState.lastCenter[1];
+                    const t = projection.translate();
+                    projection.translate([t[0] + pdx, t[1] + pdy]);
+                }
+            }
+            touchState.lastCenter = p;
+            countriesGroup.selectAll('path').attr('d', path);
+            updateCapitalStars();
+        }
+    }, { passive: false });
+
+    svg.node().addEventListener('touchend', function(e) {
+        if (e.touches.length < 2) touchState.lastDist = null;
+        if (e.touches.length === 0) {
+            // If it was a clean single-finger tap (no drag, no pinch), simulate a click
+            if (!touchState.moved && !touchState.wasPinch && touchState.startPos) {
+                const target = document.elementFromPoint(touchState.startPos.x, touchState.startPos.y);
+                if (target) target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            }
+            touchState.dragging = false;
+            touchState.moved = false;
+            touchState.wasPinch = false;
+            touchState.lastCenter = null;
+            touchState.startPos = null;
+        }
+    });
 }
 
 // Load map data based on current mode
@@ -2668,10 +2975,12 @@ function loadMapData() {
                         state.properties.name = state.properties.st_nm;
                     } else if (state.properties.NAME_1) {
                         state.properties.name = state.properties.NAME_1;
+                    } else if (state.properties.CTRY21NM) {
+                        state.properties.name = state.properties.CTRY21NM;
                     }
                 });
 
-                // Fit projection to India
+                // Fit projection to data
                 projection.fitSize([width, height], {
                     type: 'FeatureCollection',
                     features: gameState.countries
@@ -2679,6 +2988,7 @@ function loadMapData() {
             }
 
             drawCountries();
+            gameState.initialScale = projection.scale();
             startNewQuestion();
         })
         .catch(error => {
@@ -2754,7 +3064,8 @@ function getStateName(id) {
         35: 'New Mexico', 36: 'New York', 37: 'North Carolina', 38: 'North Dakota', 39: 'Ohio',
         40: 'Oklahoma', 41: 'Oregon', 42: 'Pennsylvania', 44: 'Rhode Island', 45: 'South Carolina',
         46: 'South Dakota', 47: 'Tennessee', 48: 'Texas', 49: 'Utah', 50: 'Vermont',
-        51: 'Virginia', 53: 'Washington', 54: 'West Virginia', 55: 'Wisconsin', 56: 'Wyoming'
+        51: 'Virginia', 53: 'Washington', 54: 'West Virginia', 55: 'Wisconsin', 56: 'Wyoming',
+        72: 'Puerto Rico'
     };
 
     return stateNames[id] || `State ${id}`;
@@ -2969,7 +3280,7 @@ function handleCountryClick(event, d) {
             d3.select(event.target).classed('target', true);
             gameState.answeredCorrectly = true;
             gameState.score++;
-            document.getElementById('score').textContent = gameState.score;
+            document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
             // Zoom to correct country, then advance
             zoomAndRotateToCountry(gameState.targetCountry, 800).then(() => {
@@ -3003,9 +3314,11 @@ function handleCountryClick(event, d) {
                 // Zoom to correct country
                 return zoomAndRotateToCountry(gameState.targetCountry, 800);
             }).then(() => {
-                // Keep both highlights and lock scrolling until next question
-                // The incorrect country stays red, correct stays green
-                // Scrolling remains locked until startNewQuestion is called
+                // Advance to next sub-question after showing the correct answer
+                setTimeout(() => {
+                    gameState.subQuestionIndex++;
+                    startNewQuestion();
+                }, 500);
             });
         } else {
             handleIncorrectAnswer(event.target);
@@ -3050,7 +3363,7 @@ function handleCorrectAnswer(element) {
     if (element && element.classed) {
         d3.select(element).classed('selected', false).classed('target', true);
     }
-    document.getElementById('score').textContent = gameState.score;
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
@@ -3280,7 +3593,7 @@ function startNewQuestion() {
     }
 
     // Update question number display
-    document.getElementById('current-question').textContent = gameState.currentQuestion;
+    document.getElementById('current-question').textContent = gameState.currentQuestion; syncScoreDisplay();
 
     // Render the appropriate question based on subQuestionIndex
     const hasFlags = modeConfig.hasFlags;
@@ -3432,7 +3745,7 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             // Handle correct answer logic
             gameState.answeredCorrectly = true;
             gameState.score++;
-            document.getElementById('score').textContent = gameState.score;
+            document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
             // Auto-advance to capital question immediately
             gameState.subQuestionIndex++;
@@ -3523,7 +3836,7 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
         // Handle correct answer logic
         gameState.answeredCorrectly = true;
         gameState.score++;
-        document.getElementById('score').textContent = gameState.score;
+        document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
         // Auto-advance to next country immediately
         // Reset sub-question index and move to next country
@@ -3710,13 +4023,7 @@ function updateFoundCounter() {
     ).length;
 
     document.getElementById('found-count').textContent = gameState.foundCountries.size;
-    document.getElementById('score').textContent = gameState.score;
-
-    // Update inline score if it exists
-    const scoreInline = document.getElementById('score-inline');
-    if (scoreInline) {
-        scoreInline.textContent = gameState.score;
-    }
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 }
 
 // Check if all countries have been found
@@ -3883,7 +4190,7 @@ function handleCapitalsRaceSubmit() {
 
     if (isCorrect) {
         gameState.score++;
-        document.getElementById('score').textContent = gameState.score;
+        document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
         feedback.textContent = `Correct! ${correctCapital} is the capital of ${gameState.targetCountry}.`;
         feedback.className = 'feedback correct';
     } else {
@@ -4004,7 +4311,7 @@ function checkOrderingAnswer() {
     // Update game score (convert percentage to points out of 10)
     const points = Math.round(score / 10);
     gameState.score += points;
-    document.getElementById('score').textContent = gameState.score;
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
     // Show feedback
     const feedback = document.getElementById('feedback');
@@ -4291,11 +4598,12 @@ function restartGame() {
     const currentDataObj = gameState.currentDataObj;
     const currentQuizList = gameState.currentQuizList;
     const countries = gameState.countries;
+    const prevTotal = gameState.totalQuestions;
 
     gameState = {
         score: 0,
         currentQuestion: 1,
-        totalQuestions: 10,
+        totalQuestions: prevTotal,
         targetCountry: null,
         countries: countries, // Keep loaded map data
         answeredCorrectly: false,
@@ -4310,7 +4618,7 @@ function restartGame() {
         currentQuizList: currentQuizList
     };
 
-    document.getElementById('score').textContent = '0';
+    document.getElementById('score').textContent = '0'; syncScoreDisplay();
     document.getElementById('current-question').textContent = '1';
 
     startNewQuestion();
@@ -4322,16 +4630,11 @@ function setupEventListeners() {
     document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            if (mode === 'states') {
-                // Show states sub-selector
-                document.getElementById('mode-selector').classList.add('hidden');
-                document.getElementById('states-selector').classList.remove('hidden');
-                document.getElementById('mode-icon-bar').style.display = 'none';
+            if (mode === 'find') {
+                showFindModeSelector();
             } else if (mode === 'identify') {
-                // For identify mode, show a region selector first
                 showIdentifyModeSelector();
             } else {
-                // Start game directly for countries mode
                 startGameWithMode(mode);
             }
         });
@@ -4349,32 +4652,70 @@ function setupEventListeners() {
     document.getElementById('back-to-modes-btn').addEventListener('click', () => {
         document.getElementById('states-selector').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
-        document.getElementById('mode-icon-bar').style.display = 'none';
     });
 
-    // Mode icon bar - always visible during game
-    document.querySelectorAll('.mode-icon-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
+    // Helper to switch modes from the top bar
+    function switchToMode(mode) {
+        d3.select('#globe').selectAll('*').remove();
+        d3.select('#globe-world').selectAll('*').remove();
+        document.getElementById('game-info').classList.add('hidden');
+        document.getElementById('question-container').classList.add('hidden');
+        document.getElementById('controls').classList.add('hidden');
+        document.getElementById('multiple-choice-container').classList.add('hidden');
+        document.getElementById('world-quiz-layout').classList.add('hidden');
+        document.getElementById('world-quiz-question-bar').classList.add('hidden');
+        startGameWithMode(mode);
+    }
 
-            // Clear both SVGs before starting new mode
+    // Top bar dropdown toggles
+    function closeAllDropdowns() {
+        document.querySelectorAll('.icon-dropdown').forEach(d => d.classList.remove('open'));
+    }
+
+    document.getElementById('find-mode-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dd = document.getElementById('find-dropdown');
+        const wasOpen = dd.classList.contains('open');
+        closeAllDropdowns();
+        if (!wasOpen) dd.classList.add('open');
+    });
+
+    document.getElementById('identify-mode-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dd = document.getElementById('identify-dropdown');
+        const wasOpen = dd.classList.contains('open');
+        closeAllDropdowns();
+        if (!wasOpen) dd.classList.add('open');
+    });
+
+    document.addEventListener('click', () => closeAllDropdowns());
+
+    // Find dropdown items
+    document.querySelectorAll('#find-dropdown .dropdown-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeAllDropdowns();
+            switchToMode(e.currentTarget.dataset.mode);
+        });
+    });
+
+    // Identify dropdown items
+    document.querySelectorAll('#identify-dropdown .dropdown-item').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeAllDropdowns();
+            const region = e.currentTarget.dataset.identifyRegion;
             d3.select('#globe').selectAll('*').remove();
             d3.select('#globe-world').selectAll('*').remove();
+            startIdentifyMode(region);
+        });
+    });
 
-            // Hide all game elements before starting fresh
-            document.getElementById('game-info').classList.add('hidden');
-            document.getElementById('question-container').classList.add('hidden');
-            document.getElementById('controls').classList.add('hidden');
-            document.getElementById('multiple-choice-container').classList.add('hidden');
-            document.getElementById('world-quiz-layout').classList.add('hidden');
-            document.getElementById('world-quiz-question-bar').classList.add('hidden');
-
-            // Start the selected mode with a clean slate
-            if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else {
-                startGameWithMode(mode);
-            }
+    // Direct mode icon buttons (name-all, population-order, mystery-flag, capitals-race)
+    document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const mode = e.currentTarget.dataset.mode;
+            if (mode) switchToMode(mode);
         });
     });
 
@@ -4406,10 +4747,60 @@ function setupEventListeners() {
     });
 }
 
+// Show find mode selector (choose region)
+function showFindModeSelector() {
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Find on the Map</h2>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-mode="countries">
+                <span class="mode-icon">🌍</span>
+                <span class="mode-name">World</span>
+                <span class="mode-desc">Find countries on the globe</span>
+            </button>
+            <button class="mode-btn" data-mode="us-states">
+                <span class="mode-icon">🇺🇸</span>
+                <span class="mode-name">USA</span>
+                <span class="mode-desc">Find US states on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="indian-states">
+                <span class="mode-icon">🇮🇳</span>
+                <span class="mode-name">India</span>
+                <span class="mode-desc">Find Indian states on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="german-states">
+                <span class="mode-icon">🇩🇪</span>
+                <span class="mode-name">Germany</span>
+                <span class="mode-desc">Find German Bundesländer on the map</span>
+            </button>
+            <button class="mode-btn" data-mode="uk-states">
+                <span class="mode-icon">🇬🇧</span>
+                <span class="mode-name">UK</span>
+                <span class="mode-desc">Find UK countries on the map</span>
+            </button>
+        </div>
+        <button id="back-from-find-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            startGameWithMode(e.currentTarget.dataset.mode);
+        });
+    });
+
+    document.getElementById('back-from-find-btn').addEventListener('click', () => {
+        resetModeSelector();
+    });
+}
+
 // Show identify mode selector (choose region)
 function showIdentifyModeSelector() {
-    // Hide mode icon bar when showing selector
-    document.getElementById('mode-icon-bar').style.display = 'none';
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
 
     // Create a temporary selector for identify mode regions
     const modeSelector = document.getElementById('mode-selector');
@@ -4423,7 +4814,7 @@ function showIdentifyModeSelector() {
                 <span class="mode-desc">Identify highlighted countries</span>
             </button>
             <button class="mode-btn" data-identify-region="us-states">
-                <span class="mode-icon">🗽</span>
+                <span class="mode-icon">🇺🇸</span>
                 <span class="mode-name">US States</span>
                 <span class="mode-desc">Identify highlighted US states</span>
             </button>
@@ -4431,6 +4822,16 @@ function showIdentifyModeSelector() {
                 <span class="mode-icon">🇮🇳</span>
                 <span class="mode-name">Indian States</span>
                 <span class="mode-desc">Identify highlighted Indian states</span>
+            </button>
+            <button class="mode-btn" data-identify-region="german-states">
+                <span class="mode-icon">🇩🇪</span>
+                <span class="mode-name">German States</span>
+                <span class="mode-desc">Identify highlighted German Bundesländer</span>
+            </button>
+            <button class="mode-btn" data-identify-region="uk-states">
+                <span class="mode-icon">🇬🇧</span>
+                <span class="mode-name">UK Countries</span>
+                <span class="mode-desc">Identify highlighted UK countries</span>
             </button>
         </div>
         <button id="back-from-identify-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
@@ -4462,10 +4863,12 @@ function startIdentifyMode(region) {
     QUIZ_MODES.identify.quizList = baseModeConfig.quizList;
     QUIZ_MODES.identify.dataObj = baseModeConfig.dataObj;
     QUIZ_MODES.identify.useGlobe = baseModeConfig.useGlobe;
+    QUIZ_MODES.identify.useAlbersUsa = baseModeConfig.useAlbersUsa || false;
     QUIZ_MODES.identify.mapUrl = baseModeConfig.mapUrl;
     QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
     QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
     QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
+    QUIZ_MODES.identify.totalQuestions = Math.min(10, baseModeConfig.quizList.length);
 
     // Start game with identify mode
     startGameWithMode('identify');
@@ -4477,18 +4880,13 @@ function resetModeSelector() {
     modeSelector.innerHTML = `
         <h2>Select Quiz Mode</h2>
         <div class="mode-buttons" id="mode-buttons">
-            <button class="mode-btn" data-mode="countries">
-                <span class="mode-icon">🌍</span>
-                <span class="mode-name">Countries of the World</span>
-                <span class="mode-desc">Quiz on countries, flags, and capitals</span>
-            </button>
-            <button class="mode-btn" data-mode="states">
-                <span class="mode-icon">🗺️</span>
-                <span class="mode-name">States</span>
-                <span class="mode-desc">Quiz on US and Indian states</span>
+            <button class="mode-btn" data-mode="find">
+                <span class="mode-icon">🔍</span>
+                <span class="mode-name">Find on the Map</span>
+                <span class="mode-desc">Find countries or states on the globe/map</span>
             </button>
             <button class="mode-btn" data-mode="identify">
-                <span class="mode-icon">🔍</span>
+                <span class="mode-icon">❓</span>
                 <span class="mode-name">Identify Mode</span>
                 <span class="mode-desc">Identify highlighted locations on the map</span>
             </button>
@@ -4519,9 +4917,8 @@ function resetModeSelector() {
     document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            if (mode === 'states') {
-                document.getElementById('mode-selector').classList.add('hidden');
-                document.getElementById('states-selector').classList.remove('hidden');
+            if (mode === 'find') {
+                showFindModeSelector();
             } else if (mode === 'identify') {
                 showIdentifyModeSelector();
             } else {
