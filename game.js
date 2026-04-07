@@ -547,6 +547,32 @@ function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
     }
 }
 
+// Store the spinning animation interval for identify mode
+let globeSpinInterval = null;
+
+// Stop globe spinning animation
+function stopGlobeSpin() {
+    if (globeSpinInterval) {
+        clearInterval(globeSpinInterval);
+        globeSpinInterval = null;
+    }
+}
+
+// Start slow eastward globe spin (for identify mode)
+function startGlobeSpin(speed = 0.2) {
+    stopGlobeSpin(); // Clear any existing spin
+
+    const spinStep = () => {
+        const [lon, lat, roll] = projection.rotate();
+        // Increment longitude to spin east (right)
+        projection.rotate([lon + speed, lat, roll || 0]);
+        countriesGroup.selectAll('path').attr('d', path);
+    };
+
+    // Spin every 50ms for smooth animation
+    globeSpinInterval = setInterval(spinStep, 50);
+}
+
 // Highlight country on globe
 function highlightCountryOnGlobe(countryName) {
     const country = gameState.countries.find(c => c.properties.name === countryName);
@@ -1383,6 +1409,9 @@ function giveUp() {
 
 // Start a new question
 function startNewQuestion() {
+    // Stop any globe spinning from the previous question
+    stopGlobeSpin();
+
     // Check if this is name-all mode
     const modeConfig = QUIZ_MODES[gameState.mode];
     if (modeConfig.nameAllMode) {
@@ -1758,15 +1787,22 @@ function renderIdentifyQuestion() {
     gameState.questionType = 'identify';
     const itemLabel = QUIZ_MODES[gameState.mode].itemLabel;
     document.getElementById('question-text').innerHTML = `Which ${itemLabel} is highlighted?`;
-    
+
     document.getElementById('flag-display').style.display = 'none';
 
     // Highlight the item on the map
     highlightCountryOnGlobe(gameState.targetCountry);
 
-    // Rotate globe/map to show the target
+    // Stop any existing globe spin before rotating
+    stopGlobeSpin();
+
+    // Rotate globe/map to show the target and start spinning
     if (QUIZ_MODES[gameState.mode].useGlobe) {
         rotateToCountry(gameState.targetCountry);
+        // Start globe spin after rotation animation completes
+        setTimeout(() => {
+            startGlobeSpin(0.15); // Slow eastward spin
+        }, 1100); // Wait for rotation animation (1000ms) + small buffer
     }
 
     // Generate multiple choice options
@@ -2426,6 +2462,9 @@ versor.rotation = function(q) {
 
 // End game
 function endGame() {
+    // Stop globe spinning
+    stopGlobeSpin();
+
     const modeConfig = QUIZ_MODES[gameState.mode];
     let maxSub;
     if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode) {
