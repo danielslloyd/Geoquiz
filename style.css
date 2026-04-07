@@ -34,6 +34,48 @@ header h1 {
     opacity: 0.9;
 }
 
+/* Material Icons */
+.material-icons {
+    font-family: 'Material Icons';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    display: inline-flex;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+    vertical-align: middle;
+}
+
+.material-icons.icon-small {
+    font-size: 18px;
+}
+
+.icon-inline {
+    vertical-align: middle;
+    margin-right: 0.3em;
+}
+
+/* Flag images in UI */
+.flag-dropdown {
+    height: 20px;
+    width: 30px;
+    object-fit: cover;
+    margin-right: 0.5em;
+    vertical-align: middle;
+    border-radius: 2px;
+}
+
+.mode-icon img {
+    height: 48px;
+    width: 72px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
 /* Top Bar - Single thin bar during game */
 .top-bar {
     background: white;
@@ -1000,18 +1042,6 @@ header h1 {
     padding: 15px;
     border-radius: 8px;
     margin: 15px 0;
-}
-
-/* ==================== CAPITAL STARS STYLING ==================== */
-
-.capital-star {
-    filter: drop-shadow(0 0 3px rgba(255, 215, 0, 0.8));
-    transition: opacity 0.3s ease;
-    cursor: pointer;
-}
-
-.capital-star:hover {
-    filter: drop-shadow(0 0 8px rgba(255, 215, 0, 1));
 }
 
 /* ==================== RESPONSIVE DESIGN FOR NEW FEATURES ==================== */

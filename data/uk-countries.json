@@ -1,0 +1,38 @@
+{
+  "England": {
+    "code": "gb-eng",
+    "capital": "London",
+    "similar": [
+      "Scotland",
+      "Wales",
+      "Northern Ireland"
+    ]
+  },
+  "Scotland": {
+    "code": "gb-sct",
+    "capital": "Edinburgh",
+    "similar": [
+      "England",
+      "Wales",
+      "Northern Ireland"
+    ]
+  },
+  "Wales": {
+    "code": "gb-wls",
+    "capital": "Cardiff",
+    "similar": [
+      "England",
+      "Scotland",
+      "Northern Ireland"
+    ]
+  },
+  "Northern Ireland": {
+    "code": "gb-nir",
+    "capital": "Belfast",
+    "similar": [
+      "England",
+      "Scotland",
+      "Wales"
+    ]
+  }
+}

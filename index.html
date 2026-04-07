@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Geoquiz - Interactive Geography Game</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
     <link rel="stylesheet" href="style.css">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://d3js.org/topojson.v3.min.js"></script>
@@ -13,32 +14,32 @@
     <div class="container">
         <!-- Thin top bar: title + mode icons + score (visible during game) -->
         <div class="top-bar" id="top-bar" style="display: none;">
-            <span class="top-bar-title">🌍 Geoquiz</span>
+            <span class="top-bar-title"><span class="material-icons icon-inline">public</span> Geoquiz</span>
             <div class="top-bar-modes" id="mode-icon-bar">
                 <div class="icon-group">
-                    <button class="mode-icon-btn" id="find-mode-btn" title="Find on the map">🔍</button>
+                    <button class="mode-icon-btn" id="find-mode-btn" title="Find on the map"><span class="material-icons">search</span></button>
                     <div class="icon-dropdown" id="find-dropdown">
-                        <button class="dropdown-item" data-mode="countries">🌍 World</button>
-                        <button class="dropdown-item" data-mode="us-states">🇺🇸 USA</button>
-                        <button class="dropdown-item" data-mode="indian-states">🇮🇳 India</button>
-                        <button class="dropdown-item" data-mode="german-states">🇩🇪 Germany</button>
-                        <button class="dropdown-item" data-mode="uk-states">🇬🇧 UK</button>
+                        <button class="dropdown-item" data-mode="countries"><span class="material-icons icon-small">public</span> World</button>
+                        <button class="dropdown-item" data-mode="us-states"><img class="flag-dropdown" src="https://flagpedia.net/download/us.svg" alt="USA" /> USA</button>
+                        <button class="dropdown-item" data-mode="indian-states"><img class="flag-dropdown" src="https://flagpedia.net/download/in.svg" alt="India" /> India</button>
+                        <button class="dropdown-item" data-mode="german-states"><img class="flag-dropdown" src="https://flagpedia.net/download/de.svg" alt="Germany" /> Germany</button>
+                        <button class="dropdown-item" data-mode="uk-states"><img class="flag-dropdown" src="https://flagpedia.net/download/gb.svg" alt="UK" /> UK</button>
                     </div>
                 </div>
                 <div class="icon-group">
-                    <button class="mode-icon-btn" id="identify-mode-btn" title="Identify Mode">❓</button>
+                    <button class="mode-icon-btn" id="identify-mode-btn" title="Identify Mode"><span class="material-icons">help</span></button>
                     <div class="icon-dropdown" id="identify-dropdown">
-                        <button class="dropdown-item" data-identify-region="countries">🌍 World</button>
-                        <button class="dropdown-item" data-identify-region="us-states">🇺🇸 USA</button>
-                        <button class="dropdown-item" data-identify-region="indian-states">🇮🇳 India</button>
-                        <button class="dropdown-item" data-identify-region="german-states">🇩🇪 Germany</button>
-                        <button class="dropdown-item" data-identify-region="uk-states">🇬🇧 UK</button>
+                        <button class="dropdown-item" data-identify-region="countries"><span class="material-icons icon-small">public</span> World</button>
+                        <button class="dropdown-item" data-identify-region="us-states"><img class="flag-dropdown" src="https://flagpedia.net/download/us.svg" alt="USA" /> USA</button>
+                        <button class="dropdown-item" data-identify-region="indian-states"><img class="flag-dropdown" src="https://flagpedia.net/download/in.svg" alt="India" /> India</button>
+                        <button class="dropdown-item" data-identify-region="german-states"><img class="flag-dropdown" src="https://flagpedia.net/download/de.svg" alt="Germany" /> Germany</button>
+                        <button class="dropdown-item" data-identify-region="uk-states"><img class="flag-dropdown" src="https://flagpedia.net/download/gb.svg" alt="UK" /> UK</button>
                     </div>
                 </div>
-                <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries">⌨️</button>
-                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population">📊</button>
-                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag">🚩</button>
-                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race">🏛️</button>
+                <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-icons">keyboard</span></button>
+                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-icons">bar_chart</span></button>
+                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-icons">flag</span></button>
+                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-icons">account_balance</span></button>
             </div>
             <div class="top-bar-score" id="top-bar-score">
                 <span class="score-compact"><span id="score-inline">0</span> pts</span>
@@ -48,7 +49,7 @@
 
         <!-- Landing header (only shown on mode select screen) -->
         <header id="landing-header">
-            <h1>🌍 Geoquiz</h1>
+            <h1><span class="material-icons icon-inline">public</span> Geoquiz</h1>
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
 
@@ -57,32 +58,32 @@
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
                 <button class="mode-btn" data-mode="find">
-                    <span class="mode-icon">🔍</span>
+                    <span class="mode-icon material-icons">search</span>
                     <span class="mode-name">Find on the Map</span>
                     <span class="mode-desc">Find countries or states on the globe/map</span>
                 </button>
                 <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon">❓</span>
+                    <span class="mode-icon material-icons">help</span>
                     <span class="mode-name">Identify Mode</span>
                     <span class="mode-desc">Identify highlighted locations on the map</span>
                 </button>
                 <button class="mode-btn" data-mode="name-all">
-                    <span class="mode-icon">⌨️</span>
+                    <span class="mode-icon material-icons">keyboard</span>
                     <span class="mode-name">Name All Countries</span>
                     <span class="mode-desc">Type as many countries as you can!</span>
                 </button>
                 <button class="mode-btn" data-mode="population-order">
-                    <span class="mode-icon">📊</span>
+                    <span class="mode-icon material-icons">bar_chart</span>
                     <span class="mode-name">Order by Population</span>
                     <span class="mode-desc">Drag countries to order them by population</span>
                 </button>
                 <button class="mode-btn" data-mode="mystery-flag">
-                    <span class="mode-icon">🚩</span>
+                    <span class="mode-icon material-icons">flag</span>
                     <span class="mode-name">Mystery Flag</span>
                     <span class="mode-desc">See the flag, find the country on the globe</span>
                 </button>
                 <button class="mode-btn" data-mode="capitals-race">
-                    <span class="mode-icon">🏛️</span>
+                    <span class="mode-icon material-icons">account_balance</span>
                     <span class="mode-name">Capitals Race</span>
                     <span class="mode-desc">Type the capital of each highlighted country</span>
                 </button>
@@ -94,22 +95,22 @@
             <h2>Select Region</h2>
             <div class="mode-buttons">
                 <button class="mode-btn" data-mode="us-states">
-                    <span class="mode-icon">🇺🇸</span>
+                    <img class="mode-icon" src="https://flagpedia.net/download/us.svg" alt="USA" />
                     <span class="mode-name">US States</span>
                     <span class="mode-desc">Quiz on the 50 United States</span>
                 </button>
                 <button class="mode-btn" data-mode="indian-states">
-                    <span class="mode-icon">🇮🇳</span>
+                    <img class="mode-icon" src="https://flagpedia.net/download/in.svg" alt="India" />
                     <span class="mode-name">Indian States</span>
                     <span class="mode-desc">Quiz on states and union territories of India</span>
                 </button>
                 <button class="mode-btn" data-mode="german-states">
-                    <span class="mode-icon">🇩🇪</span>
+                    <img class="mode-icon" src="https://flagpedia.net/download/de.svg" alt="Germany" />
                     <span class="mode-name">German States</span>
                     <span class="mode-desc">Quiz on the 16 Bundesländer of Germany</span>
                 </button>
                 <button class="mode-btn" data-mode="uk-states">
-                    <span class="mode-icon">🇬🇧</span>
+                    <img class="mode-icon" src="https://flagpedia.net/download/gb.svg" alt="UK" />
                     <span class="mode-name">UK Countries</span>
                     <span class="mode-desc">Quiz on England, Scotland, Wales & N. Ireland</span>
                 </button>
