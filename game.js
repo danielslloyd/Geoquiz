@@ -38,6 +38,50 @@ const height = 600;
 let projection, path, svg, g, countriesGroup;
 let rotation = { x: 0, y: 0 };
 
+// Alternate names for countries in name-all mode
+// Maps common alternate names to the official quiz list names
+const countryAltNames = {
+    'usa': 'United States of America',
+    'us': 'United States of America',
+    'america': 'United States of America',
+    'united states': 'United States of America',
+    'uk': 'United Kingdom',
+    'great britain': 'United Kingdom',
+    'britain': 'United Kingdom',
+    'holland': 'Netherlands',
+    'the netherlands': 'Netherlands',
+    'congo': 'Democratic Republic of the Congo',
+    'drc': 'Democratic Republic of the Congo',
+    'ivory coast': 'Côte d\'Ivoire',
+    'cote d\'ivoire': 'Côte d\'Ivoire',
+    'caribbean': 'Antigua and Barbuda', // common mistake
+    'aland': 'Åland Islands',
+    'aland islands': 'Åland Islands',
+    'sao tome': 'Sao Tome and Principe',
+    'sao tome and principe': 'Sao Tome and Principe',
+    'east timor': 'East Timor',
+    'timor leste': 'East Timor',
+    'papua new guinea': 'Papua New Guinea',
+    'png': 'Papua New Guinea',
+    'trinidad': 'Trinidad and Tobago',
+    'antigua': 'Antigua and Barbuda',
+    'barbuda': 'Antigua and Barbuda',
+    'antigua and barbuda': 'Antigua and Barbuda',
+    'bosnia': 'Bosnia and Herzegovina',
+    'herzegovina': 'Bosnia and Herzegovina',
+    'bosnia and herzegovina': 'Bosnia and Herzegovina',
+    'sri lanka': 'Sri Lanka',
+    'ceylon': 'Sri Lanka',
+    'korea': 'South Korea', // handles incomplete typing
+    'south korea': 'South Korea',
+    'north korea': 'North Korea',
+    'yemen': 'Yemen',
+    'uae': 'United Arab Emirates',
+    'united arab emirates': 'United Arab Emirates',
+    'czech republic': 'Czechia',
+    'czechia': 'Czechia',
+};
+
 // List of countries for the quiz (comprehensive list of 195 recognized countries)
 const quizCountries = [
     'United States of America', 'Canada', 'Mexico', 'Brazil', 'Argentina',
@@ -3978,12 +4022,20 @@ function handleNameAllInput(event) {
     // Normalize input for comparison (lowercase, remove extra spaces)
     const normalizedInput = inputValue.toLowerCase().replace(/\s+/g, ' ');
 
+    // Check if input matches any alternate names
+    let countryMatch = null;
+    if (countryAltNames[normalizedInput]) {
+        countryMatch = countryAltNames[normalizedInput];
+    }
+
     // Check against all countries in the quiz list
     for (const countryName of gameState.currentQuizList) {
         const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ');
 
-        // Check if this country hasn't been found yet and matches input
-        if (!gameState.foundCountries.has(countryName) && normalizedCountryName === normalizedInput) {
+        // Check if this country hasn't been found yet and matches input (either direct or via alternate names)
+        const isMatch = (normalizedCountryName === normalizedInput) || (countryMatch === countryName);
+
+        if (!gameState.foundCountries.has(countryName) && isMatch) {
             // Found a match!
             gameState.foundCountries.add(countryName);
             gameState.score++;
@@ -4700,22 +4752,22 @@ function showFindModeSelector() {
                 <span class="mode-desc">Find countries on the globe</span>
             </button>
             <button class="mode-btn" data-mode="us-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/us.svg" alt="USA" />
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
                 <span class="mode-name">USA</span>
                 <span class="mode-desc">Find US states on the map</span>
             </button>
             <button class="mode-btn" data-mode="indian-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/in.svg" alt="India" />
+                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
                 <span class="mode-name">India</span>
                 <span class="mode-desc">Find Indian states on the map</span>
             </button>
             <button class="mode-btn" data-mode="german-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/de.svg" alt="Germany" />
+                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
                 <span class="mode-name">Germany</span>
                 <span class="mode-desc">Find German Bundesländer on the map</span>
             </button>
             <button class="mode-btn" data-mode="uk-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/gb.svg" alt="UK" />
+                <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
                 <span class="mode-name">UK</span>
                 <span class="mode-desc">Find UK countries on the map</span>
             </button>
@@ -4751,22 +4803,22 @@ function showIdentifyModeSelector() {
                 <span class="mode-desc">Identify highlighted countries</span>
             </button>
             <button class="mode-btn" data-identify-region="us-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/us.svg" alt="USA" />
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
                 <span class="mode-name">US States</span>
                 <span class="mode-desc">Identify highlighted US states</span>
             </button>
             <button class="mode-btn" data-identify-region="indian-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/in.svg" alt="India" />
+                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
                 <span class="mode-name">Indian States</span>
                 <span class="mode-desc">Identify highlighted Indian states</span>
             </button>
             <button class="mode-btn" data-identify-region="german-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/de.svg" alt="Germany" />
+                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
                 <span class="mode-name">German States</span>
                 <span class="mode-desc">Identify highlighted German Bundesländer</span>
             </button>
             <button class="mode-btn" data-identify-region="uk-states">
-                <img class="mode-icon" src="https://flagpedia.net/download/gb.svg" alt="UK" />
+                <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
                 <span class="mode-name">UK Countries</span>
                 <span class="mode-desc">Identify highlighted UK countries</span>
             </button>
