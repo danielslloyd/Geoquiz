@@ -8,43 +8,98 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     min-height: 100vh;
-    padding: 20px;
+    max-height: 100vh;
+    padding: 8px;
     color: #333;
+    overflow: hidden;
 }
 
 .container {
     max-width: 1200px;
     margin: 0 auto;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
 }
 
 header {
     text-align: center;
     color: white;
-    margin-bottom: 30px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+}
+
+#landing-header {
+    padding: 15px 0;
 }
 
 header h1 {
-    font-size: 3rem;
-    margin-bottom: 10px;
+    font-size: 2.2rem;
+    margin-bottom: 2px;
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .subtitle {
-    font-size: 1.2rem;
+    font-size: 1rem;
     opacity: 0.9;
+    margin: 0;
+}
+
+/* Material Icons */
+.material-icons {
+    font-family: 'Material Icons';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    display: inline-flex;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+    vertical-align: middle;
+}
+
+.material-icons.icon-small {
+    font-size: 18px;
+}
+
+.icon-inline {
+    vertical-align: middle;
+    margin-right: 0.3em;
+}
+
+/* Flag images in UI */
+.flag-dropdown {
+    height: 20px;
+    width: 30px;
+    object-fit: cover;
+    margin-right: 0.5em;
+    vertical-align: middle;
+    border-radius: 2px;
+}
+
+.mode-icon img {
+    height: 48px;
+    width: 72px;
+    object-fit: cover;
+    border-radius: 4px;
 }
 
 /* Top Bar - Single thin bar during game */
 .top-bar {
     background: white;
-    border-radius: 10px;
-    padding: 6px 15px;
-    margin-bottom: 12px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    padding: 4px 10px;
+    margin-bottom: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
+    flex-shrink: 0;
+    height: 40px;
 }
 
 .top-bar-title {
@@ -147,23 +202,25 @@ header h1 {
 /* Mode Selector */
 .mode-selector {
     background: white;
-    border-radius: 15px;
-    padding: 40px 30px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-radius: 12px;
+    padding: 20px 20px;
+    margin-bottom: 12px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
     text-align: center;
+    flex: 1;
+    overflow-y: auto;
 }
 
 .mode-selector h2 {
-    font-size: 2rem;
+    font-size: 1.6rem;
     color: #667eea;
-    margin-bottom: 30px;
+    margin-bottom: 15px;
 }
 
 .mode-buttons {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
     max-width: 900px;
     margin: 0 auto;
 }
@@ -171,41 +228,41 @@ header h1 {
 .mode-btn {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     border: none;
-    border-radius: 15px;
-    padding: 30px 20px;
+    border-radius: 12px;
+    padding: 15px 12px;
     cursor: pointer;
     transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
     color: white;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
 }
 
 .mode-btn:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    transform: translateY(-3px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
 }
 
 .mode-btn:active {
-    transform: translateY(-2px);
+    transform: translateY(-1px);
 }
 
 .mode-btn .mode-icon {
-    font-size: 3rem;
+    font-size: 2.2rem;
     display: block;
 }
 
 .mode-btn .mode-name {
-    font-size: 1.3rem;
+    font-size: 1.1rem;
     font-weight: bold;
     display: block;
 }
 
 .mode-btn .mode-desc {
-    font-size: 0.9rem;
-    opacity: 0.9;
+    font-size: 0.75rem;
+    opacity: 0.85;
     display: block;
 }
 
@@ -219,16 +276,17 @@ header h1 {
 
 .game-info {
     background: white;
-    border-radius: 15px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    flex-shrink: 0;
 }
 
 .score-board {
     display: flex;
     justify-content: space-around;
-    gap: 20px;
+    gap: 15px;
 }
 
 .score-item {
@@ -237,29 +295,30 @@ header h1 {
 
 .score-item .label {
     display: block;
-    font-size: 0.9rem;
+    font-size: 0.75rem;
     color: #666;
-    margin-bottom: 5px;
+    margin-bottom: 2px;
 }
 
 .score-item .value {
     display: block;
-    font-size: 2rem;
+    font-size: 1.3rem;
     font-weight: bold;
     color: #667eea;
 }
 
 .question-container {
     background: white;
-    border-radius: 15px;
-    padding: 25px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
     text-align: center;
+    flex-shrink: 0;
 }
 
 .question h2 {
-    font-size: 1.8rem;
+    font-size: 1.2rem;
     color: #333;
 }
 
@@ -295,13 +354,16 @@ header h1 {
 
 .map-container {
     background: white;
-    border-radius: 15px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-radius: 12px;
+    padding: 8px;
+    margin-bottom: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
     display: flex;
     justify-content: center;
     align-items: center;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .map-container.hidden {
@@ -358,19 +420,20 @@ header h1 {
 .controls {
     display: flex;
     justify-content: center;
-    gap: 15px;
-    margin-bottom: 30px;
+    gap: 10px;
+    margin-bottom: 4px;
+    flex-shrink: 0;
 }
 
 .btn {
-    padding: 15px 30px;
-    font-size: 1.1rem;
+    padding: 10px 20px;
+    font-size: 0.95rem;
     font-weight: bold;
     border: none;
-    border-radius: 10px;
+    border-radius: 8px;
     cursor: pointer;
     transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
 }
 
 .btn:disabled {
@@ -762,13 +825,15 @@ header h1 {
 /* World Quiz Layout - Globe Left 2/3, Questions Right 1/3 */
 .world-quiz-layout {
     display: flex;
-    gap: 20px;
+    gap: 8px;
     background: white;
-    border-radius: 15px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-    min-height: 600px;
+    border-radius: 10px;
+    padding: 8px;
+    margin-bottom: 4px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .world-quiz-globe {
@@ -795,19 +860,21 @@ header h1 {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 6px;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .world-quiz-panel-top,
 .world-quiz-panel-bottom {
     flex: 0 0 auto;
     background: #f8f9fa;
-    border-radius: 10px;
-    padding: 15px;
+    border-radius: 8px;
+    padding: 10px;
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .world-quiz-panel-top .question h2,
@@ -1001,18 +1068,6 @@ header h1 {
     padding: 15px;
     border-radius: 8px;
     margin: 15px 0;
-}
-
-/* ==================== CAPITAL STARS STYLING ==================== */
-
-.capital-star {
-    filter: drop-shadow(0 0 3px rgba(255, 215, 0, 0.8));
-    transition: opacity 0.3s ease;
-    cursor: pointer;
-}
-
-.capital-star:hover {
-    filter: drop-shadow(0 0 8px rgba(255, 215, 0, 1));
 }
 
 /* ==================== RESPONSIVE DESIGN FOR NEW FEATURES ==================== */

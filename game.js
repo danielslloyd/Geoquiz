@@ -38,6 +38,50 @@ const height = 600;
 let projection, path, svg, g, countriesGroup;
 let rotation = { x: 0, y: 0 };
 
+// Alternate names for countries in name-all mode
+// Maps common alternate names to the official quiz list names
+const countryAltNames = {
+    'usa': 'United States of America',
+    'us': 'United States of America',
+    'america': 'United States of America',
+    'united states': 'United States of America',
+    'uk': 'United Kingdom',
+    'great britain': 'United Kingdom',
+    'britain': 'United Kingdom',
+    'holland': 'Netherlands',
+    'the netherlands': 'Netherlands',
+    'congo': 'Democratic Republic of the Congo',
+    'drc': 'Democratic Republic of the Congo',
+    'ivory coast': 'Côte d\'Ivoire',
+    'cote d\'ivoire': 'Côte d\'Ivoire',
+    'caribbean': 'Antigua and Barbuda', // common mistake
+    'aland': 'Åland Islands',
+    'aland islands': 'Åland Islands',
+    'sao tome': 'Sao Tome and Principe',
+    'sao tome and principe': 'Sao Tome and Principe',
+    'east timor': 'East Timor',
+    'timor leste': 'East Timor',
+    'papua new guinea': 'Papua New Guinea',
+    'png': 'Papua New Guinea',
+    'trinidad': 'Trinidad and Tobago',
+    'antigua': 'Antigua and Barbuda',
+    'barbuda': 'Antigua and Barbuda',
+    'antigua and barbuda': 'Antigua and Barbuda',
+    'bosnia': 'Bosnia and Herzegovina',
+    'herzegovina': 'Bosnia and Herzegovina',
+    'bosnia and herzegovina': 'Bosnia and Herzegovina',
+    'sri lanka': 'Sri Lanka',
+    'ceylon': 'Sri Lanka',
+    'korea': 'South Korea', // handles incomplete typing
+    'south korea': 'South Korea',
+    'north korea': 'North Korea',
+    'yemen': 'Yemen',
+    'uae': 'United Arab Emirates',
+    'united arab emirates': 'United Arab Emirates',
+    'czech republic': 'Czechia',
+    'czechia': 'Czechia',
+};
+
 // List of countries for the quiz (comprehensive list of 195 recognized countries)
 const quizCountries = [
     'United States of America', 'Canada', 'Mexico', 'Brazil', 'Argentina',
@@ -2883,7 +2927,6 @@ function setupGlobe() {
                         g.select('circle').attr('r', newScale);
                     }
                     countriesGroup.selectAll('path').attr('d', path);
-                    updateCapitalStars();
                 }
             }
             touchState.lastDist = dist;
@@ -2917,7 +2960,6 @@ function setupGlobe() {
             }
             touchState.lastCenter = p;
             countriesGroup.selectAll('path').attr('d', path);
-            updateCapitalStars();
         }
     }, { passive: false });
 
@@ -3383,11 +3425,6 @@ function handleCorrectAnswer(element) {
     } else {
         // All sub-questions complete, enable next question button
         document.getElementById('next-btn').disabled = false;
-
-        // Draw capital star if this is a globe mode with capitals
-        if (modeConfig.useGlobe && gameState.targetCountry) {
-            drawCapitalStar(gameState.targetCountry);
-        }
     }
 }
 
@@ -3764,15 +3801,23 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             }, 800);
         } else {
             handleIncorrectAnswer(element);
-            // Show correct answer after delay
+            // Show correct answer after delay and auto-advance
             setTimeout(() => {
                 const flagOptions = document.querySelectorAll('.flag-option');
+                let correctElement = null;
                 flagOptions.forEach(opt => {
                     const img = opt.querySelector('img');
                     if (img && img.src === getFlagUrl(correctAnswer)) {
                         opt.classList.add('correct');
+                        correctElement = opt;
                     }
                 });
+                // Auto-advance after showing the correct answer
+                if (correctElement) {
+                    setTimeout(() => {
+                        handleCorrectAnswer(correctElement);
+                    }, 800);
+                }
             }, 1000);
         }
     }
@@ -3980,12 +4025,20 @@ function handleNameAllInput(event) {
     // Normalize input for comparison (lowercase, remove extra spaces)
     const normalizedInput = inputValue.toLowerCase().replace(/\s+/g, ' ');
 
+    // Check if input matches any alternate names
+    let countryMatch = null;
+    if (countryAltNames[normalizedInput]) {
+        countryMatch = countryAltNames[normalizedInput];
+    }
+
     // Check against all countries in the quiz list
     for (const countryName of gameState.currentQuizList) {
         const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ');
 
-        // Check if this country hasn't been found yet and matches input
-        if (!gameState.foundCountries.has(countryName) && normalizedCountryName === normalizedInput) {
+        // Check if this country hasn't been found yet and matches input (either direct or via alternate names)
+        const isMatch = (normalizedCountryName === normalizedInput) || (countryMatch === countryName);
+
+        if (!gameState.foundCountries.has(countryName) && isMatch) {
             // Found a match!
             gameState.foundCountries.add(countryName);
             gameState.score++;
@@ -4353,67 +4406,7 @@ function checkOrderingAnswer() {
     gameState.currentQuestion++;
 }
 
-// ==================== CAPITAL CITY STARS ====================
-
-// Draw capital city stars on globe after correct answer
-function drawCapitalStar(countryName) {
-    const countryInfo = gameState.currentDataObj[countryName];
-    if (!countryInfo || !countryInfo.capitalCoords) return;
-
-    const [lat, lon] = countryInfo.capitalCoords;
-    const coords = [lon, lat]; // D3 uses [longitude, latitude]
-
-    // Check if the point is visible on the current globe rotation
-    const projected = projection(coords);
-    if (!projected) return; // Point is on the back of the globe
-
-    // Create or select the stars group
-    let starsGroup = g.select('.capital-stars');
-    if (starsGroup.empty()) {
-        starsGroup = g.append('g').attr('class', 'capital-stars');
-    }
-
-    // Add a star marker
-    starsGroup.append('path')
-        .attr('d', d3.symbol().type(d3.symbolStar).size(80))
-        .attr('transform', `translate(${projected[0]}, ${projected[1]})`)
-        .attr('fill', '#FFD700')
-        .attr('stroke', '#FFA500')
-        .attr('stroke-width', 1.5)
-        .attr('class', 'capital-star')
-        .append('title')
-        .text(`${countryInfo.capital} (capital of ${countryName})`);
-}
-
-// Update capital stars positions when globe rotates
-function updateCapitalStars() {
-    const starsGroup = g.select('.capital-stars');
-    if (starsGroup.empty()) return;
-
-    starsGroup.selectAll('.capital-star').each(function() {
-        const star = d3.select(this);
-        const title = star.select('title').text();
-        // Extract country name from title
-        const match = title.match(/\(capital of (.+)\)/);
-        if (!match) return;
-
-        const countryName = match[1];
-        const countryInfo = gameState.currentDataObj[countryName];
-        if (!countryInfo || !countryInfo.capitalCoords) return;
-
-        const [lat, lon] = countryInfo.capitalCoords;
-        const coords = [lon, lat];
-        const projected = projection(coords);
-
-        if (projected) {
-            star.attr('transform', `translate(${projected[0]}, ${projected[1]})`);
-            star.style('opacity', 1);
-        } else {
-            // Hide star if it's on the back of the globe
-            star.style('opacity', 0);
-        }
-    });
-}
+// ==================== GLOBE ROTATION ====================
 
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
@@ -4504,9 +4497,6 @@ function dragging(event) {
     const constrainedLat = Math.max(-85, Math.min(85, r1[1]));
     projection.rotate([r1[0], constrainedLat, gammaLocked ? 0 : r1[2]]);
     countriesGroup.selectAll('path').attr('d', path);
-
-    // Update capital stars positions
-    updateCapitalStars();
 }
 
 function dragEnd() {
@@ -4745,7 +4735,6 @@ function setupEventListeners() {
             projection.rotate([r[0], r[1], 0]);
             r_unconstrained = [r[0], r[1], 0];
             countriesGroup.selectAll('path').attr('d', path);
-            updateCapitalStars();
         }
     });
 }
@@ -4761,27 +4750,27 @@ function showFindModeSelector() {
         <h2>Find on the Map</h2>
         <div class="mode-buttons">
             <button class="mode-btn" data-mode="countries">
-                <span class="mode-icon">🌍</span>
+                <span class="mode-icon material-icons">public</span>
                 <span class="mode-name">World</span>
                 <span class="mode-desc">Find countries on the globe</span>
             </button>
             <button class="mode-btn" data-mode="us-states">
-                <span class="mode-icon">🇺🇸</span>
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
                 <span class="mode-name">USA</span>
                 <span class="mode-desc">Find US states on the map</span>
             </button>
             <button class="mode-btn" data-mode="indian-states">
-                <span class="mode-icon">🇮🇳</span>
+                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
                 <span class="mode-name">India</span>
                 <span class="mode-desc">Find Indian states on the map</span>
             </button>
             <button class="mode-btn" data-mode="german-states">
-                <span class="mode-icon">🇩🇪</span>
+                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
                 <span class="mode-name">Germany</span>
                 <span class="mode-desc">Find German Bundesländer on the map</span>
             </button>
             <button class="mode-btn" data-mode="uk-states">
-                <span class="mode-icon">🇬🇧</span>
+                <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
                 <span class="mode-name">UK</span>
                 <span class="mode-desc">Find UK countries on the map</span>
             </button>
@@ -4812,27 +4801,27 @@ function showIdentifyModeSelector() {
         <h2>Select Region for Identify Mode</h2>
         <div class="mode-buttons">
             <button class="mode-btn" data-identify-region="countries">
-                <span class="mode-icon">🌍</span>
+                <span class="mode-icon material-icons">public</span>
                 <span class="mode-name">World Countries</span>
                 <span class="mode-desc">Identify highlighted countries</span>
             </button>
             <button class="mode-btn" data-identify-region="us-states">
-                <span class="mode-icon">🇺🇸</span>
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
                 <span class="mode-name">US States</span>
                 <span class="mode-desc">Identify highlighted US states</span>
             </button>
             <button class="mode-btn" data-identify-region="indian-states">
-                <span class="mode-icon">🇮🇳</span>
+                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
                 <span class="mode-name">Indian States</span>
                 <span class="mode-desc">Identify highlighted Indian states</span>
             </button>
             <button class="mode-btn" data-identify-region="german-states">
-                <span class="mode-icon">🇩🇪</span>
+                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
                 <span class="mode-name">German States</span>
                 <span class="mode-desc">Identify highlighted German Bundesländer</span>
             </button>
             <button class="mode-btn" data-identify-region="uk-states">
-                <span class="mode-icon">🇬🇧</span>
+                <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
                 <span class="mode-name">UK Countries</span>
                 <span class="mode-desc">Identify highlighted UK countries</span>
             </button>
@@ -4884,32 +4873,32 @@ function resetModeSelector() {
         <h2>Select Quiz Mode</h2>
         <div class="mode-buttons" id="mode-buttons">
             <button class="mode-btn" data-mode="find">
-                <span class="mode-icon">🔍</span>
+                <span class="mode-icon material-icons">search</span>
                 <span class="mode-name">Find on the Map</span>
                 <span class="mode-desc">Find countries or states on the globe/map</span>
             </button>
             <button class="mode-btn" data-mode="identify">
-                <span class="mode-icon">❓</span>
+                <span class="mode-icon material-icons">help</span>
                 <span class="mode-name">Identify Mode</span>
                 <span class="mode-desc">Identify highlighted locations on the map</span>
             </button>
             <button class="mode-btn" data-mode="name-all">
-                <span class="mode-icon">⌨️</span>
+                <span class="mode-icon material-icons">keyboard</span>
                 <span class="mode-name">Name All Countries</span>
                 <span class="mode-desc">Type as many countries as you can!</span>
             </button>
             <button class="mode-btn" data-mode="population-order">
-                <span class="mode-icon">📊</span>
+                <span class="mode-icon material-icons">bar_chart</span>
                 <span class="mode-name">Order by Population</span>
                 <span class="mode-desc">Drag countries to order them by population</span>
             </button>
             <button class="mode-btn" data-mode="mystery-flag">
-                <span class="mode-icon">🚩</span>
+                <span class="mode-icon material-icons">flag</span>
                 <span class="mode-name">Mystery Flag</span>
                 <span class="mode-desc">See the flag, find the country on the globe</span>
             </button>
             <button class="mode-btn" data-mode="capitals-race">
-                <span class="mode-icon">🏛️</span>
+                <span class="mode-icon material-icons">account_balance</span>
                 <span class="mode-name">Capitals Race</span>
                 <span class="mode-desc">Type the capital of each highlighted country</span>
             </button>
