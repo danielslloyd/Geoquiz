@@ -588,16 +588,25 @@ header h1 {
     .options-grid {
         grid-template-columns: 1fr;
         gap: 10px;
+        max-width: 100%;
+        width: 100%;
+        padding: 0 10px;
     }
 
     .option-btn {
-        min-height: 60px;
+        min-height: 50px;
+        padding: 12px 10px;
+        font-size: 0.9rem;
+        word-wrap: break-word;
+    }
+
+    .multiple-choice-container {
         padding: 15px;
-        font-size: 0.95rem;
+        margin: 10px 0;
     }
 
     .flag-display img {
-        max-width: 250px;
+        max-width: 200px;
     }
 }
 
@@ -664,7 +673,15 @@ header h1 {
 @media (max-width: 768px) {
     .flag-options-grid {
         grid-template-columns: 1fr;
-        gap: 15px;
+        gap: 10px;
+        max-width: 100%;
+        width: 100%;
+        padding: 0 10px;
+        margin: 10px auto;
+    }
+
+    .flag-option {
+        padding: 10px;
     }
 
     .flag-option img {

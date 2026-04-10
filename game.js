@@ -3890,10 +3890,8 @@ function renderNameAllMode() {
     // Add name-all-mode class to container for styling
     document.querySelector('.container').classList.add('name-all-mode');
 
-    // Filter quiz list to only include countries that exist in the loaded map data
-    gameState.currentQuizList = gameState.currentQuizList.filter(item =>
-        gameState.countries.some(c => c.properties.name === item)
-    );
+    // Use all countries from the loaded map data for name-all mode
+    gameState.currentQuizList = gameState.countries.map(c => c.properties.name);
     const totalCountries = gameState.currentQuizList.length;
 
     // Hide question counter for name-all mode
@@ -4879,7 +4877,25 @@ function startIdentifyMode(region) {
 
 // Reset mode selector to original state
 function resetModeSelector() {
+    // Hide all game containers
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('game-info').classList.add('hidden');
+    document.getElementById('question-container').classList.add('hidden');
+    document.getElementById('controls').classList.add('hidden');
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+    document.getElementById('world-quiz-question-bar').classList.add('hidden');
+
+    // Clear globes/maps
+    d3.select('#globe').selectAll('*').remove();
+    d3.select('#globe-world').selectAll('*').remove();
+
+    // Show landing page
+    document.getElementById('landing-header').style.display = '';
     const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+
     modeSelector.innerHTML = `
         <h2>Select Quiz Mode</h2>
         <div class="mode-buttons" id="mode-buttons">
