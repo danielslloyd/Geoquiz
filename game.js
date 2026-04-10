@@ -2349,6 +2349,7 @@ function shuffleArray(array) {
 function renderMultipleChoice(options, correctAnswer) {
     const container = document.getElementById('options-grid');
     container.innerHTML = '';
+    container.className = 'options-grid'; // Ensure correct class for button layout
 
     options.forEach(option => {
         const button = document.createElement('button');
@@ -3889,9 +3890,11 @@ function renderNameAllMode() {
     // Add name-all-mode class to container for styling
     document.querySelector('.container').classList.add('name-all-mode');
 
-    const totalCountries = gameState.currentQuizList.filter(item =>
+    // Filter quiz list to only include countries that exist in the loaded map data
+    gameState.currentQuizList = gameState.currentQuizList.filter(item =>
         gameState.countries.some(c => c.properties.name === item)
-    ).length;
+    );
+    const totalCountries = gameState.currentQuizList.length;
 
     // Hide question counter for name-all mode
     const questionCounter = document.querySelector('.score-item:has(#current-question)');
