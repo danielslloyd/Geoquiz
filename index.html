@@ -7,83 +7,66 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>">
     <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://d3js.org/topojson.v3.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <!-- Thin top bar: title + mode icons + score (visible during game) -->
-        <div class="top-bar" id="top-bar" style="display: none;">
-            <span class="top-bar-title"><span class="material-icons icon-inline">public</span> Geoquiz</span>
-            <div class="top-bar-modes" id="mode-icon-bar">
-                <div class="icon-group">
-                    <button class="mode-icon-btn" id="find-mode-btn" title="Find on the map"><span class="material-icons">search</span></button>
-                    <div class="icon-dropdown" id="find-dropdown">
-                        <button class="dropdown-item" data-mode="countries"><span class="material-icons icon-small">public</span> World</button>
-                        <button class="dropdown-item" data-mode="us-states"><img class="flag-dropdown" src="https://flagcdn.com/us.svg" alt="USA" /> USA</button>
-                        <button class="dropdown-item" data-mode="indian-states"><img class="flag-dropdown" src="https://flagcdn.com/in.svg" alt="India" /> India</button>
-                        <button class="dropdown-item" data-mode="german-states"><img class="flag-dropdown" src="https://flagcdn.com/de.svg" alt="Germany" /> Germany</button>
-                        <button class="dropdown-item" data-mode="uk-states"><img class="flag-dropdown" src="https://flagcdn.com/gb.svg" alt="UK" /> UK</button>
-                    </div>
-                </div>
-                <div class="icon-group">
-                    <button class="mode-icon-btn" id="identify-mode-btn" title="Identify Mode"><span class="material-icons">help</span></button>
-                    <div class="icon-dropdown" id="identify-dropdown">
-                        <button class="dropdown-item" data-identify-region="countries"><span class="material-icons icon-small">public</span> World</button>
-                        <button class="dropdown-item" data-identify-region="us-states"><img class="flag-dropdown" src="https://flagcdn.com/us.svg" alt="USA" /> USA</button>
-                        <button class="dropdown-item" data-identify-region="indian-states"><img class="flag-dropdown" src="https://flagcdn.com/in.svg" alt="India" /> India</button>
-                        <button class="dropdown-item" data-identify-region="german-states"><img class="flag-dropdown" src="https://flagcdn.com/de.svg" alt="Germany" /> Germany</button>
-                        <button class="dropdown-item" data-identify-region="uk-states"><img class="flag-dropdown" src="https://flagcdn.com/gb.svg" alt="UK" /> UK</button>
-                    </div>
-                </div>
-                <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-icons">keyboard</span></button>
-                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-icons">bar_chart</span></button>
-                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-icons">flag</span></button>
-                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-icons">account_balance</span></button>
-            </div>
-            <div class="top-bar-score" id="top-bar-score">
-                <span class="score-compact"><span id="score-inline">0</span> pts</span>
-                <span class="score-compact">Q<span id="question-inline">1</span>/<span id="total-inline">10</span></span>
-            </div>
-        </div>
-
-        <!-- Landing header (only shown on mode select screen) -->
-        <header id="landing-header">
-            <h1><span class="material-icons icon-inline">public</span> Geoquiz</h1>
+        <header>
+            <h1><span class="material-symbols-outlined">public</span> Geoquiz</h1>
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
+
+        <!-- Always-visible mode icon bar -->
+        <div class="mode-icon-bar" id="mode-icon-bar" style="display: none;">
+            <button class="mode-icon-btn" data-mode="countries" title="Countries of the World"><span class="material-symbols-outlined">public</span></button>
+            <button class="mode-icon-btn" data-mode="us-states" title="US States"><span class="material-symbols-outlined">location_city</span></button>
+            <button class="mode-icon-btn" data-mode="indian-states" title="Indian States"><img src="https://flagpedia.net/data/flags/w160/in.png" alt="India" class="mode-flag-icon"></button>
+            <button class="mode-icon-btn" data-mode="german-states" title="German States"><img src="https://flagpedia.net/data/flags/w160/de.png" alt="Germany" class="mode-flag-icon"></button>
+            <button class="mode-icon-btn" data-mode="identify" title="Identify Mode"><span class="material-symbols-outlined">search</span></button>
+            <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
+            <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-symbols-outlined">bar_chart</span></button>
+            <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
+            <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
+        </div>
 
         <!-- Mode Selector -->
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
-                <button class="mode-btn" data-mode="find">
-                    <span class="mode-icon material-icons">search</span>
-                    <span class="mode-name">Find on the Map</span>
-                    <span class="mode-desc">Find countries or states on the globe/map</span>
+                <button class="mode-btn" data-mode="countries">
+                    <span class="mode-icon material-symbols-outlined">public</span>
+                    <span class="mode-name">Countries of the World</span>
+                    <span class="mode-desc">Quiz on countries, flags, and capitals</span>
+                </button>
+                <button class="mode-btn" data-mode="states">
+                    <span class="mode-icon material-symbols-outlined">map</span>
+                    <span class="mode-name">States</span>
+                    <span class="mode-desc">Quiz on US and Indian states</span>
                 </button>
                 <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon material-icons">help</span>
+                    <span class="mode-icon material-symbols-outlined">search</span>
                     <span class="mode-name">Identify Mode</span>
                     <span class="mode-desc">Identify highlighted locations on the map</span>
                 </button>
                 <button class="mode-btn" data-mode="name-all">
-                    <span class="mode-icon material-icons">keyboard</span>
+                    <span class="mode-icon material-symbols-outlined">keyboard</span>
                     <span class="mode-name">Name All Countries</span>
                     <span class="mode-desc">Type as many countries as you can!</span>
                 </button>
                 <button class="mode-btn" data-mode="population-order">
-                    <span class="mode-icon material-icons">bar_chart</span>
+                    <span class="mode-icon material-symbols-outlined">bar_chart</span>
                     <span class="mode-name">Order by Population</span>
                     <span class="mode-desc">Drag countries to order them by population</span>
                 </button>
                 <button class="mode-btn" data-mode="mystery-flag">
-                    <span class="mode-icon material-icons">flag</span>
+                    <span class="mode-icon material-symbols-outlined">flag</span>
                     <span class="mode-name">Mystery Flag</span>
                     <span class="mode-desc">See the flag, find the country on the globe</span>
                 </button>
                 <button class="mode-btn" data-mode="capitals-race">
-                    <span class="mode-icon material-icons">account_balance</span>
+                    <span class="mode-icon material-symbols-outlined">museum</span>
                     <span class="mode-name">Capitals Race</span>
                     <span class="mode-desc">Type the capital of each highlighted country</span>
                 </button>
@@ -95,17 +78,17 @@
             <h2>Select Region</h2>
             <div class="mode-buttons">
                 <button class="mode-btn" data-mode="us-states">
-                    <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
+                    <span class="mode-icon material-symbols-outlined">location_city</span>
                     <span class="mode-name">US States</span>
                     <span class="mode-desc">Quiz on the 50 United States</span>
                 </button>
                 <button class="mode-btn" data-mode="indian-states">
-                    <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
+                    <img src="https://flagpedia.net/data/flags/w160/in.png" alt="India" class="mode-flag-icon-lg">
                     <span class="mode-name">Indian States</span>
                     <span class="mode-desc">Quiz on states and union territories of India</span>
                 </button>
                 <button class="mode-btn" data-mode="german-states">
-                    <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
+                    <img src="https://flagpedia.net/data/flags/w160/de.png" alt="Germany" class="mode-flag-icon-lg">
                     <span class="mode-name">German States</span>
                     <span class="mode-desc">Quiz on the 16 Bundesländer of Germany</span>
                 </button>

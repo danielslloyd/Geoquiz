@@ -1,512 +1,652 @@
 {
-  "Alabama": {
-    "code": "us-al",
-    "capital": "Montgomery",
-    "similar": [
-      "Mississippi",
-      "Georgia",
-      "Tennessee",
-      "Florida"
-    ]
-  },
-  "Alaska": {
-    "code": "us-ak",
-    "capital": "Juneau",
-    "similar": [
-      "Washington",
-      "Montana",
-      "Wyoming",
-      "Hawaii"
-    ]
-  },
-  "Arizona": {
-    "code": "us-az",
-    "capital": "Phoenix",
-    "similar": [
-      "New Mexico",
-      "Nevada",
-      "Utah",
-      "California"
-    ]
-  },
-  "Arkansas": {
-    "code": "us-ar",
-    "capital": "Little Rock",
-    "similar": [
-      "Louisiana",
-      "Missouri",
-      "Oklahoma",
-      "Tennessee"
-    ]
-  },
-  "California": {
-    "code": "us-ca",
-    "capital": "Sacramento",
-    "similar": [
-      "Nevada",
-      "Oregon",
-      "Arizona",
-      "Washington"
-    ]
-  },
-  "Colorado": {
-    "code": "us-co",
-    "capital": "Denver",
-    "similar": [
-      "Wyoming",
-      "Utah",
-      "New Mexico",
-      "Kansas"
-    ]
-  },
-  "Connecticut": {
-    "code": "us-ct",
-    "capital": "Hartford",
-    "similar": [
-      "Rhode Island",
-      "Massachusetts",
-      "New York",
-      "New Jersey"
-    ]
-  },
-  "Delaware": {
-    "code": "us-de",
-    "capital": "Dover",
-    "similar": [
-      "Maryland",
-      "New Jersey",
-      "Pennsylvania",
-      "Rhode Island"
-    ]
-  },
-  "Florida": {
-    "code": "us-fl",
-    "capital": "Tallahassee",
-    "similar": [
-      "Georgia",
-      "Alabama",
-      "Louisiana",
-      "South Carolina"
-    ]
-  },
-  "Georgia": {
-    "code": "us-ga",
-    "capital": "Atlanta",
-    "similar": [
-      "Florida",
-      "South Carolina",
-      "Alabama",
-      "Tennessee"
-    ]
-  },
-  "Hawaii": {
-    "code": "us-hi",
-    "capital": "Honolulu",
-    "similar": [
-      "Alaska",
-      "California",
-      "Florida",
-      "Washington"
-    ]
-  },
-  "Idaho": {
-    "code": "us-id",
-    "capital": "Boise",
-    "similar": [
-      "Montana",
-      "Wyoming",
-      "Utah",
-      "Washington"
-    ]
-  },
-  "Illinois": {
-    "code": "us-il",
-    "capital": "Springfield",
-    "similar": [
-      "Indiana",
-      "Wisconsin",
-      "Iowa",
-      "Missouri"
-    ]
-  },
-  "Indiana": {
-    "code": "us-in",
-    "capital": "Indianapolis",
-    "similar": [
-      "Illinois",
-      "Ohio",
-      "Michigan",
-      "Kentucky"
-    ]
-  },
-  "Iowa": {
-    "code": "us-ia",
-    "capital": "Des Moines",
-    "similar": [
-      "Nebraska",
-      "Illinois",
-      "Missouri",
-      "Minnesota"
-    ]
-  },
-  "Kansas": {
-    "code": "us-ks",
-    "capital": "Topeka",
-    "similar": [
-      "Nebraska",
-      "Oklahoma",
-      "Missouri",
-      "Colorado"
-    ]
-  },
-  "Kentucky": {
-    "code": "us-ky",
-    "capital": "Frankfort",
-    "similar": [
-      "Tennessee",
-      "Virginia",
-      "West Virginia",
-      "Indiana"
-    ]
-  },
-  "Louisiana": {
-    "code": "us-la",
-    "capital": "Baton Rouge",
-    "similar": [
-      "Texas",
-      "Arkansas",
-      "Mississippi",
-      "Florida"
-    ]
-  },
-  "Maine": {
-    "code": "us-me",
-    "capital": "Augusta",
-    "similar": [
-      "New Hampshire",
-      "Vermont",
-      "Massachusetts",
-      "New York"
-    ]
-  },
-  "Maryland": {
-    "code": "us-md",
-    "capital": "Annapolis",
-    "similar": [
-      "Virginia",
-      "Delaware",
-      "Pennsylvania",
-      "West Virginia"
-    ]
-  },
-  "Massachusetts": {
-    "code": "us-ma",
-    "capital": "Boston",
-    "similar": [
-      "Rhode Island",
-      "Connecticut",
-      "New Hampshire",
-      "Vermont"
-    ]
-  },
-  "Michigan": {
-    "code": "us-mi",
-    "capital": "Lansing",
-    "similar": [
-      "Wisconsin",
-      "Ohio",
-      "Indiana",
-      "Minnesota"
-    ]
-  },
-  "Minnesota": {
-    "code": "us-mn",
-    "capital": "Saint Paul",
-    "similar": [
-      "Wisconsin",
-      "North Dakota",
-      "South Dakota",
-      "Iowa"
-    ]
-  },
-  "Mississippi": {
-    "code": "us-ms",
-    "capital": "Jackson",
-    "similar": [
-      "Alabama",
-      "Louisiana",
-      "Tennessee",
-      "Arkansas"
-    ]
-  },
-  "Missouri": {
-    "code": "us-mo",
-    "capital": "Jefferson City",
-    "similar": [
-      "Arkansas",
-      "Illinois",
-      "Kansas",
-      "Iowa"
-    ]
-  },
-  "Montana": {
-    "code": "us-mt",
-    "capital": "Helena",
-    "similar": [
-      "Idaho",
-      "Wyoming",
-      "North Dakota",
-      "South Dakota"
-    ]
-  },
-  "Nebraska": {
-    "code": "us-ne",
-    "capital": "Lincoln",
-    "similar": [
-      "Kansas",
-      "Iowa",
-      "South Dakota",
-      "Colorado"
-    ]
-  },
-  "Nevada": {
-    "code": "us-nv",
-    "capital": "Carson City",
-    "similar": [
-      "California",
-      "Utah",
-      "Arizona",
-      "Oregon"
-    ]
-  },
-  "New Hampshire": {
-    "code": "us-nh",
-    "capital": "Concord",
-    "similar": [
-      "Vermont",
-      "Maine",
-      "Massachusetts",
-      "Rhode Island"
-    ]
-  },
-  "New Jersey": {
-    "code": "us-nj",
-    "capital": "Trenton",
-    "similar": [
-      "New York",
-      "Pennsylvania",
-      "Delaware",
-      "Connecticut"
-    ]
-  },
-  "New Mexico": {
-    "code": "us-nm",
-    "capital": "Santa Fe",
-    "similar": [
-      "Arizona",
-      "Texas",
-      "Colorado",
-      "Oklahoma"
-    ]
-  },
-  "New York": {
-    "code": "us-ny",
-    "capital": "Albany",
-    "similar": [
-      "Pennsylvania",
-      "New Jersey",
-      "Massachusetts",
-      "Connecticut"
-    ]
-  },
-  "North Carolina": {
-    "code": "us-nc",
-    "capital": "Raleigh",
-    "similar": [
-      "South Carolina",
-      "Virginia",
-      "Tennessee",
-      "Georgia"
-    ]
-  },
-  "North Dakota": {
-    "code": "us-nd",
-    "capital": "Bismarck",
-    "similar": [
-      "South Dakota",
-      "Montana",
-      "Minnesota",
-      "Nebraska"
-    ]
-  },
-  "Ohio": {
-    "code": "us-oh",
-    "capital": "Columbus",
-    "similar": [
-      "Pennsylvania",
-      "Michigan",
-      "Indiana",
-      "Kentucky"
-    ]
-  },
-  "Oklahoma": {
-    "code": "us-ok",
-    "capital": "Oklahoma City",
-    "similar": [
-      "Texas",
-      "Kansas",
-      "Arkansas",
-      "New Mexico"
-    ]
-  },
-  "Oregon": {
-    "code": "us-or",
-    "capital": "Salem",
-    "similar": [
-      "Washington",
-      "California",
-      "Idaho",
-      "Nevada"
-    ]
-  },
-  "Pennsylvania": {
-    "code": "us-pa",
-    "capital": "Harrisburg",
-    "similar": [
-      "New York",
-      "Ohio",
-      "New Jersey",
-      "Maryland"
-    ]
-  },
-  "Rhode Island": {
-    "code": "us-ri",
-    "capital": "Providence",
-    "similar": [
-      "Connecticut",
-      "Massachusetts",
-      "New Hampshire",
-      "Delaware"
-    ]
-  },
-  "South Carolina": {
-    "code": "us-sc",
-    "capital": "Columbia",
-    "similar": [
-      "North Carolina",
-      "Georgia",
-      "Virginia",
-      "Florida"
-    ]
-  },
-  "South Dakota": {
-    "code": "us-sd",
-    "capital": "Pierre",
-    "similar": [
-      "North Dakota",
-      "Nebraska",
-      "Montana",
-      "Wyoming"
-    ]
-  },
-  "Tennessee": {
-    "code": "us-tn",
-    "capital": "Nashville",
-    "similar": [
-      "Kentucky",
-      "Alabama",
-      "Mississippi",
-      "Arkansas"
-    ]
-  },
-  "Texas": {
-    "code": "us-tx",
-    "capital": "Austin",
-    "similar": [
-      "Oklahoma",
-      "New Mexico",
-      "Louisiana",
-      "Arkansas"
-    ]
-  },
-  "Utah": {
-    "code": "us-ut",
-    "capital": "Salt Lake City",
-    "similar": [
-      "Nevada",
-      "Colorado",
-      "Wyoming",
-      "Idaho"
-    ]
-  },
-  "Vermont": {
-    "code": "us-vt",
-    "capital": "Montpelier",
-    "similar": [
-      "New Hampshire",
-      "New York",
-      "Massachusetts",
-      "Maine"
-    ]
-  },
-  "Virginia": {
-    "code": "us-va",
-    "capital": "Richmond",
-    "similar": [
-      "Maryland",
-      "North Carolina",
-      "West Virginia",
-      "Kentucky"
-    ]
-  },
-  "Washington": {
-    "code": "us-wa",
-    "capital": "Olympia",
-    "similar": [
-      "Oregon",
-      "Idaho",
-      "California",
-      "Montana"
-    ]
-  },
-  "West Virginia": {
-    "code": "us-wv",
-    "capital": "Charleston",
-    "similar": [
-      "Virginia",
-      "Kentucky",
-      "Ohio",
-      "Pennsylvania"
-    ]
-  },
-  "Wisconsin": {
-    "code": "us-wi",
-    "capital": "Madison",
-    "similar": [
-      "Minnesota",
-      "Michigan",
-      "Illinois",
-      "Iowa"
-    ]
-  },
-  "Wyoming": {
-    "code": "us-wy",
-    "capital": "Cheyenne",
-    "similar": [
-      "Montana",
-      "Colorado",
-      "Idaho",
-      "Utah"
-    ]
-  },
-  "Puerto Rico": {
-    "code": "us-pr",
-    "capital": "San Juan",
-    "similar": [
-      "Hawaii",
-      "Florida",
-      "Virgin Islands",
-      "Guam"
-    ]
-  }
+    "Alabama": {
+        "code": "us-al",
+        "capital": "Montgomery",
+        "similar": [
+            "Mississippi",
+            "Georgia",
+            "Tennessee",
+            "Florida"
+        ],
+        "alternateNames": [
+            "AL"
+        ]
+    },
+    "Alaska": {
+        "code": "us-ak",
+        "capital": "Juneau",
+        "similar": [
+            "Washington",
+            "Montana",
+            "Wyoming",
+            "Hawaii"
+        ],
+        "alternateNames": [
+            "AK"
+        ]
+    },
+    "Arizona": {
+        "code": "us-az",
+        "capital": "Phoenix",
+        "similar": [
+            "New Mexico",
+            "Nevada",
+            "Utah",
+            "California"
+        ],
+        "alternateNames": [
+            "AZ"
+        ]
+    },
+    "Arkansas": {
+        "code": "us-ar",
+        "capital": "Little Rock",
+        "similar": [
+            "Louisiana",
+            "Missouri",
+            "Oklahoma",
+            "Tennessee"
+        ],
+        "alternateNames": [
+            "AR"
+        ]
+    },
+    "California": {
+        "code": "us-ca",
+        "capital": "Sacramento",
+        "similar": [
+            "Nevada",
+            "Oregon",
+            "Arizona",
+            "Washington"
+        ],
+        "alternateNames": [
+            "CA"
+        ]
+    },
+    "Colorado": {
+        "code": "us-co",
+        "capital": "Denver",
+        "similar": [
+            "Wyoming",
+            "Utah",
+            "New Mexico",
+            "Kansas"
+        ],
+        "alternateNames": [
+            "CO"
+        ]
+    },
+    "Connecticut": {
+        "code": "us-ct",
+        "capital": "Hartford",
+        "similar": [
+            "Rhode Island",
+            "Massachusetts",
+            "New York",
+            "New Jersey"
+        ],
+        "alternateNames": [
+            "CT"
+        ]
+    },
+    "Delaware": {
+        "code": "us-de",
+        "capital": "Dover",
+        "similar": [
+            "Maryland",
+            "New Jersey",
+            "Pennsylvania",
+            "Rhode Island"
+        ],
+        "alternateNames": [
+            "DE"
+        ]
+    },
+    "Florida": {
+        "code": "us-fl",
+        "capital": "Tallahassee",
+        "similar": [
+            "Georgia",
+            "Alabama",
+            "Louisiana",
+            "South Carolina"
+        ],
+        "alternateNames": [
+            "FL"
+        ]
+    },
+    "Georgia": {
+        "code": "us-ga",
+        "capital": "Atlanta",
+        "similar": [
+            "Florida",
+            "South Carolina",
+            "Alabama",
+            "Tennessee"
+        ],
+        "alternateNames": [
+            "GA"
+        ]
+    },
+    "Hawaii": {
+        "code": "us-hi",
+        "capital": "Honolulu",
+        "similar": [
+            "Alaska",
+            "California",
+            "Florida",
+            "Washington"
+        ],
+        "alternateNames": [
+            "HI"
+        ]
+    },
+    "Idaho": {
+        "code": "us-id",
+        "capital": "Boise",
+        "similar": [
+            "Montana",
+            "Wyoming",
+            "Utah",
+            "Washington"
+        ],
+        "alternateNames": [
+            "ID"
+        ]
+    },
+    "Illinois": {
+        "code": "us-il",
+        "capital": "Springfield",
+        "similar": [
+            "Indiana",
+            "Wisconsin",
+            "Iowa",
+            "Missouri"
+        ],
+        "alternateNames": [
+            "IL"
+        ]
+    },
+    "Indiana": {
+        "code": "us-in",
+        "capital": "Indianapolis",
+        "similar": [
+            "Illinois",
+            "Ohio",
+            "Michigan",
+            "Kentucky"
+        ],
+        "alternateNames": [
+            "IN"
+        ]
+    },
+    "Iowa": {
+        "code": "us-ia",
+        "capital": "Des Moines",
+        "similar": [
+            "Nebraska",
+            "Illinois",
+            "Missouri",
+            "Minnesota"
+        ],
+        "alternateNames": [
+            "IA"
+        ]
+    },
+    "Kansas": {
+        "code": "us-ks",
+        "capital": "Topeka",
+        "similar": [
+            "Nebraska",
+            "Oklahoma",
+            "Missouri",
+            "Colorado"
+        ],
+        "alternateNames": [
+            "KS"
+        ]
+    },
+    "Kentucky": {
+        "code": "us-ky",
+        "capital": "Frankfort",
+        "similar": [
+            "Tennessee",
+            "Virginia",
+            "West Virginia",
+            "Indiana"
+        ],
+        "alternateNames": [
+            "KY"
+        ]
+    },
+    "Louisiana": {
+        "code": "us-la",
+        "capital": "Baton Rouge",
+        "similar": [
+            "Texas",
+            "Arkansas",
+            "Mississippi",
+            "Florida"
+        ],
+        "alternateNames": [
+            "LA"
+        ]
+    },
+    "Maine": {
+        "code": "us-me",
+        "capital": "Augusta",
+        "similar": [
+            "New Hampshire",
+            "Vermont",
+            "Massachusetts",
+            "New York"
+        ],
+        "alternateNames": [
+            "ME"
+        ]
+    },
+    "Maryland": {
+        "code": "us-md",
+        "capital": "Annapolis",
+        "similar": [
+            "Virginia",
+            "Delaware",
+            "Pennsylvania",
+            "West Virginia"
+        ],
+        "alternateNames": [
+            "MD"
+        ]
+    },
+    "Massachusetts": {
+        "code": "us-ma",
+        "capital": "Boston",
+        "similar": [
+            "Rhode Island",
+            "Connecticut",
+            "New Hampshire",
+            "Vermont"
+        ],
+        "alternateNames": [
+            "MA"
+        ]
+    },
+    "Michigan": {
+        "code": "us-mi",
+        "capital": "Lansing",
+        "similar": [
+            "Wisconsin",
+            "Ohio",
+            "Indiana",
+            "Minnesota"
+        ],
+        "alternateNames": [
+            "MI"
+        ]
+    },
+    "Minnesota": {
+        "code": "us-mn",
+        "capital": "Saint Paul",
+        "similar": [
+            "Wisconsin",
+            "North Dakota",
+            "South Dakota",
+            "Iowa"
+        ],
+        "alternateNames": [
+            "MN"
+        ]
+    },
+    "Mississippi": {
+        "code": "us-ms",
+        "capital": "Jackson",
+        "similar": [
+            "Alabama",
+            "Louisiana",
+            "Tennessee",
+            "Arkansas"
+        ],
+        "alternateNames": [
+            "MS"
+        ]
+    },
+    "Missouri": {
+        "code": "us-mo",
+        "capital": "Jefferson City",
+        "similar": [
+            "Arkansas",
+            "Illinois",
+            "Kansas",
+            "Iowa"
+        ],
+        "alternateNames": [
+            "MO"
+        ]
+    },
+    "Montana": {
+        "code": "us-mt",
+        "capital": "Helena",
+        "similar": [
+            "Idaho",
+            "Wyoming",
+            "North Dakota",
+            "South Dakota"
+        ],
+        "alternateNames": [
+            "MT"
+        ]
+    },
+    "Nebraska": {
+        "code": "us-ne",
+        "capital": "Lincoln",
+        "similar": [
+            "Kansas",
+            "Iowa",
+            "South Dakota",
+            "Colorado"
+        ],
+        "alternateNames": [
+            "NE"
+        ]
+    },
+    "Nevada": {
+        "code": "us-nv",
+        "capital": "Carson City",
+        "similar": [
+            "California",
+            "Utah",
+            "Arizona",
+            "Oregon"
+        ],
+        "alternateNames": [
+            "NV"
+        ]
+    },
+    "New Hampshire": {
+        "code": "us-nh",
+        "capital": "Concord",
+        "similar": [
+            "Vermont",
+            "Maine",
+            "Massachusetts",
+            "Rhode Island"
+        ],
+        "alternateNames": [
+            "NH"
+        ]
+    },
+    "New Jersey": {
+        "code": "us-nj",
+        "capital": "Trenton",
+        "similar": [
+            "New York",
+            "Pennsylvania",
+            "Delaware",
+            "Connecticut"
+        ],
+        "alternateNames": [
+            "NJ"
+        ]
+    },
+    "New Mexico": {
+        "code": "us-nm",
+        "capital": "Santa Fe",
+        "similar": [
+            "Arizona",
+            "Texas",
+            "Colorado",
+            "Oklahoma"
+        ],
+        "alternateNames": [
+            "NM"
+        ]
+    },
+    "New York": {
+        "code": "us-ny",
+        "capital": "Albany",
+        "similar": [
+            "Pennsylvania",
+            "New Jersey",
+            "Massachusetts",
+            "Connecticut"
+        ],
+        "alternateNames": [
+            "NY"
+        ]
+    },
+    "North Carolina": {
+        "code": "us-nc",
+        "capital": "Raleigh",
+        "similar": [
+            "South Carolina",
+            "Virginia",
+            "Tennessee",
+            "Georgia"
+        ],
+        "alternateNames": [
+            "NC"
+        ]
+    },
+    "North Dakota": {
+        "code": "us-nd",
+        "capital": "Bismarck",
+        "similar": [
+            "South Dakota",
+            "Montana",
+            "Minnesota",
+            "Nebraska"
+        ],
+        "alternateNames": [
+            "ND"
+        ]
+    },
+    "Ohio": {
+        "code": "us-oh",
+        "capital": "Columbus",
+        "similar": [
+            "Pennsylvania",
+            "Michigan",
+            "Indiana",
+            "Kentucky"
+        ],
+        "alternateNames": [
+            "OH"
+        ]
+    },
+    "Oklahoma": {
+        "code": "us-ok",
+        "capital": "Oklahoma City",
+        "similar": [
+            "Texas",
+            "Kansas",
+            "Arkansas",
+            "New Mexico"
+        ],
+        "alternateNames": [
+            "OK"
+        ]
+    },
+    "Oregon": {
+        "code": "us-or",
+        "capital": "Salem",
+        "similar": [
+            "Washington",
+            "California",
+            "Idaho",
+            "Nevada"
+        ],
+        "alternateNames": [
+            "OR"
+        ]
+    },
+    "Pennsylvania": {
+        "code": "us-pa",
+        "capital": "Harrisburg",
+        "similar": [
+            "New York",
+            "Ohio",
+            "New Jersey",
+            "Maryland"
+        ],
+        "alternateNames": [
+            "PA"
+        ]
+    },
+    "Rhode Island": {
+        "code": "us-ri",
+        "capital": "Providence",
+        "similar": [
+            "Connecticut",
+            "Massachusetts",
+            "New Hampshire",
+            "Delaware"
+        ],
+        "alternateNames": [
+            "RI"
+        ]
+    },
+    "South Carolina": {
+        "code": "us-sc",
+        "capital": "Columbia",
+        "similar": [
+            "North Carolina",
+            "Georgia",
+            "Virginia",
+            "Florida"
+        ],
+        "alternateNames": [
+            "SC"
+        ]
+    },
+    "South Dakota": {
+        "code": "us-sd",
+        "capital": "Pierre",
+        "similar": [
+            "North Dakota",
+            "Nebraska",
+            "Montana",
+            "Wyoming"
+        ],
+        "alternateNames": [
+            "SD"
+        ]
+    },
+    "Tennessee": {
+        "code": "us-tn",
+        "capital": "Nashville",
+        "similar": [
+            "Kentucky",
+            "Alabama",
+            "Mississippi",
+            "Arkansas"
+        ],
+        "alternateNames": [
+            "TN"
+        ]
+    },
+    "Texas": {
+        "code": "us-tx",
+        "capital": "Austin",
+        "similar": [
+            "Oklahoma",
+            "New Mexico",
+            "Louisiana",
+            "Arkansas"
+        ],
+        "alternateNames": [
+            "TX"
+        ]
+    },
+    "Utah": {
+        "code": "us-ut",
+        "capital": "Salt Lake City",
+        "similar": [
+            "Nevada",
+            "Colorado",
+            "Wyoming",
+            "Idaho"
+        ],
+        "alternateNames": [
+            "UT"
+        ]
+    },
+    "Vermont": {
+        "code": "us-vt",
+        "capital": "Montpelier",
+        "similar": [
+            "New Hampshire",
+            "New York",
+            "Massachusetts",
+            "Maine"
+        ],
+        "alternateNames": [
+            "VT"
+        ]
+    },
+    "Virginia": {
+        "code": "us-va",
+        "capital": "Richmond",
+        "similar": [
+            "Maryland",
+            "North Carolina",
+            "West Virginia",
+            "Kentucky"
+        ],
+        "alternateNames": [
+            "VA"
+        ]
+    },
+    "Washington": {
+        "code": "us-wa",
+        "capital": "Olympia",
+        "similar": [
+            "Oregon",
+            "Idaho",
+            "California",
+            "Montana"
+        ],
+        "alternateNames": [
+            "WA"
+        ]
+    },
+    "West Virginia": {
+        "code": "us-wv",
+        "capital": "Charleston",
+        "similar": [
+            "Virginia",
+            "Kentucky",
+            "Ohio",
+            "Pennsylvania"
+        ],
+        "alternateNames": [
+            "WV"
+        ]
+    },
+    "Wisconsin": {
+        "code": "us-wi",
+        "capital": "Madison",
+        "similar": [
+            "Minnesota",
+            "Michigan",
+            "Illinois",
+            "Iowa"
+        ],
+        "alternateNames": [
+            "WI"
+        ]
+    },
+    "Wyoming": {
+        "code": "us-wy",
+        "capital": "Cheyenne",
+        "similar": [
+            "Montana",
+            "Colorado",
+            "Idaho",
+            "Utah"
+        ],
+        "alternateNames": [
+            "WY"
+        ]
+    }
 }
