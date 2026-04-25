@@ -694,6 +694,7 @@ function startGameWithMode(mode) {
     // Set current data sources
     gameState.currentDataObj = modeConfig.dataObj;
     gameState.currentQuizList = modeConfig.quizList;
+    console.log(`Mode: ${mode}, DataObj keys: ${Object.keys(gameState.currentDataObj).length}, Sample keys: ${Object.keys(gameState.currentDataObj).slice(0, 5)}`);
 
     // Clear any previous game state messages
     const feedback = document.getElementById('feedback');
@@ -1932,7 +1933,9 @@ function renderFlagQuestion() {
             flagDiv.className = 'flag-option';
 
             const flagImg = document.createElement('img');
-            flagImg.src = getFlagUrl(option);
+            const flagUrl = getFlagUrl(option);
+            console.log(`Setting image src for ${option} to: ${flagUrl}`);
+            flagImg.src = flagUrl;
             flagImg.alt = `Flag of ${option}`;
 
             flagDiv.appendChild(flagImg);
