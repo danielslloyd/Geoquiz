@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Geoquiz - Interactive Geography Game</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap">
     <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -72,7 +73,7 @@
             </div>
         </div>
 
-        <!-- States Sub-Mode Selector -->
+        <!-- States Sub-Mode Selector (no longer used but kept for back-compat) -->
         <div class="mode-selector hidden" id="states-selector">
             <h2>Select Region</h2>
             <div class="mode-buttons">
@@ -90,6 +91,11 @@
                     <img src="https://flagpedia.net/data/flags/w160/de.png" alt="Germany" class="mode-flag-icon-lg">
                     <span class="mode-name">German States</span>
                     <span class="mode-desc">Quiz on the 16 Bundesländer of Germany</span>
+                </button>
+                <button class="mode-btn" data-mode="uk-states">
+                    <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
+                    <span class="mode-name">UK Countries</span>
+                    <span class="mode-desc">Quiz on England, Scotland, Wales & N. Ireland</span>
                 </button>
             </div>
             <button id="back-to-modes-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
@@ -168,8 +174,6 @@
             <button id="restart-btn" class="btn secondary">Restart Game</button>
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
         </div>
-
-        <!-- Instructions removed -->
     </div>
 
     <script src="game.js"></script>
