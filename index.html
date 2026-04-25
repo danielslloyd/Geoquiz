@@ -13,22 +13,44 @@
 </head>
 <body>
     <div class="container">
-        <header>
+        <header id="landing-header">
             <h1><span class="material-symbols-outlined">public</span> Geoquiz</h1>
             <p class="subtitle">Test your geography knowledge!</p>
         </header>
 
-        <!-- Always-visible mode icon bar -->
-        <div class="mode-icon-bar" id="mode-icon-bar" style="display: none;">
-            <button class="mode-icon-btn" data-mode="countries" title="Countries of the World"><span class="material-symbols-outlined">public</span></button>
-            <button class="mode-icon-btn" data-mode="us-states" title="US States"><span class="material-symbols-outlined">location_city</span></button>
-            <button class="mode-icon-btn" data-mode="indian-states" title="Indian States"><img src="https://flagpedia.net/data/flags/w160/in.png" alt="India" class="mode-flag-icon"></button>
-            <button class="mode-icon-btn" data-mode="german-states" title="German States"><img src="https://flagpedia.net/data/flags/w160/de.png" alt="Germany" class="mode-flag-icon"></button>
-            <button class="mode-icon-btn" data-mode="identify" title="Identify Mode"><span class="material-symbols-outlined">search</span></button>
-            <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
-            <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-symbols-outlined">bar_chart</span></button>
-            <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
-            <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
+        <!-- Top Bar (shown during game) -->
+        <div class="top-bar" id="top-bar" style="display: none;">
+            <span class="top-bar-title">Geoquiz</span>
+            <div class="top-bar-modes">
+                <div class="icon-dropdown" id="find-dropdown">
+                    <button class="mode-icon-btn" id="find-mode-btn" title="Find on Map"><span class="material-symbols-outlined">search</span></button>
+                    <div class="dropdown-menu">
+                        <button class="dropdown-item" data-mode="countries">World</button>
+                        <button class="dropdown-item" data-mode="us-states">USA</button>
+                        <button class="dropdown-item" data-mode="indian-states">India</button>
+                        <button class="dropdown-item" data-mode="german-states">Germany</button>
+                        <button class="dropdown-item" data-mode="uk-states">UK</button>
+                    </div>
+                </div>
+                <div class="icon-dropdown" id="identify-dropdown">
+                    <button class="mode-icon-btn" id="identify-mode-btn" title="Identify"><span class="material-symbols-outlined">help</span></button>
+                    <div class="dropdown-menu">
+                        <button class="dropdown-item" data-identify-region="countries">World</button>
+                        <button class="dropdown-item" data-identify-region="us-states">USA</button>
+                        <button class="dropdown-item" data-identify-region="indian-states">India</button>
+                        <button class="dropdown-item" data-identify-region="german-states">Germany</button>
+                        <button class="dropdown-item" data-identify-region="uk-states">UK</button>
+                    </div>
+                </div>
+                <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
+                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-symbols-outlined">bar_chart</span></button>
+                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
+                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
+            </div>
+            <div class="top-bar-score">
+                <span><span id="question-inline">1</span>/<span id="total-inline">10</span></span>
+                <span class="score-label">Score: <span id="score-inline">0</span></span>
+            </div>
         </div>
 
         <!-- Mode Selector -->
