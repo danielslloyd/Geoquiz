@@ -494,8 +494,13 @@ const QUIZ_MODES = {
 // Helper function to get flag URL for a country
 function getFlagUrl(itemName) {
     const data = gameState.currentDataObj[itemName];
-    if (!data) return null;
-    return `https://flagcdn.com/${data.code}.svg`;
+    if (!data) {
+        console.warn(`No data found for item: ${itemName}`);
+        return null;
+    }
+    const flagUrl = `https://flagcdn.com/${data.code}.svg`;
+    console.log(`Flag URL for ${itemName}: ${flagUrl}`);
+    return flagUrl;
 }
 
 // Helper function to get capital for a country/state
@@ -1897,12 +1902,14 @@ function renderLocationQuestion() {
 
 // Render flag question (show 4 flags and choose the correct one)
 function renderFlagQuestion() {
+    console.log('renderFlagQuestion called for:', gameState.targetCountry);
     gameState.questionType = 'flag';
     const modeConfig = QUIZ_MODES[gameState.mode];
     const itemLabel = modeConfig.itemLabel;
 
     // Generate multiple choice options
     const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
+    console.log('Generated options:', options);
 
     if (modeConfig.useWorldQuizLayout) {
         // For World Quiz Layout, show flag question in question bar
