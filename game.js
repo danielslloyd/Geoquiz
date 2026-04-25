@@ -514,8 +514,8 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
     let similarItems = [];
     if (data && data.similar) {
         similarItems = data.similar.filter(item => {
-            // Ensure the similar item is in our quiz list
-            return currentList.includes(item);
+            // Ensure the similar item is in our quiz list and has valid data
+            return currentList.includes(item) && gameState.currentDataObj[item];
         });
     }
 
@@ -525,10 +525,10 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
         options.push(randomSimilar);
     }
 
-    // Fill remaining options with random items
+    // Fill remaining options with random items (only those with valid data)
     while (options.length < 4) {
         const randomItem = currentList[Math.floor(Math.random() * currentList.length)];
-        if (!options.includes(randomItem)) {
+        if (!options.includes(randomItem) && gameState.currentDataObj[randomItem]) {
             options.push(randomItem);
         }
     }
@@ -2847,6 +2847,25 @@ function restartGame() {
     startNewQuestion();
 }
 
+// Go back to home/mode selector
+function goHome() {
+    d3.select('#globe').selectAll('*').remove();
+    d3.select('#globe-world').selectAll('*').remove();
+
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    document.getElementById('mode-selector').classList.remove('hidden');
+    document.getElementById('states-selector').classList.add('hidden');
+    document.getElementById('game-info').classList.add('hidden');
+    document.getElementById('question-container').classList.add('hidden');
+    document.getElementById('controls').classList.add('hidden');
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+    document.getElementById('world-quiz-question-bar').classList.add('hidden');
+}
+
 // Event listeners
 function setupEventListeners() {
     // Mode selection from main mode selector
@@ -2876,6 +2895,9 @@ function setupEventListeners() {
         document.getElementById('states-selector').classList.add('hidden');
         document.getElementById('mode-selector').classList.remove('hidden');
     });
+
+    // Home link in header
+    document.getElementById('home-link').addEventListener('click', goHome);
 
     // Helper to switch modes from the top bar
     function switchToMode(mode) {
