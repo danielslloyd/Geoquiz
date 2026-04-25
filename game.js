@@ -514,8 +514,8 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
     let similarItems = [];
     if (data && data.similar) {
         similarItems = data.similar.filter(item => {
-            // Ensure the similar item is in our quiz list and has valid data
-            return currentList.includes(item) && gameState.currentDataObj[item];
+            // Ensure the similar item is in our quiz list
+            return currentList.includes(item);
         });
     }
 
@@ -525,10 +525,10 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
         options.push(randomSimilar);
     }
 
-    // Fill remaining options with random items (only those with valid data)
+    // Fill remaining options with random items
     while (options.length < 4) {
         const randomItem = currentList[Math.floor(Math.random() * currentList.length)];
-        if (!options.includes(randomItem) && gameState.currentDataObj[randomItem]) {
+        if (!options.includes(randomItem)) {
             options.push(randomItem);
         }
     }
@@ -1921,11 +1921,14 @@ function renderFlagQuestion() {
         grid.className = 'flag-options-grid';
 
         options.forEach(option => {
+            const flagUrl = getFlagUrl(option);
+            if (!flagUrl) return; // Skip options without valid flag URLs
+
             const flagDiv = document.createElement('div');
             flagDiv.className = 'flag-option';
 
             const flagImg = document.createElement('img');
-            flagImg.src = getFlagUrl(option);
+            flagImg.src = flagUrl;
             flagImg.alt = `Flag of ${option}`;
 
             flagDiv.appendChild(flagImg);
@@ -1953,11 +1956,14 @@ function renderFlagChoices(options, correctAnswer) {
     grid.className = 'flag-options-grid';
 
     options.forEach(option => {
+        const flagUrl = getFlagUrl(option);
+        if (!flagUrl) return; // Skip options without valid flag URLs
+
         const flagDiv = document.createElement('div');
         flagDiv.className = 'flag-option';
 
         const flagImg = document.createElement('img');
-        flagImg.src = getFlagUrl(option);
+        flagImg.src = flagUrl;
         flagImg.alt = `Flag of ${option}`;
 
         flagDiv.appendChild(flagImg);
@@ -2897,7 +2903,12 @@ function setupEventListeners() {
     });
 
     // Home link in header
-    document.getElementById('home-link').addEventListener('click', goHome);
+    const homeLink = document.getElementById('home-link');
+    if (homeLink) {
+        homeLink.addEventListener('click', goHome);
+    } else {
+        console.error('home-link element not found');
+    }
 
     // Helper to switch modes from the top bar
     function switchToMode(mode) {
