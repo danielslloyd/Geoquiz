@@ -65,6 +65,7 @@ async function initializeGameData() {
       }
 
       window[file.key] = data;
+      console.log(`Loaded ${file.key}: ${Object.keys(data).length} entries`);
     }
 
     console.log('✓ All game data loaded and validated');
@@ -356,7 +357,7 @@ const QUIZ_MODES = {
     countries: {
         name: 'Countries of the World',
         quizList: quizCountries,
-        dataObj: countryData,
+        dataObjKey: 'countryData',
         totalQuestions: 10,
         useGlobe: true,
         mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
@@ -370,7 +371,7 @@ const QUIZ_MODES = {
     'us-states': {
         name: 'US States',
         quizList: usStates,
-        dataObj: usStateData,
+        dataObjKey: 'usStateData',
         totalQuestions: 10,
         useGlobe: false,
         useAlbersUsa: true,
@@ -384,7 +385,7 @@ const QUIZ_MODES = {
     'indian-states': {
         name: 'Indian States',
         quizList: indianStates,
-        dataObj: indianStateData,
+        dataObjKey: 'indianStateData',
         totalQuestions: 10,
         useGlobe: false,
         mapUrl: 'https://raw.githubusercontent.com/Subhash9325/GeoJson-Data-of-Indian-States/master/Indian_States',
@@ -397,7 +398,7 @@ const QUIZ_MODES = {
     'identify': {
         name: 'Identify Mode',
         quizList: quizCountries, // Will be set dynamically
-        dataObj: countryData, // Will be set dynamically
+        dataObjKey: 'countryData', // Will be set dynamically
         totalQuestions: 10,
         useGlobe: true, // Will be set dynamically
         mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json', // Will be set dynamically
@@ -411,7 +412,7 @@ const QUIZ_MODES = {
     'name-all': {
         name: 'Name All Countries',
         quizList: quizCountries,
-        dataObj: countryData,
+        dataObjKey: 'countryData',
         totalQuestions: 1, // Single question mode
         useGlobe: true,
         mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
@@ -425,7 +426,7 @@ const QUIZ_MODES = {
     'german-states': {
         name: 'German States',
         quizList: germanStates,
-        dataObj: germanStateData,
+        dataObjKey: 'germanStateData',
         totalQuestions: 10,
         useGlobe: false,
         mapUrl: '4_niedrig.geo.json',
@@ -438,7 +439,7 @@ const QUIZ_MODES = {
     'uk-states': {
         name: 'UK Countries',
         quizList: ukCountries,
-        dataObj: ukCountryData,
+        dataObjKey: 'ukCountryData',
         totalQuestions: 4,
         useGlobe: false,
         mapUrl: 'uk-countries.geo.json',
@@ -451,7 +452,7 @@ const QUIZ_MODES = {
     'population-order': {
         name: 'Order by Population',
         quizList: quizCountries,
-        dataObj: countryData,
+        dataObjKey: 'countryData',
         totalQuestions: 10,
         useGlobe: false,
         hasFlags: false,
@@ -464,7 +465,7 @@ const QUIZ_MODES = {
     'mystery-flag': {
         name: 'Mystery Flag',
         quizList: quizCountries,
-        dataObj: countryData,
+        dataObjKey: 'countryData',
         totalQuestions: 10,
         useGlobe: true,
         mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
@@ -478,7 +479,7 @@ const QUIZ_MODES = {
     'capitals-race': {
         name: 'Capitals Race',
         quizList: quizCountries,
-        dataObj: countryData,
+        dataObjKey: 'countryData',
         totalQuestions: 10,
         useGlobe: true,
         mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
@@ -692,7 +693,7 @@ function startGameWithMode(mode) {
     };
 
     // Set current data sources
-    gameState.currentDataObj = modeConfig.dataObj;
+    gameState.currentDataObj = window[modeConfig.dataObjKey] || {};
     gameState.currentQuizList = modeConfig.quizList;
     console.log(`Mode: ${mode}, DataObj keys: ${Object.keys(gameState.currentDataObj).length}, Sample keys: ${Object.keys(gameState.currentDataObj).slice(0, 5)}`);
 
