@@ -43,6 +43,16 @@ header h1 {
     gap: 10px;
 }
 
+#home-link {
+    cursor: pointer;
+    transition: opacity 0.3s ease, transform 0.2s ease;
+}
+
+#home-link:hover {
+    opacity: 0.8;
+    transform: scale(1.05);
+}
+
 header h1 .material-symbols-outlined {
     font-size: 3rem;
 }
