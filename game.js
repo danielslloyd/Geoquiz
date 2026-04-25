@@ -1921,14 +1921,11 @@ function renderFlagQuestion() {
         grid.className = 'flag-options-grid';
 
         options.forEach(option => {
-            const flagUrl = getFlagUrl(option);
-            if (!flagUrl) return; // Skip options without valid flag URLs
-
             const flagDiv = document.createElement('div');
             flagDiv.className = 'flag-option';
 
             const flagImg = document.createElement('img');
-            flagImg.src = flagUrl;
+            flagImg.src = getFlagUrl(option);
             flagImg.alt = `Flag of ${option}`;
 
             flagDiv.appendChild(flagImg);
@@ -1956,14 +1953,11 @@ function renderFlagChoices(options, correctAnswer) {
     grid.className = 'flag-options-grid';
 
     options.forEach(option => {
-        const flagUrl = getFlagUrl(option);
-        if (!flagUrl) return; // Skip options without valid flag URLs
-
         const flagDiv = document.createElement('div');
         flagDiv.className = 'flag-option';
 
         const flagImg = document.createElement('img');
-        flagImg.src = flagUrl;
+        flagImg.src = getFlagUrl(option);
         flagImg.alt = `Flag of ${option}`;
 
         flagDiv.appendChild(flagImg);
