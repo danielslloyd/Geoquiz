@@ -1207,7 +1207,7 @@ header h1 .material-symbols-outlined {
 
 /* ==================== COUNTRY SHAPE ID MODE ==================== */
 
-.target-muted {
+.country.target-muted {
     fill: #e0e0e0 !important;
     opacity: 0.3 !important;
     stroke: #999 !important;
