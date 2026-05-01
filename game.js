@@ -2562,21 +2562,12 @@ function renderFreeExploreMode() {
     document.getElementById('flag-display').style.display = 'none';
     document.getElementById('multiple-choice-container').classList.add('hidden');
 
-    // Hide buttons for free explore
+    // Hide standard buttons and repurpose restart button for exit
     document.getElementById('next-btn').style.display = 'none';
     document.getElementById('give-up-btn').style.display = 'none';
-
-    // Show exit button
-    let exitBtn = document.getElementById('exit-explore-btn');
-    if (!exitBtn) {
-        exitBtn = document.createElement('button');
-        exitBtn.id = 'exit-explore-btn';
-        exitBtn.textContent = 'Exit Explore';
-        exitBtn.className = 'btn btn-primary';
-        exitBtn.onclick = exitFreeExplore;
-        document.getElementById('button-container').appendChild(exitBtn);
-    }
-    exitBtn.style.display = 'inline-block';
+    document.getElementById('restart-btn').textContent = 'Exit Explore';
+    document.getElementById('restart-btn').onclick = exitFreeExplore;
+    document.getElementById('restart-btn').style.display = 'inline-block';
 }
 
 // Handle exit from free explore mode
@@ -2605,7 +2596,7 @@ function showCountryPopup(countryName) {
                 <p><strong>Capital:</strong> ${capital}</p>
                 <p><strong>Population:</strong> ${population}</p>
             </div>
-            <button onclick="closeCountryPopup()" class="btn-close">Close</button>
+            <button class="btn-close">Close</button>
         </div>
     `;
 
@@ -2615,10 +2606,26 @@ function showCountryPopup(countryName) {
         popup.id = 'explore-popup';
         popup.className = 'explore-popup';
         document.body.appendChild(popup);
+        // Close on outside click
+        popup.addEventListener('click', (e) => {
+            if (e.target === popup) closeCountryPopup();
+        });
     }
 
     popup.innerHTML = popupHtml;
     popup.style.display = 'block';
+
+    // Add close button handler
+    popup.querySelector('.btn-close').addEventListener('click', closeCountryPopup);
+
+    // Close on Escape key
+    const closeOnEscape = (e) => {
+        if (e.key === 'Escape') {
+            closeCountryPopup();
+            document.removeEventListener('keydown', closeOnEscape);
+        }
+    };
+    document.addEventListener('keydown', closeOnEscape);
 }
 
 // Close country popup
@@ -3022,6 +3029,9 @@ function restartGame() {
 function goHome() {
     d3.select('#globe').selectAll('*').remove();
     d3.select('#globe-world').selectAll('*').remove();
+
+    // Close any open popups
+    closeCountryPopup();
 
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
