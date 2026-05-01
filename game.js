@@ -731,6 +731,14 @@ function startGameWithMode(mode) {
     feedback.className = 'feedback';
     document.getElementById('question-text').innerHTML = '';
 
+    // Clear dynamically appended content from question-container
+    const orderingContainer = document.getElementById('ordering-container');
+    if (orderingContainer) orderingContainer.remove();
+    const nameAllInputContainer = document.getElementById('name-all-input-container');
+    if (nameAllInputContainer) nameAllInputContainer.remove();
+    const capitalsRaceInputContainer = document.getElementById('capitals-race-input-container');
+    if (capitalsRaceInputContainer) capitalsRaceInputContainer.remove();
+
     // Clear world quiz feedback
     const flagFeedback = document.getElementById('flag-feedback');
     if (flagFeedback) {

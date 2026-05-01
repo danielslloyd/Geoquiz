@@ -20,6 +20,7 @@ body {
     height: 100%;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 header {
@@ -368,6 +369,7 @@ header h1 .material-symbols-outlined {
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
     text-align: center;
     flex-shrink: 0;
+    overflow: hidden;
 }
 
 .question h2 {
@@ -476,6 +478,8 @@ header h1 .material-symbols-outlined {
     gap: 10px;
     margin-bottom: 4px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    min-height: fit-content;
 }
 
 .btn {
