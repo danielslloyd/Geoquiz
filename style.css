@@ -1123,6 +1123,96 @@ header h1 .material-symbols-outlined {
     margin: 15px 0;
 }
 
+/* ==================== FREE EXPLORE MODE ==================== */
+
+.explore-popup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 0;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    max-width: 400px;
+    width: 90%;
+    z-index: 1000;
+    display: none;
+    animation: popupSlideIn 0.3s ease-out;
+}
+
+@keyframes popupSlideIn {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -48%);
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
+
+.explore-popup-content {
+    padding: 20px;
+    text-align: center;
+}
+
+.explore-popup-content h3 {
+    margin: 0 0 15px 0;
+    font-size: 1.5rem;
+    color: #333;
+}
+
+.explore-flag {
+    max-width: 100%;
+    height: auto;
+    max-height: 120px;
+    margin: 10px 0;
+    border-radius: 4px;
+}
+
+.explore-details {
+    text-align: left;
+    background: #f8f9fa;
+    padding: 12px;
+    border-radius: 6px;
+    margin: 15px 0;
+    font-size: 0.95rem;
+}
+
+.explore-details p {
+    margin: 8px 0;
+    color: #555;
+}
+
+.explore-details strong {
+    color: #333;
+}
+
+.btn-close {
+    background: #667eea;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.2s;
+    width: 100%;
+}
+
+.btn-close:hover {
+    background: #5568d3;
+}
+
+/* ==================== COUNTRY SHAPE ID MODE ==================== */
+
+.country.target-muted {
+    fill: #e0e0e0 !important;
+    opacity: 0.3 !important;
+    stroke: #999 !important;
+}
+
 /* ==================== RESPONSIVE DESIGN FOR NEW FEATURES ==================== */
 
 @media (max-width: 768px) {
