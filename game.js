@@ -489,6 +489,34 @@ const QUIZ_MODES = {
         itemLabelPlural: 'countries',
         autoRotate: true,
         capitalsRaceMode: true // Show country on globe, type the capital
+    },
+    'free-explore': {
+        name: 'Free Explore',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: true,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        freeExploreMode: true // Interactive globe exploration mode
+    },
+    'country-shape-id': {
+        name: 'Country Shape ID',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 10,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        countryShapeIdMode: true // Identify country by shape with multiple choice
     }
 };
 
@@ -1509,6 +1537,13 @@ function drawUSStatesWithInlays_UNUSED() {
 
 // Handle country click
 function handleCountryClick(event, d) {
+    // Handle free explore mode clicks
+    if (gameState.questionType === 'free-explore') {
+        const countryName = d.properties.name;
+        showCountryPopup(countryName);
+        return;
+    }
+
     // Only allow clicking countries during location or mystery-flag questions
     if (gameState.questionType !== 'location' && gameState.questionType !== 'mystery-flag') return;
     if (gameState.answeredCorrectly) return;
@@ -1709,11 +1744,22 @@ function giveUp() {
         highlightCountryOnGlobe(gameState.targetCountry);
         rotateToCountry(gameState.targetCountry);
         feedback.textContent = `The flag belongs to: ${gameState.targetCountry}`;
+    } else if (gameState.questionType === 'country-shape-id') {
+        // Highlight the correct country
+        countriesGroup.selectAll('path')
+            .classed('target-muted', false);
+        feedback.textContent = `The correct answer is: ${gameState.targetCountry}`;
+        const buttons = document.querySelectorAll('.option-btn');
+        buttons.forEach(btn => {
+            if (btn.textContent === gameState.targetCountry) {
+                btn.classList.add('correct');
+            }
+        });
     }
 
     // Determine max sub-questions based on mode
     let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode) {
+    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.countryShapeIdMode) {
         maxSub = 1;
     } else {
         maxSub = modeConfig.hasFlags ? 3 : 2;
@@ -1745,6 +1791,12 @@ function startNewQuestion() {
     // Check if this is ordering mode (population ordering)
     if (modeConfig.orderingMode) {
         renderOrderingMode();
+        return;
+    }
+
+    // Check if this is free explore mode
+    if (modeConfig.freeExploreMode) {
+        renderFreeExploreMode();
         return;
     }
 
@@ -1834,6 +1886,8 @@ function startNewQuestion() {
             gameState.questionType = 'mystery-flag';
         } else if (modeConfig.capitalsRaceMode) {
             gameState.questionType = 'capitals-race';
+        } else if (modeConfig.countryShapeIdMode) {
+            gameState.questionType = 'country-shape-id';
         } else {
             gameState.questionType = 'location';
         }
@@ -1852,6 +1906,8 @@ function startNewQuestion() {
         renderMysteryFlagQuestion();
     } else if (modeConfig.capitalsRaceMode) {
         renderCapitalsRaceQuestion();
+    } else if (modeConfig.countryShapeIdMode) {
+        renderCountryShapeIdQuestion();
     } else if (gameState.subQuestionIndex === 0) {
         renderLocationQuestion();
     } else if (gameState.subQuestionIndex === 1 && hasFlags) {
@@ -2494,6 +2550,110 @@ function handleCapitalsRaceSubmit() {
     }
 
     document.getElementById('next-btn').disabled = false;
+}
+
+// ==================== FREE EXPLORE MODE ====================
+
+// Render free explore mode (interactive globe with popups)
+function renderFreeExploreMode() {
+    gameState.questionType = 'free-explore';
+
+    document.getElementById('question-text').innerHTML = `<strong>Explore the Globe</strong><br><span style="font-size:0.8em;color:#888;">Click any country to see details</span>`;
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+
+    // Hide buttons for free explore
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+
+    // Show exit button
+    let exitBtn = document.getElementById('exit-explore-btn');
+    if (!exitBtn) {
+        exitBtn = document.createElement('button');
+        exitBtn.id = 'exit-explore-btn';
+        exitBtn.textContent = 'Exit Explore';
+        exitBtn.className = 'btn btn-primary';
+        exitBtn.onclick = exitFreeExplore;
+        document.getElementById('button-container').appendChild(exitBtn);
+    }
+    exitBtn.style.display = 'inline-block';
+}
+
+// Handle exit from free explore mode
+function exitFreeExplore() {
+    // Return to landing page
+    goHome();
+}
+
+// Show country popup with stats and flag
+function showCountryPopup(countryName) {
+    const data = gameState.currentDataObj[countryName];
+    if (!data) {
+        console.warn(`No data found for ${countryName}`);
+        return;
+    }
+
+    const flagUrl = getFlagUrl(countryName);
+    const capital = getCapital(countryName) || 'N/A';
+    const population = data.population ? data.population.toLocaleString() : 'N/A';
+
+    const popupHtml = `
+        <div class="explore-popup-content">
+            <h3>${countryName}</h3>
+            ${flagUrl ? `<img src="${flagUrl}" alt="Flag of ${countryName}" class="explore-flag">` : ''}
+            <div class="explore-details">
+                <p><strong>Capital:</strong> ${capital}</p>
+                <p><strong>Population:</strong> ${population}</p>
+            </div>
+            <button onclick="closeCountryPopup()" class="btn-close">Close</button>
+        </div>
+    `;
+
+    let popup = document.getElementById('explore-popup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'explore-popup';
+        popup.className = 'explore-popup';
+        document.body.appendChild(popup);
+    }
+
+    popup.innerHTML = popupHtml;
+    popup.style.display = 'block';
+}
+
+// Close country popup
+function closeCountryPopup() {
+    const popup = document.getElementById('explore-popup');
+    if (popup) {
+        popup.style.display = 'none';
+    }
+}
+
+// ==================== COUNTRY SHAPE ID MODE ====================
+
+// Render country shape ID question
+function renderCountryShapeIdQuestion() {
+    gameState.questionType = 'country-shape-id';
+
+    document.getElementById('question-text').innerHTML = `Which country is highlighted?`;
+    document.getElementById('flag-display').style.display = 'none';
+
+    // Highlight the target country on globe
+    countriesGroup.selectAll('path')
+        .classed('target', false)
+        .classed('target-muted', false);
+
+    countriesGroup.selectAll('path').each(function(d) {
+        if (d.properties.name === gameState.targetCountry) {
+            d3.select(this).classed('target', true);
+        } else {
+            d3.select(this).classed('target-muted', true);
+        }
+    });
+
+    // Generate multiple choice options
+    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
+    renderMultipleChoice(options, gameState.targetCountry);
 }
 
 // ==================== POPULATION ORDERING MODE ====================
