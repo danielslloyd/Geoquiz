@@ -1745,6 +1745,51 @@
         ],
         "alternateNames": []
     },
+    "Saint Kitts and Nevis": {
+        "code": "kn",
+        "capital": "Basseterre",
+        "capitalCoords": [
+            17.3026,
+            -62.7177
+        ],
+        "population": 47755,
+        "similar": [
+            "Antigua and Barbuda",
+            "Dominica",
+            "Saint Lucia"
+        ],
+        "alternateNames": []
+    },
+    "Saint Lucia": {
+        "code": "lc",
+        "capital": "Castries",
+        "capitalCoords": [
+            14.0101,
+            -60.9875
+        ],
+        "population": 183627,
+        "similar": [
+            "Saint Vincent and the Grenadines",
+            "Dominica",
+            "Grenada"
+        ],
+        "alternateNames": []
+    },
+    "Saint Vincent and the Grenadines": {
+        "code": "vc",
+        "capital": "Kingstown",
+        "capitalCoords": [
+            13.1600,
+            -61.2248
+        ],
+        "population": 110940,
+        "similar": [
+            "Grenada",
+            "Saint Lucia",
+            "Barbados"
+        ],
+        "alternateNames": []
+    },
     "Guinea": {
         "code": "gn",
         "capital": "Conakry",
@@ -3058,5 +3103,149 @@
             "Botswana"
         ],
         "alternateNames": []
+    },
+    "Israel": {
+        "code": "il",
+        "capital": "Jerusalem",
+        "capitalCoords": [
+            31.7683,
+            35.2137
+        ],
+        "population": 9500000,
+        "similar": [
+            "Lebanon",
+            "Jordan",
+            "Syria",
+            "Palestine"
+        ],
+        "alternateNames": []
+    },
+    "Ivory Coast": {
+        "code": "ci",
+        "capital": "Yamoussoukro",
+        "capitalCoords": [
+            6.8276,
+            -5.2893
+        ],
+        "population": 27478000,
+        "similar": [
+            "Ghana",
+            "Liberia",
+            "Guinea",
+            "Mali"
+        ],
+        "alternateNames": [
+            "Cote d'Ivoire",
+            "Côte d'Ivoire"
+        ]
+    },
+    "Taiwan": {
+        "code": "tw",
+        "capital": "Taipei",
+        "capitalCoords": [
+            25.033,
+            121.5654
+        ],
+        "population": 23570000,
+        "similar": [
+            "China",
+            "Japan",
+            "Philippines",
+            "South Korea"
+        ],
+        "alternateNames": [
+            "Chinese Taipei",
+            "Republic of China"
+        ]
+    },
+    "Greenland": {
+        "code": "gl",
+        "capital": "Nuuk",
+        "capitalCoords": [
+            64.1814,
+            -51.6941
+        ],
+        "population": 56081,
+        "similar": [
+            "Iceland",
+            "Canada",
+            "Norway",
+            "Denmark"
+        ],
+        "alternateNames": [
+            "Kalaallit Nunaat"
+        ]
+    },
+    "Western Sahara": {
+        "code": "eh",
+        "capital": "El Aaiún",
+        "capitalCoords": [
+            27.1536,
+            -13.2033
+        ],
+        "population": 611000,
+        "similar": [
+            "Morocco",
+            "Mauritania",
+            "Algeria",
+            "Mali"
+        ],
+        "alternateNames": [
+            "Sahrawi Republic",
+            "Laayoune"
+        ]
+    },
+    "New Caledonia": {
+        "code": "nc",
+        "capital": "Nouméa",
+        "capitalCoords": [
+            -22.2758,
+            166.458
+        ],
+        "population": 271407,
+        "similar": [
+            "Vanuatu",
+            "Fiji",
+            "Papua New Guinea",
+            "Solomon Islands"
+        ],
+        "alternateNames": []
+    },
+    "Falkland Islands": {
+        "code": "fk",
+        "capital": "Stanley",
+        "capitalCoords": [
+            -51.6957,
+            -57.8536
+        ],
+        "population": 3662,
+        "similar": [
+            "Argentina",
+            "Chile",
+            "Uruguay",
+            "United Kingdom"
+        ],
+        "alternateNames": [
+            "Islas Malvinas",
+            "Falklands"
+        ]
+    },
+    "Kosovo": {
+        "code": "xk",
+        "capital": "Pristina",
+        "capitalCoords": [
+            42.6629,
+            21.1655
+        ],
+        "population": 1798000,
+        "similar": [
+            "Serbia",
+            "Albania",
+            "North Macedonia",
+            "Montenegro"
+        ],
+        "alternateNames": [
+            "Republic of Kosovo"
+        ]
     }
 }

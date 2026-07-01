@@ -10,8 +10,29 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://d3js.org/topojson.v3.min.js"></script>
+    <!-- three.js (ESM) for the photographic orbital "Where Is My Spaceship?" view.
+         Exposed as a global so the classic game.js can use it lazily on mode entry. -->
+    <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        window.threeReady = true;
+        window.dispatchEvent(new Event('three-ready'));
+    </script>
+    <script>
+        // Apply saved color theme before first paint to avoid a flash
+        (function () {
+            var t = localStorage.getItem('geoquiz-theme');
+            if (t === 'emerald') document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
 </head>
 <body>
+    <button id="theme-toggle" type="button" title="Switch color theme" aria-label="Switch color theme">
+        <span class="material-symbols-outlined">palette</span>
+    </button>
     <div class="container">
         <header id="landing-header">
             <h1><span class="material-symbols-outlined">public</span> Geoquiz</h1>
@@ -29,7 +50,8 @@
                         <button class="dropdown-item" data-mode="us-states">USA</button>
                         <button class="dropdown-item" data-mode="indian-states">India</button>
                         <button class="dropdown-item" data-mode="german-states">Germany</button>
-                        <button class="dropdown-item" data-mode="uk-states">UK</button>
+                        <button class="dropdown-item" data-mode="uk-states">England</button>
+                        <button class="dropdown-item" data-mode="mexican-states">Mexico</button>
                     </div>
                 </div>
                 <div class="icon-dropdown" id="identify-dropdown">
@@ -39,7 +61,8 @@
                         <button class="dropdown-item" data-identify-region="us-states">USA</button>
                         <button class="dropdown-item" data-identify-region="indian-states">India</button>
                         <button class="dropdown-item" data-identify-region="german-states">Germany</button>
-                        <button class="dropdown-item" data-identify-region="uk-states">UK</button>
+                        <button class="dropdown-item" data-identify-region="uk-states">England</button>
+                        <button class="dropdown-item" data-identify-region="mexican-states">Mexico</button>
                     </div>
                 </div>
                 <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
@@ -47,7 +70,9 @@
                 <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
                 <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
                 <button class="mode-icon-btn" data-mode="free-explore" title="Free Explore"><span class="material-symbols-outlined">explore</span></button>
-                <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">crop_square</span></button>
+                <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">extension</span></button>
+                <button class="mode-icon-btn" data-mode="find-capital" title="Find the Capital"><span class="material-symbols-outlined">location_city</span></button>
+                <button class="mode-icon-btn" data-mode="spaceship" title="Where Is My Spaceship?"><span class="material-symbols-outlined">rocket_launch</span></button>
             </div>
             <div class="top-bar-score">
                 <span><span id="question-inline">1</span>/<span id="total-inline">10</span></span>
@@ -59,18 +84,13 @@
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
-                <button class="mode-btn" data-mode="countries">
-                    <span class="mode-icon material-symbols-outlined">public</span>
-                    <span class="mode-name">Countries of the World</span>
-                    <span class="mode-desc">Quiz on countries, flags, and capitals</span>
-                </button>
-                <button class="mode-btn" data-mode="states">
-                    <span class="mode-icon material-symbols-outlined">map</span>
-                    <span class="mode-name">States</span>
-                    <span class="mode-desc">Quiz on US and Indian states</span>
+                <button class="mode-btn" data-mode="find">
+                    <span class="mode-icon material-symbols-outlined">search</span>
+                    <span class="mode-name">Find on the Map</span>
+                    <span class="mode-desc">Find countries or states on the globe/map</span>
                 </button>
                 <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon material-symbols-outlined">search</span>
+                    <span class="mode-icon material-symbols-outlined">help</span>
                     <span class="mode-name">Identify Mode</span>
                     <span class="mode-desc">Identify highlighted locations on the map</span>
                 </button>
@@ -100,9 +120,19 @@
                     <span class="mode-desc">Explore the globe and click to learn about countries</span>
                 </button>
                 <button class="mode-btn" data-mode="country-shape-id">
-                    <span class="mode-icon material-symbols-outlined">crop_square</span>
+                    <span class="mode-icon material-symbols-outlined">extension</span>
                     <span class="mode-name">Country Shape ID</span>
                     <span class="mode-desc">Identify countries by their shape</span>
+                </button>
+                <button class="mode-btn" data-mode="find-capital">
+                    <span class="mode-icon material-symbols-outlined">location_city</span>
+                    <span class="mode-name">Find the Capital</span>
+                    <span class="mode-desc">Pin a capital's location on the map by distance</span>
+                </button>
+                <button class="mode-btn" data-mode="spaceship">
+                    <span class="mode-icon material-symbols-outlined">rocket_launch</span>
+                    <span class="mode-name">Where Is My Spaceship?</span>
+                    <span class="mode-desc">Guess your orbital location from the view below</span>
                 </button>
             </div>
         </div>
@@ -127,9 +157,14 @@
                     <span class="mode-desc">Quiz on the 16 Bundesländer of Germany</span>
                 </button>
                 <button class="mode-btn" data-mode="uk-states">
-                    <img class="mode-icon" src="https://flagcdn.com/gb.svg" alt="UK" />
-                    <span class="mode-name">UK Countries</span>
-                    <span class="mode-desc">Quiz on England, Scotland, Wales & N. Ireland</span>
+                    <img class="mode-icon" src="https://flagcdn.com/gb-eng.svg" alt="England" />
+                    <span class="mode-name">England Counties</span>
+                    <span class="mode-desc">Quiz on the 47 ceremonial counties of England</span>
+                </button>
+                <button class="mode-btn" data-mode="mexican-states">
+                    <img class="mode-icon" src="https://flagcdn.com/mx.svg" alt="Mexico" />
+                    <span class="mode-name">Mexican States</span>
+                    <span class="mode-desc">Quiz on the 32 states of Mexico</span>
                 </button>
             </div>
             <button id="back-to-modes-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
@@ -206,10 +241,64 @@
             <button id="next-btn" class="btn" disabled>Next Question</button>
             <button id="give-up-btn" class="btn secondary">Give Up</button>
             <button id="restart-btn" class="btn secondary">Restart Game</button>
+            <button id="projection-toggle" class="btn secondary globe-only" title="Switch between globe and flat map">View: Globe</button>
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
+            <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
+            <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
+            <div class="tuning-row" id="spaceship-tuning" style="display:none">
+                <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
+                    Orbit height <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
+                </label>
+                <label class="tuning-item" title="Max points for a perfect-distance guess">
+                    Accuracy <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>
+                </label>
+                <label class="tuning-item" title="Max points for an instant guess">
+                    Speed <input type="range" id="tune-score-speed" min="0" max="100" step="5" value="40"><span id="tune-score-speed-val">40</span>
+                </label>
+                <label class="tuning-item" title="Points deducted per degree of look-around panning">
+                    Pan penalty <input type="range" id="tune-score-pan" min="0" max="2" step="0.05" value="0.15"><span id="tune-score-pan-val">0.15</span>
+                </label>
+                <label class="tuning-item" title="Distance (km) at which accuracy points fall to ~37%">
+                    Dist scale <input type="range" id="tune-score-dist" min="100" max="3000" step="100" value="500"><span id="tune-score-dist-val">500 km</span>
+                </label>
+                <label class="tuning-item" title="Seconds at which speed points fall to ~37%">
+                    Time scale <input type="range" id="tune-score-time" min="5" max="120" step="5" value="20"><span id="tune-score-time-val">20 s</span>
+                </label>
+            </div>
+            <div class="tuning-row" id="tuning-row">
+                <label class="tuning-item" title="Fraction of points kept for the Medium detail level">
+                    Medium detail <input type="range" id="tune-simplify" min="5" max="100" step="5" value="30"><span id="tune-simplify-val">30%</span>
+                </label>
+                <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
+                    Min dot px <input type="range" id="tune-dotsize" min="0" max="5" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
+                </label>
+                <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
+                    Dot spacing <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
+                </label>
+                <label class="tuning-item" title="Hide lakes whose largest fitting circle is narrower than this (km across); default is just under Great Salt Lake">
+                    Min lake size <input type="range" id="tune-lakesize" min="16" max="64" step="2" value="32"><span id="tune-lakesize-val">32 km</span>
+                </label>
+            </div>
         </div>
     </div>
 
+    <script>
+        // Theme toggle: cycle between the two palettes and persist the choice
+        (function () {
+            var btn = document.getElementById('theme-toggle');
+            if (!btn) return;
+            btn.addEventListener('click', function () {
+                var emerald = document.documentElement.getAttribute('data-theme') === 'emerald';
+                if (emerald) {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.setItem('geoquiz-theme', 'ocean');
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'emerald');
+                    localStorage.setItem('geoquiz-theme', 'emerald');
+                }
+            });
+        })();
+    </script>
     <script src="game.js"></script>
 </body>
 </html>

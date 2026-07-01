@@ -8,7 +8,24 @@ Interactive geography quiz game built with vanilla JS and D3.js.
 - `game.js` — all game logic (~5000 lines)
 - `style.css` — all styles
 - `4_niedrig.geo.json` — local GeoJSON for German states
-- `uk-countries.geo.json` — local GeoJSON for UK countries (placeholder)
+- `data/england-counties.geo.json` — local GeoJSON for England's 47 ceremonial counties
+- `data/mexico-states.geo.json` — local GeoJSON for the 32 Mexican states
+- Capital/code data lives in `data/*.json`, loaded by `initializeGameData()` in `game.js` into `window[dataObjKey]` (`countryData`, `usStateData`, `indianStateData`, `germanStateData`, `englandCountyData`, `mexicanStateData`). `data-loader.js` is legacy/unused.
+- `data/continents.json` — continent → country-name map (7-continent model) powering the Name-All-by-continent variants; loaded into `window.continentData`.
+- `data/textures/earth-*.jpg` — NASA Blue Marble Next Generation (June, public domain) Earth textures for the orbital `spaceship` view. `earth-bmng-2048.jpg` (committed) is a full-globe low-res **base sphere** (instant paint + far side + fallback). `earth-cap-c{col}-r{row}.jpg` are a full-500m-res **8×4 grid of 45° tiles** (10800² each, ~230 MB total, **gitignored** — rebuild locally). At ≤500 km only a ~22° cap is ever visible, so each round loads only the handful of tiles that cap reaches (`orbitalLoadCap`/`capTilesForTarget`, pruned to the current cap) onto tile meshes at radius 1 over the base (radius 0.997, so tiles always win depth). Full res is delivered as tiles because a single browser texture caps at 16384 (Chrome/ANGLE `MAX_TEXTURE_SIZE`, even on big GPUs). Regenerate via `scripts/build-earth-texture.py` (downloads the eight 21600² 500m tiles, slices each 2×2 with Pillow; a `build_half()` two-hemisphere alternative is kept but unused). three.js (r160, ESM via importmap in `index.html`, exposed as `window.THREE`) renders it.
+- `data/lakes.geo.json` — Natural Earth **110m** major lakes (Great Lakes, Victoria, Baikal, …), drawn as an overlay on world maps (`drawLakes`). Lakes track the map's detail level (`lakesResForDetail`): 110m is bundled locally; 50m/10m come from jsdelivr (`martynafford/natural-earth-geojson`), cached in `lakesCache` with the local file as fallback. They share the globe's `userSpaceOnUse` `#ocean-gradient` (kept in sync by `syncOceanGradient`) so they read as ocean; on flat maps they fill `var(--surface)` (the flat-map ocean colour) and carry a `var(--land-stroke)` coastline border.
+
+## Country dots (dynamic)
+
+`drawIslandMarkers`/`updateIslandMarkers` decide per-redraw whether each small feature shows as a clickable dot or its polygon outline, based on the largest polygon's on-screen pixel size (`DOT_PIXEL_THRESHOLD`), so it updates live on zoom. `drawIslandMarkers` keeps the **largest** feature per name (some atlas resolutions split a country into a real polygon plus a stray micro-polygon — e.g. Australia at 50m — which would otherwise be mistaken for a dot). Big features (`geoArea > DOT_CANDIDATE_AREA`) are always outlines and skip the check. World micro-states with no polygon always dot (anchored at `capitalCoords`). Visible dots are spread apart by `relaxDots` (min centre-to-centre `DOT_SPACING` px; also nudged off small outline polygons) so dense clusters (Caribbean/Pacific) stay legible. The spaceship view shows neither dots nor highlights.
+- `DOT_PIXEL_THRESHOLD` (min dot px) and `DOT_SPACING` (dot spacing), plus `MEDIUM_SIMPLIFY_RETAIN`, are exposed as live tuning sliders in the `#controls` bar (`#tune-dotsize` / `#tune-dotspace` / `#tune-simplify`).
+- The orbital `spaceship` view renders on its own **three.js** WebGL canvas (not D3/SVG) — see the `spaceship` row below.
+
+## Map detail (LOD)
+
+World (`mapObject: 'countries'`) modes pick their world-atlas resolution from the global `mapDetail` via `worldCountriesUrl()`. The `#detail-toggle` cycles three levels: `low`=110m, `medium`=50m simplified client-side, `high`=50m. The default is `medium`. Simplification happens in `worldFeaturesFromTopology()`: `topojson.presimplify`/`simplify` **return new topologies** (they don't mutate in place — capturing the return value is essential), and `MEDIUM_SIMPLIFY_RETAIN` (slider-tunable) is the fraction of points kept. Fetched topologies are cached in `worldTopoCache` (via `fetchWorldTopo`) so the slider re-simplifies without re-downloading. The 10m source is reserved for `country-shape-id` ("highest possible detail") and is not reachable from the toggle; `spaceship` forces coarse **110m** (it only needs countries for coast detection + its inset — the Blue Marble texture provides the visuals). `reloadWorldDetail()` refetches/re-simplifies, redraws, preserves rotation/scale and highlight — no new question. The toggle is hidden for `spaceship` and `country-shape-id`.
+
+The globe defaults to tilt-locked (`gammaLocked = true`, north-up) and `medium` detail.
 
 ## Game Modes
 
@@ -18,12 +35,16 @@ Interactive geography quiz game built with vanilla JS and D3.js.
 | `us-states` | Click flat map to find US state, then identify its capital |
 | `indian-states` | Click flat map to find Indian state, then identify its capital |
 | `german-states` | Click flat map to find German Bundesland, then identify its capital |
-| `uk-states` | Click flat map to find UK country (England/Scotland/Wales/NI), then identify its capital |
-| `identify` | A country/state is highlighted — pick its name from 4 choices (supports all geos: world, US, India, Germany, UK) |
-| `name-all` | Type country names to highlight them; score = countries found |
+| `uk-states` | Click flat map to find an England ceremonial county — county only, no capital (`findOnly: true`) |
+| `mexican-states` | Click flat map to find a Mexican state, then identify its capital |
+| `identify` | A country/state is highlighted — pick its name from 4 choices (supports all geos: world, US, India, Germany, England, Mexico) |
+| `name-all` | Type country names to highlight them against a countdown timer; world or per-continent (region sub-selector) |
 | `population-order` | Drag 5 countries into population order (high → low) |
 | `mystery-flag` | A flag is shown — click the globe to find the matching country |
 | `capitals-race` | A country is highlighted — type its capital to score |
+| `country-shape-id` | Only the target country's outline is shown as a flat Mercator silhouette (no globe/neighbours/lakes/dots; **10m** max detail, borderless `.shape-target` fill, projection fitted to the country; only the single target path is drawn — `drawCountries` skips the rest) — pick its name from 4 choices (`countryShapeIdMode`) |
+| `find-capital` | A capital name is shown — click the static world map to drop a guess marker, Submit; scored by total great-circle distance over X rounds (`findCapitalMode`) |
+| `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Renders on its own WebGL canvas over the (hidden) `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
 
 ## UI Structure
 
@@ -109,5 +130,9 @@ Each entry in `countryData` / `usStateData` / `indianStateData` / `germanStateDa
 ## Running Locally
 
 ```bash
-npm start   # serves on localhost:3000 (live-server)
+npm start   # python dev-server.py — serves on localhost:8000 with no-cache headers
 ```
+
+`dev-server.py` is a tiny no-cache static server (plain `python -m http.server` caches
+aggressively, so edits often don't show on reload). `.claude/launch.json` uses the same
+script for the in-editor preview.

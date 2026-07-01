@@ -4,3 +4,6 @@ node_modules/
 .env
 dist/
 build/
+
+# Full-res orbital cap tiles (~230MB) — rebuild locally via scripts/build-earth-texture.py
+data/textures/earth-cap-*.jpg

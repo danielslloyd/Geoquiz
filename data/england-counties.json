@@ -1,0 +1,143 @@
+{
+    "Bedfordshire": {
+        "code": "gb-eng"
+    },
+    "Berkshire": {
+        "code": "gb-eng"
+    },
+    "Bristol": {
+        "code": "gb-eng"
+    },
+    "Buckinghamshire": {
+        "code": "gb-eng"
+    },
+    "Cambridgeshire": {
+        "code": "gb-eng"
+    },
+    "Cheshire": {
+        "code": "gb-eng"
+    },
+    "Cornwall": {
+        "code": "gb-eng"
+    },
+    "Cumbria": {
+        "code": "gb-eng"
+    },
+    "Derbyshire": {
+        "code": "gb-eng"
+    },
+    "Devon": {
+        "code": "gb-eng"
+    },
+    "Dorset": {
+        "code": "gb-eng"
+    },
+    "Durham": {
+        "code": "gb-eng"
+    },
+    "East Riding of Yorkshire": {
+        "code": "gb-eng"
+    },
+    "East Sussex": {
+        "code": "gb-eng"
+    },
+    "Essex": {
+        "code": "gb-eng"
+    },
+    "Gloucestershire": {
+        "code": "gb-eng"
+    },
+    "Greater London": {
+        "code": "gb-eng"
+    },
+    "Greater Manchester": {
+        "code": "gb-eng"
+    },
+    "Hampshire": {
+        "code": "gb-eng"
+    },
+    "Herefordshire": {
+        "code": "gb-eng"
+    },
+    "Hertfordshire": {
+        "code": "gb-eng"
+    },
+    "Isle of Wight": {
+        "code": "gb-eng"
+    },
+    "Kent": {
+        "code": "gb-eng"
+    },
+    "Lancashire": {
+        "code": "gb-eng"
+    },
+    "Leicestershire": {
+        "code": "gb-eng"
+    },
+    "Lincolnshire": {
+        "code": "gb-eng"
+    },
+    "Merseyside": {
+        "code": "gb-eng"
+    },
+    "Norfolk": {
+        "code": "gb-eng"
+    },
+    "North Yorkshire": {
+        "code": "gb-eng"
+    },
+    "Northamptonshire": {
+        "code": "gb-eng"
+    },
+    "Northumberland": {
+        "code": "gb-eng"
+    },
+    "Nottinghamshire": {
+        "code": "gb-eng"
+    },
+    "Oxfordshire": {
+        "code": "gb-eng"
+    },
+    "Rutland": {
+        "code": "gb-eng"
+    },
+    "Shropshire": {
+        "code": "gb-eng"
+    },
+    "Somerset": {
+        "code": "gb-eng"
+    },
+    "South Yorkshire": {
+        "code": "gb-eng"
+    },
+    "Staffordshire": {
+        "code": "gb-eng"
+    },
+    "Suffolk": {
+        "code": "gb-eng"
+    },
+    "Surrey": {
+        "code": "gb-eng"
+    },
+    "Tyne and Wear": {
+        "code": "gb-eng"
+    },
+    "Warwickshire": {
+        "code": "gb-eng"
+    },
+    "West Midlands": {
+        "code": "gb-eng"
+    },
+    "West Sussex": {
+        "code": "gb-eng"
+    },
+    "West Yorkshire": {
+        "code": "gb-eng"
+    },
+    "Wiltshire": {
+        "code": "gb-eng"
+    },
+    "Worcestershire": {
+        "code": "gb-eng"
+    }
+}

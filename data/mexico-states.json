@@ -1,0 +1,130 @@
+{
+    "Aguascalientes": {
+        "code": "mx",
+        "capital": "Aguascalientes"
+    },
+    "Baja California": {
+        "code": "mx",
+        "capital": "Mexicali"
+    },
+    "Baja California Sur": {
+        "code": "mx",
+        "capital": "La Paz"
+    },
+    "Campeche": {
+        "code": "mx",
+        "capital": "Campeche"
+    },
+    "Chiapas": {
+        "code": "mx",
+        "capital": "Tuxtla Gutiérrez"
+    },
+    "Chihuahua": {
+        "code": "mx",
+        "capital": "Chihuahua"
+    },
+    "Ciudad de México": {
+        "code": "mx",
+        "capital": "Ciudad de México"
+    },
+    "Coahuila": {
+        "code": "mx",
+        "capital": "Saltillo"
+    },
+    "Colima": {
+        "code": "mx",
+        "capital": "Colima"
+    },
+    "Durango": {
+        "code": "mx",
+        "capital": "Durango"
+    },
+    "Guanajuato": {
+        "code": "mx",
+        "capital": "Guanajuato"
+    },
+    "Guerrero": {
+        "code": "mx",
+        "capital": "Chilpancingo"
+    },
+    "Hidalgo": {
+        "code": "mx",
+        "capital": "Pachuca"
+    },
+    "Jalisco": {
+        "code": "mx",
+        "capital": "Guadalajara"
+    },
+    "Michoacán": {
+        "code": "mx",
+        "capital": "Morelia"
+    },
+    "Morelos": {
+        "code": "mx",
+        "capital": "Cuernavaca"
+    },
+    "México": {
+        "code": "mx",
+        "capital": "Toluca"
+    },
+    "Nayarit": {
+        "code": "mx",
+        "capital": "Tepic"
+    },
+    "Nuevo León": {
+        "code": "mx",
+        "capital": "Monterrey"
+    },
+    "Oaxaca": {
+        "code": "mx",
+        "capital": "Oaxaca de Juárez"
+    },
+    "Puebla": {
+        "code": "mx",
+        "capital": "Puebla"
+    },
+    "Querétaro": {
+        "code": "mx",
+        "capital": "Santiago de Querétaro"
+    },
+    "Quintana Roo": {
+        "code": "mx",
+        "capital": "Chetumal"
+    },
+    "San Luis Potosí": {
+        "code": "mx",
+        "capital": "San Luis Potosí"
+    },
+    "Sinaloa": {
+        "code": "mx",
+        "capital": "Culiacán"
+    },
+    "Sonora": {
+        "code": "mx",
+        "capital": "Hermosillo"
+    },
+    "Tabasco": {
+        "code": "mx",
+        "capital": "Villahermosa"
+    },
+    "Tamaulipas": {
+        "code": "mx",
+        "capital": "Ciudad Victoria"
+    },
+    "Tlaxcala": {
+        "code": "mx",
+        "capital": "Tlaxcala"
+    },
+    "Veracruz": {
+        "code": "mx",
+        "capital": "Xalapa"
+    },
+    "Yucatán": {
+        "code": "mx",
+        "capital": "Mérida"
+    },
+    "Zacatecas": {
+        "code": "mx",
+        "capital": "Zacatecas"
+    }
+}
