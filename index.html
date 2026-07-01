@@ -249,6 +249,9 @@
                 <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
                     Orbit height <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
                 </label>
+                <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
+                    <input type="checkbox" id="tune-hires-500m"> 500 m tiles
+                </label>
                 <label class="tuning-item" title="Max points for a perfect-distance guess">
                     Accuracy <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>
                 </label>

@@ -4190,6 +4190,16 @@ function setupEventListeners() {
         });
     }
 
+    // "500 m tiles" toggle: fetch NASA's full-res Blue Marble tiles live and stitch the visible
+    // cap (not bundled with the app). Off = the lighter single-globe crop / local tiles.
+    const hires500 = document.getElementById('tune-hires-500m');
+    if (hires500) {
+        hires500.addEventListener('change', function () {
+            orbitalUse500m = this.checked;
+            if (orbCam) orbitalRefreshCap([orbCam.lon, orbCam.lat]);
+        });
+    }
+
     // Orbital scoring-weight sliders.
     [
         ['tune-score-acc', 'tune-score-acc-val', v => { scoreAccuracyWeight = v; }, v => String(v)],
@@ -4412,18 +4422,28 @@ const CAP_TILE_DEG = 45, CAP_GRID_COLS = 8, CAP_GRID_ROWS = 4;
 const capTileCache = new Map(); // 'c{col}-r{row}' -> THREE.Texture; pruned to the current cap each round (each is ~467 MB VRAM)
 const capTileUrl = (col, row) => `data/textures/earth-cap-c${col}-r${row}.jpg`;
 
-// Fallback when the local high-res cap tiles aren't deployed (they're gitignored, so a
-// static host like Netlify only ships the low-res base). We swap the whole cap system for a
-// single full-globe NASA Blue Marble equirectangular texture on the base sphere, picking the
-// largest resolution the GPU can hold (a single WebGL texture can't exceed MAX_TEXTURE_SIZE).
+// Fallback when the local high-res cap tiles aren't deployed (they're gitignored, so a static
+// host like Netlify only ships the low-res base). Rather than texturing the whole sphere with
+// an oversized globe image, we crop just the visible spherical cap straight out of a NASA Blue
+// Marble equirectangular source and drape that crop on a partial-sphere mesh — full detail in
+// view, texture always within the GPU ceiling. Default source is the single 21600×10800 globe;
+// the "500 m tiles" opt-in stitches from the eight full-res 21600² tiles (the build script's).
 const NASA_BMNG_DIR = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/june';
-const NASA_BMNG_TEXTURES = [ // descending; pick the first whose width fits the GPU
-    { url: `${NASA_BMNG_DIR}/world.200406.3x21600x10800.jpg`, width: 21600 },
-    { url: `${NASA_BMNG_DIR}/world.200406.3x5400x2700.jpg`, width: 5400 },
+const NASA_GLOBE_URLS = [ // tried in order — prefer 21600×10800, drop to 5400 if it won't decode
+    `${NASA_BMNG_DIR}/world.200406.3x21600x10800.jpg`,
+    `${NASA_BMNG_DIR}/world.200406.3x5400x2700.jpg`,
 ];
-let orbitalNasaFallback = false; // true once we've confirmed the local cap tiles are missing
-let orbitalTexHi = null;         // cached NASA full-globe fallback texture (loaded once)
-let orbitalTilesProbed = false;  // one-time local-tile availability check has run
+const NASA_500M_URL = t => `${NASA_BMNG_DIR}/world.200406.3x21600x21600.${t}.jpg`;
+const NASA_500M_COLS = ['A', 'B', 'C', 'D'];            // 90° lon columns: A[-180,-90] … D[90,180]
+const NASA_500M_ROWS = { '1': [0, 90], '2': [-90, 0] }; // row 1 = north, row 2 = south
+const NASA_500M_PPD = 21600 / 90;                       // 240 px/deg — native 500 m detail
+const CAP_TEX_MAX = 12000;                              // hard cap on the crop-canvas edge (memory guard)
+let orbitalNasaFallback = false;   // local cap tiles confirmed missing → source from NASA instead
+let orbitalTilesProbed = false;    // one-time local-tile availability check has run
+let orbitalUse500m = false;        // opt-in: fetch NASA's full 500 m tiles live and stitch the cap
+let orbitalCapToken = 0;           // bumped per cap build so stale async builds can bail
+let orbitalGlobePromise = null;    // cached decode of the NASA equirectangular globe
+const nasa500Cache = new Map();    // tileKey ('C1') -> Promise<Blob> for fetched 500 m tiles
 
 // Orbital scoring weights (all exposed as sliders). Per round:
 //   score = accuracyWeight·e^(-dKm/distScale) + speedWeight·e^(-sec/timeScale) − panWeight·panDeg
@@ -4558,65 +4578,195 @@ function orbitalSupportsHiRes() {
     return gl.getParameter(gl.MAX_TEXTURE_SIZE) >= 10800;
 }
 
-// Best NASA full-globe URL for this GPU: the largest whose width fits MAX_TEXTURE_SIZE.
-// null means even the smallest is too big — stay on the local low-res base sphere.
-function bestNasaTextureUrl() {
-    let max = 8192;
-    if (orbital) { const gl = orbital.renderer.getContext(); max = gl.getParameter(gl.MAX_TEXTURE_SIZE) || max; }
-    const pick = NASA_BMNG_TEXTURES.find(t => t.width <= max);
-    return pick ? pick.url : null;
+// The GPU's single-texture ceiling (MAX_TEXTURE_SIZE); crops are never sized above it.
+function orbitalTexCeiling() {
+    if (!orbital) return 8192;
+    const gl = orbital.renderer.getContext();
+    return gl.getParameter(gl.MAX_TEXTURE_SIZE) || 8192;
 }
 
-// Switch the orbital view to the single NASA full-globe fallback texture. Idempotent:
-// tears down the cap system on first call, loads the hi-res globe once, and re-applies the
-// cached texture to a freshly-created earth mesh on re-entry.
-function useNasaFallback() {
+// Lon/lat rectangle covering the visible spherical cap (+margin) around the sub-point. Uses the
+// 500 km worst-case cap radius; lon widens toward the poles as meridians converge. lon0/lon1 may
+// fall outside [-180,180] — the crop helpers handle the antimeridian wrap.
+function nasaCapRect(target) {
+    const [lon, lat] = target;
+    const r = capGroundRadiusDeg() + 4;
+    const dLon = Math.min(180, r / Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+    return { lon0: lon - dLon, lon1: lon + dLon,
+             lat0: Math.max(-89.9, lat - r), lat1: Math.min(89.9, lat + r) };
+}
+
+// Destination canvas size for a cap crop: the source's native pixels for the rect, shrunk to
+// fit both the GPU ceiling and our memory cap.
+function capDestSize(rect, pxPerDeg) {
+    const ceil = Math.min(orbitalTexCeiling(), CAP_TEX_MAX);
+    const w = (rect.lon1 - rect.lon0) * pxPerDeg, h = (rect.lat1 - rect.lat0) * pxPerDeg;
+    const s = Math.min(1, ceil / w, ceil / h);
+    return { w: Math.max(16, Math.round(w * s)), h: Math.max(16, Math.round(h * s)) };
+}
+
+// Decode the NASA equirectangular globe once (prefer 21600×10800; fall back to 5400×2700 if the
+// big one won't decode — e.g. mobile memory limits). Resolves to the HTMLImageElement.
+function loadNasaGlobe() {
+    if (orbitalGlobePromise) return orbitalGlobePromise;
+    orbitalGlobePromise = new Promise((resolve, reject) => {
+        let i = 0;
+        const tryNext = () => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => (img.naturalWidth ? resolve(img) : img.onerror());
+            img.onerror = () => (++i < NASA_GLOBE_URLS.length ? tryNext() : reject(new Error('NASA globe failed')));
+            img.src = NASA_GLOBE_URLS[i];
+        };
+        tryNext();
+    });
+    return orbitalGlobePromise;
+}
+
+// Crop [lon0,lon1]×[lat0,lat1] out of an equirectangular globe image into a dw×dh canvas.
+// Drawing three horizontal copies (−360/0/+360) covers antimeridian wrap; off-canvas ones clip.
+function cropGlobeToCanvas(img, rect, dw, dh) {
+    const cv = document.createElement('canvas'); cv.width = dw; cv.height = dh;
+    const ctx = cv.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const sy = (90 - rect.lat1) / 180 * H, sh = (rect.lat1 - rect.lat0) / 180 * H;
+    const sx0 = (rect.lon0 + 180) / 360 * W, sx1 = (rect.lon1 + 180) / 360 * W;
+    const scale = dw / (sx1 - sx0);
+    for (let k = -1; k <= 1; k++) ctx.drawImage(img, 0, sy, W, sh, (k * W - sx0) * scale, 0, W * scale, dh);
+    return cv;
+}
+
+// Fetch (and cache) a full 500 m tile blob; a failed fetch is evicted so it can be retried.
+function fetch500mTile(key) {
+    if (nasa500Cache.has(key)) return nasa500Cache.get(key);
+    const p = fetch(NASA_500M_URL(key)).then(r => { if (!r.ok) throw new Error('500 m ' + key + ' ' + r.status); return r.blob(); });
+    p.catch(() => nasa500Cache.delete(key));
+    nasa500Cache.set(key, p);
+    return p;
+}
+
+// Which 500 m tiles the cap rect overlaps, plus the source-pixel sub-rect within each tile and
+// where it lands in the dw×dh cap canvas. The ±360 sweep resolves antimeridian wrap.
+function tilePieces500m(rect, dw, dh) {
+    const lonSpan = rect.lon1 - rect.lon0, latSpan = rect.lat1 - rect.lat0, pieces = [];
+    for (const p of [-360, 0, 360]) for (let i = 0; i < 4; i++) {
+        const tLon0 = -180 + 90 * i;
+        const oLon0 = Math.max(rect.lon0, tLon0 + p), oLon1 = Math.min(rect.lon1, tLon0 + 90 + p);
+        if (oLon1 - oLon0 <= 1e-6) continue;
+        for (const rk of Object.keys(NASA_500M_ROWS)) {
+            const [tLat0, tLat1] = NASA_500M_ROWS[rk];
+            const oLat0 = Math.max(rect.lat0, tLat0), oLat1 = Math.min(rect.lat1, tLat1);
+            if (oLat1 - oLat0 <= 1e-6) continue;
+            pieces.push({
+                key: NASA_500M_COLS[i] + rk,
+                sx: (oLon0 - (tLon0 + p)) * NASA_500M_PPD, sw: (oLon1 - oLon0) * NASA_500M_PPD,
+                sy: (tLat1 - oLat1) * NASA_500M_PPD, sh: (oLat1 - oLat0) * NASA_500M_PPD,
+                dx: (oLon0 - rect.lon0) / lonSpan * dw, dw: (oLon1 - oLon0) / lonSpan * dw,
+                dy: (rect.lat1 - oLat1) / latSpan * dh, dh: (oLat1 - oLat0) / latSpan * dh,
+            });
+        }
+    }
+    return pieces;
+}
+
+// A partial-sphere mesh over a lon/lat rect at radius 1, textured by `texture`. Same UV/flip
+// convention as the local cap tiles (canvas/JPEG top row = north), so it maps 1:1.
+function makeRectMesh(T, rect, texture) {
+    const geo = new T.SphereGeometry(1, 64, 64,
+        (rect.lon0 + 180) * Math.PI / 180, (rect.lon1 - rect.lon0) * Math.PI / 180,
+        (90 - rect.lat1) * Math.PI / 180, (rect.lat1 - rect.lat0) * Math.PI / 180);
+    return new T.Mesh(geo, new T.MeshBasicMaterial({ map: texture }));
+}
+
+// Dispose the current cap mesh(es) and drape `canvas` over `rect` as the new one.
+function setNasaCapMesh(rect, canvas) {
     if (!orbital) return;
     const T = window.THREE;
-    if (!orbitalNasaFallback) {
-        orbitalNasaFallback = true;
-        orbital.capMeshes.forEach(m => { orbital.scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
-        orbital.capMeshes = [];
-        for (const [key, tex] of [...capTileCache]) { tex.dispose(); capTileCache.delete(key); }
-    }
-    if (orbitalTexHi) { // already loaded/loading — apply to the current earth once decoded
-        if (orbitalTexHi.image && orbital.earth.material.map !== orbitalTexHi) {
-            orbital.earth.material.map = orbitalTexHi; orbital.earth.material.needsUpdate = true; orbitalRender();
-        }
-        return;
-    }
-    const url = bestNasaTextureUrl();
-    if (!url) return; // GPU can't hold even the 5400px globe — keep the low-res base
-    orbitalTexHi = new T.TextureLoader().load(url, (t) => {
-        t.colorSpace = T.SRGBColorSpace; t.anisotropy = 8;
-        if (orbital && orbitalNasaFallback) { orbital.earth.material.map = t; orbital.earth.material.needsUpdate = true; }
-        orbitalRender();
-    });
+    orbital.capMeshes.forEach(m => { orbital.scene.remove(m); m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose(); });
+    const tex = new T.CanvasTexture(canvas);
+    tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = 8;
+    const mesh = makeRectMesh(T, rect, tex);
+    orbital.scene.add(mesh);
+    orbital.capMeshes = [mesh];
+    orbitalRender();
 }
 
-// One-time check: are the local high-res cap tiles actually deployed? They're gitignored, so
-// a static host (Netlify) ships only the base — a HEAD 404 flips us to the NASA fallback for
-// the session. If we already know they're missing (re-entry), just re-apply the fallback.
+// Build the visible cap by cropping it out of the single NASA globe image (default fallback).
+function buildGlobeCap(target, token) {
+    loadNasaGlobe().then(img => {
+        if (token !== orbitalCapToken || !orbital) return;
+        const rect = nasaCapRect(target);
+        const { w, h } = capDestSize(rect, img.naturalWidth / 360);
+        setNasaCapMesh(rect, cropGlobeToCanvas(img, rect, w, h));
+    }).catch(() => { /* both globe URLs failed — the low-res base sphere still shows */ });
+}
+
+// Build the visible cap by fetching NASA's full 500 m tiles live and stitching the overlap.
+// createImageBitmap decodes+crops+downscales each tile in one step so we never hold a 466 MP
+// canvas. Throws on any failure so the caller can fall back to the lighter globe crop.
+async function build500mCap(target, token) {
+    const rect = nasaCapRect(target);
+    const { w, h } = capDestSize(rect, NASA_500M_PPD);
+    const pieces = tilePieces500m(rect, w, h);
+    if (!pieces.length) throw new Error('no 500 m coverage');
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    await Promise.all(pieces.map(async pc => {
+        const blob = await fetch500mTile(pc.key);
+        const bmp = await createImageBitmap(blob, pc.sx, pc.sy, pc.sw, pc.sh,
+            { resizeWidth: Math.max(1, Math.round(pc.dw)), resizeHeight: Math.max(1, Math.round(pc.dh)), resizeQuality: 'high' });
+        if (token === orbitalCapToken) ctx.drawImage(bmp, pc.dx, pc.dy);
+        if (bmp.close) bmp.close();
+    }));
+    if (token !== orbitalCapToken || !orbital) return;
+    setNasaCapMesh(rect, cv);
+}
+
+// Build the fallback cap for `target` with whatever source is active. 500 m failures (network /
+// decode limits) fall back to the globe crop. Bumps the token so earlier builds don't clobber.
+function orbitalBuildNasaCap(target) {
+    const token = ++orbitalCapToken;
+    if (orbitalUse500m) build500mCap(target, token).catch(() => { if (token === orbitalCapToken) buildGlobeCap(target, token); });
+    else buildGlobeCap(target, token);
+}
+
+// Pick the cap source for `target`: the app's local pre-sliced tiles, or a NASA crop when the
+// user opted into 500 m or the local tiles turned out to be missing.
+function orbitalRefreshCap(target) {
+    if (!orbital) return;
+    if (orbitalUse500m || orbitalNasaFallback) orbitalBuildNasaCap(target);
+    else orbitalLoadCap(target);
+}
+
+// Local cap tiles aren't deployed → source the cap from NASA for the rest of the session.
+function useNasaFallback() {
+    if (!orbital || orbitalNasaFallback) return;
+    orbitalNasaFallback = true;
+    for (const [key, tex] of [...capTileCache]) { tex.dispose(); capTileCache.delete(key); } // drop failed local loads
+    if (orbCam) orbitalRefreshCap([orbCam.lon, orbCam.lat]);
+}
+
+// One-time check: are the local high-res cap tiles actually deployed? They're gitignored, so a
+// static host (Netlify) ships only the base — a HEAD 404 (or an SPA-style 200 that returns HTML)
+// flips us to the NASA fallback. On re-entry, re-apply an already-known fallback.
 function probeLocalTiles() {
-    if (orbitalNasaFallback) { useNasaFallback(); return; }
+    if (orbitalNasaFallback) { if (orbCam) orbitalRefreshCap([orbCam.lon, orbCam.lat]); return; }
     if (orbitalTilesProbed) return;
     orbitalTilesProbed = true;
     fetch(capTileUrl(0, 0), { method: 'HEAD' })
-        // A non-2xx OR an SPA-style 200 that returns HTML both mean the tile isn't really there.
         .then(r => { if (!r.ok || !(r.headers.get('content-type') || '').startsWith('image')) useNasaFallback(); })
         .catch(() => useNasaFallback());
 }
 
-// Load the low-res full-globe base texture (instant paint; covers the far side / gaps).
+// Load the low-res full-globe base texture (instant paint; covers the far side / gaps under the cap).
 function loadEarthTextures() {
     const T = window.THREE;
     if (orbitalTexLow) return;
     orbitalTexLow = new T.TextureLoader().load(EARTH_TEX_LOW, (t) => {
         t.colorSpace = T.SRGBColorSpace; t.anisotropy = 8;
-        // Show the base as a placeholder unless the hi-res NASA globe is already up (don't downgrade it).
-        if (orbital && orbital.earth.material.map !== orbitalTexHi) { orbital.earth.material.map = orbitalTexLow; orbital.earth.material.needsUpdate = true; }
+        if (orbital) { orbital.earth.material.map = orbitalTexLow; orbital.earth.material.needsUpdate = true; }
         orbitalRender();
-    }, undefined, () => useNasaFallback()); // base also missing → go straight to NASA
+    }, undefined, () => useNasaFallback()); // base also missing → NASA supplies the cap
 }
 
 // Geographic bounds of a cap grid tile.
@@ -4829,7 +4979,7 @@ function orbitalSetTarget(target) {
         roll: (Math.random() * 2 - 1) * 5,
         fov: SPACESHIP_FOV
     };
-    orbitalLoadCap(target); // swap in the full-res cap tiles for this sub-point
+    orbitalRefreshCap(target); // local tiles, NASA globe crop, or 500 m stitch — whichever is active
     orbitalRender();
 }
 
@@ -4875,7 +5025,7 @@ function disposeOrbital() {
     try {
         orbital.earth.geometry.dispose();
         orbital.earth.material.dispose();
-        orbital.capMeshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
+        orbital.capMeshes.forEach(m => { m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose(); });
         capTileCache.forEach(t => t.dispose()); capTileCache.clear();
         orbital.atmosphere.geometry.dispose();
         orbital.atmosphere.material.dispose();
