@@ -245,42 +245,57 @@
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
             <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
-            <div class="tuning-row" id="spaceship-tuning" style="display:none">
-                <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
-                    Orbit height <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
-                </label>
-                <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
-                    <input type="checkbox" id="tune-hires-500m"> 500 m tiles
-                </label>
-                <label class="tuning-item" title="Max points for a perfect-distance guess">
-                    Accuracy <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>
-                </label>
-                <label class="tuning-item" title="Max points for an instant guess">
-                    Speed <input type="range" id="tune-score-speed" min="0" max="100" step="5" value="40"><span id="tune-score-speed-val">40</span>
-                </label>
-                <label class="tuning-item" title="Points deducted per degree of look-around panning">
-                    Pan penalty <input type="range" id="tune-score-pan" min="0" max="2" step="0.05" value="0.15"><span id="tune-score-pan-val">0.15</span>
-                </label>
-                <label class="tuning-item" title="Distance (km) at which accuracy points fall to ~37%">
-                    Dist scale <input type="range" id="tune-score-dist" min="100" max="3000" step="100" value="500"><span id="tune-score-dist-val">500 km</span>
-                </label>
-                <label class="tuning-item" title="Seconds at which speed points fall to ~37%">
-                    Time scale <input type="range" id="tune-score-time" min="5" max="120" step="5" value="20"><span id="tune-score-time-val">20 s</span>
-                </label>
-            </div>
-            <div class="tuning-row" id="tuning-row">
-                <label class="tuning-item" title="Fraction of points kept for the Medium detail level">
-                    Medium detail <input type="range" id="tune-simplify" min="5" max="100" step="5" value="30"><span id="tune-simplify-val">30%</span>
-                </label>
-                <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
-                    Min dot px <input type="range" id="tune-dotsize" min="0" max="5" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
-                </label>
-                <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
-                    Dot spacing <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
-                </label>
-                <label class="tuning-item" title="Hide lakes whose largest fitting circle is narrower than this (km across); default is just under Great Salt Lake">
-                    Min lake size <input type="range" id="tune-lakesize" min="16" max="64" step="2" value="32"><span id="tune-lakesize-val">32 km</span>
-                </label>
+            <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
+        </div>
+
+        <!-- Settings pop-up: all tuning sliders live here (opened from the Settings button). -->
+        <div class="settings-overlay hidden" id="settings-overlay">
+            <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+                <div class="settings-header">
+                    <h3>Settings</h3>
+                    <button class="settings-close" id="settings-close" type="button" aria-label="Close settings">&times;</button>
+                </div>
+                <div class="settings-body">
+                    <div class="tuning-group" id="spaceship-tuning" style="display:none">
+                        <div class="tuning-group-title">Spaceship</div>
+                        <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
+                            <span class="tuning-label">Orbit height</span> <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
+                        </label>
+                        <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
+                            <span class="tuning-label">500 m tiles</span> <input type="checkbox" id="tune-hires-500m">
+                        </label>
+                        <label class="tuning-item" title="Max points for a perfect-distance guess">
+                            <span class="tuning-label">Accuracy</span> <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>
+                        </label>
+                        <label class="tuning-item" title="Max points for an instant guess">
+                            <span class="tuning-label">Speed</span> <input type="range" id="tune-score-speed" min="0" max="100" step="5" value="40"><span id="tune-score-speed-val">40</span>
+                        </label>
+                        <label class="tuning-item" title="Points deducted per degree of look-around panning">
+                            <span class="tuning-label">Pan penalty</span> <input type="range" id="tune-score-pan" min="0" max="2" step="0.05" value="0.15"><span id="tune-score-pan-val">0.15</span>
+                        </label>
+                        <label class="tuning-item" title="Distance (km) at which accuracy points fall to ~37%">
+                            <span class="tuning-label">Dist scale</span> <input type="range" id="tune-score-dist" min="100" max="3000" step="100" value="500"><span id="tune-score-dist-val">500 km</span>
+                        </label>
+                        <label class="tuning-item" title="Seconds at which speed points fall to ~37%">
+                            <span class="tuning-label">Time scale</span> <input type="range" id="tune-score-time" min="5" max="120" step="5" value="20"><span id="tune-score-time-val">20 s</span>
+                        </label>
+                    </div>
+                    <div class="tuning-group" id="tuning-row">
+                        <div class="tuning-group-title">Map</div>
+                        <label class="tuning-item" title="Fraction of points kept for the Medium detail level">
+                            <span class="tuning-label">Medium detail</span> <input type="range" id="tune-simplify" min="5" max="100" step="5" value="30"><span id="tune-simplify-val">30%</span>
+                        </label>
+                        <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
+                            <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
+                        </label>
+                        <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
+                            <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
+                        </label>
+                        <label class="tuning-item" title="Hide lakes whose largest fitting circle is narrower than this (km across); default is just under Great Salt Lake">
+                            <span class="tuning-label">Min lake size</span> <input type="range" id="tune-lakesize" min="16" max="64" step="2" value="32"><span id="tune-lakesize-val">32 km</span>
+                        </label>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
