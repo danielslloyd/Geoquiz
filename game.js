@@ -795,17 +795,32 @@ function startGlobeSpin(speed = 0.2) {
     globeSpinInterval = setInterval(spinStep, 50);
 }
 
-// Highlight country on globe
+// True when a feature IS `countryName` or is one of its overseas territories, so
+// naming/finding a parent fills the parent and all its dependencies together.
+function featureBelongsTo(d, countryName) {
+    return !!(d && d.properties &&
+        (d.properties.name === countryName || d.properties.parent === countryName));
+}
+
+// Raise highlighted paths so their outline paints ON TOP of neighbouring
+// countries — otherwise a later-drawn neighbour clips the highlight's border.
+function raiseHighlight(selection) {
+    if (selection && !selection.empty()) selection.raise();
+}
+
+// Highlight country on globe (plus any of its overseas territories).
 function highlightCountryOnGlobe(countryName) {
-    countriesGroup.selectAll('path')
-        .filter(d => d.properties.name === countryName)
+    const paths = countriesGroup.selectAll('path')
+        .filter(d => featureBelongsTo(d, countryName))
         .classed('target', true);
+    raiseHighlight(paths);
 
     // Island nations are dots, not polygons — highlight the marker too.
     if (islandMarkersGroup) {
-        islandMarkersGroup.selectAll('circle')
-            .filter(d => d.properties.name === countryName)
+        const dots = islandMarkersGroup.selectAll('circle')
+            .filter(d => featureBelongsTo(d, countryName))
             .classed('target', true);
+        raiseHighlight(dots);
     }
 }
 
@@ -834,6 +849,8 @@ function startGameWithMode(mode) {
     removeSpaceshipInset(); // clear the spaceship guess inset from any prior game
     disposeOrbital();       // tear down any prior orbital WebGL canvas
     const modeConfig = QUIZ_MODES[mode];
+    // Mark the spaceship view so the mobile layout can split into earth + guess map.
+    document.body.classList.toggle('spaceship-active', !!modeConfig.spaceshipMode);
     gameState = {
         score: 0,
         currentQuestion: 1,
@@ -1586,6 +1603,9 @@ function loadMapData() {
                         country.properties.name = mapped;
                     }
                 });
+                // Tag overseas territories with their sovereign parent so they fill
+                // with (and count as) the parent, while staying separate features.
+                tagTerritories(gameState.countries);
                 fixCountryWinding(gameState.countries);
 
                 // Flat (Mercator) view of the world: crop to the Greenland–Chile
@@ -1632,6 +1652,7 @@ function loadMapData() {
                 });
             }
 
+            shapeDescriptorCache = null; // rebuild shape descriptors for the new geometry
             drawCountries();
             gameState.initialScale = projection.scale();
             startNewQuestion();
@@ -1680,6 +1701,98 @@ function reloadWorldDetail() {
 // Load world map data (legacy function for backwards compatibility)
 function loadWorldData() {
     loadMapData();
+}
+
+// ==================== OVERSEAS TERRITORIES ====================
+// Overseas dependencies that appear as their OWN feature in the world-atlas but
+// belong to a sovereign parent. Keyed by ISO 3166-1 numeric id (= the atlas
+// feature id). Marking these lets us: (a) fill them green when the parent is
+// named/clicked, (b) count a click on the territory as finding the parent, and
+// (c) label/flag them by the parent — e.g. "Puerto Rico (USA)". Because they stay
+// SEPARATE features with their own names, the parent's shape/centroid/bounding box
+// (used for zoom and Shape-ID) naturally excludes them, as requested.
+const TERRITORY_BY_ID = {
+    // United Kingdom
+    60:  { name: 'Bermuda',                     parent: 'United Kingdom' },
+    92:  { name: 'British Virgin Islands',      parent: 'United Kingdom' },
+    136: { name: 'Cayman Islands',              parent: 'United Kingdom' },
+    238: { name: 'Falkland Islands',            parent: 'United Kingdom' },
+    292: { name: 'Gibraltar',                   parent: 'United Kingdom' },
+    500: { name: 'Montserrat',                  parent: 'United Kingdom' },
+    654: { name: 'Saint Helena',                parent: 'United Kingdom' },
+    660: { name: 'Anguilla',                    parent: 'United Kingdom' },
+    796: { name: 'Turks and Caicos Islands',    parent: 'United Kingdom' },
+    831: { name: 'Guernsey',                    parent: 'United Kingdom' },
+    832: { name: 'Jersey',                      parent: 'United Kingdom' },
+    833: { name: 'Isle of Man',                 parent: 'United Kingdom' },
+    // United States
+    16:  { name: 'American Samoa',              parent: 'United States of America' },
+    316: { name: 'Guam',                        parent: 'United States of America' },
+    580: { name: 'Northern Mariana Islands',    parent: 'United States of America' },
+    630: { name: 'Puerto Rico',                 parent: 'United States of America' },
+    850: { name: 'United States Virgin Islands', parent: 'United States of America' },
+    // France
+    258: { name: 'French Polynesia',            parent: 'France' },
+    260: { name: 'French Southern Territories', parent: 'France' },
+    540: { name: 'New Caledonia',               parent: 'France' },
+    663: { name: 'Saint Martin',                parent: 'France' },
+    666: { name: 'Saint Pierre and Miquelon',   parent: 'France' },
+    876: { name: 'Wallis and Futuna',           parent: 'France' },
+    // Denmark
+    234: { name: 'Faroe Islands',               parent: 'Denmark' },
+    304: { name: 'Greenland',                   parent: 'Denmark' },
+    // Netherlands
+    531: { name: 'Curaçao',                     parent: 'Netherlands' },
+    533: { name: 'Aruba',                       parent: 'Netherlands' },
+    534: { name: 'Sint Maarten',                parent: 'Netherlands' },
+    // New Zealand
+    184: { name: 'Cook Islands',                parent: 'New Zealand' },
+    570: { name: 'Niue',                        parent: 'New Zealand' },
+    // Australia
+    162: { name: 'Christmas Island',            parent: 'Australia' },
+    166: { name: 'Cocos Islands',               parent: 'Australia' },
+    574: { name: 'Norfolk Island',              parent: 'Australia' },
+};
+
+// Short parenthetical shown after a territory's name, e.g. "Puerto Rico (USA)".
+const PARENT_ABBREV = {
+    'United States of America': 'USA',
+    'United Kingdom': 'UK',
+    'New Zealand': 'NZ',
+};
+
+// Reverse map (territory name -> parent name), built once from TERRITORY_BY_ID.
+const TERRITORY_PARENT_BY_NAME = {};
+Object.values(TERRITORY_BY_ID).forEach(t => { TERRITORY_PARENT_BY_NAME[t.name] = t.parent; });
+
+// Parent country name for a territory, or null if `name` isn't a territory.
+function parentOfTerritory(name) {
+    return TERRITORY_PARENT_BY_NAME[name] || null;
+}
+
+// The name to use for data lookups (flag / capital / population): a territory
+// resolves to its sovereign parent, everything else is itself.
+function effectiveDataName(name) {
+    return parentOfTerritory(name) || name;
+}
+
+// Display label for a feature/name — "Puerto Rico (USA)" for territories.
+function displayLabelForName(name) {
+    const parent = parentOfTerritory(name);
+    if (!parent) return name;
+    return `${name} (${PARENT_ABBREV[parent] || parent})`;
+}
+
+// Attach territory metadata (parent, isTerritory, displayName) to world features.
+function tagTerritories(features) {
+    features.forEach(f => {
+        const terr = TERRITORY_BY_ID[parseInt(f.id, 10)];
+        if (!terr) return;
+        f.properties.name = terr.name;
+        f.properties.parent = terr.parent;
+        f.properties.isTerritory = true;
+        f.properties.displayName = displayLabelForName(terr.name);
+    });
 }
 
 // Map country IDs to names (simplified version)
@@ -2369,13 +2482,15 @@ function handleCountryClick(event, d) {
     gameState.scrollLocked = true; // Lock scrolling during animation
 
     const modeConfig = QUIZ_MODES[gameState.mode];
-    const clickedCountry = d.properties.name;
+    // A click on an overseas territory counts as finding its sovereign parent.
+    const clickedCountry = d.properties.parent || d.properties.name;
     const isCorrect = clickedCountry === gameState.targetCountry;
 
     if (isCorrect) {
         if (modeConfig.useWorldQuizLayout) {
-            // For World Quiz Layout, color correct country bright green and zoom to it
-            d3.select(event.target).classed('target', true);
+            // For World Quiz Layout, color correct country bright green and zoom to it.
+            // Fill the parent AND any overseas territories, not just the clicked feature.
+            highlightCountryOnGlobe(gameState.targetCountry);
             gameState.answeredCorrectly = true;
             gameState.score++;
             document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
@@ -2390,6 +2505,8 @@ function handleCountryClick(event, d) {
             });
         } else {
             handleCorrectAnswer(event.target);
+            // Fill parent + territories (clicking any part of a country reveals the whole).
+            highlightCountryOnGlobe(gameState.targetCountry);
             gameState.scrollLocked = false;
         }
     } else {
@@ -2397,6 +2514,7 @@ function handleCountryClick(event, d) {
             // For World Quiz Layout, color incorrect country red instantly
             const incorrectElement = d3.select(event.target);
             incorrectElement.classed('incorrect', true);
+            raiseHighlight(incorrectElement);
 
             // Zoom to incorrect country and hold for 0.1s
             zoomAndRotateToCountry(clickedCountry, 600).then(() => {
@@ -2455,7 +2573,9 @@ function handleCorrectAnswer(element) {
 
     // Always confirm a correct answer with a green highlight (path, dot, or button).
     if (element) {
-        d3.select(element).classed('selected', false).classed('target', true).classed('correct', true);
+        const sel = d3.select(element).classed('selected', false).classed('target', true).classed('correct', true);
+        // Raise map highlights so their outline isn't clipped by neighbouring shapes.
+        if (element.ownerSVGElement) raiseHighlight(sel);
     }
     document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
@@ -2514,7 +2634,9 @@ function goToNextQuestion() {
 
 // Handle incorrect answer
 function handleIncorrectAnswer(element) {
-    d3.select(element).classed('selected', false).classed('incorrect', true);
+    const sel = d3.select(element).classed('selected', false).classed('incorrect', true);
+    // Raise map highlights so the red outline isn't clipped by neighbouring shapes.
+    if (element && element.ownerSVGElement) raiseHighlight(sel);
 
     // Remove incorrect styling after a short delay
     setTimeout(() => {
@@ -3267,17 +3389,19 @@ function foundCountryMatch(countryName, inputElement) {
     checkNameAllComplete();
 }
 
-// Highlight a found country in name-all mode
+// Highlight a found country in name-all mode (plus its overseas territories).
 function highlightFoundCountry(countryName) {
-    countriesGroup.selectAll('path')
-        .filter(d => d.properties.name === countryName)
+    const paths = countriesGroup.selectAll('path')
+        .filter(d => featureBelongsTo(d, countryName))
         .classed('target', true);
+    raiseHighlight(paths);
 
     // Island nations are dots, not polygons — highlight the marker too.
     if (islandMarkersGroup) {
-        islandMarkersGroup.selectAll('circle')
-            .filter(d => d.properties.name === countryName)
+        const dots = islandMarkersGroup.selectAll('circle')
+            .filter(d => featureBelongsTo(d, countryName))
             .classed('target', true);
+        raiseHighlight(dots);
     }
 
     // Smoothly zoom to the country
@@ -3498,20 +3622,24 @@ function exitFreeExplore() {
 
 // Show country popup with stats and flag
 function showCountryPopup(countryName) {
-    const data = lookupDataEntry(countryName, gameState.currentDataObj);
+    // Territories carry the sovereign parent's flag/capital/population and are
+    // titled e.g. "Puerto Rico (USA)".
+    const dataName = effectiveDataName(countryName);
+    const title = displayLabelForName(countryName);
+    const data = lookupDataEntry(dataName, gameState.currentDataObj);
     if (!data) {
         console.warn(`No data found for ${countryName}`);
         return;
     }
 
-    const flagUrl = getFlagUrl(countryName);
-    const capital = getCapital(countryName) || 'N/A';
+    const flagUrl = getFlagUrl(dataName);
+    const capital = getCapital(dataName) || 'N/A';
     const population = data.population ? data.population.toLocaleString() : 'N/A';
 
     const popupHtml = `
         <div class="explore-popup-content">
-            <h3>${countryName}</h3>
-            ${flagUrl ? `<img src="${flagUrl}" alt="Flag of ${countryName}" class="explore-flag">` : ''}
+            <h3>${title}</h3>
+            ${flagUrl ? `<img src="${flagUrl}" alt="Flag of ${title}" class="explore-flag">` : ''}
             <div class="explore-details">
                 <p><strong>Capital:</strong> ${capital}</p>
                 <p><strong>Population:</strong> ${population}</p>
@@ -3558,6 +3686,92 @@ function closeCountryPopup() {
 
 // ==================== COUNTRY SHAPE ID MODE ====================
 
+// Shape descriptors used to offer Shape-ID distractors that LOOK like the target.
+// Built once from the loaded (10m) geometry and cached until new map data loads.
+let shapeDescriptorCache = null;
+
+// Size / elongation / compactness descriptor for a country feature.
+function computeShapeDescriptor(f) {
+    const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
+    const [[w, s], [e, n]] = d3.geoBounds(f);
+    let lonSpan = e - w;
+    if (lonSpan < 0) lonSpan += 360; // antimeridian wrap
+    const midLat = (s + n) / 2;
+    const width = lonSpan * Math.cos(midLat * Math.PI / 180); // physical width (deg-equiv)
+    const height = Math.max(n - s, 1e-3);
+    const aspect = width / height;                            // >1 wide, <1 tall
+    // Spherical bounding-box area, for a size-independent compactness ratio.
+    const bboxArea = Math.abs((lonSpan * Math.PI / 180) *
+        (Math.sin(n * Math.PI / 180) - Math.sin(s * Math.PI / 180)));
+    const compactness = bboxArea > 0 ? area / bboxArea : 0;   // fraction of bbox filled
+    return { logArea: Math.log(Math.max(area, 1e-6)), logAspect: Math.log(Math.max(aspect, 1e-3)), compactness };
+}
+
+// name -> shape descriptor, from the largest feature per name (some names split
+// into micro-polygons at high detail; the biggest carries the recognisable shape).
+function buildShapeDescriptorCache() {
+    const byName = new Map();
+    (gameState.countries || []).forEach(f => {
+        const nm = f && f.properties && f.properties.name;
+        if (!nm || (f.properties && f.properties.isTerritory)) return; // territories aren't quiz answers
+        const prev = byName.get(nm);
+        if (!prev || d3.geoArea(f) > d3.geoArea(prev)) byName.set(nm, f);
+    });
+    const cache = new Map();
+    byName.forEach((f, nm) => cache.set(nm, computeShapeDescriptor(f)));
+    return cache;
+}
+
+function getShapeDescriptorCache() {
+    if (!shapeDescriptorCache) shapeDescriptorCache = buildShapeDescriptorCache();
+    return shapeDescriptorCache;
+}
+
+// The `count` quiz-list countries whose overall shape is most similar to the
+// target's, by standardized (z-scored) distance in descriptor space.
+function shapeSimilarNames(targetName, count) {
+    const cache = getShapeDescriptorCache();
+    const list = (gameState.currentQuizList || []).filter(n => cache.has(n));
+    const target = cache.get(targetName);
+    if (!target || list.length < 2) return [];
+
+    const keys = ['logArea', 'logAspect', 'compactness'];
+    // The silhouette is fitted to fill the view, so absolute SIZE barely affects how
+    // alike two outlines look — weight form (aspect, compactness) far above area.
+    const weight = { logArea: 0.35, logAspect: 1.0, compactness: 1.0 };
+    // Standardize each dimension so no single feature (e.g. huge log-area range) dominates.
+    const stats = {};
+    keys.forEach(k => {
+        const vals = list.map(n => cache.get(n)[k]);
+        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
+        stats[k] = { mean, sd: Math.sqrt(variance) || 1 };
+    });
+    // Weighted Euclidean distance target→candidate in standardized (z-score) space.
+    const dist = (d) => Math.hypot(...keys.map(k => weight[k] * (d[k] - target[k]) / stats[k].sd));
+
+    return list
+        .filter(n => n !== targetName)
+        .map(n => ({ name: n, d: dist(cache.get(n)) }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, count)
+        .map(x => x.name);
+}
+
+// Build the 4 Shape-ID options: the answer + 2 shape-similar distractors + fill.
+function generateShapeIdOptions(correctAnswer) {
+    const list = gameState.currentQuizList || [];
+    const options = [correctAnswer];
+    shapeSimilarNames(correctAnswer, 2).forEach(n => { if (!options.includes(n)) options.push(n); });
+    // Top up to 4 with random quiz items if similarity yielded too few.
+    let guard = 0;
+    while (options.length < 4 && options.length < list.length && guard++ < 500) {
+        const r = list[Math.floor(Math.random() * list.length)];
+        if (!options.includes(r)) options.push(r);
+    }
+    return shuffleArray(options);
+}
+
 // Render country shape ID question — show ONLY the target country's outline as a
 // flat Mercator silhouette (no globe, neighbours, lakes or dots), then pick the name.
 function renderCountryShapeIdQuestion() {
@@ -3592,8 +3806,9 @@ function renderCountryShapeIdQuestion() {
             .attr('d', path);
     }
 
-    // Generate multiple choice options
-    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
+    // Multiple-choice options: the answer plus 2 distractors chosen for LOOKING like
+    // the target shape (+ a random fill), so the wrong answers are genuinely tricky.
+    const options = generateShapeIdOptions(gameState.targetCountry);
     renderMultipleChoice(options, gameState.targetCountry);
 }
 
@@ -4007,6 +4222,7 @@ function goHome() {
     stopNameAllTimer();
     removeSpaceshipInset();
     disposeOrbital();
+    document.body.classList.remove('spaceship-active');
 
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
@@ -4254,6 +4470,20 @@ function setupEventListeners() {
             if (label) label.textContent = this.value + ' km';
             drawLakes();
         });
+    }
+
+    // Settings pop-up: open/close the tuning-slider modal.
+    const settingsBtn = document.getElementById('settings-btn');
+    const settingsOverlay = document.getElementById('settings-overlay');
+    const settingsClose = document.getElementById('settings-close');
+    if (settingsBtn && settingsOverlay) {
+        const openSettings = () => settingsOverlay.classList.remove('hidden');
+        const closeSettings = () => settingsOverlay.classList.add('hidden');
+        settingsBtn.addEventListener('click', openSettings);
+        if (settingsClose) settingsClose.addEventListener('click', closeSettings);
+        // Close on backdrop click (but not when clicking inside the panel).
+        settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) closeSettings(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
     }
 
     // Debug validity overlay toggle (button + 'd' keyboard shortcut)
@@ -4848,25 +5078,43 @@ function orbitalLoadCap(target) {
     orbitalRender();
 }
 
-// A fresnel rim glow on a slightly larger back-side shell — reads as the atmosphere.
+// Atmosphere: a soft limb glow that fades GRADUALLY from the horizon up into space
+// (no hard shell edge). For each view ray we take its closest approach to the planet
+// centre; that distance maps 0→1 from the limb (tangent) to the zenith, and the glow
+// smoothly falls off over the lower band of that range. uCamDist is refreshed per
+// render so the falloff tracks the current orbit altitude.
 function makeAtmosphere(T) {
     const mat = new T.ShaderMaterial({
         transparent: true,
         blending: T.AdditiveBlending,
-        side: T.BackSide,
+        side: T.BackSide,       // big surrounding shell; earth (drawn opaque) occludes the lower half
         depthWrite: false,
+        uniforms: {
+            uCamDist: { value: 1.06 },              // camera distance in Earth radii (updated per render)
+            uBand:    { value: 0.42 },              // fraction of horizon→zenith over which the glow fades out
+            uColor:   { value: new T.Color(0.35, 0.62, 1.0) },
+            uStrength:{ value: 0.9 }
+        },
         vertexShader:
-            'varying vec3 vN; varying vec3 vP;' +
-            'void main(){ vN = normalize(normalMatrix * normal);' +
-            ' vec4 mv = modelViewMatrix * vec4(position,1.0); vP = mv.xyz;' +
-            ' gl_Position = projectionMatrix * mv; }',
+            'varying vec3 vWorld;' +
+            'void main(){ vWorld = (modelMatrix * vec4(position,1.0)).xyz;' +
+            ' gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
         fragmentShader:
-            'varying vec3 vN; varying vec3 vP;' +
-            'void main(){ vec3 v = normalize(-vP);' +
-            ' float f = pow(1.0 - abs(dot(v, vN)), 3.5);' +
-            ' gl_FragColor = vec4(vec3(0.45,0.7,1.0) * f, f); }'
+            'uniform float uCamDist; uniform float uBand; uniform vec3 uColor; uniform float uStrength;' +
+            'varying vec3 vWorld;' +
+            'void main(){' +
+            ' vec3 ro = cameraPosition;' +
+            ' vec3 rd = normalize(vWorld - ro);' +
+            ' float tca = max(-dot(ro, rd), 0.0);' +
+            ' float h = length(ro + rd * tca);' +                       // closest approach to centre (Earth radii)
+            ' float t = clamp((h - 1.0) / max(uCamDist - 1.0, 1e-3), 0.0, 1.0);' + // 0 at limb → 1 at zenith
+            ' float intensity = 1.0 - smoothstep(0.0, uBand, t);' +      // fuzzy fade above the horizon
+            ' intensity = pow(intensity, 1.4) * uStrength;' +
+            ' gl_FragColor = vec4(uColor, intensity); }'
     });
-    return new T.Mesh(new T.SphereGeometry(1.03, 64, 64), mat);
+    // Large shell so every above-horizon ray direction is covered; the fade completes
+    // long before the shell's own silhouette, so there is no visible hard edge.
+    return new T.Mesh(new T.SphereGeometry(2.5, 96, 96), mat);
 }
 
 // A simple starfield on a large surrounding sphere.
@@ -4926,6 +5174,13 @@ function ensureOrbital() {
     return orbital;
 }
 
+// True when the spaceship view should split into earth (top) + guess map (bottom):
+// a narrow (mobile) viewport while the spaceship mode is active.
+function orbitalMobileSplit() {
+    return document.body.classList.contains('spaceship-active') &&
+        window.matchMedia('(max-width: 768px)').matches;
+}
+
 // Match the renderer/camera to the container's on-screen size.
 function orbitalResize() {
     if (!orbital) return;
@@ -4936,7 +5191,13 @@ function orbitalResize() {
     const host = orbital.canvas.parentNode; // #map-container
     const cs = getComputedStyle(host);
     const w = Math.max(1, Math.round(host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)));
-    const h = Math.max(1, Math.round(host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)));
+    let h = Math.max(1, Math.round(host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)));
+    // Mobile split-screen: the guess inset sits BELOW the earth view (full width), so
+    // shrink the canvas to the space above it instead of letting the inset overlay it.
+    if (orbitalMobileSplit()) {
+        const inset = document.getElementById('spaceship-inset');
+        if (inset && inset.offsetHeight) h = Math.max(1, h - inset.offsetHeight - 12);
+    }
     orbital.renderer.setSize(w, h, true);
     orbital.camera.aspect = w / h;
     orbital.camera.updateProjectionMatrix();
@@ -4959,6 +5220,11 @@ function applyOrbitalCamera() {
     cam.up.copy(up);
     cam.fov = c.fov; cam.updateProjectionMatrix();
     cam.lookAt(cam.position.clone().add(fwd));
+
+    // Keep the atmosphere's horizon→zenith falloff matched to the current altitude.
+    if (orbital.atmosphere && orbital.atmosphere.material.uniforms) {
+        orbital.atmosphere.material.uniforms.uCamDist.value = orbitDistance();
+    }
 }
 
 function orbitalRender() {
@@ -5049,6 +5315,10 @@ function withThree(fn) {
 // Render the current orbital target through the three.js camera/sphere.
 function drawSpaceshipView() {
     if (!gameState.spaceshipTarget) return;
+    // Hide the underlying D3 globe SVG so it can't peek through the mobile split gap
+    // (the WebGL canvas + inset map cover the area instead). Restored in disposeOrbital.
+    const globeEl = document.getElementById('globe');
+    if (globeEl) globeEl.style.display = 'none';
     withThree(() => {
         if (!ensureOrbital()) return;
         orbitalSetTarget(gameState.spaceshipTarget);

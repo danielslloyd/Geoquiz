@@ -618,11 +618,15 @@ header h1 .material-symbols-outlined {
     stroke-width: 1.75;
 }
 
-/* Find the Capital — guess pin, true-location pin, and the line between them. */
+/* Find the Capital / Spaceship — guess pin, true-location pin, and the line between
+   them. non-scaling-stroke keeps borders and the line a CONSTANT on-screen width no
+   matter how far the inset is zoomed in (the fill radius is scaled by 1/k in JS), so
+   the markers stay a fixed screen size instead of ballooning with the zoom. */
 .guess-marker {
     fill: var(--selected);
     stroke: #fff;
     stroke-width: 2;
+    vector-effect: non-scaling-stroke;
     cursor: pointer;
 }
 
@@ -630,12 +634,14 @@ header h1 .material-symbols-outlined {
     fill: var(--correct);
     stroke: #fff;
     stroke-width: 2;
+    vector-effect: non-scaling-stroke;
 }
 
 .guess-line {
     stroke: var(--incorrect);
     stroke-width: 2;
     stroke-dasharray: 4 3;
+    vector-effect: non-scaling-stroke;
     pointer-events: none;
 }
 
@@ -644,6 +650,8 @@ header h1 .material-symbols-outlined {
     position: absolute;
     right: 12px;
     bottom: 12px;
+    width: 300px;
+    max-width: calc(100% - 24px);
     border: 2px solid var(--land-stroke);
     border-radius: 6px;
     overflow: hidden;
@@ -653,6 +661,8 @@ header h1 .material-symbols-outlined {
 
 #spaceship-inset svg {
     display: block;
+    width: 100%;
+    height: auto;      /* viewBox keeps the aspect ratio as the box grows */
     cursor: crosshair;
 }
 
@@ -706,32 +716,116 @@ header h1 .material-symbols-outlined {
     min-height: fit-content;
 }
 
-/* Live tuning sliders row (full width, below the control buttons) */
-.tuning-row {
-    flex-basis: 100%;
+/* ===== Settings pop-up (all tuning sliders live here) ===== */
+.settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
     display: flex;
+    align-items: center;
     justify-content: center;
-    flex-wrap: wrap;
-    gap: 16px;
-    margin-top: 2px;
+    z-index: 100;
+    padding: 16px;
+}
+
+.settings-overlay.hidden {
+    display: none !important;
+}
+
+.settings-panel {
+    background: var(--surface);
+    color: var(--text, #222);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    width: min(460px, 100%);
+    max-height: 85vh;
+    overflow-y: auto;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    z-index: 1;
+}
+
+.settings-header h3 {
+    margin: 0;
+    font-size: 1.05rem;
+}
+
+.settings-close {
+    border: none;
+    background: transparent;
+    font-size: 1.6rem;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-muted, #666);
+    padding: 0 4px;
+}
+
+.settings-close:hover {
+    color: var(--incorrect, #c0392b);
+}
+
+.settings-body {
+    padding: 12px 18px 18px;
+}
+
+.tuning-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 6px 0 14px;
+}
+
+.tuning-group + .tuning-group {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+}
+
+.tuning-group-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--text-muted, #888);
+    margin-bottom: 2px;
 }
 
 .tuning-item {
-    display: inline-flex;
+    display: grid;
+    grid-template-columns: 8.5em 1fr auto;
     align-items: center;
-    gap: 6px;
-    font-size: 0.8rem;
+    gap: 10px;
+    font-size: 0.85rem;
     color: var(--text-muted, #666);
 }
 
+.tuning-item .tuning-label {
+    min-width: 0;
+}
+
 .tuning-item input[type="range"] {
-    width: 110px;
+    width: 100%;
     accent-color: var(--land-hover);
     cursor: pointer;
 }
 
-.tuning-item span {
-    min-width: 2.5em;
+.tuning-item input[type="checkbox"] {
+    justify-self: start;
+    cursor: pointer;
+}
+
+.tuning-item > span:last-child {
+    min-width: 3.2em;
+    text-align: right;
     font-variant-numeric: tabular-nums;
 }
 
@@ -981,6 +1075,21 @@ header h1 .material-symbols-outlined {
 
     .flag-display img {
         max-width: 250px;
+    }
+
+    /* Spaceship on mobile: split the map area into earth view (top) + guess map
+       (bottom) instead of a tiny overlay. The orbital canvas is shrunk in JS
+       (orbitalResize reserves the inset height); the inset spans full width. */
+    .spaceship-active #map-container {
+        min-height: 72vh;
+    }
+
+    .spaceship-active #spaceship-inset {
+        left: 6px;
+        right: 6px;
+        bottom: 6px;
+        width: auto;
+        max-width: none;
     }
 }
 
