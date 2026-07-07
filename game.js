@@ -4553,6 +4553,30 @@ function setupEventListeners() {
         });
     }
 
+    // Hint-outline detail level (low/medium/max — see loadHintFeatures for what each means).
+    const hintDetailSel = document.getElementById('tune-hint-detail');
+    if (hintDetailSel) {
+        hintDetailSel.addEventListener('change', function () { setOrbitalHintDetail(this.value); });
+    }
+    // Hint-outline stroke width.
+    const hintWidthSlider = document.getElementById('tune-hint-width');
+    if (hintWidthSlider) {
+        const label = document.getElementById('tune-hint-width-val');
+        hintWidthSlider.addEventListener('input', function () {
+            setOrbitalHintLineWidth(+this.value);
+            if (label) label.textContent = this.value;
+        });
+    }
+    // Hint-outline elevation above the surface.
+    const hintElevSlider = document.getElementById('tune-hint-elev');
+    if (hintElevSlider) {
+        const label = document.getElementById('tune-hint-elev-val');
+        hintElevSlider.addEventListener('input', function () {
+            setOrbitalHintElevation(+this.value);
+            if (label) label.textContent = this.value + ' km';
+        });
+    }
+
     // Orbital scoring-weight sliders.
     [
         ['tune-score-acc', 'tune-score-acc-val', v => { scoreAccuracyWeight = v; }, v => String(v)],
@@ -4886,6 +4910,7 @@ function ensureSpaceshipInset() {
             zoomG.attr('transform', event.transform);
             zoomG.selectAll('circle').attr('r', 5 / k);
             zoomG.selectAll('.guess-line').attr('stroke-width', 1.5 / k);
+            if (gameState.capitalSubmitted) updateSpaceshipHeadingVector();
         })
         .on('end', (event) => {
             const se = event.sourceEvent;
@@ -5273,7 +5298,16 @@ function makeStarfield(T) {
 
 let orbitalHintOn = false;      // spaceship country-outline hint (persists across rounds/re-entry)
 let orbitalHintBuilding = false;
-const HINT_RADIUS = 1.001;      // just barely above the surface (tiles at r=1) so outlines sit on the ground
+let orbitalHintDetail = 'medium';   // 'low'=110m, 'medium'=50m simplified (MEDIUM_SIMPLIFY_RETAIN), 'max'=10m unsimplified (true source max)
+let orbitalHintLineWidth = 1.6;     // fat-line px width, tunable via the Outline-width slider
+let orbitalHintElevationKm = 6;     // hint outline height above the surface (km), tunable via the Outline-height slider
+let hintFeaturesCache = null;       // { detail, features } — avoids re-fetching on width/elevation-only changes
+const HINT_DETAIL_URL = {
+    low: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+    medium: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json',
+    max: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-10m.json'
+};
+function hintRadius() { return 1 + orbitalHintElevationKm / EARTH_R_KM; } // just above the surface (tiles at r=1)
 
 // Flat [x,y,z, x,y,z, …] array of border-segment endpoint PAIRS on the sphere. Each map
 // border segment is subdivided along its great circle so long spans keep hugging the
@@ -5313,14 +5347,17 @@ function buildCountryLinePositions(features, radius) {
     return positions;
 }
 
-// Country features at MEDIUM detail (50m, simplified with MEDIUM_SIMPLIFY_RETAIN) for the
-// hint outlines — independent of the coarse 110m the spaceship loads for its map. Shares
-// worldTopoCache so the 50m source is fetched at most once.
+// Country features at the active hint-outline detail level — independent of the coarse
+// 110m the spaceship loads for its map. 'low'/'medium' share worldTopoCache with the main
+// map detail toggle (110m/50m); 'medium' additionally simplifies with MEDIUM_SIMPLIFY_RETAIN,
+// same as the main map's Medium level. 'max' fetches the 10m source — the atlas's actual
+// highest resolution — and does NOT simplify it (unlike the main map's 'high', which is
+// just the unsimplified 50m source).
 function loadHintFeatures() {
-    const url = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json';
+    const url = HINT_DETAIL_URL[orbitalHintDetail] || HINT_DETAIL_URL.medium;
     return fetchWorldTopo(url).then(data => {
         let topo = data;
-        if (topojson.presimplify && topojson.quantile) {
+        if (orbitalHintDetail === 'medium' && topojson.presimplify && topojson.quantile) {
             const pre = topojson.presimplify(data);
             topo = topojson.simplify(pre, topojson.quantile(pre, MEDIUM_SIMPLIFY_RETAIN));
         }
@@ -5339,38 +5376,86 @@ function syncHintResolution() {
     }
 }
 
-// Lazily build the hint outline mesh from the 50m (medium) countries. Async (fetches the
-// 50m source once); uses the fat-line addon for a slightly thicker stroke, falling back to
-// 1px LineSegments if the addon didn't load.
+// Build the outline mesh from already-fetched features (sync — no network). Uses the
+// fat-line addon for a tunable stroke width, falling back to 1px LineSegments if it didn't load.
+function buildHintLinesMesh(feats) {
+    const T = window.THREE, L = window.THREE_Lines;
+    const positions = buildCountryLinePositions(feats, hintRadius());
+    let lines;
+    if (L && L.LineSegmentsGeometry) {
+        const geo = new L.LineSegmentsGeometry();
+        geo.setPositions(positions);
+        const mat = new L.LineMaterial({
+            color: 0xffffff, linewidth: orbitalHintLineWidth, transparent: true, opacity: 0.85,
+            depthTest: true, worldUnits: false
+        });
+        lines = new L.LineSegments2(geo, mat);
+    } else {
+        const geo = new T.BufferGeometry();
+        geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+        const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
+        lines = new T.LineSegments(geo, mat);
+    }
+    lines.visible = orbitalHintOn;
+    orbital.scene.add(lines);
+    orbital.hintLines = lines;
+    syncHintResolution();
+    orbitalRender();
+}
+
+// Dispose the current hint mesh (e.g. before rebuilding at a different detail level).
+function disposeHintLines() {
+    if (!orbital || !orbital.hintLines) return;
+    orbital.scene.remove(orbital.hintLines);
+    orbital.hintLines.geometry.dispose();
+    orbital.hintLines.material.dispose();
+    orbital.hintLines = null;
+}
+
+// Lazily build the hint outline mesh at the active detail level, fetching only if the
+// features aren't already cached for that level.
 function ensureHintLines() {
     if (!orbital || orbital.hintLines || orbitalHintBuilding) return;
+    if (hintFeaturesCache && hintFeaturesCache.detail === orbitalHintDetail) {
+        buildHintLinesMesh(hintFeaturesCache.features);
+        return;
+    }
     orbitalHintBuilding = true;
     loadHintFeatures().then(feats => {
         orbitalHintBuilding = false;
         if (!orbital || orbital.hintLines) return;
-        const T = window.THREE, L = window.THREE_Lines;
-        const positions = buildCountryLinePositions(feats, HINT_RADIUS);
-        let lines;
-        if (L && L.LineSegmentsGeometry) {
-            const geo = new L.LineSegmentsGeometry();
-            geo.setPositions(positions);
-            const mat = new L.LineMaterial({
-                color: 0xffffff, linewidth: 1.6, transparent: true, opacity: 0.85,
-                depthTest: true, worldUnits: false
-            });
-            lines = new L.LineSegments2(geo, mat);
-        } else {
-            const geo = new T.BufferGeometry();
-            geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
-            const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
-            lines = new T.LineSegments(geo, mat);
-        }
-        lines.visible = orbitalHintOn;
-        orbital.scene.add(lines);
-        orbital.hintLines = lines;
-        syncHintResolution();
-        orbitalRender();
+        hintFeaturesCache = { detail: orbitalHintDetail, features: feats };
+        buildHintLinesMesh(feats);
     }).catch(() => { orbitalHintBuilding = false; });
+}
+
+// Switch the hint-outline detail level (rebuilds the mesh, fetching the new source if needed).
+function setOrbitalHintDetail(detail) {
+    if (detail === orbitalHintDetail) return;
+    orbitalHintDetail = detail;
+    disposeHintLines();
+    if (orbitalHintOn) ensureHintLines();
+    orbitalRender();
+}
+
+// Update the hint-outline stroke width (fat-line material only — no geometry rebuild needed).
+function setOrbitalHintLineWidth(px) {
+    orbitalHintLineWidth = px;
+    if (orbital && orbital.hintLines && 'linewidth' in orbital.hintLines.material) {
+        orbital.hintLines.material.linewidth = px;
+        orbitalRender();
+    }
+}
+
+// Update the hint-outline elevation (rebuilds positions from the cached features — no re-fetch).
+function setOrbitalHintElevation(km) {
+    orbitalHintElevationKm = km;
+    if (!orbital || !orbital.hintLines || !hintFeaturesCache) return;
+    const positions = buildCountryLinePositions(hintFeaturesCache.features, hintRadius());
+    const geo = orbital.hintLines.geometry;
+    if (geo.setPositions) geo.setPositions(positions);
+    else geo.setAttribute('position', new window.THREE.Float32BufferAttribute(positions, 3));
+    orbitalRender();
 }
 
 // Toggle the spaceship country-outline hint (builds the mesh on first use).
@@ -5523,6 +5608,7 @@ function attachOrbitalPan(canvas) {
             gameState.roundPanDeg += Math.abs(dHeadingDeg) + Math.abs(orbCam.tilt - beforeTilt);
         }
         orbitalRender();
+        if (gameState.capitalSubmitted) updateSpaceshipHeadingVector();
     });
     const end = (e) => {
         orbDrag = null;
@@ -5621,6 +5707,33 @@ function handleSpaceshipGuessClick(event) {
     document.getElementById('next-btn').disabled = false;
 }
 
+// Live vector on the inset map showing which way the spaceship camera is currently
+// pointing (compass bearing = orbCam.heading, 0=north clockwise toward east — same
+// convention as computeCoastHeading/applyOrbitalCamera). Drawn from the true sub-point
+// once the answer is revealed, and kept live as the player keeps dragging to look around.
+// Coordinates are divided by the zoom scale k so the vector stays a constant on-screen
+// length regardless of how far the inset is zoomed in.
+function updateSpaceshipHeadingVector() {
+    if (!spaceshipInset || !orbCam || !gameState.spaceshipTarget) return;
+    const k = d3.zoomTransform(spaceshipInset.svg.node()).k || 1;
+    const [cx, cy] = spaceshipInset.projection(gameState.spaceshipTarget);
+    const len = 18 / k, headLen = 6 / k, headWidth = 4 / k;
+    const dx = Math.sin(orbCam.heading), dy = -Math.cos(orbCam.heading); // 0=north(up), clockwise toward east(right)
+    const tipX = cx + dx * len, tipY = cy + dy * len;
+    const baseX = tipX - dx * headLen, baseY = tipY - dy * headLen;
+    const px = -dy, py = dx; // perpendicular, for the arrowhead
+    const tri = `${tipX},${tipY} ${baseX + px * headWidth},${baseY + py * headWidth} ${baseX - px * headWidth},${baseY - py * headWidth}`;
+
+    let g = spaceshipInset.markers.select('.cam-heading');
+    if (g.empty()) {
+        g = spaceshipInset.markers.append('g').attr('class', 'cam-heading');
+        g.append('line').attr('class', 'cam-heading-line');
+        g.append('polygon').attr('class', 'cam-heading-head');
+    }
+    g.select('.cam-heading-line').attr('x1', cx).attr('y1', cy).attr('x2', baseX).attr('y2', baseY);
+    g.select('.cam-heading-head').attr('points', tri);
+}
+
 function revealSpaceshipAnswer() {
     if (!spaceshipInset) return;
     const k = d3.zoomTransform(spaceshipInset.svg.node()).k || 1;
@@ -5633,6 +5746,7 @@ function revealSpaceshipAnswer() {
     }
     spaceshipInset.markers.append('circle').attr('class', 'answer-marker').attr('r', 5 / k)
         .attr('cx', ap[0]).attr('cy', ap[1]);
+    updateSpaceshipHeadingVector();
     const nextBtn = document.getElementById('next-btn');
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
