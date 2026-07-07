@@ -13,13 +13,29 @@
     <!-- three.js (ESM) for the photographic orbital "Where Is My Spaceship?" view.
          Exposed as a global so the classic game.js can use it lazily on mode entry. -->
     <script type="importmap">
-    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
     </script>
     <script type="module">
         import * as THREE from 'three';
         window.THREE = THREE;
         window.threeReady = true;
         window.dispatchEvent(new Event('three-ready'));
+        // Fat-line addon for the spaceship country-outline hint. Loaded separately (dynamic
+        // import + catch) so a CDN hiccup here can never block window.THREE / three-ready —
+        // the hint just falls back to 1px lines if it's unavailable.
+        Promise.all([
+            import('three/addons/lines/LineSegments2.js'),
+            import('three/addons/lines/LineSegmentsGeometry.js'),
+            import('three/addons/lines/LineMaterial.js')
+        ]).then(([seg2, geom, mat]) => {
+            window.THREE_Lines = { LineSegments2: seg2.LineSegments2, LineSegmentsGeometry: geom.LineSegmentsGeometry, LineMaterial: mat.LineMaterial };
+            window.dispatchEvent(new Event('three-lines-ready'));
+        }).catch(e => console.warn('Fat-line addon failed to load; country-outline hint will use thin lines', e));
     </script>
     <script>
         // Apply saved color theme before first paint to avoid a flash
@@ -244,6 +260,7 @@
             <button id="projection-toggle" class="btn secondary globe-only" title="Switch between globe and flat map">View: Globe</button>
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
+            <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
             <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
             <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
         </div>
@@ -263,9 +280,6 @@
                         </label>
                         <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
                             <span class="tuning-label">500 m tiles</span> <input type="checkbox" id="tune-hires-500m">
-                        </label>
-                        <label class="tuning-item" title="Hint: draw thin white country outlines over the globe">
-                            <span class="tuning-label">Country outlines</span> <input type="checkbox" id="tune-hint-outlines">
                         </label>
                         <label class="tuning-item" title="Max points for a perfect-distance guess">
                             <span class="tuning-label">Accuracy</span> <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>

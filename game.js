@@ -970,6 +970,13 @@ function startGameWithMode(mode) {
     const spaceshipTuning = document.getElementById('spaceship-tuning');
     if (spaceshipTuning) spaceshipTuning.style.display = modeConfig.spaceshipMode ? '' : 'none';
 
+    // Country-outline hint button: shown only in the spaceship view; label reflects state.
+    const hintBtn = document.getElementById('hint-outlines-toggle');
+    if (hintBtn) {
+        hintBtn.style.display = modeConfig.spaceshipMode ? '' : 'none';
+        hintBtn.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
+    }
+
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
     if (projToggle) {
@@ -4537,10 +4544,13 @@ function setupEventListeners() {
         });
     }
 
-    // "Country outlines" hint: overlay thin white borders on the orbital globe.
-    const hintOutlines = document.getElementById('tune-hint-outlines');
-    if (hintOutlines) {
-        hintOutlines.addEventListener('change', function () { setOrbitalHint(this.checked); });
+    // "Country outlines" hint button (spaceship only; shown/labelled in the mode setup).
+    const hintBtn = document.getElementById('hint-outlines-toggle');
+    if (hintBtn) {
+        hintBtn.addEventListener('click', function () {
+            setOrbitalHint(!orbitalHintOn);
+            this.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
+        });
     }
 
     // Orbital scoring-weight sliders.
@@ -5244,42 +5254,6 @@ function makeAtmosphere(T) {
     return new T.Mesh(new T.SphereGeometry(2.5, 96, 96), mat);
 }
 
-// Front-side companion to the limb glow: a thin bluish haze painted OVER the earth near
-// its edge (not just in the sky above it), so the horizon reads as soft/atmospheric rather
-// than a crisp cutout. Strength keys off how grazing each view ray is — ~0 at the
-// sub-point (looking straight down), peaking toward the limb where the sight-line skims
-// the surface (longest air path). Sits just above the surface so it also forms a faint rim
-// slightly outside the silhouette that blends into the sky glow.
-function makeAtmosphereFront(T) {
-    const mat = new T.ShaderMaterial({
-        transparent: true,
-        blending: T.AdditiveBlending,
-        side: T.FrontSide,       // painted on the near hemisphere, in front of the earth
-        depthWrite: false,
-        uniforms: {
-            uEdge:    { value: 0.45 },              // grazing-ness below which there's no haze (centre stays clear)
-            uColor:   { value: new T.Color(0.42, 0.66, 1.0) },
-            uStrength:{ value: 0.85 }
-        },
-        vertexShader:
-            'varying vec3 vWorld; varying vec3 vNormalW;' +
-            'void main(){ vWorld = (modelMatrix * vec4(position,1.0)).xyz;' +
-            ' vNormalW = normalize(mat3(modelMatrix) * normal);' +
-            ' gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-        fragmentShader:
-            'uniform float uEdge; uniform vec3 uColor; uniform float uStrength;' +
-            'varying vec3 vWorld; varying vec3 vNormalW;' +
-            'void main(){' +
-            ' vec3 rd = normalize(vWorld - cameraPosition);' +
-            ' float graze = 1.0 - abs(dot(normalize(vNormalW), rd));' + // 0 looking straight down → 1 at the limb
-            ' float intensity = smoothstep(uEdge, 1.0, graze);' +       // haze concentrated near the edge
-            ' intensity = pow(intensity, 1.3) * uStrength;' +
-            ' gl_FragColor = vec4(uColor, intensity); }'
-    });
-    // Just above the surface (tiles at r=1) so it wins depth over the earth near the limb.
-    return new T.Mesh(new T.SphereGeometry(1.012, 96, 96), mat);
-}
-
 // A simple starfield on a large surrounding sphere.
 function makeStarfield(T) {
     const N = 1500;
@@ -5297,13 +5271,15 @@ function makeStarfield(T) {
     return new T.Points(geo, mat);
 }
 
-let orbitalHintOn = false; // spaceship country-outline hint (persists across rounds/re-entry)
+let orbitalHintOn = false;      // spaceship country-outline hint (persists across rounds/re-entry)
+let orbitalHintBuilding = false;
+const HINT_RADIUS = 1.001;      // just barely above the surface (tiles at r=1) so outlines sit on the ground
 
-// Build white country-border line geometry on the sphere for the spaceship "hint". Each
+// Flat [x,y,z, x,y,z, …] array of border-segment endpoint PAIRS on the sphere. Each map
 // border segment is subdivided along its great circle so long spans keep hugging the
-// surface (a straight chord would dip below it and be occluded). Radius sits just above the
-// tiles (r=1) so lines paint on top of the near side; the opaque earth hides far-side lines.
-function buildCountryLinesGeometry(T, features, radius) {
+// surface (a straight chord would dip below it and be occluded). This layout feeds either a
+// plain LineSegments BufferGeometry or a fat-line LineSegmentsGeometry.setPositions().
+function buildCountryLinePositions(features, radius) {
     const positions = [];
     const slerp = (a, b, t) => {
         const d = Math.max(-1, Math.min(1, a.dot(b)));
@@ -5334,24 +5310,67 @@ function buildCountryLinesGeometry(T, features, radius) {
         if (geom.type === 'Polygon') geom.coordinates.forEach(addRing);
         else if (geom.type === 'MultiPolygon') geom.coordinates.forEach(poly => poly.forEach(addRing));
     });
-    const geo = new T.BufferGeometry();
-    geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
-    return geo;
+    return positions;
 }
 
-// Lazily build the hint line mesh from the loaded (110m) countries. No-op until the
-// features are available or if already built.
+// Country features at MEDIUM detail (50m, simplified with MEDIUM_SIMPLIFY_RETAIN) for the
+// hint outlines — independent of the coarse 110m the spaceship loads for its map. Shares
+// worldTopoCache so the 50m source is fetched at most once.
+function loadHintFeatures() {
+    const url = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json';
+    return fetchWorldTopo(url).then(data => {
+        let topo = data;
+        if (topojson.presimplify && topojson.quantile) {
+            const pre = topojson.presimplify(data);
+            topo = topojson.simplify(pre, topojson.quantile(pre, MEDIUM_SIMPLIFY_RETAIN));
+        }
+        return topojson.feature(topo, topo.objects.countries).features;
+    });
+}
+
+// Fat lines size their px width against the renderer resolution — keep it in sync.
+function syncHintResolution() {
+    if (!orbital || !orbital.hintLines) return;
+    const m = orbital.hintLines.material;
+    if (m && m.resolution) {
+        const sz = new window.THREE.Vector2();
+        orbital.renderer.getSize(sz);
+        m.resolution.set(sz.x || 1, sz.y || 1);
+    }
+}
+
+// Lazily build the hint outline mesh from the 50m (medium) countries. Async (fetches the
+// 50m source once); uses the fat-line addon for a slightly thicker stroke, falling back to
+// 1px LineSegments if the addon didn't load.
 function ensureHintLines() {
-    if (!orbital || orbital.hintLines) return;
-    const T = window.THREE;
-    const feats = gameState.countries || [];
-    if (!feats.length) return;
-    const geo = buildCountryLinesGeometry(T, feats, 1.004);
-    const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false });
-    const lines = new T.LineSegments(geo, mat);
-    lines.visible = orbitalHintOn;
-    orbital.scene.add(lines);
-    orbital.hintLines = lines;
+    if (!orbital || orbital.hintLines || orbitalHintBuilding) return;
+    orbitalHintBuilding = true;
+    loadHintFeatures().then(feats => {
+        orbitalHintBuilding = false;
+        if (!orbital || orbital.hintLines) return;
+        const T = window.THREE, L = window.THREE_Lines;
+        const positions = buildCountryLinePositions(feats, HINT_RADIUS);
+        let lines;
+        if (L && L.LineSegmentsGeometry) {
+            const geo = new L.LineSegmentsGeometry();
+            geo.setPositions(positions);
+            const mat = new L.LineMaterial({
+                color: 0xffffff, linewidth: 1.6, transparent: true, opacity: 0.85,
+                depthTest: true, worldUnits: false
+            });
+            lines = new L.LineSegments2(geo, mat);
+        } else {
+            const geo = new T.BufferGeometry();
+            geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+            const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
+            lines = new T.LineSegments(geo, mat);
+        }
+        lines.visible = orbitalHintOn;
+        orbital.scene.add(lines);
+        orbital.hintLines = lines;
+        syncHintResolution();
+        orbitalRender();
+    }).catch(() => { orbitalHintBuilding = false; });
 }
 
 // Toggle the spaceship country-outline hint (builds the mesh on first use).
@@ -5387,10 +5406,9 @@ function ensureOrbital() {
     const earth = new T.Mesh(new T.SphereGeometry(0.997, 96, 96), new T.MeshBasicMaterial({ map: orbitalTexLow }));
     scene.add(earth);
     const atmosphere = makeAtmosphere(T); scene.add(atmosphere);
-    const atmosphereFront = makeAtmosphereFront(T); scene.add(atmosphereFront);
     const stars = makeStarfield(T); scene.add(stars);
 
-    orbital = { renderer, scene, camera, earth, atmosphere, atmosphereFront, stars, canvas, capMeshes: [] };
+    orbital = { renderer, scene, camera, earth, atmosphere, stars, canvas, capMeshes: [] };
     loadEarthTextures();
     if (orbitalTexLow && orbitalTexLow.image) { earth.material.map = orbitalTexLow; earth.material.needsUpdate = true; }
     probeLocalTiles(); // if the local cap tiles aren't deployed, switch to the NASA fallback
@@ -5430,6 +5448,7 @@ function orbitalResize() {
     orbital.renderer.setSize(w, h, true);
     orbital.camera.aspect = w / h;
     orbital.camera.updateProjectionMatrix();
+    syncHintResolution(); // fat-line px width tracks the renderer size
     orbitalRender();
 }
 
@@ -5525,7 +5544,6 @@ function disposeOrbital() {
         capTileCache.forEach(t => t.dispose()); capTileCache.clear();
         orbital.atmosphere.geometry.dispose();
         orbital.atmosphere.material.dispose();
-        if (orbital.atmosphereFront) { orbital.atmosphereFront.geometry.dispose(); orbital.atmosphereFront.material.dispose(); }
         if (orbital.hintLines) { orbital.hintLines.geometry.dispose(); orbital.hintLines.material.dispose(); }
         orbital.stars.geometry.dispose();
         orbital.stars.material.dispose();
