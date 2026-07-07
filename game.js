@@ -824,6 +824,44 @@ function highlightCountryOnGlobe(countryName) {
     }
 }
 
+// Paint a country's shape(s) with its own flag (used once its flag sub-question has been
+// asked). An objectBoundingBox pattern maps the flag into each feature's bounding box, so
+// the fill automatically follows the country as the globe rotates/zooms. Parent + overseas
+// territories all get the parent's flag.
+function fillCountryWithFlag(countryName) {
+    if (!svg || !countriesGroup) return;
+    const data = gameState.currentDataObj && gameState.currentDataObj[countryName];
+    if (!data || !data.code) return;
+    const url = `https://flagcdn.com/${data.code}.svg`;
+    const patId = 'flagfill-' + data.code;
+
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    if (defs.select('#' + patId).empty()) {
+        const pat = defs.append('pattern')
+            .attr('id', patId)
+            .attr('patternUnits', 'objectBoundingBox')
+            .attr('patternContentUnits', 'objectBoundingBox')
+            .attr('width', 1).attr('height', 1);
+        pat.append('image')
+            .attr('href', url).attr('xlink:href', url)   // href + legacy xlink:href for older renderers
+            .attr('width', 1).attr('height', 1)
+            .attr('preserveAspectRatio', 'xMidYMid slice');
+    }
+
+    const fill = `url(#${patId})`;
+    countriesGroup.selectAll('path')
+        .filter(d => featureBelongsTo(d, countryName))
+        .style('fill', fill)
+        .classed('flag-filled', true);
+    if (islandMarkersGroup) {
+        islandMarkersGroup.selectAll('circle')
+            .filter(d => featureBelongsTo(d, countryName))
+            .style('fill', fill)
+            .classed('flag-filled', true);
+    }
+}
+
 // Clear multiple choice UI
 function clearMultipleChoice() {
     const grid = document.getElementById('options-grid');
@@ -2043,6 +2081,22 @@ function drawLakes() {
         .style('fill', oceanFill);
 }
 
+// A feature's largest angular extent, in radians (rotation-independent). Multiplying by
+// the orthographic scale gives the pixel size the feature WOULD have at the centre of the
+// globe — so the dot/outline decision doesn't change as a country rotates toward the limb
+// (where perspective foreshortening would otherwise shrink it into a dot).
+function featureAngularDim(f) {
+    const b = d3.geoBounds(f); // [[west,south],[east,north]] in degrees
+    let dLon = b[1][0] - b[0][0];
+    if (dLon < 0) dLon += 360; // antimeridian-wrap safety (rare for dot candidates)
+    const dLat = b[1][1] - b[0][1];
+    const midLat = (b[0][1] + b[1][1]) / 2 * Math.PI / 180;
+    const angW = dLon * Math.PI / 180 * Math.cos(midLat); // shrink longitude span toward the poles
+    const angH = dLat * Math.PI / 180;
+    const m = Math.max(Math.abs(angW), Math.abs(angH));
+    return isFinite(m) ? m : 0;
+}
+
 // Build the candidate dot set: quiz items with no polygon (world micro-states) or a
 // small enough polygon that they might need a dot at some zoom. Each dot carries its
 // feature (for the live pixel-size check) and a [lon,lat] anchor.
@@ -2070,7 +2124,7 @@ function drawIslandMarkers() {
         const f = featureByName.get(name);
         if (f) {
             if (d3.geoArea(f) > DOT_CANDIDATE_AREA) continue; // big feature: always an outline
-            dots.push({ properties: { name }, feature: f, lonlat: d3.geoCentroid(f) });
+            dots.push({ properties: { name }, feature: f, lonlat: d3.geoCentroid(f), angDim: featureAngularDim(f) });
         } else {
             const d = dataObj[name];
             if (d && Array.isArray(d.capitalCoords)) {
@@ -2124,8 +2178,16 @@ function updateIslandMarkers() {
         const valid = xy && !isNaN(xy[0]) && !offGlobe;
         let showDot = true;
         if (d.feature) {
-            const b = path.bounds(d.feature); // pixel bbox under the current projection
-            const maxDim = Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
+            // On the globe, size the feature as if it were at the centre of view (angular
+            // extent × scale) so it doesn't flip to a dot merely by rotating toward the
+            // limb. Flat maps have no such foreshortening, so measure the on-screen bbox.
+            let maxDim;
+            if (globe) {
+                maxDim = projection.scale() * (d.angDim || 0);
+            } else {
+                const b = path.bounds(d.feature); // pixel bbox under the current projection
+                maxDim = Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
+            }
             showDot = isFinite(maxDim) && maxDim < DOT_PIXEL_THRESHOLD;
         }
         if (!valid || !showDot) {
@@ -2201,6 +2263,7 @@ function toggleDebugValidity() {
     if (typeof countriesGroup === 'undefined' || !countriesGroup) return;
     debugValidityOn = !debugValidityOn;
     applyDebugValidity();
+    if (!debugValidityOn) clearDebugBoundingBoxes();
     const btn = document.getElementById('debug-validity-toggle');
     if (btn) btn.textContent = debugValidityOn ? 'Debug: On' : 'Debug: Off';
 }
@@ -2220,6 +2283,56 @@ function applyDebugValidity() {
         sel.style('fill', valid ? '#22c55e' : '#ef4444')
            .style('stroke', valid ? '#15803d' : '#991b1b');
     });
+}
+
+let debugBboxGroup = null;
+
+function clearDebugBoundingBoxes() {
+    if (debugBboxGroup) { debugBboxGroup.remove(); debugBboxGroup = null; }
+}
+
+// While the debug overlay is on, clicking/selecting a country draws its two pixel
+// bounding boxes: the country's OWN feature (orange — what Shape-ID/zoom use, territories
+// excluded) and the union INCLUDING its overseas territories (cyan). Static under the
+// current projection (redraw by re-selecting); cleared on the next click / question.
+function drawDebugBoundingBoxes(d) {
+    clearDebugBoundingBoxes();
+    if (!debugValidityOn || !g || !d || !d.properties) return;
+
+    const name = d.properties.parent || d.properties.name;
+    const members = (gameState.countries || []).filter(f => featureBelongsTo(f, name));
+    const own = members.find(f => f.properties && f.properties.name === name && !f.properties.isTerritory)
+        || (d.geometry ? d : (d.feature || null)); // fall back to the clicked feature itself
+
+    debugBboxGroup = g.append('g').attr('class', 'debug-bbox-group').attr('pointer-events', 'none');
+
+    const drawRect = (bounds, color, label) => {
+        if (!bounds || !isFinite(bounds[0][0]) || !isFinite(bounds[1][0])) return;
+        const x = bounds[0][0], y = bounds[0][1];
+        const w = bounds[1][0] - bounds[0][0], h = bounds[1][1] - bounds[0][1];
+        debugBboxGroup.append('rect')
+            .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+            .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 1.5)
+            .attr('stroke-dasharray', '5,3');
+        debugBboxGroup.append('text')
+            .attr('x', x + 2).attr('y', Math.max(y - 3, 10))
+            .attr('fill', color).attr('font-size', '11px').attr('font-family', 'monospace')
+            .text(label);
+    };
+
+    // With territories: union of every member feature's pixel bbox.
+    let ub = null;
+    members.forEach(f => {
+        const b = path.bounds(f);
+        if (!isFinite(b[0][0])) return;
+        if (!ub) ub = [[b[0][0], b[0][1]], [b[1][0], b[1][1]]];
+        else {
+            ub[0][0] = Math.min(ub[0][0], b[0][0]); ub[0][1] = Math.min(ub[0][1], b[0][1]);
+            ub[1][0] = Math.max(ub[1][0], b[1][0]); ub[1][1] = Math.max(ub[1][1], b[1][1]);
+        }
+    });
+    drawRect(ub, '#22d3ee', name + ' +territories');            // cyan, drawn first (underneath)
+    if (own && own.geometry) drawRect(path.bounds(own), '#f97316', name); // orange, on top
 }
 
 // ==================== PROJECTION TOGGLE (Globe <-> Mercator) ====================
@@ -2464,6 +2577,10 @@ function drawUSStatesWithInlays_UNUSED() {
 
 // Handle country click
 function handleCountryClick(event, d) {
+    // Debug: draw the clicked country's bounding boxes (own + with-territories) before
+    // any mode-specific early-returns, so it works no matter what question is active.
+    if (debugValidityOn) drawDebugBoundingBoxes(d);
+
     // Handle free explore mode clicks
     if (gameState.questionType === 'free-explore') {
         const countryName = d.properties.name;
@@ -2540,7 +2657,7 @@ function handleCountryClick(event, d) {
 
             // Auto-advance to next sub-question even on incorrect answer
             const modeConfig = QUIZ_MODES[gameState.mode];
-            const maxSub = (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.findOnly) ? 1 : (modeConfig.hasFlags ? 3 : 2);
+            const maxSub = maxSubForMode(modeConfig);
 
             if (gameState.subQuestionIndex < maxSub - 1) {
                 // Show correct (green) and incorrect (red) for 750ms, then advance
@@ -2566,6 +2683,18 @@ function handleCountryClick(event, d) {
     }
 }
 
+// Number of sub-questions (score-able steps) per target for a mode. Single-question
+// modes score 1 point per target; find modes score per sub-question (location, +flag,
+// +capital). Kept in ONE place so the per-answer and end-of-game maths never diverge
+// (a mismatch is what made Shape-ID cap at 50% even on a perfect run).
+function maxSubForMode(mc) {
+    if (!mc) return 1;
+    if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode || mc.findOnly) {
+        return 1;
+    }
+    return mc.hasFlags ? 3 : 2;
+}
+
 // Handle correct answer
 function handleCorrectAnswer(element) {
     gameState.answeredCorrectly = true;
@@ -2581,12 +2710,7 @@ function handleCorrectAnswer(element) {
 
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.countryShapeIdMode || modeConfig.findOnly) {
-        maxSub = 1; // Single-question-per-country modes
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2; // 2 if no flags, 3 if flags
-    }
+    const maxSub = maxSubForMode(modeConfig);
 
     // Pause briefly on the green confirmation before advancing — never instant.
     if (gameState.subQuestionIndex < maxSub - 1) {
@@ -2702,6 +2826,8 @@ function giveUp() {
                 opt.classList.add('correct');
             }
         });
+        // The flag has been revealed — colour the country in with it, same as answering.
+        fillCountryWithFlag(gameState.targetCountry);
     } else if (gameState.questionType === 'capital') {
         // Highlight correct capital
         const correctCapital = getCapital(gameState.targetCountry);
@@ -2733,12 +2859,7 @@ function giveUp() {
     }
 
     // Determine max sub-questions based on mode
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.countryShapeIdMode || modeConfig.findOnly) {
-        maxSub = 1;
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2;
-    }
+    const maxSub = maxSubForMode(modeConfig);
 
     // Auto-advance or enable next button
     if (gameState.subQuestionIndex < maxSub - 1) {
@@ -2823,6 +2944,7 @@ function startNewQuestion() {
 
     // Clear multiple choice
     clearMultipleChoice();
+    clearDebugBoundingBoxes();
 
     // Hide name-all input if exists
     const inputContainer = document.getElementById('name-all-input-container');
@@ -3052,12 +3174,16 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             gameState.score++;
             document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
+            // The flag has now been asked — colour the country in with it.
+            fillCountryWithFlag(correctAnswer);
+
             // Pause on the green confirmation, then advance to the capital question.
             setTimeout(() => {
                 gameState.subQuestionIndex++;
                 startNewQuestion();
             }, CORRECT_PAUSE_MS);
         } else {
+            fillCountryWithFlag(correctAnswer);
             handleCorrectAnswer(element);
         }
     } else {
@@ -4161,12 +4287,7 @@ function endGame() {
         return;
     }
 
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.findOnly) {
-        maxSub = 1;
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2;
-    }
+    const maxSub = maxSubForMode(modeConfig);
     const maxScore = gameState.totalQuestions * maxSub;
     const percentage = Math.round((gameState.score / maxScore) * 100);
 
@@ -4414,6 +4535,12 @@ function setupEventListeners() {
             orbitalUse500m = this.checked;
             if (orbCam) orbitalRefreshCap([orbCam.lon, orbCam.lat]);
         });
+    }
+
+    // "Country outlines" hint: overlay thin white borders on the orbital globe.
+    const hintOutlines = document.getElementById('tune-hint-outlines');
+    if (hintOutlines) {
+        hintOutlines.addEventListener('change', function () { setOrbitalHint(this.checked); });
     }
 
     // Orbital scoring-weight sliders.
@@ -5117,6 +5244,42 @@ function makeAtmosphere(T) {
     return new T.Mesh(new T.SphereGeometry(2.5, 96, 96), mat);
 }
 
+// Front-side companion to the limb glow: a thin bluish haze painted OVER the earth near
+// its edge (not just in the sky above it), so the horizon reads as soft/atmospheric rather
+// than a crisp cutout. Strength keys off how grazing each view ray is — ~0 at the
+// sub-point (looking straight down), peaking toward the limb where the sight-line skims
+// the surface (longest air path). Sits just above the surface so it also forms a faint rim
+// slightly outside the silhouette that blends into the sky glow.
+function makeAtmosphereFront(T) {
+    const mat = new T.ShaderMaterial({
+        transparent: true,
+        blending: T.AdditiveBlending,
+        side: T.FrontSide,       // painted on the near hemisphere, in front of the earth
+        depthWrite: false,
+        uniforms: {
+            uEdge:    { value: 0.45 },              // grazing-ness below which there's no haze (centre stays clear)
+            uColor:   { value: new T.Color(0.42, 0.66, 1.0) },
+            uStrength:{ value: 0.85 }
+        },
+        vertexShader:
+            'varying vec3 vWorld; varying vec3 vNormalW;' +
+            'void main(){ vWorld = (modelMatrix * vec4(position,1.0)).xyz;' +
+            ' vNormalW = normalize(mat3(modelMatrix) * normal);' +
+            ' gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+        fragmentShader:
+            'uniform float uEdge; uniform vec3 uColor; uniform float uStrength;' +
+            'varying vec3 vWorld; varying vec3 vNormalW;' +
+            'void main(){' +
+            ' vec3 rd = normalize(vWorld - cameraPosition);' +
+            ' float graze = 1.0 - abs(dot(normalize(vNormalW), rd));' + // 0 looking straight down → 1 at the limb
+            ' float intensity = smoothstep(uEdge, 1.0, graze);' +       // haze concentrated near the edge
+            ' intensity = pow(intensity, 1.3) * uStrength;' +
+            ' gl_FragColor = vec4(uColor, intensity); }'
+    });
+    // Just above the surface (tiles at r=1) so it wins depth over the earth near the limb.
+    return new T.Mesh(new T.SphereGeometry(1.012, 96, 96), mat);
+}
+
 // A simple starfield on a large surrounding sphere.
 function makeStarfield(T) {
     const N = 1500;
@@ -5132,6 +5295,71 @@ function makeStarfield(T) {
     geo.setAttribute('position', new T.BufferAttribute(pos, 3));
     const mat = new T.PointsMaterial({ color: 0xffffff, size: 0.16, sizeAttenuation: true });
     return new T.Points(geo, mat);
+}
+
+let orbitalHintOn = false; // spaceship country-outline hint (persists across rounds/re-entry)
+
+// Build white country-border line geometry on the sphere for the spaceship "hint". Each
+// border segment is subdivided along its great circle so long spans keep hugging the
+// surface (a straight chord would dip below it and be occluded). Radius sits just above the
+// tiles (r=1) so lines paint on top of the near side; the opaque earth hides far-side lines.
+function buildCountryLinesGeometry(T, features, radius) {
+    const positions = [];
+    const slerp = (a, b, t) => {
+        const d = Math.max(-1, Math.min(1, a.dot(b)));
+        const th = Math.acos(d);
+        if (th < 1e-6) return a.clone();
+        const s = Math.sin(th);
+        return a.clone().multiplyScalar(Math.sin((1 - t) * th) / s)
+            .add(b.clone().multiplyScalar(Math.sin(t * th) / s));
+    };
+    const step = Math.PI / 180; // ~1° arc segments
+    const addArc = (A, B) => {
+        const n = Math.max(1, Math.ceil(A.angleTo(B) / step));
+        let prev = A.clone().multiplyScalar(radius);
+        for (let i = 1; i <= n; i++) {
+            const v = (i === n ? B.clone() : slerp(A, B, i / n)).multiplyScalar(radius);
+            positions.push(prev.x, prev.y, prev.z, v.x, v.y, v.z);
+            prev = v;
+        }
+    };
+    const addRing = (ring) => {
+        for (let i = 0; i + 1 < ring.length; i++) {
+            addArc(surfaceNormal(ring[i][1], ring[i][0]), surfaceNormal(ring[i + 1][1], ring[i + 1][0]));
+        }
+    };
+    features.forEach(f => {
+        const geom = f && f.geometry;
+        if (!geom) return;
+        if (geom.type === 'Polygon') geom.coordinates.forEach(addRing);
+        else if (geom.type === 'MultiPolygon') geom.coordinates.forEach(poly => poly.forEach(addRing));
+    });
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+    return geo;
+}
+
+// Lazily build the hint line mesh from the loaded (110m) countries. No-op until the
+// features are available or if already built.
+function ensureHintLines() {
+    if (!orbital || orbital.hintLines) return;
+    const T = window.THREE;
+    const feats = gameState.countries || [];
+    if (!feats.length) return;
+    const geo = buildCountryLinesGeometry(T, feats, 1.004);
+    const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false });
+    const lines = new T.LineSegments(geo, mat);
+    lines.visible = orbitalHintOn;
+    orbital.scene.add(lines);
+    orbital.hintLines = lines;
+}
+
+// Toggle the spaceship country-outline hint (builds the mesh on first use).
+function setOrbitalHint(on) {
+    orbitalHintOn = !!on;
+    if (orbitalHintOn) ensureHintLines();
+    if (orbital && orbital.hintLines) orbital.hintLines.visible = orbitalHintOn;
+    orbitalRender();
 }
 
 // Create the three.js scene/renderer (idempotent — reused across rounds).
@@ -5159,9 +5387,10 @@ function ensureOrbital() {
     const earth = new T.Mesh(new T.SphereGeometry(0.997, 96, 96), new T.MeshBasicMaterial({ map: orbitalTexLow }));
     scene.add(earth);
     const atmosphere = makeAtmosphere(T); scene.add(atmosphere);
+    const atmosphereFront = makeAtmosphereFront(T); scene.add(atmosphereFront);
     const stars = makeStarfield(T); scene.add(stars);
 
-    orbital = { renderer, scene, camera, earth, atmosphere, stars, canvas, capMeshes: [] };
+    orbital = { renderer, scene, camera, earth, atmosphere, atmosphereFront, stars, canvas, capMeshes: [] };
     loadEarthTextures();
     if (orbitalTexLow && orbitalTexLow.image) { earth.material.map = orbitalTexLow; earth.material.needsUpdate = true; }
     probeLocalTiles(); // if the local cap tiles aren't deployed, switch to the NASA fallback
@@ -5246,6 +5475,7 @@ function orbitalSetTarget(target) {
         fov: SPACESHIP_FOV
     };
     orbitalRefreshCap(target); // local tiles, NASA globe crop, or 500 m stitch — whichever is active
+    if (orbitalHintOn) ensureHintLines(); // (re)build the outline hint if it's on and countries are now loaded
     orbitalRender();
 }
 
@@ -5295,6 +5525,8 @@ function disposeOrbital() {
         capTileCache.forEach(t => t.dispose()); capTileCache.clear();
         orbital.atmosphere.geometry.dispose();
         orbital.atmosphere.material.dispose();
+        if (orbital.atmosphereFront) { orbital.atmosphereFront.geometry.dispose(); orbital.atmosphereFront.material.dispose(); }
+        if (orbital.hintLines) { orbital.hintLines.geometry.dispose(); orbital.hintLines.material.dispose(); }
         orbital.stars.geometry.dispose();
         orbital.stars.material.dispose();
         orbital.renderer.dispose();
