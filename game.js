@@ -824,6 +824,44 @@ function highlightCountryOnGlobe(countryName) {
     }
 }
 
+// Paint a country's shape(s) with its own flag (used once its flag sub-question has been
+// asked). An objectBoundingBox pattern maps the flag into each feature's bounding box, so
+// the fill automatically follows the country as the globe rotates/zooms. Parent + overseas
+// territories all get the parent's flag.
+function fillCountryWithFlag(countryName) {
+    if (!svg || !countriesGroup) return;
+    const data = gameState.currentDataObj && gameState.currentDataObj[countryName];
+    if (!data || !data.code) return;
+    const url = `https://flagcdn.com/${data.code}.svg`;
+    const patId = 'flagfill-' + data.code;
+
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    if (defs.select('#' + patId).empty()) {
+        const pat = defs.append('pattern')
+            .attr('id', patId)
+            .attr('patternUnits', 'objectBoundingBox')
+            .attr('patternContentUnits', 'objectBoundingBox')
+            .attr('width', 1).attr('height', 1);
+        pat.append('image')
+            .attr('href', url).attr('xlink:href', url)   // href + legacy xlink:href for older renderers
+            .attr('width', 1).attr('height', 1)
+            .attr('preserveAspectRatio', 'xMidYMid slice');
+    }
+
+    const fill = `url(#${patId})`;
+    countriesGroup.selectAll('path')
+        .filter(d => featureBelongsTo(d, countryName))
+        .style('fill', fill)
+        .classed('flag-filled', true);
+    if (islandMarkersGroup) {
+        islandMarkersGroup.selectAll('circle')
+            .filter(d => featureBelongsTo(d, countryName))
+            .style('fill', fill)
+            .classed('flag-filled', true);
+    }
+}
+
 // Clear multiple choice UI
 function clearMultipleChoice() {
     const grid = document.getElementById('options-grid');
@@ -931,6 +969,13 @@ function startGameWithMode(mode) {
     // Orbital tuning (altitude + scoring weights): only for the orbital view.
     const spaceshipTuning = document.getElementById('spaceship-tuning');
     if (spaceshipTuning) spaceshipTuning.style.display = modeConfig.spaceshipMode ? '' : 'none';
+
+    // Country-outline hint button: shown only in the spaceship view; label reflects state.
+    const hintBtn = document.getElementById('hint-outlines-toggle');
+    if (hintBtn) {
+        hintBtn.style.display = modeConfig.spaceshipMode ? '' : 'none';
+        hintBtn.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
+    }
 
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
@@ -2043,6 +2088,22 @@ function drawLakes() {
         .style('fill', oceanFill);
 }
 
+// A feature's largest angular extent, in radians (rotation-independent). Multiplying by
+// the orthographic scale gives the pixel size the feature WOULD have at the centre of the
+// globe — so the dot/outline decision doesn't change as a country rotates toward the limb
+// (where perspective foreshortening would otherwise shrink it into a dot).
+function featureAngularDim(f) {
+    const b = d3.geoBounds(f); // [[west,south],[east,north]] in degrees
+    let dLon = b[1][0] - b[0][0];
+    if (dLon < 0) dLon += 360; // antimeridian-wrap safety (rare for dot candidates)
+    const dLat = b[1][1] - b[0][1];
+    const midLat = (b[0][1] + b[1][1]) / 2 * Math.PI / 180;
+    const angW = dLon * Math.PI / 180 * Math.cos(midLat); // shrink longitude span toward the poles
+    const angH = dLat * Math.PI / 180;
+    const m = Math.max(Math.abs(angW), Math.abs(angH));
+    return isFinite(m) ? m : 0;
+}
+
 // Build the candidate dot set: quiz items with no polygon (world micro-states) or a
 // small enough polygon that they might need a dot at some zoom. Each dot carries its
 // feature (for the live pixel-size check) and a [lon,lat] anchor.
@@ -2070,7 +2131,7 @@ function drawIslandMarkers() {
         const f = featureByName.get(name);
         if (f) {
             if (d3.geoArea(f) > DOT_CANDIDATE_AREA) continue; // big feature: always an outline
-            dots.push({ properties: { name }, feature: f, lonlat: d3.geoCentroid(f) });
+            dots.push({ properties: { name }, feature: f, lonlat: d3.geoCentroid(f), angDim: featureAngularDim(f) });
         } else {
             const d = dataObj[name];
             if (d && Array.isArray(d.capitalCoords)) {
@@ -2124,8 +2185,16 @@ function updateIslandMarkers() {
         const valid = xy && !isNaN(xy[0]) && !offGlobe;
         let showDot = true;
         if (d.feature) {
-            const b = path.bounds(d.feature); // pixel bbox under the current projection
-            const maxDim = Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
+            // On the globe, size the feature as if it were at the centre of view (angular
+            // extent × scale) so it doesn't flip to a dot merely by rotating toward the
+            // limb. Flat maps have no such foreshortening, so measure the on-screen bbox.
+            let maxDim;
+            if (globe) {
+                maxDim = projection.scale() * (d.angDim || 0);
+            } else {
+                const b = path.bounds(d.feature); // pixel bbox under the current projection
+                maxDim = Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
+            }
             showDot = isFinite(maxDim) && maxDim < DOT_PIXEL_THRESHOLD;
         }
         if (!valid || !showDot) {
@@ -2201,6 +2270,7 @@ function toggleDebugValidity() {
     if (typeof countriesGroup === 'undefined' || !countriesGroup) return;
     debugValidityOn = !debugValidityOn;
     applyDebugValidity();
+    if (!debugValidityOn) clearDebugBoundingBoxes();
     const btn = document.getElementById('debug-validity-toggle');
     if (btn) btn.textContent = debugValidityOn ? 'Debug: On' : 'Debug: Off';
 }
@@ -2220,6 +2290,56 @@ function applyDebugValidity() {
         sel.style('fill', valid ? '#22c55e' : '#ef4444')
            .style('stroke', valid ? '#15803d' : '#991b1b');
     });
+}
+
+let debugBboxGroup = null;
+
+function clearDebugBoundingBoxes() {
+    if (debugBboxGroup) { debugBboxGroup.remove(); debugBboxGroup = null; }
+}
+
+// While the debug overlay is on, clicking/selecting a country draws its two pixel
+// bounding boxes: the country's OWN feature (orange — what Shape-ID/zoom use, territories
+// excluded) and the union INCLUDING its overseas territories (cyan). Static under the
+// current projection (redraw by re-selecting); cleared on the next click / question.
+function drawDebugBoundingBoxes(d) {
+    clearDebugBoundingBoxes();
+    if (!debugValidityOn || !g || !d || !d.properties) return;
+
+    const name = d.properties.parent || d.properties.name;
+    const members = (gameState.countries || []).filter(f => featureBelongsTo(f, name));
+    const own = members.find(f => f.properties && f.properties.name === name && !f.properties.isTerritory)
+        || (d.geometry ? d : (d.feature || null)); // fall back to the clicked feature itself
+
+    debugBboxGroup = g.append('g').attr('class', 'debug-bbox-group').attr('pointer-events', 'none');
+
+    const drawRect = (bounds, color, label) => {
+        if (!bounds || !isFinite(bounds[0][0]) || !isFinite(bounds[1][0])) return;
+        const x = bounds[0][0], y = bounds[0][1];
+        const w = bounds[1][0] - bounds[0][0], h = bounds[1][1] - bounds[0][1];
+        debugBboxGroup.append('rect')
+            .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+            .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 1.5)
+            .attr('stroke-dasharray', '5,3');
+        debugBboxGroup.append('text')
+            .attr('x', x + 2).attr('y', Math.max(y - 3, 10))
+            .attr('fill', color).attr('font-size', '11px').attr('font-family', 'monospace')
+            .text(label);
+    };
+
+    // With territories: union of every member feature's pixel bbox.
+    let ub = null;
+    members.forEach(f => {
+        const b = path.bounds(f);
+        if (!isFinite(b[0][0])) return;
+        if (!ub) ub = [[b[0][0], b[0][1]], [b[1][0], b[1][1]]];
+        else {
+            ub[0][0] = Math.min(ub[0][0], b[0][0]); ub[0][1] = Math.min(ub[0][1], b[0][1]);
+            ub[1][0] = Math.max(ub[1][0], b[1][0]); ub[1][1] = Math.max(ub[1][1], b[1][1]);
+        }
+    });
+    drawRect(ub, '#22d3ee', name + ' +territories');            // cyan, drawn first (underneath)
+    if (own && own.geometry) drawRect(path.bounds(own), '#f97316', name); // orange, on top
 }
 
 // ==================== PROJECTION TOGGLE (Globe <-> Mercator) ====================
@@ -2464,6 +2584,10 @@ function drawUSStatesWithInlays_UNUSED() {
 
 // Handle country click
 function handleCountryClick(event, d) {
+    // Debug: draw the clicked country's bounding boxes (own + with-territories) before
+    // any mode-specific early-returns, so it works no matter what question is active.
+    if (debugValidityOn) drawDebugBoundingBoxes(d);
+
     // Handle free explore mode clicks
     if (gameState.questionType === 'free-explore') {
         const countryName = d.properties.name;
@@ -2540,7 +2664,7 @@ function handleCountryClick(event, d) {
 
             // Auto-advance to next sub-question even on incorrect answer
             const modeConfig = QUIZ_MODES[gameState.mode];
-            const maxSub = (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.findOnly) ? 1 : (modeConfig.hasFlags ? 3 : 2);
+            const maxSub = maxSubForMode(modeConfig);
 
             if (gameState.subQuestionIndex < maxSub - 1) {
                 // Show correct (green) and incorrect (red) for 750ms, then advance
@@ -2566,6 +2690,18 @@ function handleCountryClick(event, d) {
     }
 }
 
+// Number of sub-questions (score-able steps) per target for a mode. Single-question
+// modes score 1 point per target; find modes score per sub-question (location, +flag,
+// +capital). Kept in ONE place so the per-answer and end-of-game maths never diverge
+// (a mismatch is what made Shape-ID cap at 50% even on a perfect run).
+function maxSubForMode(mc) {
+    if (!mc) return 1;
+    if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode || mc.findOnly) {
+        return 1;
+    }
+    return mc.hasFlags ? 3 : 2;
+}
+
 // Handle correct answer
 function handleCorrectAnswer(element) {
     gameState.answeredCorrectly = true;
@@ -2581,12 +2717,7 @@ function handleCorrectAnswer(element) {
 
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.countryShapeIdMode || modeConfig.findOnly) {
-        maxSub = 1; // Single-question-per-country modes
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2; // 2 if no flags, 3 if flags
-    }
+    const maxSub = maxSubForMode(modeConfig);
 
     // Pause briefly on the green confirmation before advancing — never instant.
     if (gameState.subQuestionIndex < maxSub - 1) {
@@ -2702,6 +2833,8 @@ function giveUp() {
                 opt.classList.add('correct');
             }
         });
+        // The flag has been revealed — colour the country in with it, same as answering.
+        fillCountryWithFlag(gameState.targetCountry);
     } else if (gameState.questionType === 'capital') {
         // Highlight correct capital
         const correctCapital = getCapital(gameState.targetCountry);
@@ -2733,12 +2866,7 @@ function giveUp() {
     }
 
     // Determine max sub-questions based on mode
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.countryShapeIdMode || modeConfig.findOnly) {
-        maxSub = 1;
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2;
-    }
+    const maxSub = maxSubForMode(modeConfig);
 
     // Auto-advance or enable next button
     if (gameState.subQuestionIndex < maxSub - 1) {
@@ -2823,6 +2951,7 @@ function startNewQuestion() {
 
     // Clear multiple choice
     clearMultipleChoice();
+    clearDebugBoundingBoxes();
 
     // Hide name-all input if exists
     const inputContainer = document.getElementById('name-all-input-container');
@@ -3052,12 +3181,16 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             gameState.score++;
             document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
+            // The flag has now been asked — colour the country in with it.
+            fillCountryWithFlag(correctAnswer);
+
             // Pause on the green confirmation, then advance to the capital question.
             setTimeout(() => {
                 gameState.subQuestionIndex++;
                 startNewQuestion();
             }, CORRECT_PAUSE_MS);
         } else {
+            fillCountryWithFlag(correctAnswer);
             handleCorrectAnswer(element);
         }
     } else {
@@ -4161,12 +4294,7 @@ function endGame() {
         return;
     }
 
-    let maxSub;
-    if (modeConfig.identifyOnly || modeConfig.mysteryFlagMode || modeConfig.capitalsRaceMode || modeConfig.findOnly) {
-        maxSub = 1;
-    } else {
-        maxSub = modeConfig.hasFlags ? 3 : 2;
-    }
+    const maxSub = maxSubForMode(modeConfig);
     const maxScore = gameState.totalQuestions * maxSub;
     const percentage = Math.round((gameState.score / maxScore) * 100);
 
@@ -4413,6 +4541,39 @@ function setupEventListeners() {
         hires500.addEventListener('change', function () {
             orbitalUse500m = this.checked;
             if (orbCam) orbitalRefreshCap([orbCam.lon, orbCam.lat]);
+        });
+    }
+
+    // "Country outlines" hint button (spaceship only; shown/labelled in the mode setup).
+    const hintBtn = document.getElementById('hint-outlines-toggle');
+    if (hintBtn) {
+        hintBtn.addEventListener('click', function () {
+            setOrbitalHint(!orbitalHintOn);
+            this.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
+        });
+    }
+
+    // Hint-outline detail level (low/medium/max — see loadHintFeatures for what each means).
+    const hintDetailSel = document.getElementById('tune-hint-detail');
+    if (hintDetailSel) {
+        hintDetailSel.addEventListener('change', function () { setOrbitalHintDetail(this.value); });
+    }
+    // Hint-outline stroke width.
+    const hintWidthSlider = document.getElementById('tune-hint-width');
+    if (hintWidthSlider) {
+        const label = document.getElementById('tune-hint-width-val');
+        hintWidthSlider.addEventListener('input', function () {
+            setOrbitalHintLineWidth(+this.value);
+            if (label) label.textContent = this.value;
+        });
+    }
+    // Hint-outline elevation above the surface.
+    const hintElevSlider = document.getElementById('tune-hint-elev');
+    if (hintElevSlider) {
+        const label = document.getElementById('tune-hint-elev-val');
+        hintElevSlider.addEventListener('input', function () {
+            setOrbitalHintElevation(+this.value);
+            if (label) label.textContent = this.value + ' km';
         });
     }
 
@@ -4749,6 +4910,7 @@ function ensureSpaceshipInset() {
             zoomG.attr('transform', event.transform);
             zoomG.selectAll('circle').attr('r', 5 / k);
             zoomG.selectAll('.guess-line').attr('stroke-width', 1.5 / k);
+            if (gameState.capitalSubmitted) updateSpaceshipHeadingVector();
         })
         .on('end', (event) => {
             const se = event.sourceEvent;
@@ -5134,6 +5296,176 @@ function makeStarfield(T) {
     return new T.Points(geo, mat);
 }
 
+let orbitalHintOn = false;      // spaceship country-outline hint (persists across rounds/re-entry)
+let orbitalHintBuilding = false;
+let orbitalHintDetail = 'medium';   // 'low'=110m, 'medium'=50m simplified (MEDIUM_SIMPLIFY_RETAIN), 'max'=10m unsimplified (true source max)
+let orbitalHintLineWidth = 1.6;     // fat-line px width, tunable via the Outline-width slider
+let orbitalHintElevationKm = 6;     // hint outline height above the surface (km), tunable via the Outline-height slider
+let hintFeaturesCache = null;       // { detail, features } — avoids re-fetching on width/elevation-only changes
+const HINT_DETAIL_URL = {
+    low: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+    medium: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json',
+    max: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-10m.json'
+};
+function hintRadius() { return 1 + orbitalHintElevationKm / EARTH_R_KM; } // just above the surface (tiles at r=1)
+
+// Flat [x,y,z, x,y,z, …] array of border-segment endpoint PAIRS on the sphere. Each map
+// border segment is subdivided along its great circle so long spans keep hugging the
+// surface (a straight chord would dip below it and be occluded). This layout feeds either a
+// plain LineSegments BufferGeometry or a fat-line LineSegmentsGeometry.setPositions().
+function buildCountryLinePositions(features, radius) {
+    const positions = [];
+    const slerp = (a, b, t) => {
+        const d = Math.max(-1, Math.min(1, a.dot(b)));
+        const th = Math.acos(d);
+        if (th < 1e-6) return a.clone();
+        const s = Math.sin(th);
+        return a.clone().multiplyScalar(Math.sin((1 - t) * th) / s)
+            .add(b.clone().multiplyScalar(Math.sin(t * th) / s));
+    };
+    const step = Math.PI / 180; // ~1° arc segments
+    const addArc = (A, B) => {
+        const n = Math.max(1, Math.ceil(A.angleTo(B) / step));
+        let prev = A.clone().multiplyScalar(radius);
+        for (let i = 1; i <= n; i++) {
+            const v = (i === n ? B.clone() : slerp(A, B, i / n)).multiplyScalar(radius);
+            positions.push(prev.x, prev.y, prev.z, v.x, v.y, v.z);
+            prev = v;
+        }
+    };
+    const addRing = (ring) => {
+        for (let i = 0; i + 1 < ring.length; i++) {
+            addArc(surfaceNormal(ring[i][1], ring[i][0]), surfaceNormal(ring[i + 1][1], ring[i + 1][0]));
+        }
+    };
+    features.forEach(f => {
+        const geom = f && f.geometry;
+        if (!geom) return;
+        if (geom.type === 'Polygon') geom.coordinates.forEach(addRing);
+        else if (geom.type === 'MultiPolygon') geom.coordinates.forEach(poly => poly.forEach(addRing));
+    });
+    return positions;
+}
+
+// Country features at the active hint-outline detail level — independent of the coarse
+// 110m the spaceship loads for its map. 'low'/'medium' share worldTopoCache with the main
+// map detail toggle (110m/50m); 'medium' additionally simplifies with MEDIUM_SIMPLIFY_RETAIN,
+// same as the main map's Medium level. 'max' fetches the 10m source — the atlas's actual
+// highest resolution — and does NOT simplify it (unlike the main map's 'high', which is
+// just the unsimplified 50m source).
+function loadHintFeatures() {
+    const url = HINT_DETAIL_URL[orbitalHintDetail] || HINT_DETAIL_URL.medium;
+    return fetchWorldTopo(url).then(data => {
+        let topo = data;
+        if (orbitalHintDetail === 'medium' && topojson.presimplify && topojson.quantile) {
+            const pre = topojson.presimplify(data);
+            topo = topojson.simplify(pre, topojson.quantile(pre, MEDIUM_SIMPLIFY_RETAIN));
+        }
+        return topojson.feature(topo, topo.objects.countries).features;
+    });
+}
+
+// Fat lines size their px width against the renderer resolution — keep it in sync.
+function syncHintResolution() {
+    if (!orbital || !orbital.hintLines) return;
+    const m = orbital.hintLines.material;
+    if (m && m.resolution) {
+        const sz = new window.THREE.Vector2();
+        orbital.renderer.getSize(sz);
+        m.resolution.set(sz.x || 1, sz.y || 1);
+    }
+}
+
+// Build the outline mesh from already-fetched features (sync — no network). Uses the
+// fat-line addon for a tunable stroke width, falling back to 1px LineSegments if it didn't load.
+function buildHintLinesMesh(feats) {
+    const T = window.THREE, L = window.THREE_Lines;
+    const positions = buildCountryLinePositions(feats, hintRadius());
+    let lines;
+    if (L && L.LineSegmentsGeometry) {
+        const geo = new L.LineSegmentsGeometry();
+        geo.setPositions(positions);
+        const mat = new L.LineMaterial({
+            color: 0xffffff, linewidth: orbitalHintLineWidth, transparent: true, opacity: 0.85,
+            depthTest: true, worldUnits: false
+        });
+        lines = new L.LineSegments2(geo, mat);
+    } else {
+        const geo = new T.BufferGeometry();
+        geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+        const mat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
+        lines = new T.LineSegments(geo, mat);
+    }
+    lines.visible = orbitalHintOn;
+    orbital.scene.add(lines);
+    orbital.hintLines = lines;
+    syncHintResolution();
+    orbitalRender();
+}
+
+// Dispose the current hint mesh (e.g. before rebuilding at a different detail level).
+function disposeHintLines() {
+    if (!orbital || !orbital.hintLines) return;
+    orbital.scene.remove(orbital.hintLines);
+    orbital.hintLines.geometry.dispose();
+    orbital.hintLines.material.dispose();
+    orbital.hintLines = null;
+}
+
+// Lazily build the hint outline mesh at the active detail level, fetching only if the
+// features aren't already cached for that level.
+function ensureHintLines() {
+    if (!orbital || orbital.hintLines || orbitalHintBuilding) return;
+    if (hintFeaturesCache && hintFeaturesCache.detail === orbitalHintDetail) {
+        buildHintLinesMesh(hintFeaturesCache.features);
+        return;
+    }
+    orbitalHintBuilding = true;
+    loadHintFeatures().then(feats => {
+        orbitalHintBuilding = false;
+        if (!orbital || orbital.hintLines) return;
+        hintFeaturesCache = { detail: orbitalHintDetail, features: feats };
+        buildHintLinesMesh(feats);
+    }).catch(() => { orbitalHintBuilding = false; });
+}
+
+// Switch the hint-outline detail level (rebuilds the mesh, fetching the new source if needed).
+function setOrbitalHintDetail(detail) {
+    if (detail === orbitalHintDetail) return;
+    orbitalHintDetail = detail;
+    disposeHintLines();
+    if (orbitalHintOn) ensureHintLines();
+    orbitalRender();
+}
+
+// Update the hint-outline stroke width (fat-line material only — no geometry rebuild needed).
+function setOrbitalHintLineWidth(px) {
+    orbitalHintLineWidth = px;
+    if (orbital && orbital.hintLines && 'linewidth' in orbital.hintLines.material) {
+        orbital.hintLines.material.linewidth = px;
+        orbitalRender();
+    }
+}
+
+// Update the hint-outline elevation (rebuilds positions from the cached features — no re-fetch).
+function setOrbitalHintElevation(km) {
+    orbitalHintElevationKm = km;
+    if (!orbital || !orbital.hintLines || !hintFeaturesCache) return;
+    const positions = buildCountryLinePositions(hintFeaturesCache.features, hintRadius());
+    const geo = orbital.hintLines.geometry;
+    if (geo.setPositions) geo.setPositions(positions);
+    else geo.setAttribute('position', new window.THREE.Float32BufferAttribute(positions, 3));
+    orbitalRender();
+}
+
+// Toggle the spaceship country-outline hint (builds the mesh on first use).
+function setOrbitalHint(on) {
+    orbitalHintOn = !!on;
+    if (orbitalHintOn) ensureHintLines();
+    if (orbital && orbital.hintLines) orbital.hintLines.visible = orbitalHintOn;
+    orbitalRender();
+}
+
 // Create the three.js scene/renderer (idempotent — reused across rounds).
 function ensureOrbital() {
     const T = window.THREE;
@@ -5201,6 +5533,7 @@ function orbitalResize() {
     orbital.renderer.setSize(w, h, true);
     orbital.camera.aspect = w / h;
     orbital.camera.updateProjectionMatrix();
+    syncHintResolution(); // fat-line px width tracks the renderer size
     orbitalRender();
 }
 
@@ -5246,6 +5579,7 @@ function orbitalSetTarget(target) {
         fov: SPACESHIP_FOV
     };
     orbitalRefreshCap(target); // local tiles, NASA globe crop, or 500 m stitch — whichever is active
+    if (orbitalHintOn) ensureHintLines(); // (re)build the outline hint if it's on and countries are now loaded
     orbitalRender();
 }
 
@@ -5274,6 +5608,7 @@ function attachOrbitalPan(canvas) {
             gameState.roundPanDeg += Math.abs(dHeadingDeg) + Math.abs(orbCam.tilt - beforeTilt);
         }
         orbitalRender();
+        if (gameState.capitalSubmitted) updateSpaceshipHeadingVector();
     });
     const end = (e) => {
         orbDrag = null;
@@ -5295,6 +5630,7 @@ function disposeOrbital() {
         capTileCache.forEach(t => t.dispose()); capTileCache.clear();
         orbital.atmosphere.geometry.dispose();
         orbital.atmosphere.material.dispose();
+        if (orbital.hintLines) { orbital.hintLines.geometry.dispose(); orbital.hintLines.material.dispose(); }
         orbital.stars.geometry.dispose();
         orbital.stars.material.dispose();
         orbital.renderer.dispose();
@@ -5371,6 +5707,33 @@ function handleSpaceshipGuessClick(event) {
     document.getElementById('next-btn').disabled = false;
 }
 
+// Live vector on the inset map showing which way the spaceship camera is currently
+// pointing (compass bearing = orbCam.heading, 0=north clockwise toward east — same
+// convention as computeCoastHeading/applyOrbitalCamera). Drawn from the true sub-point
+// once the answer is revealed, and kept live as the player keeps dragging to look around.
+// Coordinates are divided by the zoom scale k so the vector stays a constant on-screen
+// length regardless of how far the inset is zoomed in.
+function updateSpaceshipHeadingVector() {
+    if (!spaceshipInset || !orbCam || !gameState.spaceshipTarget) return;
+    const k = d3.zoomTransform(spaceshipInset.svg.node()).k || 1;
+    const [cx, cy] = spaceshipInset.projection(gameState.spaceshipTarget);
+    const len = 18 / k, headLen = 6 / k, headWidth = 4 / k;
+    const dx = Math.sin(orbCam.heading), dy = -Math.cos(orbCam.heading); // 0=north(up), clockwise toward east(right)
+    const tipX = cx + dx * len, tipY = cy + dy * len;
+    const baseX = tipX - dx * headLen, baseY = tipY - dy * headLen;
+    const px = -dy, py = dx; // perpendicular, for the arrowhead
+    const tri = `${tipX},${tipY} ${baseX + px * headWidth},${baseY + py * headWidth} ${baseX - px * headWidth},${baseY - py * headWidth}`;
+
+    let g = spaceshipInset.markers.select('.cam-heading');
+    if (g.empty()) {
+        g = spaceshipInset.markers.append('g').attr('class', 'cam-heading');
+        g.append('line').attr('class', 'cam-heading-line');
+        g.append('polygon').attr('class', 'cam-heading-head');
+    }
+    g.select('.cam-heading-line').attr('x1', cx).attr('y1', cy).attr('x2', baseX).attr('y2', baseY);
+    g.select('.cam-heading-head').attr('points', tri);
+}
+
 function revealSpaceshipAnswer() {
     if (!spaceshipInset) return;
     const k = d3.zoomTransform(spaceshipInset.svg.node()).k || 1;
@@ -5383,6 +5746,7 @@ function revealSpaceshipAnswer() {
     }
     spaceshipInset.markers.append('circle').attr('class', 'answer-marker').attr('r', 5 / k)
         .attr('cx', ap[0]).attr('cy', ap[1]);
+    updateSpaceshipHeadingVector();
     const nextBtn = document.getElementById('next-btn');
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;

@@ -13,13 +13,29 @@
     <!-- three.js (ESM) for the photographic orbital "Where Is My Spaceship?" view.
          Exposed as a global so the classic game.js can use it lazily on mode entry. -->
     <script type="importmap">
-    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
     </script>
     <script type="module">
         import * as THREE from 'three';
         window.THREE = THREE;
         window.threeReady = true;
         window.dispatchEvent(new Event('three-ready'));
+        // Fat-line addon for the spaceship country-outline hint. Loaded separately (dynamic
+        // import + catch) so a CDN hiccup here can never block window.THREE / three-ready —
+        // the hint just falls back to 1px lines if it's unavailable.
+        Promise.all([
+            import('three/addons/lines/LineSegments2.js'),
+            import('three/addons/lines/LineSegmentsGeometry.js'),
+            import('three/addons/lines/LineMaterial.js')
+        ]).then(([seg2, geom, mat]) => {
+            window.THREE_Lines = { LineSegments2: seg2.LineSegments2, LineSegmentsGeometry: geom.LineSegmentsGeometry, LineMaterial: mat.LineMaterial };
+            window.dispatchEvent(new Event('three-lines-ready'));
+        }).catch(e => console.warn('Fat-line addon failed to load; country-outline hint will use thin lines', e));
     </script>
     <script>
         // Apply saved color theme before first paint to avoid a flash
@@ -244,6 +260,7 @@
             <button id="projection-toggle" class="btn secondary globe-only" title="Switch between globe and flat map">View: Globe</button>
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
+            <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
             <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
             <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
         </div>
@@ -278,6 +295,20 @@
                         </label>
                         <label class="tuning-item" title="Seconds at which speed points fall to ~37%">
                             <span class="tuning-label">Time scale</span> <input type="range" id="tune-score-time" min="5" max="120" step="5" value="20"><span id="tune-score-time-val">20 s</span>
+                        </label>
+                        <label class="tuning-item" title="Resolution of the Country-outlines hint. Low=110m, Medium=50m (simplified), Max=10m (the source's actual highest detail, not simplified).">
+                            <span class="tuning-label">Outline detail</span>
+                            <select id="tune-hint-detail">
+                                <option value="low">Low</option>
+                                <option value="medium" selected>Medium</option>
+                                <option value="max">Max</option>
+                            </select>
+                        </label>
+                        <label class="tuning-item" title="Thickness of the Country-outlines hint lines">
+                            <span class="tuning-label">Outline width</span> <input type="range" id="tune-hint-width" min="0.5" max="6" step="0.1" value="1.6"><span id="tune-hint-width-val">1.6</span>
+                        </label>
+                        <label class="tuning-item" title="How far above the surface the Country-outlines hint sits">
+                            <span class="tuning-label">Outline height</span> <input type="range" id="tune-hint-elev" min="0" max="50" step="1" value="6"><span id="tune-hint-elev-val">6 km</span>
                         </label>
                     </div>
                     <div class="tuning-group" id="tuning-row">

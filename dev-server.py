@@ -9,9 +9,12 @@ directory on port 8000.
     python dev-server.py
 """
 import http.server
+import os
 import socketserver
 
-PORT = 8000
+# Default to 8000 for `python dev-server.py`, but honour PORT so tooling (e.g. the
+# in-editor preview with autoPort) can place us on a free port.
+PORT = int(os.environ.get("PORT", "8000"))
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):

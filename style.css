@@ -645,6 +645,21 @@ header h1 .material-symbols-outlined {
     pointer-events: none;
 }
 
+/* Spaceship — live vector on the inset showing which way the camera is pointing,
+   shown once the answer is revealed. Endpoint coordinates are pre-divided by the
+   zoom scale in JS so the vector stays a constant on-screen length. */
+.cam-heading-line {
+    stroke: var(--selected);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+.cam-heading-head {
+    fill: var(--selected);
+    pointer-events: none;
+}
+
 /* Where Is My Spaceship? — inset guess map overlaid on the globe view. */
 #spaceship-inset {
     position: absolute;
