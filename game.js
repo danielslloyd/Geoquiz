@@ -60,9 +60,8 @@ let mapDetail = 'medium';
 const DETAIL_RES = { low: '110m', medium: '50m', high: '50m' };
 const DETAIL_ORDER = ['low', 'medium', 'high'];
 // Fraction of the 50m geometry's points kept when deriving the 'medium' level via
-// topojson simplification (1 = full detail, lower = coarser). Tunable live via the
-// Medium-detail slider.
-let MEDIUM_SIMPLIFY_RETAIN = 0.3;
+// topojson simplification (1 = full detail, lower = coarser). Locked.
+const MEDIUM_SIMPLIFY_RETAIN = 0.2;
 
 // In-memory cache of fetched world-atlas topologies, keyed by URL, so the detail
 // slider can re-simplify without re-downloading/re-parsing the source.
@@ -115,7 +114,8 @@ async function initializeGameData() {
       { key: 'germanStateData', path: 'data/german-states.json' },
       { key: 'englandCountyData', path: 'data/england-counties.json' },
       { key: 'mexicanStateData', path: 'data/mexico-states.json' },
-      { key: 'continentData', path: 'data/continents.json' }
+      { key: 'continentData', path: 'data/continents.json' },
+      { key: 'skylineCityData', path: 'data/skyline-cities.json' }
     ];
 
     for (const file of dataFiles) {
@@ -625,6 +625,20 @@ const QUIZ_MODES = {
         itemLabelPlural: 'locations',
         autoRotate: false,
         spaceshipMode: true // Frozen LEO globe view; guess the location on an inset map
+    },
+    'skyline-id': {
+        name: 'Skyline ID',
+        // A getter, not an array: QUIZ_MODES is built while this file parses, but the city
+        // list only arrives with the data/*.json fetches, so a literal would always be empty.
+        get quizList() { return Object.keys(window.skylineCityData || {}); },
+        dataObjKey: 'skylineCityData',
+        totalQuestions: 10,
+        useGlobe: false,   // no map at all — the photo IS the question
+        hasFlags: false,
+        itemLabel: 'city',
+        itemLabelPlural: 'cities',
+        autoRotate: false,
+        skylineIdMode: true // Show a city skyline photo, pick the city from 4 choices
     }
 };
 
@@ -749,21 +763,16 @@ function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
     } else {
         button.classList.add('incorrect');
         handleIncorrectAnswer(button);
-        // Show correct answer after delay and automatically advance
-        setTimeout(() => {
-            const buttons = document.querySelectorAll('.option-btn');
+        scheduleWrongThenCorrect(() => {
             let correctButton = null;
-            buttons.forEach(btn => {
+            document.querySelectorAll('.option-btn').forEach(btn => {
                 if (btn.textContent === correctAnswer) {
                     btn.classList.add('correct');
                     correctButton = btn;
                 }
             });
-            // Automatically handle the correct answer to advance the game
-            if (correctButton && !gameState.answeredCorrectly) {
-                handleCorrectAnswer(correctButton);
-            }
-        }, 1000);
+            return correctButton;
+        });
     }
 }
 
@@ -869,6 +878,8 @@ function clearMultipleChoice() {
     grid.className = 'options-grid'; // Reset to default class
     document.getElementById('multiple-choice-container').classList.add('hidden');
     document.getElementById('flag-display').style.display = 'none';
+    const skyline = document.getElementById('skyline-display');
+    if (skyline) skyline.style.display = 'none';
 }
 
 // Initialize the game
@@ -889,6 +900,11 @@ function startGameWithMode(mode) {
     const modeConfig = QUIZ_MODES[mode];
     // Mark the spaceship view so the mobile layout can split into earth + guess map.
     document.body.classList.toggle('spaceship-active', !!modeConfig.spaceshipMode);
+    // Globe modes (but not spaceship, which has its own bespoke inset layout) get the
+    // map/globe maximised with question/flag/multiple-choice in a narrow side panel —
+    // see .globe-layout/.globe-side-panel in style.css.
+    document.querySelector('.container').classList.toggle(
+        'globe-side-layout', !!modeConfig.useGlobe && !modeConfig.spaceshipMode);
     gameState = {
         score: 0,
         currentQuestion: 1,
@@ -1008,8 +1024,8 @@ function startGameWithMode(mode) {
     }
 
     // Setup visualization based on mode
-    // Skip map loading for ordering modes (they don't use maps)
-    if (modeConfig.orderingMode) {
+    // Skip map loading for the map-less modes (ordering, skyline photos)
+    if (modeConfig.orderingMode || modeConfig.skylineIdMode) {
         startNewQuestion();
     } else {
         if (modeConfig.spaceshipMode) flatGlobeView = false; // always orthographic for the LEO view
@@ -1924,20 +1940,26 @@ const ISLAND_MARKER_RADIUS = 4;
 let DOT_PIXEL_THRESHOLD = 5;       // largest-polygon pixel size below which a dot is shown (slider-tunable)
 const DOT_CANDIDATE_AREA = 0.05;   // steradians; bigger features are always outlines (skip the pixel check)
 let DOT_SPACING = 5;               // min centre-to-centre px between dots; closer ones are nudged apart (slider-tunable)
-let MIN_LAKE_DIAM_KM = 32;         // lakes whose largest inscribed circle is narrower than this (km) are hidden (slider-tunable); ~just under Great Salt Lake
+const MIN_LAKE_DIAM_KM = 32;       // lakes whose largest inscribed circle is narrower than this (km) are hidden; ~just under Great Salt Lake. Locked.
 // The Lake Winnipeg system is several separate Natural Earth features; treat them as
 // one for the size filter so they appear/disappear together instead of fragmenting.
 const WINNIPEG_GROUP = new Set(['Lake Winnipeg', 'Cedar Lake', 'Lake Manitoba', 'Lake Winnipegosis']);
 let lakesGroup = null;     // major-lakes overlay (Great Lakes, Victoria, Baikal, …)
-// Natural Earth lakes at three resolutions so the overlay tracks the map's detail
-// level: 110m is bundled locally; 50m/10m are fetched from jsdelivr and cached, with
-// the local 110m file as a fallback. Keyed by resolution → features array.
+// Natural Earth lakes at two resolutions so the overlay tracks the map's detail level:
+// 110m is bundled locally; 50m is fetched from jsdelivr and cached, with the local 110m
+// file as a fallback. Keyed by resolution → features array.
 const lakesCache = {};
 
+// medium maps to 110m, NOT 50m: country coastlines at 'medium' are the 50m source
+// client-side-simplified down to MEDIUM_SIMPLIFY_RETAIN (20%) via worldFeaturesFromTopology,
+// but lake polygons have no equivalent simplification pass — fetching raw 50m lakes for
+// 'medium' rendered them sharper than the coastline they sit inside. 110m lakes are close
+// in coarseness to a 20%-simplified 50m coastline, and (being the bundled local file) need
+// no network fetch, so 'medium' now locks to the same source as 'low'.
 function lakesResForDetail() {
     const mc = QUIZ_MODES[gameState.mode];
     if (mc && mc.spaceshipMode) return '110m';                 // moot — lakes are suppressed in the orbital view
-    return ({ low: '110m', medium: '50m', high: '50m' })[mapDetail] || '110m';
+    return ({ low: '110m', medium: '110m', high: '50m' })[mapDetail] || '110m';
 }
 function lakesUrlForRes(res) {
     return res === '110m'
@@ -2088,12 +2110,38 @@ function drawLakes() {
         .style('fill', oceanFill);
 }
 
-// A feature's largest angular extent, in radians (rotation-independent). Multiplying by
-// the orthographic scale gives the pixel size the feature WOULD have at the centre of the
+// Split a Polygon/MultiPolygon feature's geometry into one ring-set per polygon PART. A
+// feature with several islands scattered across many degrees has one combined bounding box
+// spanning the whole spread — measuring THAT (rather than each part on its own) is what let
+// a 10-island nation register as "big" even when no single island is more than a pixel.
+function featureParts(feature) {
+    const geom = feature && feature.geometry;
+    if (!geom) return [];
+    if (geom.type === 'Polygon') return [geom.coordinates];
+    if (geom.type === 'MultiPolygon') return geom.coordinates;
+    return [];
+}
+
+// Longitude span of a set of degrees, correctly handling antimeridian wraparound: the true
+// extent going around the circle is 360° minus the single largest gap between consecutive
+// (sorted) longitudes. d3.geoBounds gets this right when it has a whole feature's worth of
+// points to find the gap in, but on an ISOLATED ring of just a few points that happens to
+// sit right at ±180° (e.g. a sliver of Fiji), it can't tell which side is "outside" and
+// reports the full 360° — this computes it directly from the ring's own points instead.
+function lonSpanDeg(lons) {
+    if (lons.length < 2) return 0;
+    const sorted = lons.slice().sort((a, b) => a - b);
+    let maxGap = 360 - (sorted[sorted.length - 1] - sorted[0]); // wrap-around gap: last → first
+    for (let i = 1; i < sorted.length; i++) maxGap = Math.max(maxGap, sorted[i] - sorted[i - 1]);
+    return 360 - maxGap;
+}
+
+// A feature's largest angular extent among its individual polygon PARTS, in radians
+// (rotation-independent) — not the combined bounding box of every part. Multiplying by the
+// orthographic scale gives the pixel size the LARGEST part would have at the centre of the
 // globe — so the dot/outline decision doesn't change as a country rotates toward the limb
 // (where perspective foreshortening would otherwise shrink it into a dot).
-function featureAngularDim(f) {
-    const b = d3.geoBounds(f); // [[west,south],[east,north]] in degrees
+function angularDimOfBounds(b) {
     let dLon = b[1][0] - b[0][0];
     if (dLon < 0) dLon += 360; // antimeridian-wrap safety (rare for dot candidates)
     const dLat = b[1][1] - b[0][1];
@@ -2102,6 +2150,52 @@ function featureAngularDim(f) {
     const angH = dLat * Math.PI / 180;
     const m = Math.max(Math.abs(angW), Math.abs(angH));
     return isFinite(m) ? m : 0;
+}
+// Per-part angular extent computed directly from the part's own raw points (via lonSpanDeg)
+// rather than through d3.geoBounds, since a single small part is exactly the case where
+// d3.geoBounds's antimeridian heuristic can misfire (see lonSpanDeg).
+function angularDimOfPart(coords) {
+    let minLat = Infinity, maxLat = -Infinity;
+    const lons = [];
+    coords.forEach(ring => ring.forEach(p => {
+        lons.push(p[0]);
+        if (p[1] < minLat) minLat = p[1];
+        if (p[1] > maxLat) maxLat = p[1];
+    }));
+    if (!lons.length) return 0;
+    const dLon = lonSpanDeg(lons);
+    const dLat = maxLat - minLat;
+    const midLat = (minLat + maxLat) / 2 * Math.PI / 180;
+    const angW = dLon * Math.PI / 180 * Math.cos(midLat);
+    const angH = dLat * Math.PI / 180;
+    const m = Math.max(Math.abs(angW), Math.abs(angH));
+    return isFinite(m) ? m : 0;
+}
+function featureAngularDim(f) {
+    const parts = featureParts(f);
+    if (!parts.length) return angularDimOfBounds(d3.geoBounds(f)); // unexpected geometry type: fall back whole
+    let maxDim = 0;
+    for (const coords of parts) {
+        maxDim = Math.max(maxDim, angularDimOfPart(coords));
+    }
+    return maxDim;
+}
+
+// The flat-map analogue of featureAngularDim: largest on-screen pixel dimension among a
+// feature's individual polygon parts, under the CURRENT projection — not path.bounds() on
+// the whole feature, which unions every part into one bbox.
+function pixelDimOfBounds(b) {
+    if (!isFinite(b[0][0]) || !isFinite(b[0][1]) || !isFinite(b[1][0]) || !isFinite(b[1][1])) return 0;
+    return Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
+}
+function featureMaxPartPixelDim(feature) {
+    const parts = featureParts(feature);
+    if (!parts.length) return pixelDimOfBounds(path.bounds(feature)); // unexpected geometry type: fall back whole
+    let maxDim = 0;
+    for (const coords of parts) {
+        maxDim = Math.max(maxDim, pixelDimOfBounds(path.bounds({ type: 'Polygon', coordinates: coords })));
+    }
+    return maxDim;
 }
 
 // Build the candidate dot set: quiz items with no polygon (world micro-states) or a
@@ -2188,13 +2282,10 @@ function updateIslandMarkers() {
             // On the globe, size the feature as if it were at the centre of view (angular
             // extent × scale) so it doesn't flip to a dot merely by rotating toward the
             // limb. Flat maps have no such foreshortening, so measure the on-screen bbox.
-            let maxDim;
-            if (globe) {
-                maxDim = projection.scale() * (d.angDim || 0);
-            } else {
-                const b = path.bounds(d.feature); // pixel bbox under the current projection
-                maxDim = Math.max(b[1][0] - b[0][0], b[1][1] - b[0][1]);
-            }
+            // Both measure the LARGEST INDIVIDUAL polygon part, not every part combined.
+            const maxDim = globe
+                ? projection.scale() * (d.angDim || 0)
+                : featureMaxPartPixelDim(d.feature);
             showDot = isFinite(maxDim) && maxDim < DOT_PIXEL_THRESHOLD;
         }
         if (!valid || !showDot) {
@@ -2622,10 +2713,12 @@ function handleCountryClick(event, d) {
             // Zoom to correct country, then advance
             zoomAndRotateToCountry(gameState.targetCountry, 800).then(() => {
                 // Keep scrolling locked until next question
-                setTimeout(() => {
+                clearAutoAdvance();
+                autoAdvanceTimer = setTimeout(() => {
+                    autoAdvanceTimer = null;
                     gameState.subQuestionIndex++;
                     startNewQuestion();
-                }, 500);
+                }, ANSWER_PAUSE_MS);
             });
         } else {
             handleCorrectAnswer(event.target);
@@ -2640,51 +2733,54 @@ function handleCountryClick(event, d) {
             incorrectElement.classed('incorrect', true);
             raiseHighlight(incorrectElement);
 
-            // Zoom to incorrect country and hold for 0.1s
+            // Zoom to incorrect country and pause before revealing the correct one
             zoomAndRotateToCountry(clickedCountry, 600).then(() => {
-                return new Promise(resolve => setTimeout(resolve, 100));
+                return new Promise(resolve => setTimeout(resolve, ANSWER_PAUSE_MS));
             }).then(() => {
-                // Find and highlight the correct country in green (covers island dots too)
+                // Find and highlight the correct country in green (covers island dots too).
+                // The wrong country stays red (never cleared) so both are visible together.
                 highlightCountryOnGlobe(gameState.targetCountry);
 
                 // Zoom to correct country
                 return zoomAndRotateToCountry(gameState.targetCountry, 800);
             }).then(() => {
                 // Advance to next sub-question after showing the correct answer
-                setTimeout(() => {
+                clearAutoAdvance();
+                autoAdvanceTimer = setTimeout(() => {
+                    autoAdvanceTimer = null;
                     gameState.subQuestionIndex++;
                     startNewQuestion();
-                }, 500);
+                }, ANSWER_PAUSE_MS);
             });
         } else {
             handleIncorrectAnswer(event.target);
 
-            // Highlight the correct answer in green
+            // Highlight the correct answer in green — the wrong one (marked above) is
+            // never cleared, so both stay visible together.
             highlightCountryOnGlobe(gameState.targetCountry);
 
             // Auto-advance to next sub-question even on incorrect answer
-            const modeConfig = QUIZ_MODES[gameState.mode];
             const maxSub = maxSubForMode(modeConfig);
 
             if (gameState.subQuestionIndex < maxSub - 1) {
-                // Show correct (green) and incorrect (red) for 750ms, then advance
-                setTimeout(() => {
+                // Show correct (green) and incorrect (red), pause, then advance
+                clearAutoAdvance();
+                autoAdvanceTimer = setTimeout(() => {
+                    autoAdvanceTimer = null;
                     gameState.subQuestionIndex++;
                     gameState.scrollLocked = false;
                     startNewQuestion();
-                }, 750);
+                }, ANSWER_PAUSE_MS);
             } else {
-                // All sub-questions complete, enable next question button
+                // All sub-questions complete — enable Next as a manual skip, and auto-advance.
                 gameState.scrollLocked = false;
                 document.getElementById('next-btn').disabled = false;
 
-                // For mystery-flag mode, reveal the correct country after an incorrect guess
-                if (modeConfig.mysteryFlagMode) {
-                    setTimeout(() => {
-                        highlightCountryOnGlobe(gameState.targetCountry);
-                        rotateToCountry(gameState.targetCountry);
-                    }, 500);
-                }
+                // For mystery-flag mode, rotate the correct country into view (it's already
+                // highlighted, but may be off-screen/unrotated-to).
+                if (modeConfig.mysteryFlagMode) rotateToCountry(gameState.targetCountry);
+
+                scheduleAutoAdvance();
             }
         }
     }
@@ -2696,48 +2792,22 @@ function handleCountryClick(event, d) {
 // (a mismatch is what made Shape-ID cap at 50% even on a perfect run).
 function maxSubForMode(mc) {
     if (!mc) return 1;
-    if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode || mc.findOnly) {
+    if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode ||
+        mc.skylineIdMode || mc.findOnly) {
         return 1;
     }
     return mc.hasFlags ? 3 : 2;
 }
 
-// Handle correct answer
-function handleCorrectAnswer(element) {
-    gameState.answeredCorrectly = true;
-    gameState.score++;
-
-    // Always confirm a correct answer with a green highlight (path, dot, or button).
-    if (element) {
-        const sel = d3.select(element).classed('selected', false).classed('target', true).classed('correct', true);
-        // Raise map highlights so their outline isn't clipped by neighbouring shapes.
-        if (element.ownerSVGElement) raiseHighlight(sel);
-    }
-    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
-
-    // Determine max sub-questions based on mode
-    const modeConfig = QUIZ_MODES[gameState.mode];
-    const maxSub = maxSubForMode(modeConfig);
-
-    // Pause briefly on the green confirmation before advancing — never instant.
-    if (gameState.subQuestionIndex < maxSub - 1) {
-        clearAutoAdvance();
-        autoAdvanceTimer = setTimeout(() => {
-            autoAdvanceTimer = null;
-            gameState.subQuestionIndex++;
-            startNewQuestion();
-        }, CORRECT_PAUSE_MS);
-    } else {
-        // All sub-questions complete: enable Next as a manual skip and auto-advance.
-        document.getElementById('next-btn').disabled = false;
-        scheduleAutoAdvance(1200);
-    }
-}
-
-// Auto-advance helpers — used by single-question modes so a correct answer
-// automatically moves to the next question (Next button still works as a skip).
+// ---- Shared answer pacing -------------------------------------------------------------
+// One knob controls every quiz mode's reveal/advance pacing (Settings ▸ Gameplay). A
+// CORRECT answer: pause, then advance. A WRONG answer: pause, THEN reveal the correct
+// answer alongside it (the wrong highlight is never cleared, so the two stay visible
+// together — see handleIncorrectAnswer), pause again, then advance. Distance/score-based
+// modes (find-capital, spaceship, ordering) have no "wrong" to reveal against, so they use
+// a single pause after the result is shown, same shape as a correct answer.
+let ANSWER_PAUSE_MS = 1200;
 let autoAdvanceTimer = null;
-const CORRECT_PAUSE_MS = 650; // green-confirmation pause before advancing on a correct answer
 
 function clearAutoAdvance() {
     if (autoAdvanceTimer) {
@@ -2746,7 +2816,7 @@ function clearAutoAdvance() {
     }
 }
 
-function scheduleAutoAdvance(delay = 1200) {
+function scheduleAutoAdvance(delay = ANSWER_PAUSE_MS) {
     clearAutoAdvance();
     autoAdvanceTimer = setTimeout(goToNextQuestion, delay);
 }
@@ -2763,16 +2833,64 @@ function goToNextQuestion() {
     }
 }
 
-// Handle incorrect answer
+// Handle correct answer. `award` is false when this is only being used to reveal the answer
+// and drive the advance after the player already got it WRONG — that path must not score.
+function handleCorrectAnswer(element, award = true) {
+    gameState.answeredCorrectly = true;
+    if (award) gameState.score++;
+
+    // Always confirm a correct answer with a green highlight (path, dot, or button).
+    if (element) {
+        const sel = d3.select(element).classed('selected', false).classed('target', true).classed('correct', true);
+        // Raise map highlights so their outline isn't clipped by neighbouring shapes.
+        if (element.ownerSVGElement) raiseHighlight(sel);
+    }
+    document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
+
+    // The round is decided (this also runs for the auto-reveal after a wrong answer), so the
+    // photo credit can finally be shown without its title spoiling the city.
+    if (gameState.questionType === 'skyline-id') revealSkylineCredit();
+
+    // Determine max sub-questions based on mode
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    const maxSub = maxSubForMode(modeConfig);
+
+    // Pause briefly on the green confirmation before advancing — never instant.
+    if (gameState.subQuestionIndex < maxSub - 1) {
+        clearAutoAdvance();
+        autoAdvanceTimer = setTimeout(() => {
+            autoAdvanceTimer = null;
+            gameState.subQuestionIndex++;
+            startNewQuestion();
+        }, ANSWER_PAUSE_MS);
+    } else {
+        // All sub-questions complete: enable Next as a manual skip and auto-advance.
+        document.getElementById('next-btn').disabled = false;
+        scheduleAutoAdvance();
+    }
+}
+
+// Handle incorrect answer. Unlike a stale "self-clearing" flash, this highlight is left in
+// place deliberately — the caller pauses, then reveals the correct answer ALONGSIDE it (see
+// scheduleWrongThenCorrect) so the two can be compared, and the whole button/shape grid is
+// rebuilt fresh for the next question anyway (clearMultipleChoice/startNewQuestion), so
+// nothing needs to explicitly clear this class later.
 function handleIncorrectAnswer(element) {
     const sel = d3.select(element).classed('selected', false).classed('incorrect', true);
     // Raise map highlights so the red outline isn't clipped by neighbouring shapes.
     if (element && element.ownerSVGElement) raiseHighlight(sel);
+}
 
-    // Remove incorrect styling after a short delay
-    setTimeout(() => {
-        d3.select(element).classed('incorrect', false);
-    }, 800);
+// The standard two-phase wrong-answer sequence used by every discrete right/wrong question
+// type: pause, call `revealCorrect` (marks the correct answer — must NOT clear the existing
+// wrong highlight), pause again, then advance (via handleCorrectAnswer, unscored).
+function scheduleWrongThenCorrect(revealCorrect) {
+    clearAutoAdvance();
+    autoAdvanceTimer = setTimeout(() => {
+        autoAdvanceTimer = null;
+        const correctElement = revealCorrect();
+        if (correctElement && !gameState.answeredCorrectly) handleCorrectAnswer(correctElement, false);
+    }, ANSWER_PAUSE_MS);
 }
 
 // Handle give up - reveal answer without awarding points
@@ -2794,6 +2912,24 @@ function giveUp() {
         return;
     }
 
+    // Skyline ID: reveal the city on the option buttons. Needs its own handler because the
+    // generic tail below reaches for the globe, which this mode doesn't have.
+    if (modeConfig.skylineIdMode) {
+        if (gameState.answeredCorrectly || !gameState.targetCountry) return; // nothing to reveal yet
+        gameState.answeredCorrectly = true;
+        const label = skylineLabel(gameState.targetCountry);
+        document.querySelectorAll('.option-btn').forEach(btn => {
+            if (btn.textContent === label) btn.classList.add('correct');
+        });
+        const feedback = document.getElementById('feedback');
+        feedback.textContent = 'This is ' + label + '.';
+        feedback.className = 'feedback incorrect';
+        revealSkylineCredit();
+        document.getElementById('next-btn').disabled = false;
+        scheduleAutoAdvance();
+        return;
+    }
+
     // Special handling for capitals-race mode
     if (modeConfig.capitalsRaceMode) {
         if (gameState.answeredCorrectly) return;
@@ -2805,6 +2941,7 @@ function giveUp() {
         const capitalsInput = document.getElementById('capitals-race-input');
         if (capitalsInput) capitalsInput.disabled = true;
         document.getElementById('next-btn').disabled = false;
+        scheduleAutoAdvance();
         return;
     }
 
@@ -2868,14 +3005,17 @@ function giveUp() {
     // Determine max sub-questions based on mode
     const maxSub = maxSubForMode(modeConfig);
 
-    // Auto-advance or enable next button
+    // Pause on the reveal, then advance — same pacing as answering (right or wrong).
     if (gameState.subQuestionIndex < maxSub - 1) {
-        setTimeout(() => {
+        clearAutoAdvance();
+        autoAdvanceTimer = setTimeout(() => {
+            autoAdvanceTimer = null;
             gameState.subQuestionIndex++;
             startNewQuestion();
-        }, 2500);
+        }, ANSWER_PAUSE_MS);
     } else {
         document.getElementById('next-btn').disabled = false;
+        scheduleAutoAdvance();
     }
 }
 
@@ -2895,6 +3035,15 @@ function startNewQuestion() {
     // Check if this is ordering mode (population ordering)
     if (modeConfig.orderingMode) {
         renderOrderingMode();
+        return;
+    }
+
+    // Skyline ID must hook in HERE, with the other map-less modes, not down at the render
+    // dispatch: the shared code below dereferences countriesGroup (never created without a
+    // map) and picks its target by filtering the quiz list against map features, which for
+    // an empty gameState.countries recurses forever. Skyline picks its own target instead.
+    if (modeConfig.skylineIdMode) {
+        renderSkylineQuestion();
         return;
     }
 
@@ -3185,43 +3334,36 @@ function handleFlagChoiceAnswer(selectedAnswer, correctAnswer, element) {
             fillCountryWithFlag(correctAnswer);
 
             // Pause on the green confirmation, then advance to the capital question.
-            setTimeout(() => {
+            clearAutoAdvance();
+            autoAdvanceTimer = setTimeout(() => {
+                autoAdvanceTimer = null;
                 gameState.subQuestionIndex++;
                 startNewQuestion();
-            }, CORRECT_PAUSE_MS);
+            }, ANSWER_PAUSE_MS);
         } else {
             fillCountryWithFlag(correctAnswer);
             handleCorrectAnswer(element);
         }
     } else {
         element.classList.add('incorrect');
-
-        if (modeConfig.useWorldQuizLayout) {
-            // Remove incorrect styling after a short delay
-            setTimeout(() => {
-                element.classList.remove('selected', 'incorrect');
-            }, 800);
-        } else {
-            handleIncorrectAnswer(element);
-            // Show correct answer after delay and auto-advance
-            setTimeout(() => {
-                const flagOptions = document.querySelectorAll('.flag-option');
-                let correctElement = null;
-                flagOptions.forEach(opt => {
-                    const img = opt.querySelector('img');
-                    if (img && img.src === getFlagUrl(correctAnswer)) {
-                        opt.classList.add('correct');
-                        correctElement = opt;
-                    }
-                });
-                // Auto-advance after showing the correct answer
-                if (correctElement) {
-                    setTimeout(() => {
-                        handleCorrectAnswer(correctElement);
-                    }, 800);
+        handleIncorrectAnswer(element);
+        // Reveal the correct flag alongside the wrong one, then advance (unscored) — the
+        // world-quiz-layout branch used to just clear and loop with no reveal/advance at
+        // all; both branches now share the standard wrong-answer pacing.
+        scheduleWrongThenCorrect(() => {
+            let correctElement = null;
+            document.querySelectorAll('.flag-option').forEach(opt => {
+                const img = opt.querySelector('img');
+                if (img && img.src === getFlagUrl(correctAnswer)) {
+                    opt.classList.add('correct');
+                    correctElement = opt;
                 }
-            }, 1000);
-        }
+            });
+            // The flag has now been asked (right or wrong) — colour the country in with it,
+            // same as a correct guess does.
+            if (modeConfig.useWorldQuizLayout) fillCountryWithFlag(correctAnswer);
+            return correctElement;
+        });
     }
 }
 
@@ -3287,23 +3429,23 @@ function handleCapitalChoiceAnswer(selectedAnswer, correctAnswer, element) {
         document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
         // Pause on the green confirmation, then advance to the next country.
-        setTimeout(() => {
-            gameState.subQuestionIndex = 0;
-            gameState.currentQuestion++;
-            if (gameState.currentQuestion <= gameState.totalQuestions) {
-                gameState.answeredCorrectly = false;
-                startNewQuestion();
-            } else {
-                endGame();
-            }
-        }, CORRECT_PAUSE_MS);
+        document.getElementById('next-btn').disabled = false;
+        scheduleAutoAdvance();
     } else {
         element.classList.add('incorrect');
-
-        // Remove incorrect styling after a short delay
-        setTimeout(() => {
-            element.classList.remove('selected', 'incorrect');
-        }, 800);
+        handleIncorrectAnswer(element);
+        // Reveal the correct capital alongside the wrong one, then advance (unscored) —
+        // this used to just clear and loop with no reveal/advance at all.
+        scheduleWrongThenCorrect(() => {
+            let correctElement = null;
+            document.querySelectorAll('#capital-options-grid .option-btn').forEach(btn => {
+                if (btn.textContent === correctAnswer) {
+                    btn.classList.add('correct');
+                    correctElement = btn;
+                }
+            });
+            return correctElement;
+        });
     }
 }
 
@@ -3370,6 +3512,7 @@ function nameAllRenderable(name) {
 }
 
 function renderNameAllMode() {
+    const modeConfig = QUIZ_MODES[gameState.mode];
     gameState.questionType = 'name-all';
     gameState.foundCountries = new Set();
     gameState.nameAllStartTime = Date.now();
@@ -3379,9 +3522,10 @@ function renderNameAllMode() {
     // Add name-all-mode class to container for styling
     document.querySelector('.container').classList.add('name-all-mode');
 
-    // Keep only countries that are drawn (as a polygon or an island dot).
+    // Keep only items that are drawn (as a polygon or, for world countries, an island dot).
     gameState.currentQuizList = gameState.currentQuizList.filter(nameAllRenderable);
-    const totalCountries = gameState.currentQuizList.length;
+    const totalItems = gameState.currentQuizList.length;
+    const itemWord = modeConfig.itemLabelPlural || 'countries';
 
     // Hide question counter for name-all mode
     const questionCounter = document.querySelector('.score-item:has(#current-question)');
@@ -3389,8 +3533,8 @@ function renderNameAllMode() {
         questionCounter.style.display = 'none';
     }
 
-    const regionLabel = QUIZ_MODES['name-all'].regionLabel || 'the World';
-    document.getElementById('question-text').innerHTML = `Name all countries in ${regionLabel}! Found: <span id="found-count">0</span>/${totalCountries} &nbsp;|&nbsp; ⏱ <span id="name-all-timer">--:--</span>`;
+    const regionLabel = modeConfig.regionLabel || 'the World';
+    document.getElementById('question-text').innerHTML = `Name all ${itemWord} in ${regionLabel}! Found: <span id="found-count">0</span>/${totalItems} &nbsp;|&nbsp; ⏱ <span id="name-all-timer">--:--</span>`;
 
     document.getElementById('flag-display').style.display = 'none';
     document.getElementById('multiple-choice-container').classList.add('hidden');
@@ -3398,12 +3542,15 @@ function renderNameAllMode() {
     // Create and show input field
     createNameAllInput();
 
-    // Start the countdown (~6s per country, at least 60s).
-    startNameAllTimer(Math.max(60, totalCountries * 6));
+    // Start the countdown (~6s per item, at least 60s).
+    startNameAllTimer(Math.max(60, totalItems * 6));
 
-    // Reset globe rotation
-    projection.rotate([0, 0, 0]);
-    r_unconstrained = [0, 0, 0];
+    // Reset rotation — only orthographic/Mercator support .rotate(); AlbersUSA (us-states)
+    // does not, so it's skipped there (its extent is already fixed).
+    if (typeof projection.rotate === 'function') {
+        projection.rotate([0, 0, 0]);
+        r_unconstrained = [0, 0, 0];
+    }
 
     // Ensure all countries are visible with clear borders
     countriesGroup.selectAll('path')
@@ -3442,7 +3589,6 @@ function createNameAllInput() {
         input.type = 'text';
         input.id = 'name-all-input';
         input.className = 'name-all-input';
-        input.placeholder = 'Type a country name...';
         input.autocomplete = 'off';
 
         inputContainer.appendChild(input);
@@ -3460,10 +3606,17 @@ function createNameAllInput() {
         });
     }
 
+    // Placeholder depends on the geography (country/state/county), so it's refreshed on
+    // every call — not just when the element is first created — in case the player
+    // switched geographies since the input was last built.
+    const modeConfig = QUIZ_MODES[gameState.mode];
+    const input = document.getElementById('name-all-input');
+    input.placeholder = `Type a ${modeConfig.itemLabel || 'country'} name...`;
+
     // Show and focus input
     inputContainer.style.display = 'block';
-    document.getElementById('name-all-input').value = '';
-    document.getElementById('name-all-input').focus();
+    input.value = '';
+    input.focus();
 }
 
 // Handle input changes in name-all mode
@@ -3549,20 +3702,21 @@ function updateFoundCounter() {
     document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 }
 
-// Check if all countries have been found
+// Check if all items have been found
 function checkNameAllComplete() {
-    const totalCountries = gameState.currentQuizList.length;
+    const totalItems = gameState.currentQuizList.length;
 
-    if (gameState.foundCountries.size >= totalCountries) {
-        // All countries found!
+    if (gameState.foundCountries.size >= totalItems) {
+        // All items found!
         stopNameAllTimer();
         const elapsedTime = Math.round((Date.now() - gameState.nameAllStartTime) / 1000);
         const minutes = Math.floor(elapsedTime / 60);
         const seconds = elapsedTime % 60;
         const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 
+        const itemWord = (QUIZ_MODES[gameState.mode].itemLabelPlural) || 'countries';
         const feedback = document.getElementById('feedback');
-        feedback.textContent = `🎉 Congratulations! You named all ${totalCountries} countries in ${timeStr}!`;
+        feedback.textContent = `🎉 Congratulations! You named all ${totalItems} ${itemWord} in ${timeStr}!`;
         feedback.className = 'feedback correct';
 
         // Hide input
@@ -3587,34 +3741,35 @@ function handleNameAllGiveUp(timedOut) {
         inputContainer.style.display = 'none';
     }
 
-    // Highlight all missed countries in red and create list
-    const missedCountries = [];
-    gameState.currentQuizList.forEach(countryName => {
-        if (!gameState.foundCountries.has(countryName)) {
-            missedCountries.push(countryName);
+    // Highlight all missed items in red and create list
+    const missedItems = [];
+    gameState.currentQuizList.forEach(itemName => {
+        if (!gameState.foundCountries.has(itemName)) {
+            missedItems.push(itemName);
 
             // Highlight in red (polygon or island dot)
             countriesGroup.selectAll('path')
-                .filter(d => d.properties.name === countryName)
+                .filter(d => d.properties.name === itemName)
                 .classed('incorrect', true);
             if (islandMarkersGroup) {
                 islandMarkersGroup.selectAll('circle')
-                    .filter(d => d.properties.name === countryName)
+                    .filter(d => d.properties.name === itemName)
                     .classed('incorrect', true);
             }
         }
     });
 
-    // Show feedback with missed countries
-    const totalCountries = gameState.currentQuizList.length;
+    // Show feedback with missed items
+    const totalItems = gameState.currentQuizList.length;
+    const itemWord = (QUIZ_MODES[gameState.mode].itemLabelPlural) || 'countries';
 
     const feedback = document.getElementById('feedback');
     feedback.innerHTML = `
         <div>
-            <p>${timedOut ? "⏰ Time's up! " : ''}You found ${gameState.foundCountries.size} out of ${totalCountries} countries.</p>
-            <p style="margin-top: 10px;"><strong>Missed countries:</strong></p>
+            <p>${timedOut ? "⏰ Time's up! " : ''}You found ${gameState.foundCountries.size} out of ${totalItems} ${itemWord}.</p>
+            <p style="margin-top: 10px;"><strong>Missed ${itemWord}:</strong></p>
             <div style="max-height: 200px; overflow-y: auto; margin-top: 10px; text-align: left;">
-                ${missedCountries.sort().map(name => `<div style="padding: 3px 0;">• ${name}</div>`).join('')}
+                ${missedItems.sort().map(name => `<div style="padding: 3px 0;">• ${name}</div>`).join('')}
             </div>
         </div>
     `;
@@ -3720,13 +3875,15 @@ function handleCapitalsRaceSubmit() {
         document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
         feedback.textContent = `Correct! ${correctCapital} is the capital of ${gameState.targetCountry}.`;
         feedback.className = 'feedback correct';
-        document.getElementById('next-btn').disabled = false;
-        scheduleAutoAdvance(1400);
     } else {
         feedback.textContent = `Incorrect. The capital of ${gameState.targetCountry} is ${correctCapital}.`;
         feedback.className = 'feedback incorrect';
-        document.getElementById('next-btn').disabled = false;
     }
+    // The correct capital is already shown in the feedback text either way (a typed-input
+    // answer has no separate "highlight" step to sequence), so both outcomes get the same
+    // single pause before auto-advancing.
+    document.getElementById('next-btn').disabled = false;
+    scheduleAutoAdvance();
 }
 
 // ==================== FREE EXPLORE MODE ====================
@@ -3945,6 +4102,268 @@ function renderCountryShapeIdQuestion() {
     renderMultipleChoice(options, gameState.targetCountry);
 }
 
+// ==================== SKYLINE ID MODE ====================
+
+// Photos come from Wikimedia Commons: its API is CORS-open (origin=*) and every file
+// carries machine-readable licensing, so the pool can be restricted to images we are
+// actually allowed to show, and each one credited.
+const COMMONS_API = 'https://commons.wikimedia.org/w/api.php';
+// Obvious non-photographs that a text search still surfaces.
+const SKYLINE_REJECT_TITLE = /\b(map|flag|coat of arms|seal|logo|diagram|chart|plan|locator|poster|stamp|coin|banner|icon)\b/i;
+// Titles promising an actual wide city view — used to RANK, never to reject.
+const SKYLINE_GOOD_TITLE = /skyline|panorama|cityscape|downtown|aerial/i;
+
+const skylineListCache = {};      // city → Promise<candidate[]>
+const skylineNoPhoto = new Set(); // cities Commons had nothing usable for (don't re-query all game)
+let skylineToken = 0;             // voids in-flight searches when the question moves on
+let skylineNext = null;           // { city, photo } resolved ahead of time for the next round
+let skylinePrefetching = false;
+
+function commonsMeta(meta, key) {
+    return (meta && meta[key] && meta[key].value) ? String(meta[key].value) : '';
+}
+
+// extmetadata values are HTML fragments (Artist is typically a link). DOMParser builds an
+// INERT document, so unlike innerHTML this can't run scripts or fire loaders on remote markup.
+function stripHtml(html) {
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+// Accept public domain / CC0 (no obligations) and CC-BY / CC-BY-SA (credited under the
+// photo). Everything else — NonCommercial, NoDerivatives, fair use, unrecognised — is
+// dropped rather than guessed at.
+function skylineLicenceOk(meta) {
+    const s = (commonsMeta(meta, 'License') || commonsMeta(meta, 'LicenseShortName')).toLowerCase();
+    if (!s) return false;
+    if (/\bnc\b|noncommercial|\bnd\b|noderiv|fair use/.test(s)) return false;
+    return /^(cc0|pd|public domain|cc[ -]by)/.test(s);
+}
+
+function commonsSearch(query) {
+    const params = new URLSearchParams({
+        action: 'query', format: 'json', origin: '*',
+        generator: 'search', gsrsearch: query, gsrnamespace: '6', gsrlimit: '40',
+        prop: 'imageinfo', iiprop: 'url|size|mime|extmetadata', iiurlwidth: '1280',
+        iiextmetadatafilter: 'License|LicenseShortName|Artist'
+    });
+    return fetch(COMMONS_API + '?' + params).then(r => {
+        if (!r.ok) throw new Error('Commons search ' + r.status);
+        return r.json();
+    });
+}
+
+// Turn a Commons search response into ranked, usable skyline photos.
+function skylineCandidates(json, city) {
+    const pages = (json && json.query && json.query.pages) || {};
+    const key = normalizeName(city);
+    return Object.keys(pages).map(id => {
+        const page = pages[id];
+        const ii = page.imageinfo && page.imageinfo[0];
+        if (!ii) return null;
+        if (!/^image\/(jpeg|png|webp)$/.test(ii.mime || '')) return null;  // no SVG/PDF/video
+        if (!(ii.width >= 900 && ii.width > ii.height)) return null;       // a skyline is wide
+        const title = String(page.title || '').replace(/^File:/, '').replace(/\.\w+$/, '');
+        if (SKYLINE_REJECT_TITLE.test(title)) return null;
+        if (!skylineLicenceOk(ii.extmetadata)) return null;
+        return {
+            url: ii.thumburl || ii.url,
+            page: ii.descriptionurl,
+            title: title,
+            artist: stripHtml(commonsMeta(ii.extmetadata, 'Artist')) || 'Unknown photographer',
+            licence: commonsMeta(ii.extmetadata, 'LicenseShortName') || commonsMeta(ii.extmetadata, 'License'),
+            // Rank, don't reject: a title naming the city is a far safer bet than trusting
+            // search relevance, but a good photo may still be titled "Manhattan at dusk".
+            score: (normalizeName(title).includes(key) ? 2 : 0) + (SKYLINE_GOOD_TITLE.test(title) ? 1 : 0)
+        };
+    }).filter(Boolean).sort((a, b) => b.score - a.score);
+}
+
+// Search terms for a city. The state/country disambiguator (taken from the display label)
+// is NOT optional: '"Toledo" skyline' returns Toledo, SPAIN above Toledo, Ohio, and
+// '"St. Petersburg" skyline' can land in Russia — either would caption a photo with the
+// wrong city and mark a right answer wrong. Adding the term costs ~5% of the usable hits
+// and fixes that. A city can override the whole query via a `query` field in the data.
+function skylineQuery(city) {
+    const d = (gameState.currentDataObj || {})[city] || {};
+    if (d.query) return d.query;
+    const label = d.label || city;
+    const comma = label.indexOf(',');
+    const where = comma > -1 ? label.slice(comma + 1).trim() : '';
+    return '"' + city + '" ' + (where ? where + ' ' : '') + 'skyline';
+}
+
+// Usable photos for a city, cached per session. A failed fetch is evicted so a network
+// blip can't permanently blank a city.
+function fetchSkylineCandidates(city) {
+    if (skylineListCache[city]) return skylineListCache[city];
+    const p = commonsSearch(skylineQuery(city)).then(j => skylineCandidates(j, city).slice(0, 6));
+    p.catch(() => { delete skylineListCache[city]; });
+    skylineListCache[city] = p;
+    return p;
+}
+
+// Find a city Commons actually has a usable photo for. Whether one exists is only knowable
+// after searching, so a miss retries with another city — and is remembered, so a barren city
+// isn't re-queried every round. The pick is reserved (added to usedCountries) before the
+// search returns, so a prefetch and a live pick can never land on the same city.
+async function resolveSkylineTarget() {
+    const data = gameState.currentDataObj || {};
+    for (let attempt = 0; attempt < 8; attempt++) {
+        const pool = Object.keys(data).filter(
+            c => !gameState.usedCountries.has(c) && !skylineNoPhoto.has(c));
+        if (!pool.length) return null;
+        const city = pool[Math.floor(Math.random() * pool.length)];
+        gameState.usedCountries.add(city);
+        const list = await fetchSkylineCandidates(city).catch(() => []);
+        if (list.length) return { city: city, photo: list[Math.floor(Math.random() * list.length)] };
+        skylineNoPhoto.add(city);
+    }
+    return null;
+}
+
+// Resolve the NEXT round in the background while the player is still reading this one. A
+// Commons search takes 0.5–6 s — far too long to spend on a spinner between questions.
+function prefetchNextSkyline() {
+    if (skylineNext || skylinePrefetching) return;
+    skylinePrefetching = true;
+    resolveSkylineTarget()
+        .then(r => { skylineNext = r; })
+        .catch(() => { })
+        .then(() => { skylinePrefetching = false; });
+}
+
+function skylineLabel(name) {
+    const d = (gameState.currentDataObj || {})[name];
+    return (d && d.label) || name;
+}
+
+// Lower = better distractor. Same country dominates (Dallas vs Houston vs Austin), then
+// same region; within a tier, closeness in population — so a megacity is never offered
+// against a suburb. Population is compared on a log scale because the list spans 200k–30M.
+function skylineDistractorScore(name, me, data) {
+    const d = data[name] || {};
+    const lg = p => Math.log10(Math.max(p || 1, 1));
+    let s = 0;
+    if (d.country && d.country === me.country) s -= 1000;
+    else if (d.region && d.region === me.region) s -= 500;
+    return s + Math.abs(lg(d.population) - lg(me.population)) * 100;
+}
+
+// 4 options as display labels: the answer plus its 3 most confusable neighbours.
+function generateSkylineOptions(correct) {
+    const data = gameState.currentDataObj || {};
+    const me = data[correct] || {};
+    const ranked = Object.keys(data).filter(n => n !== correct)
+        .sort((a, b) => skylineDistractorScore(a, me, data) - skylineDistractorScore(b, me, data));
+    // Draw from the closest handful rather than strictly the top 3, so replaying a city
+    // doesn't always serve the same three wrong answers.
+    const picks = shuffleArray(ranked.slice(0, 8)).slice(0, 3);
+    return shuffleArray([correct].concat(picks)).map(skylineLabel);
+}
+
+function setSkylineStatus(text) {
+    const el = document.getElementById('skyline-status');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+}
+
+function showSkylinePhoto(photo) {
+    const img = document.getElementById('skyline-image');
+    document.getElementById('skyline-display').style.display = 'block';
+    document.getElementById('skyline-credit').style.display = 'none';
+    img.style.display = 'none';
+    setSkylineStatus('Loading photo…');
+    img.onload = () => { img.style.display = ''; setSkylineStatus(''); };
+    img.onerror = () => setSkylineStatus('That photo failed to load — press Next for another city.');
+    img.src = photo.url;
+}
+
+// Credit appears only once the round is decided. It has to wait: the Commons file title
+// almost always names the city, so showing it up front would hand over the answer.
+function revealSkylineCredit() {
+    const credit = document.getElementById('skyline-credit');
+    const photo = gameState.skylinePhoto;
+    if (!credit || !photo) return;
+    const link = document.createElement('a');
+    link.href = photo.page;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = photo.title;
+    credit.textContent = '';
+    credit.append(link, document.createTextNode(
+        ' · ' + photo.artist + ' · ' + photo.licence + ' · via Wikimedia Commons'));
+    credit.style.display = '';
+}
+
+// Render a Skyline ID question: find a real photo of some large city's skyline, show it,
+// and offer 4 city names. No map is involved at any point.
+async function renderSkylineQuestion() {
+    gameState.questionType = 'skyline-id';
+
+    // This mode short-circuits the shared startNewQuestion body (which needs a map), so the
+    // per-question resets it would have run have to happen here.
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+    document.getElementById('question-container').classList.remove('hidden');
+    clearMultipleChoice();
+    gameState.answeredCorrectly = false;
+    gameState.guessedThisQuestion = false;
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.disabled = true;
+    nextBtn.style.display = 'inline-block';
+    nextBtn.textContent = 'Next Question';
+    const giveUpBtn = document.getElementById('give-up-btn');
+    giveUpBtn.style.display = 'inline-block';
+    giveUpBtn.textContent = 'Give Up';
+    const feedback = document.getElementById('feedback');
+    feedback.textContent = '';
+    feedback.className = 'feedback';
+
+    if (gameState.currentQuestion > gameState.totalQuestions) { endGame(); return; }
+
+    // Drop the previous round's answer up front, so that if no photo can be found the error
+    // state can't be given-up on and reveal a stale city/credit.
+    gameState.targetCountry = null;
+    gameState.skylinePhoto = null;
+
+    const token = ++skylineToken;
+    document.getElementById('question-text').textContent = 'Which city is this?';
+    document.getElementById('skyline-display').style.display = 'block';
+    document.getElementById('skyline-image').style.display = 'none';
+    document.getElementById('skyline-credit').style.display = 'none';
+
+    // Usually the previous round already resolved this one in the background.
+    let picked = skylineNext;
+    skylineNext = null;
+    if (!picked) {
+        setSkylineStatus('Finding a skyline…');
+        picked = await resolveSkylineTarget();
+        if (token !== skylineToken) return;   // a newer question superseded this one
+    }
+
+    if (!picked) {
+        setSkylineStatus('Couldn’t reach Wikimedia Commons for a skyline photo. ' +
+            'Check your connection, then press Next to try another city.');
+        nextBtn.disabled = false;
+        return;
+    }
+
+    gameState.targetCountry = picked.city;
+    gameState.skylinePhoto = picked.photo;
+    // resolveSkylineTarget already reserved this, but re-assert it: a pick prefetched during
+    // a PREVIOUS game was reserved in a usedCountries that the new game then cleared, so
+    // without this the carried-over city could come up a second time in the same game.
+    gameState.usedCountries.add(picked.city);
+
+    document.getElementById('question-text').innerHTML =
+        'Which city is this? <span style="font-size:0.8em;color:#888;">Read the skyline.</span>';
+    showSkylinePhoto(picked.photo);
+    renderMultipleChoice(generateSkylineOptions(picked.city), skylineLabel(picked.city));
+    prefetchNextSkyline();
+}
+
 // ==================== POPULATION ORDERING MODE ====================
 
 // Render population ordering mode
@@ -4086,12 +4505,13 @@ function checkOrderingAnswer() {
     // Disable submit button
     document.getElementById('submit-order-btn').disabled = true;
 
-    // Show next button
+    // Show next button as a manual skip, then auto-advance after a pause. Advancing goes
+    // through the shared goToNextQuestion() (via scheduleAutoAdvance/the Next button), which
+    // already increments currentQuestion — this used to ALSO increment it here directly,
+    // so every round advanced the counter by 2 and the game ended after half the rounds.
     document.getElementById('next-btn').style.display = 'inline-block';
     document.getElementById('next-btn').disabled = false;
-
-    // Move to next question
-    gameState.currentQuestion++;
+    scheduleAutoAdvance();
 }
 
 
@@ -4351,6 +4771,7 @@ function goHome() {
     removeSpaceshipInset();
     disposeOrbital();
     document.body.classList.remove('spaceship-active');
+    document.querySelector('.container').classList.remove('globe-side-layout');
 
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
@@ -4403,12 +4824,31 @@ function setupEventListeners() {
         document.getElementById('mode-selector').classList.remove('hidden');
     });
 
-    // Home link in header
+    // Home link in header — both the in-game top-bar title and the big landing-page
+    // title/logo always take the user back to the mode selector.
     const homeLink = document.getElementById('home-link');
     if (homeLink) {
         homeLink.addEventListener('click', goHome);
     } else {
         console.error('home-link element not found');
+    }
+    const landingHeader = document.getElementById('landing-header');
+    if (landingHeader) landingHeader.addEventListener('click', goHome);
+
+    // All/Random-10 scope toggle (Find + Identify selector screens). Delegated on the
+    // persistent #mode-selector container since showFindModeSelector/showIdentifyModeSelector
+    // rewrite its innerHTML wholesale every time they're opened.
+    const modeSelectorEl = document.getElementById('mode-selector');
+    if (modeSelectorEl) {
+        modeSelectorEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('.scope-btn');
+            if (!btn) return;
+            const group = btn.closest('.scope-toggle');
+            const isAll = btn.dataset.scope === 'all';
+            if (group.dataset.for === 'find') findQuizScopeAll = isAll;
+            else if (group.dataset.for === 'identify') identifyQuizScopeAll = isAll;
+            group.querySelectorAll('.scope-btn').forEach(b => b.classList.toggle('active', b === btn));
+        });
     }
 
     // Helper to switch modes from the top bar
@@ -4544,6 +4984,38 @@ function setupEventListeners() {
         });
     }
 
+    // Atmosphere gradient: independent space/earth spread sliders, the linear/tangent
+    // earth-side toggle, and the 5-stop editor.
+    const atmoSpreadSpace = document.getElementById('tune-atmo-spread-space');
+    if (atmoSpreadSpace) {
+        const label = document.getElementById('tune-atmo-spread-space-val');
+        atmoSpreadSpace.addEventListener('input', function () {
+            atmoSpreadSpaceKm = +this.value;
+            if (label) label.textContent = atmoSpreadSpaceKm + ' km';
+            applyAtmoUniforms();
+            orbitalRender();
+        });
+    }
+    const atmoSpreadEarth = document.getElementById('tune-atmo-spread-earth');
+    if (atmoSpreadEarth) {
+        const label = document.getElementById('tune-atmo-spread-earth-val');
+        atmoSpreadEarth.addEventListener('input', function () {
+            atmoSpreadEarthKm = +this.value;
+            if (label) label.textContent = atmoSpreadEarthKm + ' km';
+            applyAtmoUniforms();
+            orbitalRender();
+        });
+    }
+    const atmoTangent = document.getElementById('tune-atmo-tan-earth');
+    if (atmoTangent) {
+        atmoTangent.addEventListener('change', function () {
+            atmoEarthTangentFade = this.checked;
+            applyAtmoUniforms();
+            orbitalRender();
+        });
+    }
+    buildAtmoEditor();
+
     // "Country outlines" hint button (spaceship only; shown/labelled in the mode setup).
     const hintBtn = document.getElementById('hint-outlines-toggle');
     if (hintBtn) {
@@ -4567,20 +5039,17 @@ function setupEventListeners() {
         el.addEventListener('input', function () { const v = +this.value; setter(v); if (lab) lab.textContent = fmt(v); });
     });
 
-    // Live tuning sliders (Medium-detail simplification, dot pixel threshold, dot spacing).
-    const simplifySlider = document.getElementById('tune-simplify');
-    if (simplifySlider) {
-        const label = document.getElementById('tune-simplify-val');
-        simplifySlider.addEventListener('input', function () {
-            MEDIUM_SIMPLIFY_RETAIN = (+this.value) / 100;
-            if (label) label.textContent = this.value + '%';
-        });
-        // Re-simplify only on release (cheap from the cached topology) and only when it matters.
-        simplifySlider.addEventListener('change', function () {
-            if (mapDetail === 'medium' && QUIZ_MODES[gameState.mode] &&
-                QUIZ_MODES[gameState.mode].mapObject === 'countries') reloadWorldDetail();
+    // Site-wide answer-reveal/advance pause (every quiz mode).
+    const answerPauseSlider = document.getElementById('tune-answer-pause');
+    if (answerPauseSlider) {
+        const label = document.getElementById('tune-answer-pause-val');
+        answerPauseSlider.addEventListener('input', function () {
+            ANSWER_PAUSE_MS = +this.value;
+            if (label) label.textContent = this.value + ' ms';
         });
     }
+
+    // Live tuning sliders (dot pixel threshold, dot spacing).
     const dotSizeSlider = document.getElementById('tune-dotsize');
     if (dotSizeSlider) {
         const label = document.getElementById('tune-dotsize-val');
@@ -4599,16 +5068,6 @@ function setupEventListeners() {
             updateIslandMarkers();
         });
     }
-    const lakeSizeSlider = document.getElementById('tune-lakesize');
-    if (lakeSizeSlider) {
-        const label = document.getElementById('tune-lakesize-val');
-        lakeSizeSlider.addEventListener('input', function () {
-            MIN_LAKE_DIAM_KM = +this.value;
-            if (label) label.textContent = this.value + ' km';
-            drawLakes();
-        });
-    }
-
     // Settings pop-up: open/close the tuning-slider modal.
     const settingsBtn = document.getElementById('settings-btn');
     const settingsOverlay = document.getElementById('settings-overlay');
@@ -4718,6 +5177,11 @@ function revealCapitalAnswer(extraLine) {
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
     document.getElementById('give-up-btn').style.display = 'none';
+
+    // Distance-scored — no discrete right/wrong to reveal, so a single pause after the
+    // result is shown (matching a correct-answer's pacing) before auto-advancing. The
+    // relabelled Next/See Results button above still works as a manual skip.
+    scheduleAutoAdvance();
 }
 
 function submitCapitalGuess() {
@@ -5215,43 +5679,227 @@ function orbitalLoadCap(target) {
     orbitalRender();
 }
 
-// Atmosphere: a soft limb glow that fades GRADUALLY from the horizon up into space
-// (no hard shell edge). For each view ray we take its closest approach to the planet
-// centre; that distance maps 0→1 from the limb (tangent) to the zenith, and the glow
-// smoothly falls off over the lower band of that range. uCamDist is refreshed per
-// render so the falloff tracks the current orbit altitude.
+// ---- Atmosphere gradient -----------------------------------------------------------
+// The gradient axis is a ray's TANGENT ALTITUDE — how high its closest approach to the
+// planet centre sits above the surface. It is signed: positive while the ray still clears
+// the limb (sky seen against space), negative once the ray cuts into the disc (ground).
+// That single axis is what lets one gradient fade in BOTH directions away from the
+// horizon. It is normalised to 0..1 as: 0 = uSpreadSpace above the limb, 0.5 = the limb
+// itself, 1 = uSpreadEarth below it — the two sides scale INDEPENDENTLY (space capped at
+// 600 km, earth at 1500 km), since the visible band is a much thinner optical effect above
+// the limb than the haze/perspective fade a satellite photo shows across the ground. The
+// space side always maps distance→position linearly; the earth side can instead warp
+// through a tangent curve (uEarthTangent, a Settings checkbox) to compare the two shapes.
+// Stop 2 ("Horizon") is pinned at exactly the limb (pos 0.5, undraggable) so there is
+// always an explicit anchor colour right at the horizon line, independent of wherever the
+// two flanking "Horizon (blue/white)" stops get dragged to. The editor keeps every other
+// stop ascending and clamped to its neighbours (see setAtmoPos).
+const ATMO_MIN_GAP = 0.01;           // min separation between stops (smoothstep needs edge0 < edge1)
+let atmoSpreadSpaceKm = 150;         // space-side reach, capped at 600 km
+let atmoSpreadEarthKm = 400;         // earth-side reach, capped at 1500 km
+let atmoEarthTangentFade = false;    // false = linear earth-side fade, true = tangent-warped
+let atmoStops = [
+    { label: 'Space',           pos: 0.00, color: '#5b9dff', alpha: 0.00 },
+    { label: 'Horizon (blue)',  pos: 0.32, color: '#4a90ff', alpha: 0.60 },
+    { label: 'Horizon',         pos: 0.50, color: '#ffffff', alpha: 0.90, fixed: true },
+    { label: 'Horizon (white)', pos: 0.66, color: '#eaf4ff', alpha: 0.75 },
+    { label: 'Earth',           pos: 1.00, color: '#dceeff', alpha: 0.00 }
+];
+
+// '#rrggbb' → [r,g,b] in 0..1. Deliberately NOT via THREE.Color: colour management would
+// convert the picked sRGB down to linear, but this shader writes straight to the sRGB
+// framebuffer (a ShaderMaterial gets no output-conversion chunk unless it asks for one),
+// so raw sRGB floats are what make the render match the swatch — and match the CSS preview.
+function hexToRgb01(hex) {
+    const n = parseInt(String(hex).replace('#', ''), 16) || 0;
+    return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+}
+
+// Atmosphere: a soft radial gradient anchored to the LIMB, fading both up into space and
+// down across the earth's disc, with no hard shell edge.
+//
+// Blending is ADDITIVE, which is what lets one gradient serve both sides: against the black
+// sky the blue stop reads as a limb glow, and over the lit disc the white stop reads as haze
+// washing the ground out. Alpha is therefore intensity — additive maths is dst + rgb*alpha,
+// so the 0-alpha stops at each end leave deep space and the ground genuinely untouched.
+// (That formula is also exactly what CSS rgba() over black does, so the editor's preview
+// strip is a true match rather than an approximation.)
+//
+// depthTest is off and renderOrder 1 so the shell composites over the earth rather than
+// being occluded by it — the camera sits inside the shell, so its back faces cover every
+// pixel and each fragment is shaded purely from its own ray direction.
 function makeAtmosphere(T) {
+    const n = atmoStops.length;
     const mat = new T.ShaderMaterial({
         transparent: true,
         blending: T.AdditiveBlending,
-        side: T.BackSide,       // big surrounding shell; earth (drawn opaque) occludes the lower half
+        side: T.BackSide,       // camera is inside the shell, so back faces cover the screen
         depthWrite: false,
+        depthTest: false,       // glow must reach the disc, not stop at the earth's silhouette
         uniforms: {
-            uCamDist: { value: 1.06 },              // camera distance in Earth radii (updated per render)
-            uBand:    { value: 0.42 },              // fraction of horizon→zenith over which the glow fades out
-            uColor:   { value: new T.Color(0.35, 0.62, 1.0) },
-            uStrength:{ value: 0.9 }
+            uSpreadSpace:  { value: atmoSpreadSpaceKm / EARTH_R_KM },  // space-side reach, Earth radii
+            uSpreadEarth:  { value: atmoSpreadEarthKm / EARTH_R_KM },  // earth-side reach, Earth radii
+            uEarthTangent: { value: atmoEarthTangentFade ? 1.0 : 0.0 },
+            uPos: { value: atmoStops.map(s => s.pos) },
+            uA:   { value: atmoStops.map(s => s.alpha) },
+            uC:   { value: atmoStops.map(() => new T.Vector3()) }
         },
         vertexShader:
             'varying vec3 vWorld;' +
             'void main(){ vWorld = (modelMatrix * vec4(position,1.0)).xyz;' +
             ' gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
         fragmentShader:
-            'uniform float uCamDist; uniform float uBand; uniform vec3 uColor; uniform float uStrength;' +
+            'uniform float uSpreadSpace; uniform float uSpreadEarth; uniform float uEarthTangent;' +
+            'uniform float uPos[' + n + ']; uniform float uA[' + n + ']; uniform vec3 uC[' + n + '];' +
             'varying vec3 vWorld;' +
+            // tan(60°) and its reciprocal — the earth-side warp maps x∈[0,1] through
+            // tan(x·60°)/tan(60°), a bounded convex curve (60°, not 90°, keeps tan finite).
+            'const float TAN_K = 1.0471975512; const float INV_TAN_K = 0.5773502692;' +
             'void main(){' +
             ' vec3 ro = cameraPosition;' +
             ' vec3 rd = normalize(vWorld - ro);' +
             ' float tca = max(-dot(ro, rd), 0.0);' +
-            ' float h = length(ro + rd * tca);' +                       // closest approach to centre (Earth radii)
-            ' float t = clamp((h - 1.0) / max(uCamDist - 1.0, 1e-3), 0.0, 1.0);' + // 0 at limb → 1 at zenith
-            ' float intensity = 1.0 - smoothstep(0.0, uBand, t);' +      // fuzzy fade above the horizon
-            ' intensity = pow(intensity, 1.4) * uStrength;' +
-            ' gl_FragColor = vec4(uColor, intensity); }'
+            ' float h = length(ro + rd * tca) - 1.0;' +   // signed tangent altitude (Earth radii)
+            ' float p;' +
+            ' if (h >= 0.0) {' +                          // space side: always LINEAR in distance
+            '   float x = clamp(h / max(uSpreadSpace, 1e-5), 0.0, 1.0);' +
+            '   p = 0.5 - x * 0.5;' +
+            ' } else {' +                                  // earth side: linear, or tangent-warped
+            '   float x = clamp(-h / max(uSpreadEarth, 1e-5), 0.0, 1.0);' +
+            '   float xw = mix(x, tan(x * TAN_K) * INV_TAN_K, uEarthTangent);' +
+            '   p = 0.5 + xw * 0.5;' +
+            ' }' +
+            // Chained mixes = an N-stop piecewise gradient: each smoothstep is fully 0 below
+            // its own segment and fully 1 above it, so only the segment containing p blends.
+            ' vec4 c = vec4(uC[0], uA[0]);' +
+            ' for (int i = 1; i < ' + n + '; i++) {' +
+            '   c = mix(c, vec4(uC[i], uA[i]), smoothstep(uPos[i - 1], uPos[i], p));' +
+            ' }' +
+            ' gl_FragColor = c; }'
     });
-    // Large shell so every above-horizon ray direction is covered; the fade completes
-    // long before the shell's own silhouette, so there is no visible hard edge.
-    return new T.Mesh(new T.SphereGeometry(2.5, 96, 96), mat);
+    // Large shell so every ray direction is covered; the fade completes long before the
+    // shell's own silhouette, so there is no visible hard edge.
+    const mesh = new T.Mesh(new T.SphereGeometry(2.5, 96, 96), mat);
+    mesh.renderOrder = 1;   // draw last, over the earth and the outline hint
+    return mesh;
+}
+
+// Push the current gradient state into the shader. Safe to call before the scene exists.
+function applyAtmoUniforms() {
+    if (!orbital || !orbital.atmosphere) return;
+    const u = orbital.atmosphere.material.uniforms;
+    u.uSpreadSpace.value = atmoSpreadSpaceKm / EARTH_R_KM;
+    u.uSpreadEarth.value = atmoSpreadEarthKm / EARTH_R_KM;
+    u.uEarthTangent.value = atmoEarthTangentFade ? 1.0 : 0.0;
+    atmoStops.forEach((s, i) => {
+        u.uPos.value[i] = s.pos;
+        u.uA.value[i] = s.alpha;
+        u.uC.value[i].fromArray(hexToRgb01(s.color));
+    });
+}
+
+// ---- Atmosphere gradient editor (Settings ▸ Spaceship) ------------------------------
+
+function atmoRgba(stop) {
+    const [r, g, b] = hexToRgb01(stop.color).map(v => Math.round(v * 255));
+    return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + stop.alpha + ')';
+}
+
+// Repaint the preview strip and re-place the handles/readouts from atmoStops.
+function refreshAtmoEditor() {
+    const preview = document.getElementById('atmo-preview');
+    if (!preview) return;
+    preview.style.background = 'linear-gradient(90deg, ' +
+        atmoStops.map(s => atmoRgba(s) + ' ' + (s.pos * 100).toFixed(1) + '%').join(', ') + ')';
+    document.querySelectorAll('#atmo-track .atmo-handle').forEach(h => {
+        const s = atmoStops[+h.dataset.i];
+        h.style.left = (s.pos * 100) + '%';
+        h.style.background = s.color;   // opaque: a 0-alpha stop still needs a grabbable handle
+        h.title = s.label + (s.fixed ? ' — fixed at the horizon' : ' — ' + Math.round(s.pos * 100) + '%');
+    });
+    document.querySelectorAll('#atmo-stops .atmo-stop-val').forEach(el => {
+        el.textContent = Math.round(atmoStops[+el.dataset.i].alpha * 100) + '%';
+    });
+}
+
+// Move stop i along the axis. Neighbours are held ATMO_MIN_GAP apart rather than merely
+// kept in order, because smoothstep(edge0, edge1, x) is undefined when the edges coincide.
+function setAtmoPos(i, pos) {
+    if (atmoStops[i].fixed) return;   // the "Horizon" stop is pinned at the limb, not draggable
+    const lo = i === 0 ? 0 : atmoStops[i - 1].pos + ATMO_MIN_GAP;
+    const hi = i === atmoStops.length - 1 ? 1 : atmoStops[i + 1].pos - ATMO_MIN_GAP;
+    atmoStops[i].pos = Math.min(Math.max(pos, Math.min(lo, hi)), Math.max(lo, hi));
+    applyAtmoUniforms();
+    refreshAtmoEditor();
+    orbitalRender();
+}
+
+// Build the track handles and the per-stop colour/opacity rows (once, at startup).
+function buildAtmoEditor() {
+    const track = document.getElementById('atmo-track');
+    const rows = document.getElementById('atmo-stops');
+    if (!track || !rows) return;
+
+    atmoStops.forEach((s, i) => {
+        const handle = document.createElement('div');
+        handle.className = 'atmo-handle' + (s.fixed ? ' fixed' : '');
+        handle.dataset.i = i;
+        track.appendChild(handle);
+        // The "Horizon" stop is pinned at the limb — no drag handler at all, rather than one
+        // that no-ops, so the cursor/behaviour honestly reflects that it can't be moved.
+        if (!s.fixed) {
+            handle.addEventListener('pointerdown', e => {
+                e.preventDefault();
+                handle.setPointerCapture(e.pointerId);   // keep tracking once the cursor leaves the track
+                const move = ev => {
+                    const r = track.getBoundingClientRect();
+                    setAtmoPos(i, (ev.clientX - r.left) / (r.width || 1));
+                };
+                const up = () => {
+                    handle.removeEventListener('pointermove', move);
+                    handle.removeEventListener('pointerup', up);
+                };
+                handle.addEventListener('pointermove', move);
+                handle.addEventListener('pointerup', up);
+                move(e);
+            });
+        }
+
+        const row = document.createElement('div');
+        row.className = 'atmo-stop';
+
+        const name = document.createElement('span');
+        name.textContent = s.label;
+
+        const colour = document.createElement('input');
+        colour.type = 'color';
+        colour.value = s.color;
+        colour.title = s.label + ' colour';
+        colour.addEventListener('input', () => {
+            s.color = colour.value;
+            applyAtmoUniforms(); refreshAtmoEditor(); orbitalRender();
+        });
+
+        const alpha = document.createElement('input');
+        alpha.type = 'range';
+        alpha.className = 'atmo-alpha';
+        alpha.min = 0; alpha.max = 100; alpha.step = 1;
+        alpha.value = Math.round(s.alpha * 100);
+        alpha.title = s.label + ' opacity';
+        alpha.addEventListener('input', () => {
+            s.alpha = (+alpha.value) / 100;
+            applyAtmoUniforms(); refreshAtmoEditor(); orbitalRender();
+        });
+
+        const val = document.createElement('span');
+        val.className = 'atmo-stop-val';
+        val.dataset.i = i;
+
+        row.append(name, colour, alpha, val);
+        rows.appendChild(row);
+    });
+
+    refreshAtmoEditor();
 }
 
 // A simple starfield on a large surrounding sphere.
@@ -5409,6 +6057,7 @@ function ensureOrbital() {
     const stars = makeStarfield(T); scene.add(stars);
 
     orbital = { renderer, scene, camera, earth, atmosphere, stars, canvas, capMeshes: [] };
+    applyAtmoUniforms(); // pick up any gradient edits made before the scene existed
     loadEarthTextures();
     if (orbitalTexLow && orbitalTexLow.image) { earth.material.map = orbitalTexLow; earth.material.needsUpdate = true; }
     probeLocalTiles(); // if the local cap tiles aren't deployed, switch to the NASA fallback
@@ -5468,11 +6117,8 @@ function applyOrbitalCamera() {
     cam.up.copy(up);
     cam.fov = c.fov; cam.updateProjectionMatrix();
     cam.lookAt(cam.position.clone().add(fwd));
-
-    // Keep the atmosphere's horizon→zenith falloff matched to the current altitude.
-    if (orbital.atmosphere && orbital.atmosphere.material.uniforms) {
-        orbital.atmosphere.material.uniforms.uCamDist.value = orbitDistance();
-    }
+    // The atmosphere needs no per-frame update: its gradient is anchored to tangent
+    // altitude above the surface, so the band stays put as the orbit height changes.
 }
 
 function orbitalRender() {
@@ -5637,6 +6283,11 @@ function revealSpaceshipAnswer() {
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
     document.getElementById('give-up-btn').style.display = 'none';
+
+    // Distance-scored — no discrete right/wrong to reveal, so a single pause after the
+    // result is shown (matching a correct-answer's pacing) before auto-advancing. The
+    // relabelled Next/See Results button above still works as a manual skip.
+    scheduleAutoAdvance();
 }
 
 function submitSpaceshipGuess() {
@@ -5674,40 +6325,74 @@ function skipSpaceshipGuess() {
     feedback.className = 'feedback incorrect';
 }
 
-// Configure and start name-all for a region ('world' or a continent name).
+// The QUIZ_MODES keys of every state-level map Name All can target — each is a whole
+// separate geography (own quizList/dataObj/map), not a subset of world country data like
+// the continents are.
+const NAME_ALL_STATE_MODES = ['us-states', 'indian-states', 'german-states', 'uk-states', 'mexican-states'];
+
+// Configure and start name-all for a region: 'world', a continent name (a subset of world
+// country data), or one of NAME_ALL_STATE_MODES (an entirely different geography, with its
+// own quizList/dataObj/map borrowed wholesale from that mode's own QUIZ_MODES entry).
 function startNameAllMode(region) {
-    if (region && region !== 'world' && window.continentData && window.continentData[region]) {
-        QUIZ_MODES['name-all'].quizList = window.continentData[region];
-        QUIZ_MODES['name-all'].regionLabel = region;
+    const nm = QUIZ_MODES['name-all'];
+    if (NAME_ALL_STATE_MODES.includes(region)) {
+        const base = QUIZ_MODES[region];
+        nm.quizList = base.quizList;
+        nm.dataObjKey = base.dataObjKey;
+        nm.useGlobe = base.useGlobe;
+        nm.useAlbersUsa = base.useAlbersUsa || false;
+        nm.mapUrl = base.mapUrl;
+        nm.mapObject = base.mapObject;
+        nm.itemLabel = base.itemLabel;
+        nm.itemLabelPlural = base.itemLabelPlural;
+        nm.regionLabel = base.name;
     } else {
-        QUIZ_MODES['name-all'].quizList = quizCountries;
-        QUIZ_MODES['name-all'].regionLabel = 'the World';
+        nm.quizList = (region && region !== 'world' && window.continentData && window.continentData[region])
+            ? window.continentData[region] : quizCountries;
+        nm.dataObjKey = 'countryData';
+        nm.useGlobe = true;
+        nm.useAlbersUsa = false;
+        nm.mapUrl = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+        nm.mapObject = 'countries';
+        nm.itemLabel = 'country';
+        nm.itemLabelPlural = 'countries';
+        nm.regionLabel = (region && region !== 'world') ? region : 'the World';
     }
     startGameWithMode('name-all');
 }
 
-// Region picker for Name All (World + continents)
+// Region picker for Name All: World + continents (unchanged groups), plus one entry per
+// state-level map.
 function showNameAllModeSelector() {
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
 
     const modeSelector = document.getElementById('mode-selector');
     modeSelector.classList.remove('hidden');
+    // icon: 'icon' → material-symbols glyph, 'flag' → flagcdn country flag (matches the
+    // Find/Identify region-picker convention for the state-level geographies).
     const regions = [
-        ['world', 'public', 'World', 'Name every country on Earth'],
-        ['North America', 'globe', 'North America', 'Name all North American countries'],
-        ['South America', 'globe', 'South America', 'Name all South American countries'],
-        ['Europe', 'globe', 'Europe', 'Name all European countries'],
-        ['Africa', 'globe', 'Africa', 'Name all African countries'],
-        ['Asia', 'globe', 'Asia', 'Name all Asian countries'],
-        ['Oceania', 'globe', 'Oceania', 'Name all countries in Oceania']
+        ['world', 'icon', 'public', 'World', 'Name every country on Earth'],
+        ['North America', 'icon', 'globe', 'North America', 'Name all North American countries'],
+        ['South America', 'icon', 'globe', 'South America', 'Name all South American countries'],
+        ['Europe', 'icon', 'globe', 'Europe', 'Name all European countries'],
+        ['Africa', 'icon', 'globe', 'Africa', 'Name all African countries'],
+        ['Asia', 'icon', 'globe', 'Asia', 'Name all Asian countries'],
+        ['Oceania', 'icon', 'globe', 'Oceania', 'Name all countries in Oceania'],
+        ['us-states', 'flag', 'us', 'USA', 'Name all US states'],
+        ['indian-states', 'flag', 'in', 'India', 'Name all Indian states'],
+        ['german-states', 'flag', 'de', 'Germany', 'Name all German Bundesländer'],
+        ['uk-states', 'flag', 'gb-eng', 'England', 'Name all English counties'],
+        ['mexican-states', 'flag', 'mx', 'Mexico', 'Name all Mexican states']
     ];
     modeSelector.innerHTML = `
         <h2>Name All — Choose a Region</h2>
         <div class="mode-buttons">
-            ${regions.map(([key, icon, name, desc]) => `
+            ${regions.map(([key, iconType, iconVal, name, desc]) => `
             <button class="mode-btn" data-nameall-region="${key}">
-                <span class="mode-icon material-symbols-outlined">${icon}</span>
+                ${iconType === 'flag'
+                    ? `<img class="mode-icon" src="https://flagcdn.com/${iconVal}.svg" alt="${name}" />`
+                    : `<span class="mode-icon material-symbols-outlined">${iconVal}</span>`}
                 <span class="mode-name">${name}</span>
                 <span class="mode-desc">${desc}</span>
             </button>`).join('')}
@@ -5721,6 +6406,34 @@ function showNameAllModeSelector() {
     document.getElementById('back-from-nameall-btn').addEventListener('click', () => resetModeSelector());
 }
 
+// ---- Find/Identify "All" vs "Random 10" scope toggle --------------------------------
+// One global per screen (not per region — the screens list several regions at once, and
+// the choice applies to whichever the player then clicks). Defaults preserve almost all
+// existing behaviour: Find already defaulted every STATE region to "all" (only World was
+// capped at 10), so Find defaults to "all"; Identify capped every region at 10, so it
+// defaults to "random10" — the player can flip either without changing the other.
+let findQuizScopeAll = true;
+let identifyQuizScopeAll = false;
+
+function scopeToggleHtml(kind, isAll) {
+    return `
+        <div class="scope-toggle" data-for="${kind}" role="group" aria-label="Number of questions">
+            <span class="scope-toggle-label">Questions:</span>
+            <button type="button" class="scope-btn${isAll ? ' active' : ''}" data-scope="all">All</button>
+            <button type="button" class="scope-btn${isAll ? '' : ' active'}" data-scope="random10">Random 10</button>
+        </div>`;
+}
+
+// Override a Find-screen mode's totalQuestions per the current toggle state. Identify
+// mode computes its own totalQuestions inline (startIdentifyMode) since it always
+// reconfigures QUIZ_MODES.identify from scratch per region.
+function applyQuizScope(mode, scopeAll) {
+    const mc = QUIZ_MODES[mode];
+    if (mc && Array.isArray(mc.quizList)) {
+        mc.totalQuestions = scopeAll ? mc.quizList.length : Math.min(10, mc.quizList.length);
+    }
+}
+
 function showFindModeSelector() {
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
@@ -5729,6 +6442,7 @@ function showFindModeSelector() {
     modeSelector.classList.remove('hidden');
     modeSelector.innerHTML = `
         <h2>Find on the Map</h2>
+        ${scopeToggleHtml('find', findQuizScopeAll)}
         <div class="mode-buttons">
             <button class="mode-btn" data-mode="countries">
                 <span class="mode-icon material-symbols-outlined">public</span>
@@ -5776,7 +6490,9 @@ function showFindModeSelector() {
 
     document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            startGameWithMode(e.currentTarget.dataset.mode);
+            const mode = e.currentTarget.dataset.mode;
+            applyQuizScope(mode, findQuizScopeAll);
+            startGameWithMode(mode);
         });
     });
 
@@ -5795,6 +6511,7 @@ function showIdentifyModeSelector() {
     modeSelector.classList.remove('hidden');
     const html = `
         <h2>Select Region for Identify Mode</h2>
+        ${scopeToggleHtml('identify', identifyQuizScopeAll)}
         <div class="mode-buttons">
             <button class="mode-btn" data-identify-region="countries">
                 <span class="mode-icon material-symbols-outlined">public</span>
@@ -5861,7 +6578,9 @@ function startIdentifyMode(region) {
     QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
     QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
     QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
-    QUIZ_MODES.identify.totalQuestions = Math.min(10, baseModeConfig.quizList.length);
+    QUIZ_MODES.identify.totalQuestions = identifyQuizScopeAll
+        ? baseModeConfig.quizList.length
+        : Math.min(10, baseModeConfig.quizList.length);
 
     // Start game with identify mode
     startGameWithMode('identify');
@@ -5923,6 +6642,13 @@ function resetModeSelector() {
                 <span class="mode-name">Where Is My Spaceship?</span>
                 <span class="mode-desc">Guess your orbital location from the view below</span>
             </button>
+            <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
+                 see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
+            <!-- <button class="mode-btn" data-mode="skyline-id">
+                <span class="mode-icon material-symbols-outlined">apartment</span>
+                <span class="mode-name">Skyline ID</span>
+                <span class="mode-desc">Name the city from a photo of its skyline</span>
+            </button> -->
         </div>
     `;
 

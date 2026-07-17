@@ -125,6 +125,12 @@ header {
 
 #landing-header {
     padding: 14px 0 6px;
+    cursor: pointer;
+    transition: opacity 0.3s ease;
+}
+
+#landing-header:hover {
+    opacity: 0.8;
 }
 
 header h1 {
@@ -357,6 +363,43 @@ header h1 .material-symbols-outlined {
     margin: 0 auto;
 }
 
+/* Find/Identify screens: "All" vs "Random 10" scope toggle, above the region grid. */
+.scope-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 0 18px;
+}
+
+.scope-toggle-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-right: 2px;
+}
+
+.scope-btn {
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.scope-btn:hover {
+    border-color: var(--land-hover);
+}
+
+.scope-btn.active {
+    background: var(--land-hover);
+    color: #fff;
+    border-color: var(--land-hover);
+}
+
 .mode-btn {
     background: var(--surface-2);
     border: 1px solid var(--border);
@@ -533,6 +576,77 @@ header h1 .material-symbols-outlined {
     background: var(--incorrect-soft);
     color: var(--incorrect-text);
     border: 1px solid var(--incorrect-soft-border);
+}
+
+/* Globe-mode layout: the map/globe dominates, with question text/flag/multiple-choice in
+   a narrow side panel beside it. .globe-layout/.globe-side-panel are `display: contents`
+   (transparent — their children act as direct .container children, today's layout) UNLESS
+   startGameWithMode() has added .globe-side-layout to .container (useGlobe modes other
+   than spaceship, which keeps its own bespoke inset layout), in which case they become a
+   real flex row/column. Being pure wrapper elements with no layout of their own by
+   default, this costs nothing for every other mode (flat state maps, map-less modes,
+   spaceship, etc.) — #map-container/#question-container/#multiple-choice-container keep
+   exactly their pre-existing sizing and stacking order. */
+.globe-layout,
+.globe-side-panel {
+    display: contents;
+}
+
+.container.globe-side-layout .globe-layout {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+}
+
+.container.globe-side-layout .map-container {
+    flex: 3 1 0;
+    margin-bottom: 0;
+}
+
+.container.globe-side-layout .globe-side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 0 0 300px;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.container.globe-side-layout .globe-side-panel .question-container,
+.container.globe-side-layout .globe-side-panel .multiple-choice-container {
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+/* Flags and multiple-choice keep priority over question text/feedback: both stay full
+   size for the panel width, while the text around them is what shrinks. */
+.container.globe-side-layout .globe-side-panel .question h2 {
+    font-size: 1rem;
+}
+
+.container.globe-side-layout .globe-side-panel .flag-display img {
+    max-width: 220px;
+}
+
+.container.globe-side-layout .globe-side-panel .options-grid {
+    grid-template-columns: 1fr;
+}
+
+@media (max-width: 1024px) {
+    .container.globe-side-layout .globe-layout {
+        flex-direction: column;
+    }
+
+    .container.globe-side-layout .map-container {
+        flex: none;
+        min-height: 45vh;
+    }
+
+    .container.globe-side-layout .globe-side-panel {
+        flex: none;
+    }
 }
 
 .map-container {
@@ -829,6 +943,117 @@ header h1 .material-symbols-outlined {
     font-variant-numeric: tabular-nums;
 }
 
+/* ---- Atmosphere gradient editor (Settings ▸ Spaceship) ---------------------------- */
+
+.atmo-item {
+    align-items: start;
+}
+
+.atmo-item > .tuning-label {
+    padding-top: 5px;
+}
+
+.atmo-editor {
+    grid-column: 2 / -1;   /* span the value column too — the label is the only sibling */
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Black backdrop is not decorative: the shader blends additively (dst + rgb*alpha), and
+   CSS rgba() over black paints exactly that, so the strip is a true preview of the limb
+   glow rather than a rough impression. */
+.atmo-track {
+    position: relative;
+    height: 26px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #000;
+}
+
+.atmo-preview {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+}
+
+.atmo-limb {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.55);
+    pointer-events: none;
+}
+
+.atmo-handle {
+    position: absolute;
+    top: 50%;
+    width: 13px;
+    height: 13px;
+    margin: -7px 0 0 -7px;   /* centre the handle on its `left` position */
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+    cursor: ew-resize;
+    touch-action: none;
+}
+
+/* The "Horizon" stop is pinned at the limb — a halo instead of the drag cursor marks it
+   as fixed rather than merely a handle that happens not to move. */
+.atmo-handle.fixed {
+    cursor: default;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 0 4px rgba(255, 255, 255, 0.4);
+}
+
+.atmo-axis {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;   /* centres "horizon" on the limb tick at 50% */
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted, #888);
+}
+
+.atmo-axis span:nth-child(2) { text-align: center; }
+.atmo-axis span:nth-child(3) { text-align: right; }
+
+.atmo-stops {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 2px;
+}
+
+.atmo-stop {
+    display: grid;
+    grid-template-columns: 7.6em 26px 1fr 2.6em;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+}
+
+.atmo-stop input[type="color"] {
+    width: 26px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: none;
+    cursor: pointer;
+}
+
+.atmo-stop input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.atmo-stop input[type="color"]::-webkit-color-swatch { border: none; border-radius: 2px; }
+
+.atmo-stop-val {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted, #888);
+}
+
 .btn {
     padding: 9px 18px;
     font-size: 0.92rem;
@@ -908,6 +1133,62 @@ header h1 .material-symbols-outlined {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
+}
+
+/* Skyline ID photo panel */
+.skyline-display {
+    margin: 16px auto 0;
+    max-width: 860px;
+    text-align: center;
+}
+
+/* Fixed aspect box so the layout doesn't jump between photos of different shapes, and so
+   the "finding a skyline" status has somewhere to sit before any image exists. */
+.skyline-frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    max-height: 46vh;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--surface-2, rgba(127, 127, 127, 0.12));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+}
+
+/* `contain`, not `cover`: cover fills the frame more handsomely, but it crops ~25% off a
+   4:3 photo — and the strip it eats is exactly where a Space Needle or a Burj spire lives.
+   Never hide the evidence in an identification quiz; letterbox instead. */
+.skyline-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.skyline-status {
+    position: absolute;
+    padding: 0 24px;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: var(--text-muted, #888);
+}
+
+.skyline-credit {
+    margin-top: 6px;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-muted, #888);
+}
+
+.skyline-credit a {
+    color: inherit;
+}
+
+@media (max-width: 768px) {
+    .skyline-frame { max-height: 38vh; }
 }
 
 /* Multiple choice container */
@@ -1269,7 +1550,7 @@ header h1 .material-symbols-outlined {
 }
 
 .world-quiz-globe {
-    flex: 2.4;
+    flex: 1;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -1290,7 +1571,7 @@ header h1 .material-symbols-outlined {
 }
 
 .world-quiz-panels {
-    flex: 1;
+    flex: 0 0 300px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -1370,7 +1651,11 @@ header h1 .material-symbols-outlined {
         flex: none;
     }
 
+    /* .world-quiz-layout is now a COLUMN, so the panels' flex-basis governs HEIGHT, not
+       width — the desktop `flex: 0 0 300px` would clip/dead-space them here. Go back to
+       flexible height, sized side-by-side internally via flex-direction: row. */
     .world-quiz-panels {
+        flex: 1;
         flex-direction: row;
     }
 }

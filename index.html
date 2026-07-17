@@ -89,6 +89,9 @@
                 <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">extension</span></button>
                 <button class="mode-icon-btn" data-mode="find-capital" title="Find the Capital"><span class="material-symbols-outlined">location_city</span></button>
                 <button class="mode-icon-btn" data-mode="spaceship" title="Where Is My Spaceship?"><span class="material-symbols-outlined">rocket_launch</span></button>
+                <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
+                     see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
+                <!-- <button class="mode-icon-btn" data-mode="skyline-id" title="Skyline ID"><span class="material-symbols-outlined">apartment</span></button> -->
             </div>
             <div class="top-bar-score">
                 <span><span id="question-inline">1</span>/<span id="total-inline">10</span></span>
@@ -150,6 +153,13 @@
                     <span class="mode-name">Where Is My Spaceship?</span>
                     <span class="mode-desc">Guess your orbital location from the view below</span>
                 </button>
+                <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
+                     see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
+                <!-- <button class="mode-btn" data-mode="skyline-id">
+                    <span class="mode-icon material-symbols-outlined">apartment</span>
+                    <span class="mode-name">Skyline ID</span>
+                    <span class="mode-desc">Name the city from a photo of its skyline</span>
+                </button> -->
             </div>
         </div>
 
@@ -199,23 +209,42 @@
             </div>
         </div>
 
-        <div class="question-container hidden" id="question-container">
-            <div class="question">
-                <h2 id="question-text">Find: <span id="country-name">Loading...</span></h2>
+        <!-- Globe-mode layout: the map/globe gets the lion's share of the space; question
+             text, flag and multiple-choice all live in a narrow side panel beside it. For
+             modes that don't use the globe, .globe-layout/.globe-side-panel fall back to
+             `display: contents` (see style.css) so #map-container/#question-container/
+             #multiple-choice-container behave exactly as if they were direct children of
+             .container, same as before this wrapper existed. -->
+        <div class="globe-layout" id="globe-layout">
+            <!-- Standard Map/Globe Container (for non-world-quiz modes) -->
+            <div class="map-container hidden" id="map-container">
+                <svg id="globe"></svg>
             </div>
-            <div class="flag-display" id="flag-display" style="display: none;">
-                <img id="flag-image" src="" alt="Country Flag" />
+
+            <div class="globe-side-panel" id="globe-side-panel">
+                <div class="question-container hidden" id="question-container">
+                    <div class="question">
+                        <h2 id="question-text">Find: <span id="country-name">Loading...</span></h2>
+                    </div>
+                    <div class="flag-display" id="flag-display" style="display: none;">
+                        <img id="flag-image" src="" alt="Country Flag" />
+                    </div>
+                    <!-- Skyline ID photo panel. The credit line is populated up front but stays
+                         hidden until the round is decided — the Commons title names the city. -->
+                    <div class="skyline-display" id="skyline-display" style="display: none;">
+                        <div class="skyline-frame">
+                            <img id="skyline-image" alt="Photograph of a city skyline" />
+                            <div class="skyline-status" id="skyline-status"></div>
+                        </div>
+                        <div class="skyline-credit" id="skyline-credit" style="display: none;"></div>
+                    </div>
+                    <div class="feedback" id="feedback"></div>
+                </div>
+
+                <div class="multiple-choice-container hidden" id="multiple-choice-container">
+                    <div class="options-grid" id="options-grid"></div>
+                </div>
             </div>
-            <div class="feedback" id="feedback"></div>
-        </div>
-
-        <!-- Standard Map/Globe Container (for non-world-quiz modes) -->
-        <div class="map-container hidden" id="map-container">
-            <svg id="globe"></svg>
-        </div>
-
-        <div class="multiple-choice-container hidden" id="multiple-choice-container">
-            <div class="options-grid" id="options-grid"></div>
         </div>
 
         <!-- World Quiz Question Bar (placed below game-info for compact layout) -->
@@ -281,6 +310,30 @@
                         <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
                             <span class="tuning-label">500 m tiles</span> <input type="checkbox" id="tune-hires-500m">
                         </label>
+                        <label class="tuning-item" title="How far the atmosphere gradient reaches ABOVE the horizon (space side), measured as a view ray's tangent altitude above the surface. Capped at 600 km.">
+                            <span class="tuning-label">Atmo spread (space)</span> <input type="range" id="tune-atmo-spread-space" min="20" max="600" step="10" value="150"><span id="tune-atmo-spread-space-val">150 km</span>
+                        </label>
+                        <label class="tuning-item" title="How far the atmosphere gradient reaches BELOW the horizon (earth side). Capped at 1500 km — ground haze reads much further than the space-side glow.">
+                            <span class="tuning-label">Atmo spread (earth)</span> <input type="range" id="tune-atmo-spread-earth" min="50" max="1500" step="50" value="400"><span id="tune-atmo-spread-earth-val">400 km</span>
+                        </label>
+                        <label class="tuning-item" title="The space side always fades linearly with distance from the horizon. Check this to warp the earth side through a tangent curve instead, to compare the two shapes.">
+                            <span class="tuning-label">Tangent earth fade</span> <input type="checkbox" id="tune-atmo-tan-earth">
+                        </label>
+                        <!-- 5-stop atmosphere gradient. Left = space, the tick = the horizon, right = down
+                             into the earth's disc. The centre "Horizon" stop is pinned at the limb and
+                             can't be dragged — only its colour/opacity are editable. Handles and stop
+                             rows are built by buildAtmoEditor(). -->
+                        <div class="tuning-item atmo-item" title="Atmosphere gradient across the horizon. Drag the handles to move each stop (the centre one is fixed); set its colour and opacity below.">
+                            <span class="tuning-label">Atmosphere</span>
+                            <div class="atmo-editor">
+                                <div class="atmo-track" id="atmo-track">
+                                    <div class="atmo-preview" id="atmo-preview"></div>
+                                    <div class="atmo-limb" title="The horizon"></div>
+                                </div>
+                                <div class="atmo-axis"><span>space</span><span>horizon</span><span>earth</span></div>
+                                <div class="atmo-stops" id="atmo-stops"></div>
+                            </div>
+                        </div>
                         <label class="tuning-item" title="Max points for a perfect-distance guess">
                             <span class="tuning-label">Accuracy</span> <input type="range" id="tune-score-acc" min="0" max="100" step="5" value="60"><span id="tune-score-acc-val">60</span>
                         </label>
@@ -297,19 +350,19 @@
                             <span class="tuning-label">Time scale</span> <input type="range" id="tune-score-time" min="5" max="120" step="5" value="20"><span id="tune-score-time-val">20 s</span>
                         </label>
                     </div>
+                    <div class="tuning-group" id="gameplay-tuning-row">
+                        <div class="tuning-group-title">Gameplay</div>
+                        <label class="tuning-item" title="Pause used everywhere a question is answered: how long a correct answer holds before advancing, and how long a wrong answer holds (both before AND after the correct answer is revealed alongside it).">
+                            <span class="tuning-label">Answer pause</span> <input type="range" id="tune-answer-pause" min="300" max="3000" step="100" value="1200"><span id="tune-answer-pause-val">1200 ms</span>
+                        </label>
+                    </div>
                     <div class="tuning-group" id="tuning-row">
                         <div class="tuning-group-title">Map</div>
-                        <label class="tuning-item" title="Fraction of points kept for the Medium detail level">
-                            <span class="tuning-label">Medium detail</span> <input type="range" id="tune-simplify" min="5" max="100" step="5" value="30"><span id="tune-simplify-val">30%</span>
-                        </label>
                         <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
                             <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
                         </label>
                         <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
                             <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
-                        </label>
-                        <label class="tuning-item" title="Hide lakes whose largest fitting circle is narrower than this (km across); default is just under Great Salt Lake">
-                            <span class="tuning-label">Min lake size</span> <input type="range" id="tune-lakesize" min="16" max="64" step="2" value="32"><span id="tune-lakesize-val">32 km</span>
                         </label>
                     </div>
                 </div>
