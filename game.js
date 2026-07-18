@@ -465,6 +465,23 @@ class DragToReorder {
     }
 }
 
+// ---- "Places I've Been" mode ----
+// Three categories a place can be marked as; a click cycles unvisited → visited → lived
+// → passed through → unvisited (default is visited, i.e. the first click). Each has a CSS
+// fill class on the country path/dot and a label for the side list.
+const PLACE_META = {
+    lived:   { label: 'Lived',          cls: 'place-lived'   },
+    visited: { label: 'Visited',        cls: 'place-visited' },
+    passed:  { label: 'Passed through', cls: 'place-passed'  }
+};
+// Click cycle: keyed by current category ('none' = unvisited). Value is the next category.
+const PLACE_CYCLE = { none: 'visited', visited: 'lived', lived: 'passed', passed: null };
+// Order the categories appear in the side list.
+const PLACE_LIST_ORDER = ['lived', 'visited', 'passed'];
+// Set by startPlacesMode; consumed by renderPlacesMode once the region's data is loaded.
+let placesPendingSelectionsStr = null;
+let placesPendingMessage = '';
+
 // Quiz mode configurations
 const QUIZ_MODES = {
     countries: {
@@ -630,6 +647,24 @@ const QUIZ_MODES = {
         itemLabelPlural: 'countries',
         autoRotate: false,
         freeExploreMode: true // Interactive globe exploration mode
+    },
+    // "Places I've Been": paint a personal travel map. Config below is a placeholder —
+    // startPlacesMode() copies quizList/data/map settings from `countries` or `us-states`
+    // depending on the chosen region (same reconfigure pattern as identify/name-all).
+    'places-been': {
+        name: "Places I've Been",
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: true,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        placesMode: true,
+        placesRegion: 'world'
     },
     'country-shape-id': {
         name: 'Country Shape ID',
@@ -936,6 +971,9 @@ async function initGame() {
     if (!dataLoaded) return;
 
     setupEventListeners();
+
+    // Deep-link support: if the URL names a mode (from a shared/challenge link), open it.
+    routeFromUrl();
 }
 
 // Start game with selected mode
@@ -949,9 +987,14 @@ function startGameWithMode(mode) {
     document.body.classList.toggle('spaceship-active', !!modeConfig.spaceshipMode);
     // Globe modes (but not spaceship, which has its own bespoke inset layout) get the
     // map/globe maximised with question/flag/multiple-choice in a narrow side panel —
-    // see .globe-layout/.globe-side-panel in style.css.
+    // see .globe-layout/.globe-side-panel in style.css. Places-been uses the same side
+    // layout (its category lists live in that panel) even for the flat US map.
     document.querySelector('.container').classList.toggle(
-        'globe-side-layout', !!modeConfig.useGlobe && !modeConfig.spaceshipMode);
+        'globe-side-layout', (!!modeConfig.useGlobe || !!modeConfig.placesMode) && !modeConfig.spaceshipMode);
+
+    // Drop any leftover Places panel when switching to a different mode.
+    const stalePlacesPanel = document.getElementById('places-panel');
+    if (stalePlacesPanel && !modeConfig.placesMode) stalePlacesPanel.remove();
     gameState = {
         score: 0,
         currentQuestion: 1,
@@ -970,7 +1013,10 @@ function startGameWithMode(mode) {
         currentQuizList: null,
         foundCountries: new Set(),
         nameAllStartTime: null,
-        nameAllGaveUp: false
+        nameAllGaveUp: false,
+        placesSelections: {},   // Places-been: { placeName: 'visited'|'lived'|'passed' }
+        placesMessage: '',
+        ended: false
     };
 
     // Set current data sources
@@ -1069,6 +1115,10 @@ function startGameWithMode(mode) {
         document.getElementById('world-quiz-layout').classList.add('hidden');
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
+
+    // Reflect the current mode in the URL so a plain "copy link" shares this mode. Places
+    // mode manages its own richer URL (region + selections + message) in updatePlacesUrl.
+    if (!modeConfig.placesMode) syncModeUrl(mode);
 
     // Setup visualization based on mode
     // Skip map loading for the map-less modes (ordering, skyline photos)
@@ -2293,6 +2343,10 @@ function drawIslandMarkers() {
         .on('click', handleCountryClick);
 
     updateIslandMarkers();
+
+    // Re-apply Places-been fills — a full marker rebuild (detail change etc.) drops the
+    // category classes; country paths keep theirs, so this only really re-colours the dots.
+    if (QUIZ_MODES[gameState.mode] && QUIZ_MODES[gameState.mode].placesMode) applyPlacesFills();
 }
 
 // Keep the ocean gradient centered/sized on the globe so the ocean and the carved
@@ -2733,6 +2787,13 @@ function handleCountryClick(event, d) {
         return;
     }
 
+    // Places-been: cycle the clicked place's category (a click on a territory cycles its
+    // sovereign parent, matching how highlights fill parent + territories together).
+    if (gameState.questionType === 'places-been') {
+        cyclePlace(d.properties.parent || d.properties.name);
+        return;
+    }
+
     // Only allow clicking countries during location or mystery-flag questions
     if (gameState.questionType !== 'location' && gameState.questionType !== 'mystery-flag') return;
     if (gameState.answeredCorrectly) return;
@@ -3097,6 +3158,12 @@ function startNewQuestion() {
     // Check if this is free explore mode
     if (modeConfig.freeExploreMode) {
         renderFreeExploreMode();
+        return;
+    }
+
+    // "Places I've Been" — paint-the-map mode (no quiz target).
+    if (modeConfig.placesMode) {
+        renderPlacesMode();
         return;
     }
 
@@ -3955,6 +4022,342 @@ function renderFreeExploreMode() {
 function exitFreeExplore() {
     // Return to landing page
     goHome();
+}
+
+// ==================== "Places I've Been" mode ====================
+
+// Enter Places-been for a region ('world' or 'us'), borrowing that region's map/data config
+// wholesale (same reconfigure pattern as startIdentifyMode). `opts` carries state to restore
+// from a shared URL: selectionsStr (encoded) and message.
+function startPlacesMode(region, opts = {}) {
+    const base = region === 'us' ? QUIZ_MODES['us-states'] : QUIZ_MODES['countries'];
+    const m = QUIZ_MODES['places-been'];
+    m.quizList = base.quizList;
+    m.dataObjKey = base.dataObjKey;
+    m.useGlobe = base.useGlobe;
+    m.useAlbersUsa = base.useAlbersUsa || false;
+    m.mapUrl = base.mapUrl;
+    m.mapObject = base.mapObject;
+    m.itemLabel = base.itemLabel;
+    m.itemLabelPlural = base.itemLabelPlural;
+    m.placesRegion = region;
+
+    placesPendingSelectionsStr = opts.selectionsStr || null;
+    placesPendingMessage = opts.message || '';
+    startGameWithMode('places-been');
+}
+
+// Render the Places-been UI (called after the map is drawn). Restores any URL-shared state,
+// swaps the quiz chrome for the category side panel, colours the map and syncs the URL.
+function renderPlacesMode() {
+    gameState.questionType = 'places-been';
+    if (!gameState.placesSelections) gameState.placesSelections = {};
+
+    // Restore state shared via the URL (decoded now that the region's data is loaded).
+    if (placesPendingSelectionsStr != null) {
+        gameState.placesSelections = decodePlaces(placesPendingSelectionsStr);
+        placesPendingSelectionsStr = null;
+    }
+    if (placesPendingMessage) { gameState.placesMessage = placesPendingMessage; placesPendingMessage = ''; }
+
+    // Hide the quiz chrome; repurpose Restart as an Exit button.
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+    const restart = document.getElementById('restart-btn');
+    restart.textContent = 'Exit';
+    restart.onclick = goHome;
+    restart.style.display = 'inline-block';
+
+    buildPlacesPanel();
+    refreshPlacesPanel();
+    applyPlacesFills();
+    updatePlacesUrl();
+}
+
+// Build the side panel (instructions + category lists + share controls) once per entry.
+function buildPlacesPanel() {
+    document.getElementById('question-container').classList.add('hidden');
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+
+    let panel = document.getElementById('places-panel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'places-panel';
+        panel.className = 'places-panel';
+        document.getElementById('globe-side-panel').appendChild(panel);
+    }
+    const label = QUIZ_MODES['places-been'].itemLabel || 'place';
+    panel.innerHTML = `
+        <h2 class="places-title">Places I've Been</h2>
+        <p class="places-hint">Click a ${label} to mark it. Each click cycles
+            <strong>Visited → Lived → Passed through → clear</strong>.</p>
+        <div class="places-lists" id="places-lists"></div>
+        <label class="places-msg-label">Add a message to your map
+            <input id="places-msg" class="places-msg" type="text" maxlength="140"
+                   placeholder="e.g. Everywhere I've wandered so far">
+        </label>
+        <button id="places-share-btn" class="btn places-share-btn" type="button">Copy shareable link</button>
+        <div class="places-share-status" id="places-share-status" role="status"></div>
+    `;
+
+    const msg = document.getElementById('places-msg');
+    msg.value = gameState.placesMessage || '';
+    msg.addEventListener('input', () => { gameState.placesMessage = msg.value; updatePlacesUrl(); });
+    document.getElementById('places-share-btn').addEventListener('click', sharePlacesLink);
+}
+
+// Rebuild the three category lists (small flag + name chips) from the current selections.
+function refreshPlacesPanel() {
+    const host = document.getElementById('places-lists');
+    if (!host) return;
+    const sel = gameState.placesSelections || {};
+    const byCat = { lived: [], visited: [], passed: [] };
+    Object.keys(sel).forEach(name => { if (byCat[sel[name]]) byCat[sel[name]].push(name); });
+
+    host.innerHTML = PLACE_LIST_ORDER.map(cat => {
+        const meta = PLACE_META[cat];
+        const names = byCat[cat].sort((a, b) => a.localeCompare(b));
+        const chips = names.map(n => {
+            const url = placesFlagUrl(n);
+            const title = displayLabelForName(n);
+            return `<span class="place-chip" title="${title}">` +
+                   (url ? `<img class="place-chip-flag" src="${url}" alt="">` : '') +
+                   `<span class="place-chip-name">${title}</span></span>`;
+        }).join('');
+        return `<div class="places-cat">
+            <div class="places-cat-head">
+                <span class="places-swatch ${meta.cls}"></span>
+                <span class="places-cat-name">${meta.label}</span>
+                <span class="places-count">${names.length}</span>
+            </div>
+            <div class="places-chips">${chips || '<span class="places-empty">None yet</span>'}</div>
+        </div>`;
+    }).join('');
+}
+
+// Quiet flag-URL lookup (no console noise) for a place name, via its data-object code.
+function placesFlagUrl(name) {
+    const data = lookupDataEntry(effectiveDataName(name), gameState.currentDataObj) ||
+                 lookupDataEntry(name, gameState.currentDataObj);
+    return data && data.code ? `https://flagcdn.com/${data.code}.svg` : null;
+}
+
+// Advance a place through the category cycle and refresh map + panel + URL.
+function cyclePlace(name) {
+    const sel = gameState.placesSelections;
+    const next = PLACE_CYCLE[sel[name] || 'none'];
+    if (next == null) delete sel[name];
+    else sel[name] = next;
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// Apply the category fill class to every country path and island dot (parent-resolved so a
+// territory takes its sovereign's category). Called after every draw and every cycle.
+function applyPlacesFills() {
+    if (!countriesGroup) return;
+    const sel = gameState.placesSelections || {};
+    const paint = function (d) {
+        const name = d && d.properties && (d.properties.parent || d.properties.name);
+        const cat = name && sel[name];
+        const node = d3.select(this);
+        node.classed('place-visited', cat === 'visited')
+            .classed('place-lived', cat === 'lived')
+            .classed('place-passed', cat === 'passed');
+    };
+    countriesGroup.selectAll('path').each(paint);
+    if (islandMarkersGroup) islandMarkersGroup.selectAll('circle').each(paint);
+}
+
+// ---- Places URL encode/decode ----
+// Compact scheme grouped by category, using ISO codes: "v:us.fr~l:gb~p:ca".
+function encodePlaces(sel) {
+    const groups = { visited: [], lived: [], passed: [] };
+    Object.keys(sel).forEach(name => {
+        const data = lookupDataEntry(name, gameState.currentDataObj);
+        const code = data && data.code;
+        if (code && groups[sel[name]]) groups[sel[name]].push(code);
+    });
+    const parts = [];
+    if (groups.visited.length) parts.push('v:' + groups.visited.sort().join('.'));
+    if (groups.lived.length)   parts.push('l:' + groups.lived.sort().join('.'));
+    if (groups.passed.length)  parts.push('p:' + groups.passed.sort().join('.'));
+    return parts.join('~');
+}
+
+function decodePlaces(str) {
+    const rev = {};   // code → name, from the current region's data object
+    const obj = gameState.currentDataObj || {};
+    Object.keys(obj).forEach(name => { if (obj[name].code) rev[obj[name].code] = name; });
+
+    const catFor = { v: 'visited', l: 'lived', p: 'passed' };
+    const out = {};
+    (str || '').split('~').forEach(seg => {
+        const i = seg.indexOf(':');
+        if (i < 0) return;
+        const cat = catFor[seg.slice(0, i)];
+        if (!cat) return;
+        seg.slice(i + 1).split('.').forEach(code => {
+            const name = rev[code];
+            if (name) out[name] = cat;
+        });
+    });
+    return out;
+}
+
+// Build the query string for the current Places map (mode + region + selections + message).
+function placesQueryString() {
+    const p = new URLSearchParams();
+    p.set('mode', 'places-been');
+    p.set('region', QUIZ_MODES['places-been'].placesRegion || 'world');
+    const enc = encodePlaces(gameState.placesSelections || {});
+    if (enc) p.set('places', enc);
+    if (gameState.placesMessage) p.set('msg', gameState.placesMessage);
+    return p.toString();
+}
+
+// Keep the address bar in sync as the map is edited (no history entry per click).
+function updatePlacesUrl() {
+    history.replaceState(null, '', location.pathname + '?' + placesQueryString());
+}
+
+function sharePlacesLink() {
+    const url = location.origin + location.pathname + '?' + placesQueryString();
+    history.replaceState(null, '', url);
+    copyShareLink(url, 'places-share-status');
+}
+
+// ---- Generic share / challenge plumbing ----
+
+// Reflect a plain quiz mode in the URL so "copy link" shares that mode.
+function syncModeUrl(mode) {
+    const p = new URLSearchParams();
+    p.set('mode', mode);
+    history.replaceState(null, '', location.pathname + '?' + p.toString());
+}
+
+// Copy `url` to the clipboard, reporting success/failure into an optional status element
+// (falls back to a toast when no status id is given).
+function copyShareLink(url, statusId) {
+    const report = ok => {
+        const text = ok ? 'Link copied to clipboard!' : 'Copy failed — the link is in your address bar.';
+        const status = statusId && document.getElementById(statusId);
+        if (status) status.textContent = text;
+        else showToast(text);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => report(true)).catch(() => report(false));
+    } else {
+        report(false);
+    }
+}
+
+// Share the current quiz as a challenge: the mode plus, once the game has ended, the score.
+function shareCurrentGame() {
+    const mc = QUIZ_MODES[gameState.mode];
+    if (mc && mc.placesMode) { sharePlacesLink(); return; }
+    const p = new URLSearchParams();
+    p.set('mode', gameState.mode);
+    if (gameState.ended) {
+        p.set('score', String(gameState.score));
+        const max = gameState.totalQuestions * maxSubForMode(mc);
+        if (isFinite(max) && max > 0) p.set('max', String(max));
+    }
+    const url = location.origin + location.pathname + '?' + p.toString();
+    history.replaceState(null, '', url);
+    copyShareLink(url, null);
+}
+
+// Small transient toast in the corner (used for share confirmations).
+function showToast(text) {
+    let toast = document.getElementById('app-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'app-toast';
+        toast.className = 'app-toast';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = text;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+// On load, start the mode named in the URL (?mode=...). Returns true if it handled routing.
+function routeFromUrl() {
+    const p = new URLSearchParams(location.search);
+    const mode = p.get('mode');
+    if (!mode) return false;
+
+    if (mode === 'places-been') {
+        const region = p.get('region') === 'us' ? 'us' : 'world';
+        startPlacesMode(region, { selectionsStr: p.get('places') || '', message: p.get('msg') || '' });
+        return true;
+    }
+
+    // A challenge link (score present) shows a banner before starting the quiz.
+    const score = p.get('score');
+    if (score != null && QUIZ_MODES[mode]) {
+        showChallengeBanner(mode, score, p.get('max'));
+    }
+    if (QUIZ_MODES[mode] && !QUIZ_MODES[mode].placesMode) {
+        startGameWithMode(mode);
+        return true;
+    }
+    return false;
+}
+
+// Banner shown when someone opens a challenge link, naming the score to beat.
+function showChallengeBanner(mode, score, max) {
+    const name = (QUIZ_MODES[mode] && QUIZ_MODES[mode].name) || mode;
+    const target = max ? `${score}/${max}` : `${score}`;
+    let banner = document.getElementById('challenge-banner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'challenge-banner';
+        banner.className = 'challenge-banner';
+        document.body.appendChild(banner);
+    }
+    banner.innerHTML = `<span>🏆 You've been challenged in <strong>${name}</strong> — beat <strong>${target}</strong>!</span>
+        <button type="button" class="challenge-banner-close" aria-label="Dismiss">&times;</button>`;
+    banner.classList.add('show');
+    banner.querySelector('.challenge-banner-close').addEventListener('click', () => banner.classList.remove('show'));
+    clearTimeout(showChallengeBanner._t);
+    showChallengeBanner._t = setTimeout(() => banner.classList.remove('show'), 8000);
+}
+
+// Show the region picker (World / USA) for Places-been.
+function showPlacesModeSelector() {
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Places I've Been</h2>
+        <p class="selector-sub">Fill in the map with everywhere you've been, then share it.</p>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-places-region="world">
+                <span class="mode-icon material-symbols-outlined">public</span>
+                <span class="mode-name">World</span>
+                <span class="mode-desc">Mark the countries you've been to</span>
+            </button>
+            <button class="mode-btn" data-places-region="us">
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
+                <span class="mode-name">USA</span>
+                <span class="mode-desc">Mark the US states you've been to</span>
+            </button>
+        </div>
+        <button id="back-from-places-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    modeSelector.querySelectorAll('[data-places-region]').forEach(btn => {
+        btn.addEventListener('click', (e) => startPlacesMode(e.currentTarget.dataset.placesRegion));
+    });
+    document.getElementById('back-from-places-btn').addEventListener('click', resetModeSelector);
 }
 
 // Show country popup with stats and flag
@@ -4840,6 +5243,7 @@ versor.rotation = function(q) {
 function endGame() {
     // Stop globe spinning
     stopGlobeSpin();
+    gameState.ended = true;
 
     const modeConfig = QUIZ_MODES[gameState.mode];
 
@@ -4856,6 +5260,7 @@ function endGame() {
         feedback.className = 'feedback ' + (avg < 1000 ? 'correct' : 'incorrect');
         document.getElementById('next-btn').disabled = true;
         document.getElementById('give-up-btn').style.display = 'none';
+        appendChallengeButton(feedback);
         return;
     }
 
@@ -4871,6 +5276,20 @@ function endGame() {
     feedback.className = percentage >= 70 ? 'feedback correct' : 'feedback incorrect';
 
     document.getElementById('next-btn').disabled = true;
+    appendChallengeButton(feedback);
+}
+
+// Add a "Challenge a friend" button under the final-score feedback: copies a link that
+// carries this mode + score so the recipient sees a beat-my-score banner.
+function appendChallengeButton(feedback) {
+    if (!feedback) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn challenge-share-btn';
+    btn.textContent = '🏆 Challenge a friend';
+    btn.addEventListener('click', shareCurrentGame);
+    feedback.appendChild(document.createElement('br'));
+    feedback.appendChild(btn);
 }
 
 // Restart game
@@ -4918,6 +5337,11 @@ function goHome() {
     document.body.classList.remove('spaceship-active');
     document.querySelector('.container').classList.remove('globe-side-layout');
 
+    // Tear down the Places panel and return to a clean, mode-less URL.
+    const placesPanel = document.getElementById('places-panel');
+    if (placesPanel) placesPanel.remove();
+    history.replaceState(null, '', location.pathname);
+
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
 
@@ -4949,6 +5373,8 @@ function setupEventListeners() {
                 showIdentifyModeSelector();
             } else if (mode === 'name-all') {
                 showNameAllModeSelector();
+            } else if (mode === 'places') {
+                showPlacesModeSelector();
             } else {
                 startGameWithMode(mode);
             }
@@ -5057,6 +5483,9 @@ function setupEventListeners() {
     document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
+            // Places-been needs a region choice first, so open its selector rather than
+            // starting a mode directly.
+            if (mode === 'places') { showPlacesModeSelector(); return; }
             if (mode) switchToMode(mode);
         });
     });
@@ -5226,6 +5655,11 @@ function setupEventListeners() {
         settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) closeSettings(); });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
     }
+
+    // Share button: copy a link to the current mode (or, once a game has ended, a challenge
+    // link carrying the score). Places-been routes to its own richer share.
+    const shareBtn = document.getElementById('share-btn');
+    if (shareBtn) shareBtn.addEventListener('click', shareCurrentGame);
 
     // Debug validity overlay toggle (button + 'd' keyboard shortcut)
     const debugBtn = document.getElementById('debug-validity-toggle');
@@ -6772,6 +7206,11 @@ function resetModeSelector() {
                 <span class="mode-name">Free Explore</span>
                 <span class="mode-desc">Explore the globe and click to learn about countries</span>
             </button>
+            <button class="mode-btn" data-mode="places">
+                <span class="mode-icon material-symbols-outlined">travel_explore</span>
+                <span class="mode-name">Places I've Been</span>
+                <span class="mode-desc">Fill in the map with your travels and share it</span>
+            </button>
             <button class="mode-btn" data-mode="country-shape-id">
                 <span class="mode-icon material-symbols-outlined">extension</span>
                 <span class="mode-name">Country Shape ID</span>
@@ -6807,6 +7246,8 @@ function resetModeSelector() {
                 showIdentifyModeSelector();
             } else if (mode === 'name-all') {
                 showNameAllModeSelector();
+            } else if (mode === 'places') {
+                showPlacesModeSelector();
             } else {
                 startGameWithMode(mode);
             }

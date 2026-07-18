@@ -716,6 +716,16 @@ header h1 .material-symbols-outlined {
     stroke-width: 1.5;
 }
 
+/* "Places I've Been" category fills for country paths and island dots. Defined AFTER
+   .country:hover so the category colour wins in the resting state; explicit :hover
+   variants keep the colour (slightly lighter) instead of reverting to the land hover. */
+.country.place-visited, .island-marker.place-visited { fill: #4a90d9; stroke: #2f6ba3; }
+.country.place-lived,   .island-marker.place-lived   { fill: #e05262; stroke: #b23644; }
+.country.place-passed,  .island-marker.place-passed  { fill: #f0b429; stroke: #c8951a; }
+.country.place-visited:hover, .island-marker.place-visited:hover { fill: #63a4e6; }
+.country.place-lived:hover,   .island-marker.place-lived:hover   { fill: #ea6f7c; }
+.country.place-passed:hover,  .island-marker.place-passed:hover  { fill: #f4c556; }
+
 /* Island / microstate markers: clickable dots for nations too small to appear
    as polygons at this map detail. They carry the .country class, so the
    .target / .incorrect / .selected feedback states above style them too. */
@@ -1893,6 +1903,186 @@ header h1 .material-symbols-outlined {
     .order-result { column-gap: 60px; }
     .oc-name { font-size: 0.95rem; }
     .oc-pop { font-size: 0.9rem; }
+}
+
+/* ==================== PLACES I'VE BEEN ==================== */
+
+.places-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 2px;
+}
+
+.places-title { margin: 0; font-size: 1.3rem; color: var(--text); }
+
+.places-hint {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.places-lists { display: flex; flex-direction: column; gap: 12px; }
+
+.places-cat {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+}
+
+.places-cat-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+
+.places-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    flex: 0 0 auto;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+.places-swatch.place-visited { background: #4a90d9; }
+.places-swatch.place-lived   { background: #e05262; }
+.places-swatch.place-passed  { background: #f0b429; }
+
+.places-cat-name { flex: 1; }
+
+.places-count {
+    font-variant-numeric: tabular-nums;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 9px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.places-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.place-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 9px 3px 4px;
+    font-size: 0.82rem;
+    color: var(--text);
+    max-width: 100%;
+}
+
+.place-chip-flag {
+    width: 20px;
+    height: 14px;
+    object-fit: cover;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    flex: 0 0 auto;
+}
+
+.place-chip-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.places-empty { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
+
+.places-msg-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.places-msg {
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+}
+
+.places-share-btn { width: 100%; }
+
+.places-share-status {
+    min-height: 1.1em;
+    font-size: 0.85rem;
+    color: var(--correct, #2a9d8f);
+    text-align: center;
+}
+
+/* Share / challenge affordances */
+.challenge-share-btn { margin-top: 12px; }
+
+.app-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--text, #222);
+    color: var(--surface, #fff);
+    padding: 11px 18px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.9rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    z-index: 2000;
+}
+.app-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.challenge-banner {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%) translateY(-120%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--primary, #2a9d8f);
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.92rem;
+    max-width: 92vw;
+    z-index: 2000;
+    transition: transform 0.35s ease;
+}
+.challenge-banner.show { transform: translateX(-50%) translateY(0); }
+
+.challenge-banner-close {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: #fff;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+.challenge-banner-close:hover { background: rgba(255, 255, 255, 0.35); }
+
+.selector-sub {
+    text-align: center;
+    color: var(--text-muted);
+    margin: -6px 0 14px;
+    font-size: 0.95rem;
 }
 
 /* Feedback variations for partial scores */
