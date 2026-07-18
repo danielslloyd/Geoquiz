@@ -481,6 +481,8 @@ const PLACE_LIST_ORDER = ['lived', 'visited', 'passed'];
 // Set by startPlacesMode; consumed by renderPlacesMode once the region's data is loaded.
 let placesPendingSelectionsStr = null;
 let placesPendingMessage = '';
+// Name of the chip currently being dragged between category lists (null when not dragging).
+let placesDragName = null;
 
 // Quiz mode configurations
 const QUIZ_MODES = {
@@ -1869,47 +1871,49 @@ function loadWorldData() {
 // (c) label/flag them by the parent — e.g. "Puerto Rico (USA)". Because they stay
 // SEPARATE features with their own names, the parent's shape/centroid/bounding box
 // (used for zoom and Shape-ID) naturally excludes them, as requested.
+// `code` is the territory's own ISO 3166-1 alpha-2 (for its flag on flagcdn and for the
+// Places-been share URL), distinct from its sovereign parent's.
 const TERRITORY_BY_ID = {
     // United Kingdom
-    60:  { name: 'Bermuda',                     parent: 'United Kingdom' },
-    92:  { name: 'British Virgin Islands',      parent: 'United Kingdom' },
-    136: { name: 'Cayman Islands',              parent: 'United Kingdom' },
-    238: { name: 'Falkland Islands',            parent: 'United Kingdom' },
-    292: { name: 'Gibraltar',                   parent: 'United Kingdom' },
-    500: { name: 'Montserrat',                  parent: 'United Kingdom' },
-    654: { name: 'Saint Helena',                parent: 'United Kingdom' },
-    660: { name: 'Anguilla',                    parent: 'United Kingdom' },
-    796: { name: 'Turks and Caicos Islands',    parent: 'United Kingdom' },
-    831: { name: 'Guernsey',                    parent: 'United Kingdom' },
-    832: { name: 'Jersey',                      parent: 'United Kingdom' },
-    833: { name: 'Isle of Man',                 parent: 'United Kingdom' },
+    60:  { name: 'Bermuda',                     parent: 'United Kingdom', code: 'bm' },
+    92:  { name: 'British Virgin Islands',      parent: 'United Kingdom', code: 'vg' },
+    136: { name: 'Cayman Islands',              parent: 'United Kingdom', code: 'ky' },
+    238: { name: 'Falkland Islands',            parent: 'United Kingdom', code: 'fk' },
+    292: { name: 'Gibraltar',                   parent: 'United Kingdom', code: 'gi' },
+    500: { name: 'Montserrat',                  parent: 'United Kingdom', code: 'ms' },
+    654: { name: 'Saint Helena',                parent: 'United Kingdom', code: 'sh' },
+    660: { name: 'Anguilla',                    parent: 'United Kingdom', code: 'ai' },
+    796: { name: 'Turks and Caicos Islands',    parent: 'United Kingdom', code: 'tc' },
+    831: { name: 'Guernsey',                    parent: 'United Kingdom', code: 'gg' },
+    832: { name: 'Jersey',                      parent: 'United Kingdom', code: 'je' },
+    833: { name: 'Isle of Man',                 parent: 'United Kingdom', code: 'im' },
     // United States
-    16:  { name: 'American Samoa',              parent: 'United States of America' },
-    316: { name: 'Guam',                        parent: 'United States of America' },
-    580: { name: 'Northern Mariana Islands',    parent: 'United States of America' },
-    630: { name: 'Puerto Rico',                 parent: 'United States of America' },
-    850: { name: 'United States Virgin Islands', parent: 'United States of America' },
+    16:  { name: 'American Samoa',              parent: 'United States of America', code: 'as' },
+    316: { name: 'Guam',                        parent: 'United States of America', code: 'gu' },
+    580: { name: 'Northern Mariana Islands',    parent: 'United States of America', code: 'mp' },
+    630: { name: 'Puerto Rico',                 parent: 'United States of America', code: 'pr' },
+    850: { name: 'United States Virgin Islands', parent: 'United States of America', code: 'vi' },
     // France
-    258: { name: 'French Polynesia',            parent: 'France' },
-    260: { name: 'French Southern Territories', parent: 'France' },
-    540: { name: 'New Caledonia',               parent: 'France' },
-    663: { name: 'Saint Martin',                parent: 'France' },
-    666: { name: 'Saint Pierre and Miquelon',   parent: 'France' },
-    876: { name: 'Wallis and Futuna',           parent: 'France' },
+    258: { name: 'French Polynesia',            parent: 'France', code: 'pf' },
+    260: { name: 'French Southern Territories', parent: 'France', code: 'tf' },
+    540: { name: 'New Caledonia',               parent: 'France', code: 'nc' },
+    663: { name: 'Saint Martin',                parent: 'France', code: 'mf' },
+    666: { name: 'Saint Pierre and Miquelon',   parent: 'France', code: 'pm' },
+    876: { name: 'Wallis and Futuna',           parent: 'France', code: 'wf' },
     // Denmark
-    234: { name: 'Faroe Islands',               parent: 'Denmark' },
-    304: { name: 'Greenland',                   parent: 'Denmark' },
+    234: { name: 'Faroe Islands',               parent: 'Denmark', code: 'fo' },
+    304: { name: 'Greenland',                   parent: 'Denmark', code: 'gl' },
     // Netherlands
-    531: { name: 'Curaçao',                     parent: 'Netherlands' },
-    533: { name: 'Aruba',                       parent: 'Netherlands' },
-    534: { name: 'Sint Maarten',                parent: 'Netherlands' },
+    531: { name: 'Curaçao',                     parent: 'Netherlands', code: 'cw' },
+    533: { name: 'Aruba',                       parent: 'Netherlands', code: 'aw' },
+    534: { name: 'Sint Maarten',                parent: 'Netherlands', code: 'sx' },
     // New Zealand
-    184: { name: 'Cook Islands',                parent: 'New Zealand' },
-    570: { name: 'Niue',                        parent: 'New Zealand' },
+    184: { name: 'Cook Islands',                parent: 'New Zealand', code: 'ck' },
+    570: { name: 'Niue',                        parent: 'New Zealand', code: 'nu' },
     // Australia
-    162: { name: 'Christmas Island',            parent: 'Australia' },
-    166: { name: 'Cocos Islands',               parent: 'Australia' },
-    574: { name: 'Norfolk Island',              parent: 'Australia' },
+    162: { name: 'Christmas Island',            parent: 'Australia', code: 'cx' },
+    166: { name: 'Cocos Islands',               parent: 'Australia', code: 'cc' },
+    574: { name: 'Norfolk Island',              parent: 'Australia', code: 'nf' },
 };
 
 // Short parenthetical shown after a territory's name, e.g. "Puerto Rico (USA)".
@@ -1922,6 +1926,15 @@ const PARENT_ABBREV = {
 // Reverse map (territory name -> parent name), built once from TERRITORY_BY_ID.
 const TERRITORY_PARENT_BY_NAME = {};
 Object.values(TERRITORY_BY_ID).forEach(t => { TERRITORY_PARENT_BY_NAME[t.name] = t.parent; });
+
+// Territory name <-> own ISO code maps (for Places-been flags and share URLs).
+const TERRITORY_CODE_BY_NAME = {};
+const TERRITORY_NAME_BY_CODE = {};
+Object.values(TERRITORY_BY_ID).forEach(t => {
+    if (!t.code) return;
+    TERRITORY_CODE_BY_NAME[t.name] = t.code;
+    TERRITORY_NAME_BY_CODE[t.code] = t.name;
+});
 
 // Parent country name for a territory, or null if `name` isn't a territory.
 function parentOfTerritory(name) {
@@ -2787,10 +2800,10 @@ function handleCountryClick(event, d) {
         return;
     }
 
-    // Places-been: cycle the clicked place's category (a click on a territory cycles its
-    // sovereign parent, matching how highlights fill parent + territories together).
+    // Places-been: cycle the clicked feature's own category. Unlike the quizzes, each
+    // territory is independent of its parent here — clicking Denmark doesn't fill Greenland.
     if (gameState.questionType === 'places-been') {
-        cyclePlace(d.properties.parent || d.properties.name);
+        cyclePlace(d.properties.name);
         return;
     }
 
@@ -4106,6 +4119,61 @@ function buildPlacesPanel() {
     msg.value = gameState.placesMessage || '';
     msg.addEventListener('input', () => { gameState.placesMessage = msg.value; updatePlacesUrl(); });
     document.getElementById('places-share-btn').addEventListener('click', sharePlacesLink);
+
+    wirePlacesListInteractions(document.getElementById('places-lists'));
+}
+
+// Delegated handlers on the (persistent) #places-lists element: click the hover ✕ to remove
+// a chip, and drag a chip from one category list to another to re-file it.
+function wirePlacesListInteractions(lists) {
+    if (!lists) return;
+
+    lists.addEventListener('click', e => {
+        const rm = e.target.closest('.place-chip-remove');
+        if (!rm) return;
+        const chip = rm.closest('.place-chip');
+        if (chip) removePlace(chip.dataset.place);
+    });
+
+    lists.addEventListener('dragstart', e => {
+        const chip = e.target.closest('.place-chip');
+        if (!chip) return;
+        placesDragName = chip.dataset.place;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', placesDragName);
+        chip.classList.add('dragging');
+    });
+
+    lists.addEventListener('dragend', () => {
+        lists.querySelectorAll('.dragging').forEach(c => c.classList.remove('dragging'));
+        lists.querySelectorAll('.places-cat.drag-over').forEach(c => c.classList.remove('drag-over'));
+        placesDragName = null;
+    });
+
+    lists.addEventListener('dragover', e => {
+        if (!placesDragName) return;
+        const cat = e.target.closest('.places-cat');
+        if (!cat) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        lists.querySelectorAll('.places-cat.drag-over').forEach(c => { if (c !== cat) c.classList.remove('drag-over'); });
+        cat.classList.add('drag-over');
+    });
+
+    lists.addEventListener('dragleave', e => {
+        const cat = e.target.closest('.places-cat');
+        if (cat && !cat.contains(e.relatedTarget)) cat.classList.remove('drag-over');
+    });
+
+    lists.addEventListener('drop', e => {
+        if (!placesDragName) return;
+        const cat = e.target.closest('.places-cat');
+        if (!cat) return;
+        e.preventDefault();
+        movePlaceToCategory(placesDragName, cat.dataset.cat);
+        cat.classList.remove('drag-over');
+        placesDragName = null;
+    });
 }
 
 // Rebuild the three category lists (small flag + name chips) from the current selections.
@@ -4122,26 +4190,61 @@ function refreshPlacesPanel() {
         const chips = names.map(n => {
             const url = placesFlagUrl(n);
             const title = displayLabelForName(n);
-            return `<span class="place-chip" title="${title}">` +
-                   (url ? `<img class="place-chip-flag" src="${url}" alt="">` : '') +
-                   `<span class="place-chip-name">${title}</span></span>`;
+            return `<span class="place-chip" draggable="true" data-place="${escAttr(n)}" title="${escAttr(title)}">` +
+                   (url ? `<img class="place-chip-flag" src="${url}" alt="" draggable="false">` : '') +
+                   `<span class="place-chip-name">${escAttr(title)}</span>` +
+                   `<button type="button" class="place-chip-remove" aria-label="Remove ${escAttr(title)}" title="Remove">&times;</button>` +
+                   `</span>`;
         }).join('');
-        return `<div class="places-cat">
+        return `<div class="places-cat" data-cat="${cat}">
             <div class="places-cat-head">
                 <span class="places-swatch ${meta.cls}"></span>
                 <span class="places-cat-name">${meta.label}</span>
                 <span class="places-count">${names.length}</span>
             </div>
-            <div class="places-chips">${chips || '<span class="places-empty">None yet</span>'}</div>
+            <div class="places-chips">${chips || '<span class="places-empty">None yet — drag chips here or click the map</span>'}</div>
         </div>`;
     }).join('');
 }
 
-// Quiet flag-URL lookup (no console noise) for a place name, via its data-object code.
+// Minimal HTML-attribute escaper for interpolated place names (apostrophes, &, quotes, <).
+function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// Remove a place entirely (the hover ✕ on a chip).
+function removePlace(name) {
+    if (!name || !gameState.placesSelections) return;
+    delete gameState.placesSelections[name];
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// Move a place into a different category (drag chip between lists).
+function movePlaceToCategory(name, cat) {
+    if (!name || !PLACE_META[cat]) return;
+    if (gameState.placesSelections[name] === cat) return;
+    gameState.placesSelections[name] = cat;
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// The ISO code to use for a place: a territory's OWN code (so its own flag shows) when it
+// has one, otherwise the sovereign data-object entry's code.
+function placesCodeForName(name) {
+    if (TERRITORY_CODE_BY_NAME[name]) return TERRITORY_CODE_BY_NAME[name];
+    const data = lookupDataEntry(name, gameState.currentDataObj) ||
+                 lookupDataEntry(effectiveDataName(name), gameState.currentDataObj);
+    return data && data.code ? data.code : null;
+}
+
+// Quiet flag-URL lookup (no console noise) for a place name — the territory's own flag if it
+// has one, else the sovereign flag.
 function placesFlagUrl(name) {
-    const data = lookupDataEntry(effectiveDataName(name), gameState.currentDataObj) ||
-                 lookupDataEntry(name, gameState.currentDataObj);
-    return data && data.code ? `https://flagcdn.com/${data.code}.svg` : null;
+    const code = placesCodeForName(name);
+    return code ? `https://flagcdn.com/${code}.svg` : null;
 }
 
 // Advance a place through the category cycle and refresh map + panel + URL.
@@ -4155,13 +4258,14 @@ function cyclePlace(name) {
     updatePlacesUrl();
 }
 
-// Apply the category fill class to every country path and island dot (parent-resolved so a
-// territory takes its sovereign's category). Called after every draw and every cycle.
+// Apply the category fill class to every country path and island dot. Each feature is
+// coloured by its OWN name (territories fill independently of their parent), unlike the
+// quizzes where a parent fills its dependencies too. Called after every draw and cycle.
 function applyPlacesFills() {
     if (!countriesGroup) return;
     const sel = gameState.placesSelections || {};
     const paint = function (d) {
-        const name = d && d.properties && (d.properties.parent || d.properties.name);
+        const name = d && d.properties && d.properties.name;
         const cat = name && sel[name];
         const node = d3.select(this);
         node.classed('place-visited', cat === 'visited')
@@ -4177,8 +4281,7 @@ function applyPlacesFills() {
 function encodePlaces(sel) {
     const groups = { visited: [], lived: [], passed: [] };
     Object.keys(sel).forEach(name => {
-        const data = lookupDataEntry(name, gameState.currentDataObj);
-        const code = data && data.code;
+        const code = placesCodeForName(name);
         if (code && groups[sel[name]]) groups[sel[name]].push(code);
     });
     const parts = [];
@@ -4189,9 +4292,10 @@ function encodePlaces(sel) {
 }
 
 function decodePlaces(str) {
-    const rev = {};   // code → name, from the current region's data object
+    const rev = {};   // code → name: current region's data object plus territory codes
     const obj = gameState.currentDataObj || {};
     Object.keys(obj).forEach(name => { if (obj[name].code) rev[obj[name].code] = name; });
+    Object.keys(TERRITORY_NAME_BY_CODE).forEach(code => { rev[code] = TERRITORY_NAME_BY_CODE[code]; });
 
     const catFor = { v: 'visited', l: 'lived', p: 'passed' };
     const out = {};

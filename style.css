@@ -1967,16 +1967,54 @@ header h1 .material-symbols-outlined {
 .places-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .place-chip {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: 6px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 3px 9px 3px 4px;
+    padding: 3px 22px 3px 4px;   /* right padding leaves room for the hover ✕ */
     font-size: 0.82rem;
     color: var(--text);
     max-width: 100%;
+    cursor: grab;
+    user-select: none;
+}
+
+.place-chip.dragging { opacity: 0.45; cursor: grabbing; }
+
+/* Hover ✕ to delete a chip (always visible on touch, where there is no hover). */
+.place-chip-remove {
+    position: absolute;
+    right: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(128, 128, 128, 0.25);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+.place-chip:hover .place-chip-remove { opacity: 1; }
+.place-chip-remove:hover { background: var(--incorrect, #d1495b); color: #fff; }
+@media (hover: none) { .place-chip-remove { opacity: 1; } }
+
+/* Drop-zone highlight while dragging a chip over a category. */
+.places-cat.drag-over {
+    outline: 2px dashed var(--primary, #2a9d8f);
+    outline-offset: 2px;
+    background: var(--surface);
 }
 
 .place-chip-flag {
