@@ -1713,6 +1713,7 @@ header h1 .material-symbols-outlined {
     transition: all 0.2s ease;
     box-shadow: var(--shadow-sm);
     user-select: none;
+    touch-action: none;   /* custom pointer drag handles touch; don't scroll the page */
 }
 
 .draggable-item:active {

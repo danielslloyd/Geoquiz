@@ -307,7 +307,7 @@ class DragToReorder {
             ...options
         };
 
-        this.draggedElement = null;
+        this.drag = null;   // active drag state (see handlePointerDown)
         this.init();
     }
 
@@ -321,9 +321,9 @@ class DragToReorder {
         this.items.forEach((item, index) => {
             const element = document.createElement('div');
             element.className = this.options.itemClass;
-            element.draggable = true;
             element.dataset.itemId = item.id;
             element.dataset.index = index;
+            element.draggable = false;   // custom pointer drag, not native HTML5 DnD
 
             if (typeof item.content === 'string') {
                 element.innerHTML = item.content;
@@ -331,108 +331,129 @@ class DragToReorder {
                 element.appendChild(item.content);
             }
 
+            // Flag <img>s are natively draggable and would hijack the pointer drag.
+            element.querySelectorAll('img').forEach(img => { img.draggable = false; });
+
             this.container.appendChild(element);
         });
     }
 
     attachEventListeners() {
         const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
-
         elements.forEach(element => {
-            element.addEventListener('dragstart', (e) => this.handleDragStart(e));
-            element.addEventListener('dragover', (e) => this.handleDragOver(e));
-            element.addEventListener('drop', (e) => this.handleDrop(e));
-            element.addEventListener('dragend', (e) => this.handleDragEnd(e));
-            element.addEventListener('dragenter', (e) => this.handleDragEnter(e));
-            element.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            element.addEventListener('pointerdown', (e) => this.handlePointerDown(e, element));
         });
     }
 
-    handleDragStart(e) {
-        this.draggedElement = e.target;
-        e.target.classList.add(this.options.dragClass);
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/html', e.target.innerHTML);
-    }
-
-    handleDragOver(e) {
-        if (e.preventDefault) {
-            e.preventDefault();
-        }
-        e.dataTransfer.dropEffect = 'move';
-        return false;
-    }
-
-    handleDragEnter(e) {
-        if (e.target.classList.contains(this.options.itemClass)) {
-            e.target.classList.add(this.options.overClass);
-        }
-    }
-
-    handleDragLeave(e) {
-        if (e.target.classList.contains(this.options.itemClass)) {
-            e.target.classList.remove(this.options.overClass);
-        }
-    }
-
-    handleDrop(e) {
-        if (e.stopPropagation) {
-            e.stopPropagation();
-        }
+    // Begin a drag: snapshot the baseline layout so moves can be computed against
+    // fixed reference positions, lift the grabbed item out, and let siblings animate.
+    handlePointerDown(e, element) {
+        if (e.button != null && e.button > 0) return;   // primary button / touch only
         e.preventDefault();
 
-        if (this.draggedElement !== e.target && e.target.classList.contains(this.options.itemClass)) {
-            // Capture old positions before reordering
-            const oldPositions = new Map();
-            this.container.querySelectorAll(`.${this.options.itemClass}`).forEach(el => {
-                const id = el.dataset.itemId;
-                oldPositions.set(id, el.getBoundingClientRect());
-            });
+        const elements = Array.from(this.container.querySelectorAll(`.${this.options.itemClass}`));
+        const rects = elements.map(el => el.getBoundingClientRect());
+        const dragIndex = elements.indexOf(element);
+        if (dragIndex < 0) return;
 
-            // Reorder items array
-            const draggedIndex = parseInt(this.draggedElement.dataset.index);
-            const targetIndex = parseInt(e.target.dataset.index);
+        this.drag = {
+            element,
+            elements,
+            dragIndex,
+            newIndex: dragIndex,
+            startY: e.clientY,
+            pointerId: e.pointerId,
+            tops: rects.map(r => r.top),                       // baseline top edge of each slot
+            bottoms: rects.map(r => r.bottom),                 // baseline bottom edge of each slot
+            centers: rects.map(r => r.top + r.height / 2)      // baseline vertical centre
+        };
 
-            // Move the item
-            const temp = this.items[draggedIndex];
-            this.items.splice(draggedIndex, 1);
-            this.items.splice(targetIndex, 0, temp);
+        // Siblings glide to their preview slots; the grabbed item tracks the cursor 1:1.
+        // Pin an explicit transform on each so the CSS :hover lift can't override the shift.
+        elements.forEach(el => {
+            el.style.transition = 'transform 0.16s ease';
+            if (el !== element) el.style.transform = 'translateY(0px)';
+        });
+        element.classList.add(this.options.dragClass);
+        element.style.transition = 'none';
+        element.style.zIndex = '20';
+        element.style.position = 'relative';
 
-            // Re-render
-            this.render();
-            this.attachEventListeners();
-
-            // Animate items to their new positions
-            this.container.querySelectorAll(`.${this.options.itemClass}`).forEach(el => {
-                const id = el.dataset.itemId;
-                const oldPos = oldPositions.get(id);
-                if (oldPos) {
-                    const newPos = el.getBoundingClientRect();
-                    const offsetX = oldPos.left - newPos.left;
-                    const offsetY = oldPos.top - newPos.top;
-
-                    if (offsetX !== 0 || offsetY !== 0) {
-                        el.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
-                        el.style.transition = 'none';
-                        el.offsetHeight; // trigger reflow
-                        el.style.transition = 'transform 0.3s ease-out';
-                        el.style.transform = 'translate(0, 0)';
-                    }
-                }
-            });
-
-            // Callback
-            this.options.onOrderChange(this.getCurrentOrder());
-        }
-
-        e.target.classList.remove(this.options.overClass);
-        return false;
+        // Attach the move/up listeners before capturing so a capture failure can't abort
+        // the drag; capture (keeps tracking once the cursor leaves the item) is best-effort.
+        this._onMove = (ev) => this.handlePointerMove(ev);
+        this._onUp = (ev) => this.handlePointerUp(ev);
+        element.addEventListener('pointermove', this._onMove);
+        element.addEventListener('pointerup', this._onUp);
+        element.addEventListener('pointercancel', this._onUp);
+        try { element.setPointerCapture(e.pointerId); } catch (_) {}
     }
 
-    handleDragEnd(e) {
-        e.target.classList.remove(this.options.dragClass);
-        const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
-        elements.forEach(el => el.classList.remove(this.options.overClass));
+    handlePointerMove(e) {
+        const d = this.drag;
+        if (!d) return;
+
+        const delta = e.clientY - d.startY;
+        d.element.style.transform = `translateY(${delta}px) scale(1.04)`;
+
+        // Where would the grabbed item land? The swap fires the moment the grabbed bubble's
+        // own leading edge overlaps a neighbour's near edge (its bottom edge vs the neighbour
+        // above when moving up; its top edge vs the neighbour below when moving down) — i.e.
+        // as soon as the two bubbles begin to touch. Because the cursor sits at the grabbed
+        // bubble's centre, half a bubble behind that leading edge, the preview updates while
+        // the cursor is still short of the neighbour. Thresholds are the fixed baseline edges,
+        // so newIndex is monotonic in the drag distance and never oscillates.
+        const draggedTop = d.tops[d.dragIndex] + delta;
+        const draggedBottom = d.bottoms[d.dragIndex] + delta;
+        let newIndex = d.dragIndex;
+        for (let i = 0; i < d.dragIndex; i++) {
+            if (draggedTop < d.bottoms[i]) { newIndex = i; break; }
+        }
+        for (let i = d.elements.length - 1; i > d.dragIndex; i--) {
+            if (draggedBottom > d.tops[i]) { newIndex = i; break; }
+        }
+
+        if (newIndex !== d.newIndex) {
+            d.newIndex = newIndex;
+            this.previewShift(newIndex);
+        }
+    }
+
+    // Slide every non-grabbed item to the slot it would occupy if the grabbed item were
+    // dropped at newIndex, giving a live preview of the resulting order.
+    previewShift(newIndex) {
+        const d = this.drag;
+        const n = d.elements.length;
+        const order = [];
+        for (let i = 0; i < n; i++) if (i !== d.dragIndex) order.push(i);
+        order.splice(newIndex, 0, d.dragIndex);
+
+        order.forEach((origIndex, slot) => {
+            if (origIndex === d.dragIndex) return;   // grabbed item follows the cursor
+            const el = d.elements[origIndex];
+            el.style.transform = `translateY(${d.tops[slot] - d.tops[origIndex]}px)`;
+        });
+    }
+
+    handlePointerUp() {
+        const d = this.drag;
+        if (!d) return;
+        d.element.removeEventListener('pointermove', this._onMove);
+        d.element.removeEventListener('pointerup', this._onUp);
+        d.element.removeEventListener('pointercancel', this._onUp);
+        try { d.element.releasePointerCapture(d.pointerId); } catch (_) {}
+
+        this.drag = null;
+
+        // Commit the reorder, then re-render cleanly to drop all inline transforms.
+        if (d.newIndex !== d.dragIndex) {
+            const moved = this.items[d.dragIndex];
+            this.items.splice(d.dragIndex, 1);
+            this.items.splice(d.newIndex, 0, moved);
+        }
+        this.render();
+        this.attachEventListeners();
+        this.options.onOrderChange(this.getCurrentOrder());
     }
 
     getCurrentOrder() {
