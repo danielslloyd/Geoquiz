@@ -4460,8 +4460,13 @@ function renderOrderingMode() {
         document.getElementById('question-container').appendChild(orderingContainer);
     }
 
-    // Clear container
+    // Clear container and drop any result-grid state from the previous round.
+    orderingContainer.classList.remove('results-mode');
     orderingContainer.innerHTML = '';
+    if (gameState._orderArrowResize) {
+        window.removeEventListener('resize', gameState._orderArrowResize);
+        gameState._orderArrowResize = null;
+    }
 
     // Create draggable items with flag
     const items = selectedCountries.map(country => {
@@ -4523,34 +4528,31 @@ function checkOrderingAnswer() {
     gameState.score += points;
     document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
-    // Show feedback
+    // Show feedback (the short score message only — the correct order is now shown in-place
+    // as a grid via renderOrderingResult, not repeated as a list here).
     const feedback = document.getElementById('feedback');
-
-    // Display correct order with populations
-    let correctOrderHTML = '<div class="correct-order"><strong>Correct Order:</strong><ol>';
-    correctOrder.forEach(country => {
-        const pop = gameState.currentDataObj[country].population;
-        const formattedPop = pop.toLocaleString();
-        correctOrderHTML += `<li>${country}: <strong>${formattedPop}</strong></li>`;
-    });
-    correctOrderHTML += '</ol></div>';
-
     if (score === 100) {
         feedback.innerHTML = `<div class="feedback correct">
             Perfect! 🎉 You got 100% of pairs in the correct order! (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     } else if (score >= 70) {
         feedback.innerHTML = `<div class="feedback partial">
             Good! You got ${score}% of pairs in the correct order. (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     } else {
         feedback.innerHTML = `<div class="feedback incorrect">
             You got ${score}% of pairs in the correct order. (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     }
 
-    // Disable submit button
-    document.getElementById('submit-order-btn').disabled = true;
+    // Replace the draggable bubbles with the result grid: the player's order as a flag-only
+    // column on the left, the correct order (flag · name · population) filling the rest, and
+    // arrows mapping each guess to where that country actually belongs.
+    renderOrderingResult(userOrder, correctOrder);
+
+    // Hide the submit button — the round is decided.
+    const submitBtn = document.getElementById('submit-order-btn');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.style.display = 'none'; }
 
     // Show next button as a manual skip, then auto-advance after a pause. Advancing goes
     // through the shared goToNextQuestion() (via scheduleAutoAdvance/the Next button), which
@@ -4559,6 +4561,102 @@ function checkOrderingAnswer() {
     document.getElementById('next-btn').style.display = 'inline-block';
     document.getElementById('next-btn').disabled = false;
     scheduleAutoAdvance();
+}
+
+// Replace the draggable bubbles with a result grid: the player's submitted order as a
+// flag-only column on the left, the correct order (flag · name · population) filling the
+// rest, and curved arrows linking each guess to the country's true position.
+function renderOrderingResult(userOrder, correctOrder) {
+    const container = document.getElementById('ordering-container');
+    if (!container) return;
+    const dataObj = gameState.currentDataObj;
+
+    const correctIndexOf = {};
+    correctOrder.forEach((c, j) => { correctIndexOf[c] = j; });
+
+    const guessRows = userOrder.map(c => `
+        <div class="order-guess" data-country="${c}">
+            <img src="${getFlagUrl(c)}" alt="${c}" class="order-flag">
+        </div>`).join('');
+
+    const correctRows = correctOrder.map((c, j) => `
+        <div class="order-correct-row" data-country="${c}">
+            <span class="oc-rank">${j + 1}</span>
+            <img src="${getFlagUrl(c)}" alt="${c}" class="order-flag">
+            <span class="oc-name">${c}</span>
+            <span class="oc-pop">${dataObj[c].population.toLocaleString()}</span>
+        </div>`).join('');
+
+    container.classList.add('results-mode');
+    container.innerHTML = `
+        <div class="order-result">
+            <div class="order-guesses" aria-label="Your order">${guessRows}</div>
+            <div class="order-correct" aria-label="Correct order">${correctRows}</div>
+            <svg class="order-arrows" aria-hidden="true">
+                <defs>
+                    <marker id="order-arrowhead-correct" viewBox="0 0 10 10" refX="8" refY="5"
+                            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path class="ah-correct" d="M0,0 L10,5 L0,10 z"></path>
+                    </marker>
+                    <marker id="order-arrowhead-moved" viewBox="0 0 10 10" refX="8" refY="5"
+                            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path class="ah-moved" d="M0,0 L10,5 L0,10 z"></path>
+                    </marker>
+                </defs>
+            </svg>
+        </div>`;
+
+    // Draw arrows from measured DOM positions. Row heights are fixed by CSS (independent of
+    // flag-image load), so getBoundingClientRect is accurate immediately — draw synchronously
+    // rather than relying on requestAnimationFrame (which is throttled when the tab isn't
+    // visible). A follow-up rAF re-draw absorbs any late layout shift (e.g. web-font swap).
+    const redraw = () => drawOrderArrows(container, correctIndexOf);
+    redraw();
+    requestAnimationFrame(redraw);
+    if (gameState._orderArrowResize) window.removeEventListener('resize', gameState._orderArrowResize);
+    gameState._orderArrowResize = () => {
+        if (!container.querySelector('.order-arrows')) {
+            window.removeEventListener('resize', gameState._orderArrowResize);
+            gameState._orderArrowResize = null;
+            return;
+        }
+        drawOrderArrows(container, correctIndexOf);
+    };
+    window.addEventListener('resize', gameState._orderArrowResize);
+}
+
+// Draw one curved arrow per guess, from the right edge of the guess flag to the left edge
+// of the matching correct-order row. Correctly-placed guesses are green, moved ones muted.
+function drawOrderArrows(container, correctIndexOf) {
+    const result = container.querySelector('.order-result');
+    const svg = container.querySelector('.order-arrows');
+    if (!result || !svg) return;
+
+    const rect = result.getBoundingClientRect();
+    svg.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+    svg.setAttribute('width', rect.width);
+    svg.setAttribute('height', rect.height);
+    svg.querySelectorAll('path.order-connector').forEach(n => n.remove());
+
+    const rowByCountry = {};
+    result.querySelectorAll('.order-correct-row').forEach(r => { rowByCountry[r.dataset.country] = r; });
+
+    result.querySelectorAll('.order-guess').forEach((g, i) => {
+        const country = g.dataset.country;
+        const target = rowByCountry[country];
+        if (!target) return;
+        const gr = g.getBoundingClientRect(), tr = target.getBoundingClientRect();
+        const x1 = gr.right - rect.left, y1 = gr.top + gr.height / 2 - rect.top;
+        const x2 = tr.left - rect.left, y2 = tr.top + tr.height / 2 - rect.top;
+        const dx = Math.max(24, (x2 - x1) * 0.5);   // horizontal control-point pull for the curve
+
+        const correct = correctIndexOf[country] === i;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2 - 2} ${y2}`);
+        path.setAttribute('class', 'order-connector ' + (correct ? 'is-correct' : 'is-moved'));
+        path.setAttribute('marker-end', correct ? 'url(#order-arrowhead-correct)' : 'url(#order-arrowhead-moved)');
+        svg.appendChild(path);
+    });
 }
 
 
