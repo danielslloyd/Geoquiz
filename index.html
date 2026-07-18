@@ -305,19 +305,19 @@
                     <div class="tuning-group" id="spaceship-tuning" style="display:none">
                         <div class="tuning-group-title">Spaceship</div>
                         <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
-                            <span class="tuning-label">Orbit height</span> <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
+                            <span class="tuning-label">Orbit height</span> <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="250"><span id="tune-orbit-height-val">250 km</span>
                         </label>
                         <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
                             <span class="tuning-label">500 m tiles</span> <input type="checkbox" id="tune-hires-500m">
                         </label>
                         <label class="tuning-item" title="How far the atmosphere gradient reaches ABOVE the horizon (space side), measured as a view ray's tangent altitude above the surface. Capped at 600 km.">
-                            <span class="tuning-label">Atmo spread (space)</span> <input type="range" id="tune-atmo-spread-space" min="20" max="600" step="10" value="150"><span id="tune-atmo-spread-space-val">150 km</span>
+                            <span class="tuning-label">Atmo spread (space)</span> <input type="range" id="tune-atmo-spread-space" min="20" max="600" step="10" value="120"><span id="tune-atmo-spread-space-val">120 km</span>
                         </label>
                         <label class="tuning-item" title="How far the atmosphere gradient reaches BELOW the horizon (earth side). Capped at 1500 km — ground haze reads much further than the space-side glow.">
-                            <span class="tuning-label">Atmo spread (earth)</span> <input type="range" id="tune-atmo-spread-earth" min="50" max="1500" step="50" value="400"><span id="tune-atmo-spread-earth-val">400 km</span>
+                            <span class="tuning-label">Atmo spread (earth)</span> <input type="range" id="tune-atmo-spread-earth" min="50" max="1500" step="50" value="200"><span id="tune-atmo-spread-earth-val">200 km</span>
                         </label>
-                        <label class="tuning-item" title="The space side always fades linearly with distance from the horizon. Check this to warp the earth side through a tangent curve instead, to compare the two shapes.">
-                            <span class="tuning-label">Tangent earth fade</span> <input type="checkbox" id="tune-atmo-tan-earth">
+                        <label class="tuning-item" title="The space side always fades linearly with distance from the horizon. Check this to warp the earth side through a curve that simulates looking through progressively more atmosphere as you look closer to the ground.">
+                            <span class="tuning-label">Atmospheric depth</span> <input type="checkbox" id="tune-atmo-tan-earth">
                         </label>
                         <!-- 5-stop atmosphere gradient. Left = space, the tick = the horizon, right = down
                              into the earth's disc. The centre "Horizon" stop is pinned at the limb and

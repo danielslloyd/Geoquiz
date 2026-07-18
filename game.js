@@ -382,6 +382,13 @@ class DragToReorder {
         e.preventDefault();
 
         if (this.draggedElement !== e.target && e.target.classList.contains(this.options.itemClass)) {
+            // Capture old positions before reordering
+            const oldPositions = new Map();
+            this.container.querySelectorAll(`.${this.options.itemClass}`).forEach(el => {
+                const id = el.dataset.itemId;
+                oldPositions.set(id, el.getBoundingClientRect());
+            });
+
             // Reorder items array
             const draggedIndex = parseInt(this.draggedElement.dataset.index);
             const targetIndex = parseInt(e.target.dataset.index);
@@ -394,6 +401,25 @@ class DragToReorder {
             // Re-render
             this.render();
             this.attachEventListeners();
+
+            // Animate items to their new positions
+            this.container.querySelectorAll(`.${this.options.itemClass}`).forEach(el => {
+                const id = el.dataset.itemId;
+                const oldPos = oldPositions.get(id);
+                if (oldPos) {
+                    const newPos = el.getBoundingClientRect();
+                    const offsetX = oldPos.left - newPos.left;
+                    const offsetY = oldPos.top - newPos.top;
+
+                    if (offsetX !== 0 || offsetY !== 0) {
+                        el.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+                        el.style.transition = 'none';
+                        el.offsetHeight; // trigger reflow
+                        el.style.transition = 'transform 0.3s ease-out';
+                        el.style.transform = 'translate(0, 0)';
+                    }
+                }
+            });
 
             // Callback
             this.options.onOrderChange(this.getCurrentOrder());
@@ -5235,7 +5261,7 @@ let orbitalTexLow = null;      // cached THREE.Texture (2048 low-res base sphere
 let orbCam = null;             // current camera params { lat, lon, heading, tilt, roll, fov }
 let orbDrag = null;            // pointer-drag state for look-around
 let orbitalResizeBound = false;
-let orbitAltitudeKm = 400;        // camera altitude — ISS-class default; tunable via the Orbit-height slider
+let orbitAltitudeKm = 250;        // camera altitude — tunable via the Orbit-height slider
 const SPACESHIP_FOV = 48;         // vertical field of view (degrees)
 const EARTH_R_KM = 6371;
 // Distance ratio (R+h)/R and the derived viewing geometry. The camera-nadir→horizon
@@ -5695,15 +5721,15 @@ function orbitalLoadCap(target) {
 // two flanking "Horizon (blue/white)" stops get dragged to. The editor keeps every other
 // stop ascending and clamped to its neighbours (see setAtmoPos).
 const ATMO_MIN_GAP = 0.01;           // min separation between stops (smoothstep needs edge0 < edge1)
-let atmoSpreadSpaceKm = 150;         // space-side reach, capped at 600 km
-let atmoSpreadEarthKm = 400;         // earth-side reach, capped at 1500 km
+let atmoSpreadSpaceKm = 120;         // space-side reach, capped at 600 km
+let atmoSpreadEarthKm = 200;         // earth-side reach, capped at 1500 km
 let atmoEarthTangentFade = false;    // false = linear earth-side fade, true = tangent-warped
 let atmoStops = [
     { label: 'Space',           pos: 0.00, color: '#5b9dff', alpha: 0.00 },
     { label: 'Horizon (blue)',  pos: 0.32, color: '#4a90ff', alpha: 0.60 },
     { label: 'Horizon',         pos: 0.50, color: '#ffffff', alpha: 0.90, fixed: true },
-    { label: 'Horizon (white)', pos: 0.66, color: '#eaf4ff', alpha: 0.75 },
-    { label: 'Earth',           pos: 1.00, color: '#dceeff', alpha: 0.00 }
+    { label: 'Horizon (white)', pos: 0.66, color: '#eaf4ff', alpha: 0.52 },
+    { label: 'Earth',           pos: 1.00, color: '#dceeff', alpha: 0.12 }
 ];
 
 // '#rrggbb' → [r,g,b] in 0..1. Deliberately NOT via THREE.Color: colour management would
