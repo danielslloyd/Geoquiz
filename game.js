@@ -622,6 +622,18 @@ const QUIZ_MODES = {
         autoRotate: false,
         mysteryFlagMode: true // Show flag, click globe to find country
     },
+    'flag-id': {
+        name: 'US Flag ID',
+        quizList: usStates,
+        dataObjKey: 'usStateData',
+        totalQuestions: 10,
+        useGlobe: false,
+        hasFlags: true,
+        itemLabel: 'state',
+        itemLabelPlural: 'states',
+        autoRotate: false,
+        flagIdMode: true // Show a US state flag, pick its name from 4 choices (no map)
+    },
     'capitals-race': {
         name: 'Capitals Race',
         quizList: quizCountries,
@@ -1123,8 +1135,8 @@ function startGameWithMode(mode) {
     if (!modeConfig.placesMode) syncModeUrl(mode);
 
     // Setup visualization based on mode
-    // Skip map loading for the map-less modes (ordering, skyline photos)
-    if (modeConfig.orderingMode || modeConfig.skylineIdMode) {
+    // Skip map loading for the map-less modes (ordering, skyline photos, flag ID)
+    if (modeConfig.orderingMode || modeConfig.skylineIdMode || modeConfig.flagIdMode) {
         startNewQuestion();
     } else {
         if (modeConfig.spaceshipMode) flatGlobeView = false; // always orthographic for the LEO view
@@ -2038,7 +2050,10 @@ function getStateName(id) {
         72: 'Puerto Rico'
     };
 
-    return stateNames[id] || `State ${id}`;
+    // Map feature ids are zero-padded FIPS strings ("01".."56"); normalize to int, or the
+    // single-digit-FIPS states (Alabama "01" … Connecticut "09") miss the numeric keys and
+    // fall back to "State 0X" with no matching quiz/flag data.
+    return stateNames[parseInt(id, 10)] || `State ${id}`;
 }
 
 // Country dots: a feature whose largest polygon is too small to see on screen (and
@@ -2914,7 +2929,7 @@ function handleCountryClick(event, d) {
 function maxSubForMode(mc) {
     if (!mc) return 1;
     if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode ||
-        mc.skylineIdMode || mc.findOnly) {
+        mc.skylineIdMode || mc.flagIdMode || mc.placeCountriesMode || mc.findOnly) {
         return 1;
     }
     return mc.hasFlags ? 3 : 2;
@@ -3105,6 +3120,11 @@ function giveUp() {
     } else if (gameState.questionType === 'identify') {
         // Already highlighted, just show in feedback
         feedback.textContent = `The highlighted location is: ${gameState.targetCountry}`;
+    } else if (gameState.questionType === 'flag-id') {
+        feedback.textContent = `This is the flag of: ${gameState.targetCountry}`;
+        document.querySelectorAll('.option-btn').forEach(btn => {
+            if (btn.textContent === gameState.targetCountry) btn.classList.add('correct');
+        });
     } else if (gameState.questionType === 'mystery-flag') {
         // Reveal and rotate to the correct country
         highlightCountryOnGlobe(gameState.targetCountry);
@@ -3165,6 +3185,13 @@ function startNewQuestion() {
     // an empty gameState.countries recurses forever. Skyline picks its own target instead.
     if (modeConfig.skylineIdMode) {
         renderSkylineQuestion();
+        return;
+    }
+
+    // Flag ID (map-less): show a flag, pick the name. Hooks in here for the same reason as
+    // skyline — the shared body below needs a map.
+    if (modeConfig.flagIdMode) {
+        renderFlagIdQuestion();
         return;
     }
 
@@ -3925,6 +3952,48 @@ function renderMysteryFlagQuestion() {
     document.getElementById('multiple-choice-container').classList.add('hidden');
 }
 
+// ==================== US FLAG ID MODE ====================
+
+// Show a US state flag and pick its name from 4 choices. Map-less, so (like skyline) it runs
+// the per-question resets the shared startNewQuestion body would otherwise have handled.
+function renderFlagIdQuestion() {
+    gameState.questionType = 'flag-id';
+
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+    document.getElementById('question-container').classList.remove('hidden');
+    clearMultipleChoice();
+    gameState.answeredCorrectly = false;
+    gameState.guessedThisQuestion = false;
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.disabled = true; nextBtn.style.display = 'inline-block'; nextBtn.textContent = 'Next Question';
+    const giveUpBtn = document.getElementById('give-up-btn');
+    giveUpBtn.style.display = 'inline-block'; giveUpBtn.textContent = 'Give Up';
+    const feedback = document.getElementById('feedback');
+    feedback.textContent = ''; feedback.className = 'feedback';
+
+    if (gameState.currentQuestion > gameState.totalQuestions) { endGame(); return; }
+
+    // Pick a fresh state (no map, so no feature filtering — just draw from the quiz list).
+    const avail = gameState.currentQuizList.filter(n => !gameState.usedCountries.has(n));
+    if (!avail.length) gameState.usedCountries.clear();
+    const pool = avail.length ? avail : gameState.currentQuizList;
+    gameState.targetCountry = pool[Math.floor(Math.random() * pool.length)];
+    gameState.usedCountries.add(gameState.targetCountry);
+
+    document.getElementById('current-question').textContent = gameState.currentQuestion; syncScoreDisplay();
+    document.getElementById('question-text').innerHTML = 'Which state has this flag?';
+
+    const flagDisplay = document.getElementById('flag-display');
+    const flagImg = document.getElementById('flag-image');
+    flagImg.src = getFlagUrl(gameState.targetCountry);
+    flagImg.alt = 'State flag';
+    flagDisplay.style.display = 'block';
+
+    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
+    renderMultipleChoice(options, gameState.targetCountry);
+}
+
 // ==================== CAPITALS RACE MODE ====================
 
 // Render capitals race question (highlight country on globe, type the capital)
@@ -4433,8 +4502,30 @@ function showChallengeBanner(mode, score, max) {
     showChallengeBanner._t = setTimeout(() => banner.classList.remove('show'), 8000);
 }
 
+// Tear down any live in-game view (the spaceship WebGL canvas + inset, side panels, layout
+// classes, running timers) so a sub-selector opened from the in-game top bar doesn't leave
+// the previous mode showing behind it — notably the spaceship canvas when opening Places.
+function teardownActiveGame() {
+    disposeOrbital();
+    removeSpaceshipInset();
+    stopNameAllTimer();
+    stopGlobeSpin();
+    document.body.classList.remove('spaceship-active');
+    document.querySelector('.container').classList.remove('globe-side-layout');
+    const placesPanel = document.getElementById('places-panel');
+    if (placesPanel) placesPanel.remove();
+    d3.select('#globe').selectAll('*').remove();
+    d3.select('#globe-world').selectAll('*').remove();
+    ['map-container', 'controls', 'question-container', 'multiple-choice-container',
+     'world-quiz-layout', 'world-quiz-question-bar', 'game-info'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+    });
+}
+
 // Show the region picker (World / USA) for Places-been.
 function showPlacesModeSelector() {
+    teardownActiveGame();
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
 
@@ -5177,6 +5268,19 @@ function getCountryCentroid(countryName) {
     return null;
 }
 
+// d3.interpolate for a projection.rotate() array that always takes the SHORT way around
+// each axis, so spinning to a country never crosses the whole globe when the target is just
+// across the ±180° seam. Each target angle is nudged by ±360° so its delta lands in [-180,180].
+function interpolateRotateShortest(from, to) {
+    const adjusted = to.map((v, i) => {
+        let d = (v - from[i]) % 360;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return from[i] + d;
+    });
+    return d3.interpolate(from, adjusted);
+}
+
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
     if (!isGlobeView()) return; // No rotation in flat (Mercator) view
@@ -5186,7 +5290,7 @@ function rotateToCountry(countryName) {
     d3.transition()
         .duration(1000)
         .tween('rotate', () => {
-            const r = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
+            const r = interpolateRotateShortest(projection.rotate(), [-centroid[0], -centroid[1]]);
             return t => {
                 projection.rotate(r(t));
                 countriesGroup.selectAll('path').attr('d', path);
@@ -5210,7 +5314,7 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
         d3.transition()
             .duration(duration)
             .tween('zoom-rotate', () => {
-                const r = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
+                const r = interpolateRotateShortest(projection.rotate(), [-centroid[0], -centroid[1]]);
                 const s = d3.interpolate(projection.scale(), 400); // Zoom in a bit
                 return t => {
                     projection.rotate(r(t));
@@ -7319,6 +7423,11 @@ function resetModeSelector() {
                 <span class="mode-icon material-symbols-outlined">extension</span>
                 <span class="mode-name">Country Shape ID</span>
                 <span class="mode-desc">Identify countries by their shape</span>
+            </button>
+            <button class="mode-btn" data-mode="flag-id">
+                <span class="mode-icon material-symbols-outlined">flag</span>
+                <span class="mode-name">US Flag ID</span>
+                <span class="mode-desc">Name the US state from its flag</span>
             </button>
             <button class="mode-btn" data-mode="find-capital">
                 <span class="mode-icon material-symbols-outlined">location_city</span>
