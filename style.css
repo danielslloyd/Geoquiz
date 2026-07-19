@@ -2123,6 +2123,77 @@ header h1 .material-symbols-outlined {
     font-size: 0.95rem;
 }
 
+/* ==================== PLACE THE COUNTRIES ==================== */
+
+.place-ocean { fill: var(--ocean-1, #aebfca); }
+
+.place-shoreline {
+    fill: none;
+    stroke: rgba(90, 105, 120, 0.85);
+    stroke-width: 0.8;
+    pointer-events: none;   /* clicks fall through to the map (svg) for guessing */
+}
+
+.place-anchor {
+    fill: var(--land, #cdd6cf);
+    stroke: var(--land-stroke, #8a978c);
+    stroke-width: 0.8;
+    pointer-events: none;
+}
+
+.place-label {
+    fill: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2.5px;
+    pointer-events: none;
+}
+
+/* The target country revealed after a guess is submitted. */
+.place-reveal {
+    fill: var(--correct, #2a9d8f);
+    fill-opacity: 0.55;
+    stroke: var(--correct-dark, #1f7a6d);
+    stroke-width: 1.2;
+    pointer-events: none;
+}
+
+/* "Choose from list" dropdown. */
+.place-choose {
+    margin-top: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+    max-width: 100%;
+}
+
+/* Difficulty / mode picker on the setup screen. */
+.place-setup {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    justify-content: center;
+    margin: 8px 0 20px;
+}
+.place-setup-group { text-align: center; }
+.place-setup-label {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+.place-setup-hint {
+    margin-top: 8px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    max-width: 260px;
+}
+
 /* Feedback variations for partial scores */
 .feedback.partial {
     background: var(--partial-soft);

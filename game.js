@@ -484,6 +484,13 @@ let placesPendingMessage = '';
 // Name of the chip currently being dragged between category lists (null when not dragging).
 let placesDragName = null;
 
+// ---- "Place the Countries" mode ----
+// One well-known anchor country per inhabited continent, seeded (filled + labelled) in Easy
+// mode as reference points and excluded from the questions.
+const PLACE_ANCHORS = ['United States of America', 'Brazil', 'France', 'Egypt', 'India', 'Australia'];
+// Medium difficulty shows only 1/N of each shoreline (via a dash pattern); N is tunable.
+let placeFragmentDenominator = 4;
+
 // Quiz mode configurations
 const QUIZ_MODES = {
     countries: {
@@ -707,6 +714,22 @@ const QUIZ_MODES = {
         itemLabelPlural: 'capitals',
         autoRotate: false,
         findCapitalMode: true // Show a capital name, click the map to guess its location
+    },
+    'place-countries': {
+        name: 'Place the Countries',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 10,
+        useGlobe: false,   // static full-world Mercator (same guessing-map path as find-capital)
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        placeCountriesMode: true, // Click a blank map to place countries; scored by distance
+        placeDifficulty: 'easy',  // set by startPlaceCountriesMode
+        placeSubmode: 'named'
     },
     'spaceship': {
         name: 'Where Is My Spaceship?',
@@ -1476,9 +1499,11 @@ function setupGlobe() {
         svg.call(flatDrag);
     }
 
-    // Find-the-Capital: clicking the map drops/moves a guess marker.
+    // Find-the-Capital / Place-the-Countries: clicking the static map drops/moves a guess marker.
     if (modeConfig.findCapitalMode) {
         svg.on('click', handleCapitalGuessClick);
+    } else if (modeConfig.placeCountriesMode) {
+        svg.on('click', handlePlaceGuessClick);
     }
 
     // Add zoom behavior with scroll wheel (Jason Davies style)
@@ -1491,8 +1516,9 @@ function setupGlobe() {
 
         event.preventDefault();
 
-        // The Find-the-Capital map is static so guess markers stay aligned.
-        if (QUIZ_MODES[gameState.mode] && QUIZ_MODES[gameState.mode].findCapitalMode) return;
+        // The Find-the-Capital / Place-the-Countries maps are static so guess markers stay aligned.
+        const zmc = QUIZ_MODES[gameState.mode];
+        if (zmc && (zmc.findCapitalMode || zmc.placeCountriesMode)) return;
 
         const delta = -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
         const scale = projection.scale();
@@ -1783,7 +1809,7 @@ function loadMapData() {
                 // Flat (Mercator) view of the world: crop to the Greenland–Chile
                 // band, fill the container, and enable east-west wrapping.
                 // The orthographic globe keeps its fixed scale instead.
-                if (modeConfig.findCapitalMode) {
+                if (modeConfig.findCapitalMode || modeConfig.placeCountriesMode) {
                     fitCapitalWorld(projection); // static full-width world for guessing
                 } else if (flatGlobeView) {
                     fitFlatWorld(projection);
@@ -2095,6 +2121,9 @@ function lakesUrlForRes(res) {
 // Draw countries on the globe
 function drawCountries() {
     const mc = QUIZ_MODES[gameState.mode];
+    // Place-the-Countries renders a blank map (difficulty-based shoreline seeds), not the
+    // normal filled/clickable countries — and no lakes or island dots.
+    if (mc && mc.placeCountriesMode) { drawPlaceSeeds(); return; }
     // Country Shape ID draws only the current target (in renderCountryShapeIdQuestion);
     // adding the whole 10m world here would be far too heavy for a one-country view.
     if (!(mc && mc.countryShapeIdMode)) {
@@ -3043,6 +3072,11 @@ function giveUp() {
         return;
     }
 
+    if (modeConfig.placeCountriesMode) {
+        skipPlaceGuess();
+        return;
+    }
+
     if (modeConfig.spaceshipMode) {
         skipSpaceshipGuess();
         return;
@@ -3277,6 +3311,12 @@ function startNewQuestion() {
     // Find-the-Capital handles its own target selection and rendering.
     if (modeConfig.findCapitalMode) {
         renderFindCapitalQuestion();
+        return;
+    }
+
+    // Place-the-Countries handles its own target selection and rendering.
+    if (modeConfig.placeCountriesMode) {
+        renderPlaceCountriesQuestion();
         return;
     }
 
@@ -5455,11 +5495,11 @@ function endGame() {
 
     const modeConfig = QUIZ_MODES[gameState.mode];
 
-    // Distance-scored modes (Find the Capital, Where Is My Spaceship?).
-    if (modeConfig.findCapitalMode || modeConfig.spaceshipMode) {
+    // Distance-scored modes (Find the Capital, Where Is My Spaceship?, Place the Countries).
+    if (modeConfig.findCapitalMode || modeConfig.spaceshipMode || modeConfig.placeCountriesMode) {
         document.getElementById('question-text').innerHTML = 'Game Over!';
         clearMultipleChoice();
-        const unit = modeConfig.spaceshipMode ? 'locations' : 'capitals';
+        const unit = modeConfig.spaceshipMode ? 'locations' : modeConfig.placeCountriesMode ? 'countries' : 'capitals';
         const total = Math.round(gameState.totalDistanceKm || 0);
         const avg = Math.round((gameState.totalDistanceKm || 0) / gameState.totalQuestions);
         const feedback = document.getElementById('feedback');
@@ -5583,6 +5623,8 @@ function setupEventListeners() {
                 showNameAllModeSelector();
             } else if (mode === 'places') {
                 showPlacesModeSelector();
+            } else if (mode === 'place-quiz') {
+                showPlaceCountriesSelector();
             } else {
                 startGameWithMode(mode);
             }
@@ -5708,6 +5750,10 @@ function setupEventListeners() {
         }
         if (mc && mc.spaceshipMode && !gameState.capitalSubmitted) {
             submitSpaceshipGuess();
+            return;
+        }
+        if (mc && mc.placeCountriesMode && !gameState.capitalSubmitted) {
+            submitPlaceGuess();
             return;
         }
         // Move to next item (also cancels any pending auto-advance)
@@ -5848,6 +5894,18 @@ function setupEventListeners() {
             DOT_SPACING = +this.value;
             if (label) label.textContent = this.value;
             updateIslandMarkers();
+        });
+    }
+    // Place-the-Countries Medium: fraction (1/N) of each shoreline shown.
+    const placeFragSlider = document.getElementById('tune-place-frag');
+    if (placeFragSlider) {
+        const label = document.getElementById('tune-place-frag-val');
+        placeFragSlider.addEventListener('input', function () {
+            placeFragmentDenominator = +this.value;
+            if (label) label.textContent = this.value;
+            // Re-apply live if a Medium round is on screen.
+            const mc = QUIZ_MODES[gameState.mode];
+            if (mc && mc.placeCountriesMode && mc.placeDifficulty === 'medium' && countriesGroup) applyFragmentDash();
         });
     }
     // Settings pop-up: open/close the tuning-slider modal.
@@ -6006,6 +6064,270 @@ function capitalRating(avgKm) {
     if (avgKm < 1500) return 'Solid effort 👍';
     if (avgKm < 3000) return 'Room to improve 🗺️';
     return 'Back to the atlas! 📚';
+}
+
+// ==================== PLACE THE COUNTRIES ====================
+// A blank static world map (difficulty controls how much is shown). Each round asks the
+// player to place a country by clicking; scored by the total great-circle distance from
+// each click to the nearest point of that country's outline (0 if the click lands inside).
+
+// [lon,lat] rings for a Polygon/MultiPolygon geometry.
+function geomRings(geom) {
+    if (!geom) return [];
+    if (geom.type === 'Polygon') return geom.coordinates;
+    if (geom.type === 'MultiPolygon') return geom.coordinates.reduce((a, poly) => a.concat(poly), []);
+    return [];
+}
+
+// Great-circle distance (km) from a guess [lon,lat] to a country feature: 0 if the guess is
+// inside it, else the distance to the nearest boundary vertex (stored for the reveal line).
+function distanceToCountryKm(guess, feature) {
+    if (!feature) return 0;
+    gameState.placeNearest = null;
+    if (d3.geoContains(feature, guess)) return 0;
+    let min = Infinity;
+    for (const ring of geomRings(feature.geometry)) {
+        for (const pt of ring) {
+            const d = d3.geoDistance(guess, pt);
+            if (d < min) { min = d; gameState.placeNearest = pt; }
+        }
+    }
+    return (min === Infinity ? 0 : min * 6371);
+}
+
+// Draw the difficulty-appropriate blank-map seeds into countriesGroup (called by drawCountries).
+function drawPlaceSeeds() {
+    const mc = QUIZ_MODES[gameState.mode];
+    const diff = mc.placeDifficulty || 'easy';
+
+    // Ocean backdrop so the empty map reads as water (also catches clicks over the sea).
+    countriesGroup.append('rect').attr('class', 'place-ocean')
+        .attr('x', 0).attr('y', 0).attr('width', width).attr('height', height);
+
+    const featureByName = name => gameState.countries.find(c => c.properties && c.properties.name === name);
+
+    if (diff === 'hard') {
+        // Just the UK as the single reference.
+        const uk = featureByName('United Kingdom');
+        if (uk) {
+            countriesGroup.append('path').datum(uk).attr('class', 'place-anchor').attr('d', path);
+            drawPlaceLabel(uk, 'UK');
+        }
+        return;
+    }
+
+    // Easy + Medium: all coastlines/borders as thin outlines (Medium shows only fragments).
+    const cls = diff === 'medium' ? 'place-shoreline place-fragment' : 'place-shoreline';
+    countriesGroup.selectAll('path.place-shoreline')
+        .data(gameState.countries).enter().append('path')
+        .attr('class', cls).attr('d', path);
+    if (diff === 'medium') applyFragmentDash();
+
+    // Easy also seeds + labels one anchor country per continent.
+    if (diff === 'easy') {
+        PLACE_ANCHORS.forEach(name => {
+            const f = featureByName(name);
+            if (!f) return;
+            countriesGroup.append('path').datum(f).attr('class', 'place-anchor').attr('d', path);
+            drawPlaceLabel(f, name === 'United States of America' ? 'USA' : name);
+        });
+    }
+}
+
+// Medium difficulty: reveal only ~1/N of each outline via a dash pattern (N is tunable).
+function applyFragmentDash() {
+    const N = Math.max(2, placeFragmentDenominator | 0);
+    const dash = 5;
+    countriesGroup.selectAll('path.place-fragment').style('stroke-dasharray', `${dash} ${dash * (N - 1)}`);
+}
+
+function drawPlaceLabel(feature, label) {
+    if (!feature) return;
+    const c = path.centroid(feature);
+    if (!c || isNaN(c[0])) return;
+    countriesGroup.append('text').attr('class', 'place-label')
+        .attr('x', c[0]).attr('y', c[1]).attr('text-anchor', 'middle').text(label);
+}
+
+function renderPlaceCountriesQuestion() {
+    gameState.questionType = 'place-countries';
+    gameState.capitalSubmitted = false;   // reuse the distance-mode "submitted" flag
+    gameState.currentGuess = null;
+    gameState.placeNearest = null;
+    if (gameState.totalDistanceKm == null) gameState.totalDistanceKm = 0;
+
+    clearCapitalMarkers();
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+
+    const mc = QUIZ_MODES['place-countries'];
+    const submode = mc.placeSubmode || 'named';
+    const anchors = mc.placeDifficulty === 'easy' ? new Set(PLACE_ANCHORS) : new Set();
+
+    // Placeable = has geometry on the map, not already used, not a shown anchor.
+    const pool = gameState.currentQuizList.filter(n =>
+        gameState.countries.some(c => c.properties && c.properties.name === n) &&
+        !gameState.usedCountries.has(n) && !anchors.has(n));
+    if (!pool.length) { endGame(); return; }
+
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.textContent = 'Submit Guess'; nextBtn.disabled = true; nextBtn.style.display = 'inline-block';
+    const giveUpBtn = document.getElementById('give-up-btn');
+    giveUpBtn.style.display = 'inline-block'; giveUpBtn.textContent = 'Skip';
+
+    const progress = `Round ${gameState.currentQuestion}/${gameState.totalQuestions}`;
+    const totalLine = `<br><span style="font-size:.85em;opacity:.8">Total distance so far: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km</span>`;
+    const qEl = document.getElementById('question-text');
+
+    if (submode === 'choose') {
+        const sorted = pool.slice().sort((a, b) => a.localeCompare(b));
+        gameState.placeTarget = sorted[0];
+        qEl.innerHTML = `${progress} — Choose a country, then click the map to place it.` +
+            `<br><select id="place-choose" class="place-choose">` +
+            sorted.map(n => `<option value="${escAttr(n)}">${escAttr(n)}</option>`).join('') +
+            `</select>` + totalLine;
+        const sel = document.getElementById('place-choose');
+        sel.addEventListener('change', () => { gameState.placeTarget = sel.value; });
+    } else {
+        gameState.placeTarget = pool[Math.floor(Math.random() * pool.length)];
+        qEl.innerHTML = `${progress} — Place <strong>${gameState.placeTarget}</strong> on the map, then Submit.` + totalLine;
+    }
+}
+
+function handlePlaceGuessClick(event) {
+    const mc = QUIZ_MODES[gameState.mode];
+    if (!mc || !mc.placeCountriesMode || gameState.capitalSubmitted) return;
+    const p = d3.pointer(event, svg.node());
+    const geo = projection.invert(p);
+    if (!geo || isNaN(geo[0])) return;
+    gameState.currentGuess = geo;
+    const grp = ensureCapitalMarkersGroup();
+    let m = grp.select('.guess-marker');
+    if (m.empty()) m = grp.append('circle').attr('class', 'guess-marker').attr('r', 6);
+    m.attr('cx', p[0]).attr('cy', p[1]);
+    document.getElementById('next-btn').disabled = false;
+}
+
+// Reveal the target country's outline, the guess marker, and a line to the nearest point.
+function revealPlaceAnswer(feature) {
+    const grp = ensureCapitalMarkersGroup();
+    if (feature) grp.append('path').datum(feature).attr('class', 'place-reveal').attr('d', path);
+    if (gameState.currentGuess) {
+        const gp = projection(gameState.currentGuess);
+        if (gameState.placeNearest) {
+            const np = projection(gameState.placeNearest);
+            grp.append('line').attr('class', 'guess-line')
+                .attr('x1', gp[0]).attr('y1', gp[1]).attr('x2', np[0]).attr('y2', np[1]);
+        }
+        grp.append('circle').attr('class', 'guess-marker').attr('r', 6).attr('cx', gp[0]).attr('cy', gp[1]);
+    }
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
+    nextBtn.disabled = false;
+    document.getElementById('give-up-btn').style.display = 'none';
+    scheduleAutoAdvance();
+}
+
+function submitPlaceGuess() {
+    if (gameState.capitalSubmitted || !gameState.currentGuess || !gameState.placeTarget) return;
+    gameState.capitalSubmitted = true;
+    gameState.usedCountries.add(gameState.placeTarget);
+
+    const feature = gameState.countries.find(c => c.properties && c.properties.name === gameState.placeTarget);
+    const dKm = distanceToCountryKm(gameState.currentGuess, feature);
+    gameState.totalDistanceKm += dKm;
+
+    const feedback = document.getElementById('feedback');
+    const hit = dKm < 1;
+    feedback.innerHTML = `<strong>${gameState.placeTarget}</strong> — ` +
+        (hit ? 'spot on! (0 km)' : `your click was <strong>${Math.round(dKm).toLocaleString()} km</strong> away.`) +
+        ` &nbsp;Total: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km`;
+    feedback.className = 'feedback ' + (dKm < 500 ? 'correct' : 'incorrect');
+    if (dKm < 500) { gameState.score++; document.getElementById('score').textContent = gameState.score; syncScoreDisplay(); }
+
+    revealPlaceAnswer(feature);
+}
+
+function skipPlaceGuess() {
+    if (gameState.capitalSubmitted) return;
+    if (gameState.currentGuess) { submitPlaceGuess(); return; }
+    gameState.capitalSubmitted = true;
+    if (gameState.placeTarget) gameState.usedCountries.add(gameState.placeTarget);
+    gameState.totalDistanceKm += 5000; // skip penalty
+    const feature = gameState.countries.find(c => c.properties && c.properties.name === gameState.placeTarget);
+    const feedback = document.getElementById('feedback');
+    feedback.innerHTML = `Skipped. <strong>${gameState.placeTarget}</strong> is shown (+5,000 km penalty).` +
+        ` &nbsp;Total: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km`;
+    feedback.className = 'feedback incorrect';
+    revealPlaceAnswer(feature);
+}
+
+// Difficulty + sub-mode picker for Place-the-Countries.
+function showPlaceCountriesSelector() {
+    teardownActiveGame();
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Place the Countries</h2>
+        <p class="selector-sub">Click a blank map to place each country — scored by distance.</p>
+        <div class="place-setup">
+            <div class="place-setup-group">
+                <div class="place-setup-label">Difficulty</div>
+                <div class="scope-toggle" id="place-diff">
+                    <button class="scope-btn active" data-diff="easy">Easy</button>
+                    <button class="scope-btn" data-diff="medium">Medium</button>
+                    <button class="scope-btn" data-diff="hard">Hard</button>
+                </div>
+                <div class="place-setup-hint" id="place-diff-hint"></div>
+            </div>
+            <div class="place-setup-group">
+                <div class="place-setup-label">Mode</div>
+                <div class="scope-toggle" id="place-submode">
+                    <button class="scope-btn active" data-sub="named">Name given</button>
+                    <button class="scope-btn" data-sub="choose">Choose from list</button>
+                </div>
+            </div>
+        </div>
+        <div class="mode-buttons">
+            <button class="mode-btn" id="place-start-btn">
+                <span class="mode-icon material-symbols-outlined">public</span>
+                <span class="mode-name">Start</span>
+                <span class="mode-desc">Begin placing countries</span>
+            </button>
+        </div>
+        <button id="back-from-place-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    const hints = {
+        easy: 'All coastlines drawn, plus one labelled anchor country per continent.',
+        medium: 'Only fragments of the coastlines (tunable in Settings), no anchors.',
+        hard: 'Just the UK is shown — nothing else.'
+    };
+    const state = { diff: 'easy', sub: 'named' };
+    const hintEl = document.getElementById('place-diff-hint');
+    hintEl.textContent = hints.easy;
+
+    modeSelector.querySelectorAll('#place-diff .scope-btn').forEach(b => b.addEventListener('click', () => {
+        state.diff = b.dataset.diff;
+        hintEl.textContent = hints[state.diff];
+        modeSelector.querySelectorAll('#place-diff .scope-btn').forEach(x => x.classList.toggle('active', x === b));
+    }));
+    modeSelector.querySelectorAll('#place-submode .scope-btn').forEach(b => b.addEventListener('click', () => {
+        state.sub = b.dataset.sub;
+        modeSelector.querySelectorAll('#place-submode .scope-btn').forEach(x => x.classList.toggle('active', x === b));
+    }));
+    document.getElementById('place-start-btn').addEventListener('click', () => startPlaceCountriesMode(state.diff, state.sub));
+    document.getElementById('back-from-place-btn').addEventListener('click', resetModeSelector);
+}
+
+function startPlaceCountriesMode(difficulty, submode) {
+    const m = QUIZ_MODES['place-countries'];
+    m.placeDifficulty = difficulty || 'easy';
+    m.placeSubmode = submode || 'named';
+    startGameWithMode('place-countries');
 }
 
 // ==================== WHERE IS MY SPACESHIP? ====================
@@ -7419,6 +7741,11 @@ function resetModeSelector() {
                 <span class="mode-name">Places I've Been</span>
                 <span class="mode-desc">Fill in the map with your travels and share it</span>
             </button>
+            <button class="mode-btn" data-mode="place-quiz">
+                <span class="mode-icon material-symbols-outlined">map</span>
+                <span class="mode-name">Place the Countries</span>
+                <span class="mode-desc">Click a blank map to place each country</span>
+            </button>
             <button class="mode-btn" data-mode="country-shape-id">
                 <span class="mode-icon material-symbols-outlined">extension</span>
                 <span class="mode-name">Country Shape ID</span>
@@ -7461,6 +7788,8 @@ function resetModeSelector() {
                 showNameAllModeSelector();
             } else if (mode === 'places') {
                 showPlacesModeSelector();
+            } else if (mode === 'place-quiz') {
+                showPlaceCountriesSelector();
             } else {
                 startGameWithMode(mode);
             }
