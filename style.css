@@ -634,6 +634,85 @@ header h1 .material-symbols-outlined {
     grid-template-columns: 1fr;
 }
 
+/* Free Explore has no questions or answer buttons — only a one-line prompt and, on click,
+   a country popup. Reserving a 300px side column for that wasted a third of the screen, so
+   here the map fills the whole area and the panel floats over its top-right corner (the
+   part of a globe view that is always empty). The panel itself is click-through so drags
+   that start over it still rotate the globe; its cards re-enable pointer events. */
+.container.explore-overlay-layout .globe-layout {
+    display: block;
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+
+.container.explore-overlay-layout .map-container {
+    height: 100%;
+    margin-bottom: 0;
+}
+
+.container.explore-overlay-layout .globe-side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 5;
+    width: 280px;
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+    pointer-events: none;
+}
+
+.container.explore-overlay-layout .globe-side-panel > * {
+    pointer-events: auto;
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+.container.explore-overlay-layout .question-container {
+    padding: 10px 14px;
+    backdrop-filter: blur(2px);
+}
+
+.container.explore-overlay-layout .question h2 {
+    font-size: 1rem;
+}
+
+/* Docked popup: the fixed centred dialog becomes a normal card in the floating column. */
+#globe-side-panel .explore-popup {
+    position: static;
+    transform: none;
+    width: 100%;
+    max-width: none;
+    animation: popupFadeIn 0.25s ease-out;
+}
+
+#globe-side-panel .explore-popup-content {
+    padding: 14px;
+}
+
+#globe-side-panel .explore-popup-content h3 {
+    margin-bottom: 10px;
+    font-size: 1.2rem;
+}
+
+@keyframes popupFadeIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* Too narrow for a floating column beside the globe — span the width instead. */
+@media (max-width: 600px) {
+    .container.explore-overlay-layout .globe-side-panel {
+        left: 8px;
+        right: 8px;
+        width: auto;
+    }
+}
+
 @media (max-width: 1024px) {
     .container.globe-side-layout .globe-layout {
         flex-direction: column;
@@ -715,6 +794,16 @@ header h1 .material-symbols-outlined {
     stroke: var(--selected-dark);
     stroke-width: 1.5;
 }
+
+/* "Places I've Been" category fills for country paths and island dots. Defined AFTER
+   .country:hover so the category colour wins in the resting state; explicit :hover
+   variants keep the colour (slightly lighter) instead of reverting to the land hover. */
+.country.place-visited, .island-marker.place-visited { fill: #4a90d9; stroke: #2f6ba3; }
+.country.place-lived,   .island-marker.place-lived   { fill: #e05262; stroke: #b23644; }
+.country.place-passed,  .island-marker.place-passed  { fill: #f0b429; stroke: #c8951a; }
+.country.place-visited:hover, .island-marker.place-visited:hover { fill: #63a4e6; }
+.country.place-lived:hover,   .island-marker.place-lived:hover   { fill: #ea6f7c; }
+.country.place-passed:hover,  .island-marker.place-passed:hover  { fill: #f4c556; }
 
 /* Island / microstate markers: clickable dots for nations too small to appear
    as polygons at this map detail. They carry the .country class, so the
@@ -1126,10 +1215,13 @@ header h1 .material-symbols-outlined {
     max-width: 400px;
 }
 
+/* Capped on BOTH axes, not just width: a width-only cap let Nepal's pennant (taller than
+   it is wide) render half again as tall as every other flag and shove the answer buttons
+   down the panel. Anything up to 3:2 now lands at exactly max-height. */
 .flag-display img {
-    width: 100%;
+    width: auto;
     max-width: 300px;
-    height: auto;
+    max-height: 200px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
@@ -1412,7 +1504,8 @@ header h1 .material-symbols-outlined {
 .flag-option img {
     width: 120px;
     max-width: 120px;
-    height: auto;
+    height: 80px;                     /* fixed box + contain: see .bubble-flag */
+    object-fit: contain;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-sm);
@@ -1444,6 +1537,7 @@ header h1 .material-symbols-outlined {
     .flag-option img {
         width: 100px;
         max-width: 100px;
+        height: 67px;
     }
 }
 
@@ -1713,6 +1807,7 @@ header h1 .material-symbols-outlined {
     transition: all 0.2s ease;
     box-shadow: var(--shadow-sm);
     user-select: none;
+    touch-action: none;   /* custom pointer drag handles touch; don't scroll the page */
 }
 
 .draggable-item:active {
@@ -1745,9 +1840,15 @@ header h1 .material-symbols-outlined {
     gap: 15px;
 }
 
+/* Flags are NOT all 3:2 — Nepal is a taller-than-wide pennant, Switzerland/Vatican are
+   square, Qatar is 11:28. Sizing by width alone therefore gave every row a different
+   height and broke the list's rhythm. Every flag now gets the same fixed box with
+   object-fit: contain, so odd ratios letterbox inside it instead of resizing the row. */
 .bubble-flag {
     width: 50px;
-    height: auto;
+    height: 34px;
+    object-fit: contain;
+    flex: 0 0 auto;
     border-radius: 5px;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
@@ -1781,6 +1882,408 @@ header h1 .material-symbols-outlined {
 
 .correct-order strong {
     color: var(--primary);
+}
+
+/* ---- Population-order result grid (shown after Submit) ---- */
+/* The container widens from its drag-time card to hold both columns + the arrow gap. */
+.ordering-container.results-mode {
+    max-width: 760px;
+}
+
+.order-result {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 96px;                 /* room for the connecting arrows */
+    align-items: start;
+    position: relative;
+}
+
+.order-guesses,
+.order-correct {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Both column rows share one fixed height so guess i and correct j line up on a grid. */
+.order-guess,
+.order-correct-row {
+    height: 48px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-sm);
+}
+
+.order-guess {
+    justify-content: center;
+    width: 66px;                      /* narrow, flag-only */
+    border-left: 3px solid var(--accent);
+}
+
+.order-correct-row {
+    gap: 12px;
+    padding: 0 14px;
+    border-left: 3px solid var(--primary);
+}
+
+.order-flag {
+    width: 38px;
+    height: 26px;                     /* fixed box + contain: see .bubble-flag */
+    object-fit: contain;
+    flex: 0 0 auto;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.oc-rank {
+    min-width: 16px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.oc-name {
+    flex: 1;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.oc-pop {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+/* Arrow overlay spans the whole grid; lines are positioned in measured pixels. */
+.order-arrows {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+}
+
+.order-connector {
+    fill: none;
+    stroke-width: 2;
+}
+
+.order-connector.is-correct {
+    stroke: var(--correct);
+}
+
+.order-connector.is-moved {
+    stroke: var(--text-muted);
+    opacity: 0.75;
+}
+
+.order-arrows .ah-correct { fill: var(--correct); }
+.order-arrows .ah-moved   { fill: var(--text-muted); }
+
+@media (max-width: 560px) {
+    .order-result { column-gap: 60px; }
+    .oc-name { font-size: 0.95rem; }
+    .oc-pop { font-size: 0.9rem; }
+}
+
+/* ==================== PLACES I'VE BEEN ==================== */
+
+.places-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 2px;
+}
+
+.places-title { margin: 0; font-size: 1.3rem; color: var(--text); }
+
+.places-hint {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.places-lists { display: flex; flex-direction: column; gap: 12px; }
+
+.places-cat {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+}
+
+.places-cat-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+
+.places-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    flex: 0 0 auto;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+.places-swatch.place-visited { background: #4a90d9; }
+.places-swatch.place-lived   { background: #e05262; }
+.places-swatch.place-passed  { background: #f0b429; }
+
+.places-cat-name { flex: 1; }
+
+.places-count {
+    font-variant-numeric: tabular-nums;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 9px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.places-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.place-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 22px 3px 4px;   /* right padding leaves room for the hover ✕ */
+    font-size: 0.82rem;
+    color: var(--text);
+    max-width: 100%;
+    cursor: grab;
+    user-select: none;
+}
+
+.place-chip.dragging { opacity: 0.45; cursor: grabbing; }
+
+/* Hover ✕ to delete a chip (always visible on touch, where there is no hover). */
+.place-chip-remove {
+    position: absolute;
+    right: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(128, 128, 128, 0.25);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+.place-chip:hover .place-chip-remove { opacity: 1; }
+.place-chip-remove:hover { background: var(--incorrect, #d1495b); color: #fff; }
+@media (hover: none) { .place-chip-remove { opacity: 1; } }
+
+/* Drop-zone highlight while dragging a chip over a category. */
+.places-cat.drag-over {
+    outline: 2px dashed var(--primary, #2a9d8f);
+    outline-offset: 2px;
+    background: var(--surface);
+}
+
+.place-chip-flag {
+    width: 20px;
+    height: 14px;
+    object-fit: cover;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    flex: 0 0 auto;
+}
+
+.place-chip-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.places-empty { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
+
+.places-msg-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.places-msg {
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+}
+
+.places-share-btn { width: 100%; }
+
+.places-share-status {
+    min-height: 1.1em;
+    font-size: 0.85rem;
+    color: var(--correct, #2a9d8f);
+    text-align: center;
+}
+
+/* Share / challenge affordances */
+.challenge-share-btn { margin-top: 12px; }
+
+.app-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--text, #222);
+    color: var(--surface, #fff);
+    padding: 11px 18px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.9rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    z-index: 2000;
+}
+.app-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.challenge-banner {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%) translateY(-120%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--primary, #2a9d8f);
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.92rem;
+    max-width: 92vw;
+    z-index: 2000;
+    transition: transform 0.35s ease;
+}
+.challenge-banner.show { transform: translateX(-50%) translateY(0); }
+
+.challenge-banner-close {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: #fff;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+.challenge-banner-close:hover { background: rgba(255, 255, 255, 0.35); }
+
+.selector-sub {
+    text-align: center;
+    color: var(--text-muted);
+    margin: -6px 0 14px;
+    font-size: 0.95rem;
+}
+
+/* ==================== PLACE THE COUNTRIES ==================== */
+
+.place-ocean { fill: var(--ocean-1, #aebfca); }
+
+.place-shoreline {
+    fill: none;
+    stroke: rgba(90, 105, 120, 0.85);
+    stroke-width: 0.8;
+    pointer-events: none;   /* clicks fall through to the map (svg) for guessing */
+}
+
+.place-anchor {
+    fill: var(--land, #cdd6cf);
+    stroke: var(--land-stroke, #8a978c);
+    stroke-width: 0.8;
+    pointer-events: none;
+}
+
+.place-label {
+    fill: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2.5px;
+    pointer-events: none;
+}
+
+/* The target country revealed after a guess is submitted. */
+.place-reveal {
+    fill: var(--correct, #2a9d8f);
+    fill-opacity: 0.55;
+    stroke: var(--correct-dark, #1f7a6d);
+    stroke-width: 1.2;
+    pointer-events: none;
+}
+
+/* "Choose from list" dropdown. */
+.place-choose {
+    margin-top: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+    max-width: 100%;
+}
+
+/* Difficulty / mode picker on the setup screen. */
+.place-setup {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    justify-content: center;
+    margin: 8px 0 20px;
+}
+.place-setup-group { text-align: center; }
+.place-setup-label {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+.place-setup-hint {
+    margin-top: 8px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    max-width: 260px;
 }
 
 /* Feedback variations for partial scores */
@@ -1898,6 +2401,7 @@ header h1 .material-symbols-outlined {
 
     .bubble-flag {
         width: 40px;
+        height: 27px;
     }
 
     .draggable-item {

@@ -307,7 +307,7 @@ class DragToReorder {
             ...options
         };
 
-        this.draggedElement = null;
+        this.drag = null;   // active drag state (see handlePointerDown)
         this.init();
     }
 
@@ -321,9 +321,9 @@ class DragToReorder {
         this.items.forEach((item, index) => {
             const element = document.createElement('div');
             element.className = this.options.itemClass;
-            element.draggable = true;
             element.dataset.itemId = item.id;
             element.dataset.index = index;
+            element.draggable = false;   // custom pointer drag, not native HTML5 DnD
 
             if (typeof item.content === 'string') {
                 element.innerHTML = item.content;
@@ -331,82 +331,129 @@ class DragToReorder {
                 element.appendChild(item.content);
             }
 
+            // Flag <img>s are natively draggable and would hijack the pointer drag.
+            element.querySelectorAll('img').forEach(img => { img.draggable = false; });
+
             this.container.appendChild(element);
         });
     }
 
     attachEventListeners() {
         const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
-
         elements.forEach(element => {
-            element.addEventListener('dragstart', (e) => this.handleDragStart(e));
-            element.addEventListener('dragover', (e) => this.handleDragOver(e));
-            element.addEventListener('drop', (e) => this.handleDrop(e));
-            element.addEventListener('dragend', (e) => this.handleDragEnd(e));
-            element.addEventListener('dragenter', (e) => this.handleDragEnter(e));
-            element.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            element.addEventListener('pointerdown', (e) => this.handlePointerDown(e, element));
         });
     }
 
-    handleDragStart(e) {
-        this.draggedElement = e.target;
-        e.target.classList.add(this.options.dragClass);
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/html', e.target.innerHTML);
-    }
-
-    handleDragOver(e) {
-        if (e.preventDefault) {
-            e.preventDefault();
-        }
-        e.dataTransfer.dropEffect = 'move';
-        return false;
-    }
-
-    handleDragEnter(e) {
-        if (e.target.classList.contains(this.options.itemClass)) {
-            e.target.classList.add(this.options.overClass);
-        }
-    }
-
-    handleDragLeave(e) {
-        if (e.target.classList.contains(this.options.itemClass)) {
-            e.target.classList.remove(this.options.overClass);
-        }
-    }
-
-    handleDrop(e) {
-        if (e.stopPropagation) {
-            e.stopPropagation();
-        }
+    // Begin a drag: snapshot the baseline layout so moves can be computed against
+    // fixed reference positions, lift the grabbed item out, and let siblings animate.
+    handlePointerDown(e, element) {
+        if (e.button != null && e.button > 0) return;   // primary button / touch only
         e.preventDefault();
 
-        if (this.draggedElement !== e.target && e.target.classList.contains(this.options.itemClass)) {
-            // Reorder items array
-            const draggedIndex = parseInt(this.draggedElement.dataset.index);
-            const targetIndex = parseInt(e.target.dataset.index);
+        const elements = Array.from(this.container.querySelectorAll(`.${this.options.itemClass}`));
+        const rects = elements.map(el => el.getBoundingClientRect());
+        const dragIndex = elements.indexOf(element);
+        if (dragIndex < 0) return;
 
-            // Move the item
-            const temp = this.items[draggedIndex];
-            this.items.splice(draggedIndex, 1);
-            this.items.splice(targetIndex, 0, temp);
+        this.drag = {
+            element,
+            elements,
+            dragIndex,
+            newIndex: dragIndex,
+            startY: e.clientY,
+            pointerId: e.pointerId,
+            tops: rects.map(r => r.top),                       // baseline top edge of each slot
+            bottoms: rects.map(r => r.bottom),                 // baseline bottom edge of each slot
+            centers: rects.map(r => r.top + r.height / 2)      // baseline vertical centre
+        };
 
-            // Re-render
-            this.render();
-            this.attachEventListeners();
+        // Siblings glide to their preview slots; the grabbed item tracks the cursor 1:1.
+        // Pin an explicit transform on each so the CSS :hover lift can't override the shift.
+        elements.forEach(el => {
+            el.style.transition = 'transform 0.16s ease';
+            if (el !== element) el.style.transform = 'translateY(0px)';
+        });
+        element.classList.add(this.options.dragClass);
+        element.style.transition = 'none';
+        element.style.zIndex = '20';
+        element.style.position = 'relative';
 
-            // Callback
-            this.options.onOrderChange(this.getCurrentOrder());
-        }
-
-        e.target.classList.remove(this.options.overClass);
-        return false;
+        // Attach the move/up listeners before capturing so a capture failure can't abort
+        // the drag; capture (keeps tracking once the cursor leaves the item) is best-effort.
+        this._onMove = (ev) => this.handlePointerMove(ev);
+        this._onUp = (ev) => this.handlePointerUp(ev);
+        element.addEventListener('pointermove', this._onMove);
+        element.addEventListener('pointerup', this._onUp);
+        element.addEventListener('pointercancel', this._onUp);
+        try { element.setPointerCapture(e.pointerId); } catch (_) {}
     }
 
-    handleDragEnd(e) {
-        e.target.classList.remove(this.options.dragClass);
-        const elements = this.container.querySelectorAll(`.${this.options.itemClass}`);
-        elements.forEach(el => el.classList.remove(this.options.overClass));
+    handlePointerMove(e) {
+        const d = this.drag;
+        if (!d) return;
+
+        const delta = e.clientY - d.startY;
+        d.element.style.transform = `translateY(${delta}px) scale(1.04)`;
+
+        // Where would the grabbed item land? The swap fires the moment the grabbed bubble's
+        // own leading edge overlaps a neighbour's near edge (its bottom edge vs the neighbour
+        // above when moving up; its top edge vs the neighbour below when moving down) — i.e.
+        // as soon as the two bubbles begin to touch. Because the cursor sits at the grabbed
+        // bubble's centre, half a bubble behind that leading edge, the preview updates while
+        // the cursor is still short of the neighbour. Thresholds are the fixed baseline edges,
+        // so newIndex is monotonic in the drag distance and never oscillates.
+        const draggedTop = d.tops[d.dragIndex] + delta;
+        const draggedBottom = d.bottoms[d.dragIndex] + delta;
+        let newIndex = d.dragIndex;
+        for (let i = 0; i < d.dragIndex; i++) {
+            if (draggedTop < d.bottoms[i]) { newIndex = i; break; }
+        }
+        for (let i = d.elements.length - 1; i > d.dragIndex; i--) {
+            if (draggedBottom > d.tops[i]) { newIndex = i; break; }
+        }
+
+        if (newIndex !== d.newIndex) {
+            d.newIndex = newIndex;
+            this.previewShift(newIndex);
+        }
+    }
+
+    // Slide every non-grabbed item to the slot it would occupy if the grabbed item were
+    // dropped at newIndex, giving a live preview of the resulting order.
+    previewShift(newIndex) {
+        const d = this.drag;
+        const n = d.elements.length;
+        const order = [];
+        for (let i = 0; i < n; i++) if (i !== d.dragIndex) order.push(i);
+        order.splice(newIndex, 0, d.dragIndex);
+
+        order.forEach((origIndex, slot) => {
+            if (origIndex === d.dragIndex) return;   // grabbed item follows the cursor
+            const el = d.elements[origIndex];
+            el.style.transform = `translateY(${d.tops[slot] - d.tops[origIndex]}px)`;
+        });
+    }
+
+    handlePointerUp() {
+        const d = this.drag;
+        if (!d) return;
+        d.element.removeEventListener('pointermove', this._onMove);
+        d.element.removeEventListener('pointerup', this._onUp);
+        d.element.removeEventListener('pointercancel', this._onUp);
+        try { d.element.releasePointerCapture(d.pointerId); } catch (_) {}
+
+        this.drag = null;
+
+        // Commit the reorder, then re-render cleanly to drop all inline transforms.
+        if (d.newIndex !== d.dragIndex) {
+            const moved = this.items[d.dragIndex];
+            this.items.splice(d.dragIndex, 1);
+            this.items.splice(d.newIndex, 0, moved);
+        }
+        this.render();
+        this.attachEventListeners();
+        this.options.onOrderChange(this.getCurrentOrder());
     }
 
     getCurrentOrder() {
@@ -417,6 +464,32 @@ class DragToReorder {
         return this.items;
     }
 }
+
+// ---- "Places I've Been" mode ----
+// Three categories a place can be marked as; a click cycles unvisited → visited → lived
+// → passed through → unvisited (default is visited, i.e. the first click). Each has a CSS
+// fill class on the country path/dot and a label for the side list.
+const PLACE_META = {
+    lived:   { label: 'Lived',          cls: 'place-lived'   },
+    visited: { label: 'Visited',        cls: 'place-visited' },
+    passed:  { label: 'Passed through', cls: 'place-passed'  }
+};
+// Click cycle: keyed by current category ('none' = unvisited). Value is the next category.
+const PLACE_CYCLE = { none: 'visited', visited: 'lived', lived: 'passed', passed: null };
+// Order the categories appear in the side list.
+const PLACE_LIST_ORDER = ['lived', 'visited', 'passed'];
+// Set by startPlacesMode; consumed by renderPlacesMode once the region's data is loaded.
+let placesPendingSelectionsStr = null;
+let placesPendingMessage = '';
+// Name of the chip currently being dragged between category lists (null when not dragging).
+let placesDragName = null;
+
+// ---- "Place the Countries" mode ----
+// One well-known anchor country per inhabited continent, seeded (filled + labelled) in Easy
+// mode as reference points and excluded from the questions.
+const PLACE_ANCHORS = ['United States of America', 'Brazil', 'France', 'Egypt', 'India', 'Australia'];
+// Medium difficulty shows only 1/N of each shoreline (via a dash pattern); N is tunable.
+let placeFragmentDenominator = 4;
 
 // Quiz mode configurations
 const QUIZ_MODES = {
@@ -556,6 +629,18 @@ const QUIZ_MODES = {
         autoRotate: false,
         mysteryFlagMode: true // Show flag, click globe to find country
     },
+    'flag-id': {
+        name: 'US Flag ID',
+        quizList: usStates,
+        dataObjKey: 'usStateData',
+        totalQuestions: 10,
+        useGlobe: false,
+        hasFlags: true,
+        itemLabel: 'state',
+        itemLabelPlural: 'states',
+        autoRotate: false,
+        flagIdMode: true // Show a US state flag, pick its name from 4 choices (no map)
+    },
     'capitals-race': {
         name: 'Capitals Race',
         quizList: quizCountries,
@@ -584,6 +669,24 @@ const QUIZ_MODES = {
         autoRotate: false,
         freeExploreMode: true // Interactive globe exploration mode
     },
+    // "Places I've Been": paint a personal travel map. Config below is a placeholder —
+    // startPlacesMode() copies quizList/data/map settings from `countries` or `us-states`
+    // depending on the chosen region (same reconfigure pattern as identify/name-all).
+    'places-been': {
+        name: "Places I've Been",
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: true,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        placesMode: true,
+        placesRegion: 'world'
+    },
     'country-shape-id': {
         name: 'Country Shape ID',
         quizList: quizCountries,
@@ -611,6 +714,22 @@ const QUIZ_MODES = {
         itemLabelPlural: 'capitals',
         autoRotate: false,
         findCapitalMode: true // Show a capital name, click the map to guess its location
+    },
+    'place-countries': {
+        name: 'Place the Countries',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 10,
+        useGlobe: false,   // static full-world Mercator (same guessing-map path as find-capital)
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        placeCountriesMode: true, // Click a blank map to place countries; scored by distance
+        placeDifficulty: 'easy',  // set by startPlaceCountriesMode
+        placeSubmode: 'named'
     },
     'spaceship': {
         name: 'Where Is My Spaceship?',
@@ -889,6 +1008,9 @@ async function initGame() {
     if (!dataLoaded) return;
 
     setupEventListeners();
+
+    // Deep-link support: if the URL names a mode (from a shared/challenge link), open it.
+    routeFromUrl();
 }
 
 // Start game with selected mode
@@ -902,9 +1024,18 @@ function startGameWithMode(mode) {
     document.body.classList.toggle('spaceship-active', !!modeConfig.spaceshipMode);
     // Globe modes (but not spaceship, which has its own bespoke inset layout) get the
     // map/globe maximised with question/flag/multiple-choice in a narrow side panel —
-    // see .globe-layout/.globe-side-panel in style.css.
+    // see .globe-layout/.globe-side-panel in style.css. Places-been uses the same side
+    // layout (its category lists live in that panel) even for the flat US map.
+    // Free Explore goes a step further: the globe takes the FULL width and the same panel
+    // floats over its (otherwise unused) top-right corner — see explore-overlay-layout.
     document.querySelector('.container').classList.toggle(
-        'globe-side-layout', !!modeConfig.useGlobe && !modeConfig.spaceshipMode);
+        'globe-side-layout', (!!modeConfig.useGlobe || !!modeConfig.placesMode) &&
+        !modeConfig.spaceshipMode && !modeConfig.freeExploreMode);
+    document.querySelector('.container').classList.toggle('explore-overlay-layout', !!modeConfig.freeExploreMode);
+
+    // Drop any leftover Places panel when switching to a different mode.
+    const stalePlacesPanel = document.getElementById('places-panel');
+    if (stalePlacesPanel && !modeConfig.placesMode) stalePlacesPanel.remove();
     gameState = {
         score: 0,
         currentQuestion: 1,
@@ -923,7 +1054,10 @@ function startGameWithMode(mode) {
         currentQuizList: null,
         foundCountries: new Set(),
         nameAllStartTime: null,
-        nameAllGaveUp: false
+        nameAllGaveUp: false,
+        placesSelections: {},   // Places-been: { placeName: 'visited'|'lived'|'passed' }
+        placesMessage: '',
+        ended: false
     };
 
     // Set current data sources
@@ -1023,9 +1157,13 @@ function startGameWithMode(mode) {
         document.getElementById('world-quiz-question-bar').classList.add('hidden');
     }
 
+    // Reflect the current mode in the URL so a plain "copy link" shares this mode. Places
+    // mode manages its own richer URL (region + selections + message) in updatePlacesUrl.
+    if (!modeConfig.placesMode) syncModeUrl(mode);
+
     // Setup visualization based on mode
-    // Skip map loading for the map-less modes (ordering, skyline photos)
-    if (modeConfig.orderingMode || modeConfig.skylineIdMode) {
+    // Skip map loading for the map-less modes (ordering, skyline photos, flag ID)
+    if (modeConfig.orderingMode || modeConfig.skylineIdMode || modeConfig.flagIdMode) {
         startNewQuestion();
     } else {
         if (modeConfig.spaceshipMode) flatGlobeView = false; // always orthographic for the LEO view
@@ -1365,9 +1503,11 @@ function setupGlobe() {
         svg.call(flatDrag);
     }
 
-    // Find-the-Capital: clicking the map drops/moves a guess marker.
+    // Find-the-Capital / Place-the-Countries: clicking the static map drops/moves a guess marker.
     if (modeConfig.findCapitalMode) {
         svg.on('click', handleCapitalGuessClick);
+    } else if (modeConfig.placeCountriesMode) {
+        svg.on('click', handlePlaceGuessClick);
     }
 
     // Add zoom behavior with scroll wheel (Jason Davies style)
@@ -1380,8 +1520,9 @@ function setupGlobe() {
 
         event.preventDefault();
 
-        // The Find-the-Capital map is static so guess markers stay aligned.
-        if (QUIZ_MODES[gameState.mode] && QUIZ_MODES[gameState.mode].findCapitalMode) return;
+        // The Find-the-Capital / Place-the-Countries maps are static so guess markers stay aligned.
+        const zmc = QUIZ_MODES[gameState.mode];
+        if (zmc && (zmc.findCapitalMode || zmc.placeCountriesMode)) return;
 
         const delta = -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
         const scale = projection.scale();
@@ -1672,7 +1813,7 @@ function loadMapData() {
                 // Flat (Mercator) view of the world: crop to the Greenland–Chile
                 // band, fill the container, and enable east-west wrapping.
                 // The orthographic globe keeps its fixed scale instead.
-                if (modeConfig.findCapitalMode) {
+                if (modeConfig.findCapitalMode || modeConfig.placeCountriesMode) {
                     fitCapitalWorld(projection); // static full-width world for guessing
                 } else if (flatGlobeView) {
                     fitFlatWorld(projection);
@@ -1724,20 +1865,46 @@ function loadMapData() {
         });
 }
 
+// Snapshot the per-feature marks a redraw would otherwise wipe: the class attribute
+// (target / found / places categories) AND any inline fill (the flag pattern painted by
+// fillCountryWithFlag). Covers the country paths and the island dots alike — dots are
+// rebuilt from scratch by drawIslandMarkers, so unlike the paths they lose *everything*.
+function captureFeatureMarks() {
+    const marks = { paths: [], dots: [] };
+    const grab = (bucket, baseClass) => function (d) {
+        const cls = this.getAttribute('class') || '';
+        const fill = this.style.fill || '';
+        const stroke = this.style.stroke || '';
+        if (cls === baseClass && !fill && !stroke) return;   // untouched feature: nothing to restore
+        const name = d && d.properties && d.properties.name;
+        if (name) bucket.push({ name, cls, fill, stroke });
+    };
+    if (countriesGroup) countriesGroup.selectAll('path').each(grab(marks.paths, 'country'));
+    if (islandMarkersGroup) islandMarkersGroup.selectAll('circle').each(grab(marks.dots, 'country island-marker'));
+    return marks;
+}
+
+// Re-apply a captureFeatureMarks() snapshot after the geometry has been redrawn.
+function restoreFeatureMarks(marks) {
+    if (!marks) return;
+    const apply = (sel, list) => list.forEach(m => {
+        const hit = sel.filter(d => d && d.properties && d.properties.name === m.name);
+        hit.attr('class', m.cls);
+        if (m.fill) hit.style('fill', m.fill);
+        if (m.stroke) hit.style('stroke', m.stroke);
+    });
+    if (countriesGroup) apply(countriesGroup.selectAll('path'), marks.paths);
+    if (islandMarkersGroup) apply(islandMarkersGroup.selectAll('circle'), marks.dots);
+}
+
 // Reload the world geometry at the current detail level WITHOUT starting a new
 // question — preserves rotation/scale and any in-progress highlight.
 function reloadWorldDetail() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     if (!countriesGroup || !modeConfig || modeConfig.mapObject !== 'countries') return;
 
-    // Capture per-feature highlight classes so they can be restored after redraw.
-    const highlights = [];
-    countriesGroup.selectAll('path').each(function (d) {
-        const cls = this.getAttribute('class') || '';
-        if (cls !== 'country' && cls !== 'lake') {
-            highlights.push({ name: d && d.properties && d.properties.name, cls });
-        }
-    });
+    // Capture highlight classes + flag fills (paths AND dots) to restore after the redraw.
+    const marks = captureFeatureMarks();
 
     const rot = projection.rotate(), sc = projection.scale(), tr = projection.translate();
     fetchWorldTopo(worldCountriesUrl()).then(data => {
@@ -1750,11 +1917,7 @@ function reloadWorldDetail() {
         projection.rotate(rot).scale(sc).translate(tr);
         countriesGroup.selectAll('*').remove();
         drawCountries(); // redraws land + lakes + island dots
-        highlights.forEach(h => {
-            countriesGroup.selectAll('path')
-                .filter(d => d && d.properties && d.properties.name === h.name)
-                .attr('class', h.cls);
-        });
+        restoreFeatureMarks(marks);
         updateIslandMarkers();
     }).catch(err => console.error('Detail reload failed:', err));
 }
@@ -1772,47 +1935,49 @@ function loadWorldData() {
 // (c) label/flag them by the parent — e.g. "Puerto Rico (USA)". Because they stay
 // SEPARATE features with their own names, the parent's shape/centroid/bounding box
 // (used for zoom and Shape-ID) naturally excludes them, as requested.
+// `code` is the territory's own ISO 3166-1 alpha-2 (for its flag on flagcdn and for the
+// Places-been share URL), distinct from its sovereign parent's.
 const TERRITORY_BY_ID = {
     // United Kingdom
-    60:  { name: 'Bermuda',                     parent: 'United Kingdom' },
-    92:  { name: 'British Virgin Islands',      parent: 'United Kingdom' },
-    136: { name: 'Cayman Islands',              parent: 'United Kingdom' },
-    238: { name: 'Falkland Islands',            parent: 'United Kingdom' },
-    292: { name: 'Gibraltar',                   parent: 'United Kingdom' },
-    500: { name: 'Montserrat',                  parent: 'United Kingdom' },
-    654: { name: 'Saint Helena',                parent: 'United Kingdom' },
-    660: { name: 'Anguilla',                    parent: 'United Kingdom' },
-    796: { name: 'Turks and Caicos Islands',    parent: 'United Kingdom' },
-    831: { name: 'Guernsey',                    parent: 'United Kingdom' },
-    832: { name: 'Jersey',                      parent: 'United Kingdom' },
-    833: { name: 'Isle of Man',                 parent: 'United Kingdom' },
+    60:  { name: 'Bermuda',                     parent: 'United Kingdom', code: 'bm' },
+    92:  { name: 'British Virgin Islands',      parent: 'United Kingdom', code: 'vg' },
+    136: { name: 'Cayman Islands',              parent: 'United Kingdom', code: 'ky' },
+    238: { name: 'Falkland Islands',            parent: 'United Kingdom', code: 'fk' },
+    292: { name: 'Gibraltar',                   parent: 'United Kingdom', code: 'gi' },
+    500: { name: 'Montserrat',                  parent: 'United Kingdom', code: 'ms' },
+    654: { name: 'Saint Helena',                parent: 'United Kingdom', code: 'sh' },
+    660: { name: 'Anguilla',                    parent: 'United Kingdom', code: 'ai' },
+    796: { name: 'Turks and Caicos Islands',    parent: 'United Kingdom', code: 'tc' },
+    831: { name: 'Guernsey',                    parent: 'United Kingdom', code: 'gg' },
+    832: { name: 'Jersey',                      parent: 'United Kingdom', code: 'je' },
+    833: { name: 'Isle of Man',                 parent: 'United Kingdom', code: 'im' },
     // United States
-    16:  { name: 'American Samoa',              parent: 'United States of America' },
-    316: { name: 'Guam',                        parent: 'United States of America' },
-    580: { name: 'Northern Mariana Islands',    parent: 'United States of America' },
-    630: { name: 'Puerto Rico',                 parent: 'United States of America' },
-    850: { name: 'United States Virgin Islands', parent: 'United States of America' },
+    16:  { name: 'American Samoa',              parent: 'United States of America', code: 'as' },
+    316: { name: 'Guam',                        parent: 'United States of America', code: 'gu' },
+    580: { name: 'Northern Mariana Islands',    parent: 'United States of America', code: 'mp' },
+    630: { name: 'Puerto Rico',                 parent: 'United States of America', code: 'pr' },
+    850: { name: 'United States Virgin Islands', parent: 'United States of America', code: 'vi' },
     // France
-    258: { name: 'French Polynesia',            parent: 'France' },
-    260: { name: 'French Southern Territories', parent: 'France' },
-    540: { name: 'New Caledonia',               parent: 'France' },
-    663: { name: 'Saint Martin',                parent: 'France' },
-    666: { name: 'Saint Pierre and Miquelon',   parent: 'France' },
-    876: { name: 'Wallis and Futuna',           parent: 'France' },
+    258: { name: 'French Polynesia',            parent: 'France', code: 'pf' },
+    260: { name: 'French Southern Territories', parent: 'France', code: 'tf' },
+    540: { name: 'New Caledonia',               parent: 'France', code: 'nc' },
+    663: { name: 'Saint Martin',                parent: 'France', code: 'mf' },
+    666: { name: 'Saint Pierre and Miquelon',   parent: 'France', code: 'pm' },
+    876: { name: 'Wallis and Futuna',           parent: 'France', code: 'wf' },
     // Denmark
-    234: { name: 'Faroe Islands',               parent: 'Denmark' },
-    304: { name: 'Greenland',                   parent: 'Denmark' },
+    234: { name: 'Faroe Islands',               parent: 'Denmark', code: 'fo' },
+    304: { name: 'Greenland',                   parent: 'Denmark', code: 'gl' },
     // Netherlands
-    531: { name: 'Curaçao',                     parent: 'Netherlands' },
-    533: { name: 'Aruba',                       parent: 'Netherlands' },
-    534: { name: 'Sint Maarten',                parent: 'Netherlands' },
+    531: { name: 'Curaçao',                     parent: 'Netherlands', code: 'cw' },
+    533: { name: 'Aruba',                       parent: 'Netherlands', code: 'aw' },
+    534: { name: 'Sint Maarten',                parent: 'Netherlands', code: 'sx' },
     // New Zealand
-    184: { name: 'Cook Islands',                parent: 'New Zealand' },
-    570: { name: 'Niue',                        parent: 'New Zealand' },
+    184: { name: 'Cook Islands',                parent: 'New Zealand', code: 'ck' },
+    570: { name: 'Niue',                        parent: 'New Zealand', code: 'nu' },
     // Australia
-    162: { name: 'Christmas Island',            parent: 'Australia' },
-    166: { name: 'Cocos Islands',               parent: 'Australia' },
-    574: { name: 'Norfolk Island',              parent: 'Australia' },
+    162: { name: 'Christmas Island',            parent: 'Australia', code: 'cx' },
+    166: { name: 'Cocos Islands',               parent: 'Australia', code: 'cc' },
+    574: { name: 'Norfolk Island',              parent: 'Australia', code: 'nf' },
 };
 
 // Short parenthetical shown after a territory's name, e.g. "Puerto Rico (USA)".
@@ -1825,6 +1990,15 @@ const PARENT_ABBREV = {
 // Reverse map (territory name -> parent name), built once from TERRITORY_BY_ID.
 const TERRITORY_PARENT_BY_NAME = {};
 Object.values(TERRITORY_BY_ID).forEach(t => { TERRITORY_PARENT_BY_NAME[t.name] = t.parent; });
+
+// Territory name <-> own ISO code maps (for Places-been flags and share URLs).
+const TERRITORY_CODE_BY_NAME = {};
+const TERRITORY_NAME_BY_CODE = {};
+Object.values(TERRITORY_BY_ID).forEach(t => {
+    if (!t.code) return;
+    TERRITORY_CODE_BY_NAME[t.name] = t.code;
+    TERRITORY_NAME_BY_CODE[t.code] = t.name;
+});
 
 // Parent country name for a territory, or null if `name` isn't a territory.
 function parentOfTerritory(name) {
@@ -1928,7 +2102,10 @@ function getStateName(id) {
         72: 'Puerto Rico'
     };
 
-    return stateNames[id] || `State ${id}`;
+    // Map feature ids are zero-padded FIPS strings ("01".."56"); normalize to int, or the
+    // single-digit-FIPS states (Alabama "01" … Connecticut "09") miss the numeric keys and
+    // fall back to "State 0X" with no matching quiz/flag data.
+    return stateNames[parseInt(id, 10)] || `State ${id}`;
 }
 
 // Country dots: a feature whose largest polygon is too small to see on screen (and
@@ -1970,6 +2147,9 @@ function lakesUrlForRes(res) {
 // Draw countries on the globe
 function drawCountries() {
     const mc = QUIZ_MODES[gameState.mode];
+    // Place-the-Countries renders a blank map (difficulty-based shoreline seeds), not the
+    // normal filled/clickable countries — and no lakes or island dots.
+    if (mc && mc.placeCountriesMode) { drawPlaceSeeds(); return; }
     // Country Shape ID draws only the current target (in renderCountryShapeIdQuestion);
     // adding the whole 10m world here would be far too heavy for a one-country view.
     if (!(mc && mc.countryShapeIdMode)) {
@@ -2246,6 +2426,10 @@ function drawIslandMarkers() {
         .on('click', handleCountryClick);
 
     updateIslandMarkers();
+
+    // Re-apply Places-been fills — a full marker rebuild (detail change etc.) drops the
+    // category classes; country paths keep theirs, so this only really re-colours the dots.
+    if (QUIZ_MODES[gameState.mode] && QUIZ_MODES[gameState.mode].placesMode) applyPlacesFills();
 }
 
 // Keep the ocean gradient centered/sized on the globe so the ocean and the carved
@@ -2454,18 +2638,8 @@ function reprojectMap() {
     if (!countriesGroup || !gameState.countries) return;
 
     // Capture current per-feature highlight state so it can be restored after redraw.
-    const highlights = [];
-    countriesGroup.selectAll('path').each(function (d) {
-        const cls = this.getAttribute('class') || '';
-        if (cls !== 'country') {
-            highlights.push({
-                name: d && d.properties && d.properties.name,
-                cls: cls,
-                fill: this.style.fill,
-                stroke: this.style.stroke
-            });
-        }
-    });
+    // Includes the island dots, which setupGlobe/drawCountries rebuild from scratch.
+    const marks = captureFeatureMarks();
 
     stopGlobeSpin();
     setupGlobe();
@@ -2479,17 +2653,7 @@ function reprojectMap() {
     gameState.initialScale = projection.scale();
 
     // Restore highlights (the debug overlay is re-applied by drawCountries).
-    if (!debugValidityOn) {
-        highlights.forEach(h => {
-            countriesGroup.selectAll('path')
-                .filter(d => d && d.properties && d.properties.name === h.name)
-                .each(function () {
-                    this.setAttribute('class', h.cls);
-                    if (h.fill) this.style.fill = h.fill;
-                    if (h.stroke) this.style.stroke = h.stroke;
-                });
-        });
-    }
+    if (!debugValidityOn) restoreFeatureMarks(marks);
 
     // In the globe view, re-center on the target for auto-rotate modes.
     if (isGlobeView() && QUIZ_MODES[gameState.mode].autoRotate && gameState.targetCountry) {
@@ -2686,6 +2850,13 @@ function handleCountryClick(event, d) {
         return;
     }
 
+    // Places-been: cycle the clicked feature's own category. Unlike the quizzes, each
+    // territory is independent of its parent here — clicking Denmark doesn't fill Greenland.
+    if (gameState.questionType === 'places-been') {
+        cyclePlace(d.properties.name);
+        return;
+    }
+
     // Only allow clicking countries during location or mystery-flag questions
     if (gameState.questionType !== 'location' && gameState.questionType !== 'mystery-flag') return;
     if (gameState.answeredCorrectly) return;
@@ -2793,7 +2964,7 @@ function handleCountryClick(event, d) {
 function maxSubForMode(mc) {
     if (!mc) return 1;
     if (mc.identifyOnly || mc.mysteryFlagMode || mc.capitalsRaceMode || mc.countryShapeIdMode ||
-        mc.skylineIdMode || mc.findOnly) {
+        mc.skylineIdMode || mc.flagIdMode || mc.placeCountriesMode || mc.findOnly) {
         return 1;
     }
     return mc.hasFlags ? 3 : 2;
@@ -2907,6 +3078,11 @@ function giveUp() {
         return;
     }
 
+    if (modeConfig.placeCountriesMode) {
+        skipPlaceGuess();
+        return;
+    }
+
     if (modeConfig.spaceshipMode) {
         skipSpaceshipGuess();
         return;
@@ -2984,6 +3160,11 @@ function giveUp() {
     } else if (gameState.questionType === 'identify') {
         // Already highlighted, just show in feedback
         feedback.textContent = `The highlighted location is: ${gameState.targetCountry}`;
+    } else if (gameState.questionType === 'flag-id') {
+        feedback.textContent = `This is the flag of: ${gameState.targetCountry}`;
+        document.querySelectorAll('.option-btn').forEach(btn => {
+            if (btn.textContent === gameState.targetCountry) btn.classList.add('correct');
+        });
     } else if (gameState.questionType === 'mystery-flag') {
         // Reveal and rotate to the correct country
         highlightCountryOnGlobe(gameState.targetCountry);
@@ -3047,9 +3228,22 @@ function startNewQuestion() {
         return;
     }
 
+    // Flag ID (map-less): show a flag, pick the name. Hooks in here for the same reason as
+    // skyline — the shared body below needs a map.
+    if (modeConfig.flagIdMode) {
+        renderFlagIdQuestion();
+        return;
+    }
+
     // Check if this is free explore mode
     if (modeConfig.freeExploreMode) {
         renderFreeExploreMode();
+        return;
+    }
+
+    // "Places I've Been" — paint-the-map mode (no quiz target).
+    if (modeConfig.placesMode) {
+        renderPlacesMode();
         return;
     }
 
@@ -3123,6 +3317,12 @@ function startNewQuestion() {
     // Find-the-Capital handles its own target selection and rendering.
     if (modeConfig.findCapitalMode) {
         renderFindCapitalQuestion();
+        return;
+    }
+
+    // Place-the-Countries handles its own target selection and rendering.
+    if (modeConfig.placeCountriesMode) {
+        renderPlaceCountriesQuestion();
         return;
     }
 
@@ -3798,6 +3998,48 @@ function renderMysteryFlagQuestion() {
     document.getElementById('multiple-choice-container').classList.add('hidden');
 }
 
+// ==================== US FLAG ID MODE ====================
+
+// Show a US state flag and pick its name from 4 choices. Map-less, so (like skyline) it runs
+// the per-question resets the shared startNewQuestion body would otherwise have handled.
+function renderFlagIdQuestion() {
+    gameState.questionType = 'flag-id';
+
+    document.getElementById('map-container').classList.add('hidden');
+    document.getElementById('world-quiz-layout').classList.add('hidden');
+    document.getElementById('question-container').classList.remove('hidden');
+    clearMultipleChoice();
+    gameState.answeredCorrectly = false;
+    gameState.guessedThisQuestion = false;
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.disabled = true; nextBtn.style.display = 'inline-block'; nextBtn.textContent = 'Next Question';
+    const giveUpBtn = document.getElementById('give-up-btn');
+    giveUpBtn.style.display = 'inline-block'; giveUpBtn.textContent = 'Give Up';
+    const feedback = document.getElementById('feedback');
+    feedback.textContent = ''; feedback.className = 'feedback';
+
+    if (gameState.currentQuestion > gameState.totalQuestions) { endGame(); return; }
+
+    // Pick a fresh state (no map, so no feature filtering — just draw from the quiz list).
+    const avail = gameState.currentQuizList.filter(n => !gameState.usedCountries.has(n));
+    if (!avail.length) gameState.usedCountries.clear();
+    const pool = avail.length ? avail : gameState.currentQuizList;
+    gameState.targetCountry = pool[Math.floor(Math.random() * pool.length)];
+    gameState.usedCountries.add(gameState.targetCountry);
+
+    document.getElementById('current-question').textContent = gameState.currentQuestion; syncScoreDisplay();
+    document.getElementById('question-text').innerHTML = 'Which state has this flag?';
+
+    const flagDisplay = document.getElementById('flag-display');
+    const flagImg = document.getElementById('flag-image');
+    flagImg.src = getFlagUrl(gameState.targetCountry);
+    flagImg.alt = 'State flag';
+    flagDisplay.style.display = 'block';
+
+    const options = generateMultipleChoiceOptions(gameState.targetCountry, 'item');
+    renderMultipleChoice(options, gameState.targetCountry);
+}
+
 // ==================== CAPITALS RACE MODE ====================
 
 // Render capitals race question (highlight country on globe, type the capital)
@@ -3910,6 +4152,457 @@ function exitFreeExplore() {
     goHome();
 }
 
+// ==================== "Places I've Been" mode ====================
+
+// Enter Places-been for a region ('world' or 'us'), borrowing that region's map/data config
+// wholesale (same reconfigure pattern as startIdentifyMode). `opts` carries state to restore
+// from a shared URL: selectionsStr (encoded) and message.
+function startPlacesMode(region, opts = {}) {
+    const base = region === 'us' ? QUIZ_MODES['us-states'] : QUIZ_MODES['countries'];
+    const m = QUIZ_MODES['places-been'];
+    m.quizList = base.quizList;
+    m.dataObjKey = base.dataObjKey;
+    m.useGlobe = base.useGlobe;
+    m.useAlbersUsa = base.useAlbersUsa || false;
+    m.mapUrl = base.mapUrl;
+    m.mapObject = base.mapObject;
+    m.itemLabel = base.itemLabel;
+    m.itemLabelPlural = base.itemLabelPlural;
+    m.placesRegion = region;
+
+    placesPendingSelectionsStr = opts.selectionsStr || null;
+    placesPendingMessage = opts.message || '';
+    startGameWithMode('places-been');
+}
+
+// Render the Places-been UI (called after the map is drawn). Restores any URL-shared state,
+// swaps the quiz chrome for the category side panel, colours the map and syncs the URL.
+function renderPlacesMode() {
+    gameState.questionType = 'places-been';
+    if (!gameState.placesSelections) gameState.placesSelections = {};
+
+    // Restore state shared via the URL (decoded now that the region's data is loaded).
+    if (placesPendingSelectionsStr != null) {
+        gameState.placesSelections = decodePlaces(placesPendingSelectionsStr);
+        placesPendingSelectionsStr = null;
+    }
+    if (placesPendingMessage) { gameState.placesMessage = placesPendingMessage; placesPendingMessage = ''; }
+
+    // Hide the quiz chrome; repurpose Restart as an Exit button.
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+    const restart = document.getElementById('restart-btn');
+    restart.textContent = 'Exit';
+    restart.onclick = goHome;
+    restart.style.display = 'inline-block';
+
+    buildPlacesPanel();
+    refreshPlacesPanel();
+    applyPlacesFills();
+    updatePlacesUrl();
+}
+
+// Build the side panel (instructions + category lists + share controls) once per entry.
+function buildPlacesPanel() {
+    document.getElementById('question-container').classList.add('hidden');
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+
+    let panel = document.getElementById('places-panel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'places-panel';
+        panel.className = 'places-panel';
+        document.getElementById('globe-side-panel').appendChild(panel);
+    }
+    const label = QUIZ_MODES['places-been'].itemLabel || 'place';
+    panel.innerHTML = `
+        <h2 class="places-title">Places I've Been</h2>
+        <p class="places-hint">Click a ${label} to mark it. Each click cycles
+            <strong>Visited → Lived → Passed through → clear</strong>.</p>
+        <div class="places-lists" id="places-lists"></div>
+        <label class="places-msg-label">Add a message to your map
+            <input id="places-msg" class="places-msg" type="text" maxlength="140"
+                   placeholder="e.g. Everywhere I've wandered so far">
+        </label>
+        <button id="places-share-btn" class="btn places-share-btn" type="button">Copy shareable link</button>
+        <div class="places-share-status" id="places-share-status" role="status"></div>
+    `;
+
+    const msg = document.getElementById('places-msg');
+    msg.value = gameState.placesMessage || '';
+    msg.addEventListener('input', () => { gameState.placesMessage = msg.value; updatePlacesUrl(); });
+    document.getElementById('places-share-btn').addEventListener('click', sharePlacesLink);
+
+    wirePlacesListInteractions(document.getElementById('places-lists'));
+}
+
+// Delegated handlers on the (persistent) #places-lists element: click the hover ✕ to remove
+// a chip, and drag a chip from one category list to another to re-file it.
+function wirePlacesListInteractions(lists) {
+    if (!lists) return;
+
+    lists.addEventListener('click', e => {
+        const rm = e.target.closest('.place-chip-remove');
+        if (!rm) return;
+        const chip = rm.closest('.place-chip');
+        if (chip) removePlace(chip.dataset.place);
+    });
+
+    lists.addEventListener('dragstart', e => {
+        const chip = e.target.closest('.place-chip');
+        if (!chip) return;
+        placesDragName = chip.dataset.place;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', placesDragName);
+        chip.classList.add('dragging');
+    });
+
+    lists.addEventListener('dragend', () => {
+        lists.querySelectorAll('.dragging').forEach(c => c.classList.remove('dragging'));
+        lists.querySelectorAll('.places-cat.drag-over').forEach(c => c.classList.remove('drag-over'));
+        placesDragName = null;
+    });
+
+    lists.addEventListener('dragover', e => {
+        if (!placesDragName) return;
+        const cat = e.target.closest('.places-cat');
+        if (!cat) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        lists.querySelectorAll('.places-cat.drag-over').forEach(c => { if (c !== cat) c.classList.remove('drag-over'); });
+        cat.classList.add('drag-over');
+    });
+
+    lists.addEventListener('dragleave', e => {
+        const cat = e.target.closest('.places-cat');
+        if (cat && !cat.contains(e.relatedTarget)) cat.classList.remove('drag-over');
+    });
+
+    lists.addEventListener('drop', e => {
+        if (!placesDragName) return;
+        const cat = e.target.closest('.places-cat');
+        if (!cat) return;
+        e.preventDefault();
+        movePlaceToCategory(placesDragName, cat.dataset.cat);
+        cat.classList.remove('drag-over');
+        placesDragName = null;
+    });
+}
+
+// Rebuild the three category lists (small flag + name chips) from the current selections.
+function refreshPlacesPanel() {
+    const host = document.getElementById('places-lists');
+    if (!host) return;
+    const sel = gameState.placesSelections || {};
+    const byCat = { lived: [], visited: [], passed: [] };
+    Object.keys(sel).forEach(name => { if (byCat[sel[name]]) byCat[sel[name]].push(name); });
+
+    host.innerHTML = PLACE_LIST_ORDER.map(cat => {
+        const meta = PLACE_META[cat];
+        const names = byCat[cat].sort((a, b) => a.localeCompare(b));
+        const chips = names.map(n => {
+            const url = placesFlagUrl(n);
+            const title = displayLabelForName(n);
+            return `<span class="place-chip" draggable="true" data-place="${escAttr(n)}" title="${escAttr(title)}">` +
+                   (url ? `<img class="place-chip-flag" src="${url}" alt="" draggable="false">` : '') +
+                   `<span class="place-chip-name">${escAttr(title)}</span>` +
+                   `<button type="button" class="place-chip-remove" aria-label="Remove ${escAttr(title)}" title="Remove">&times;</button>` +
+                   `</span>`;
+        }).join('');
+        return `<div class="places-cat" data-cat="${cat}">
+            <div class="places-cat-head">
+                <span class="places-swatch ${meta.cls}"></span>
+                <span class="places-cat-name">${meta.label}</span>
+                <span class="places-count">${names.length}</span>
+            </div>
+            <div class="places-chips">${chips || '<span class="places-empty">None yet — drag chips here or click the map</span>'}</div>
+        </div>`;
+    }).join('');
+}
+
+// Minimal HTML-attribute escaper for interpolated place names (apostrophes, &, quotes, <).
+function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// Remove a place entirely (the hover ✕ on a chip).
+function removePlace(name) {
+    if (!name || !gameState.placesSelections) return;
+    delete gameState.placesSelections[name];
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// Move a place into a different category (drag chip between lists).
+function movePlaceToCategory(name, cat) {
+    if (!name || !PLACE_META[cat]) return;
+    if (gameState.placesSelections[name] === cat) return;
+    gameState.placesSelections[name] = cat;
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// The ISO code to use for a place: a territory's OWN code (so its own flag shows) when it
+// has one, otherwise the sovereign data-object entry's code.
+function placesCodeForName(name) {
+    if (TERRITORY_CODE_BY_NAME[name]) return TERRITORY_CODE_BY_NAME[name];
+    const data = lookupDataEntry(name, gameState.currentDataObj) ||
+                 lookupDataEntry(effectiveDataName(name), gameState.currentDataObj);
+    return data && data.code ? data.code : null;
+}
+
+// Quiet flag-URL lookup (no console noise) for a place name — the territory's own flag if it
+// has one, else the sovereign flag.
+function placesFlagUrl(name) {
+    const code = placesCodeForName(name);
+    return code ? `https://flagcdn.com/${code}.svg` : null;
+}
+
+// Advance a place through the category cycle and refresh map + panel + URL.
+function cyclePlace(name) {
+    const sel = gameState.placesSelections;
+    const next = PLACE_CYCLE[sel[name] || 'none'];
+    if (next == null) delete sel[name];
+    else sel[name] = next;
+    applyPlacesFills();
+    refreshPlacesPanel();
+    updatePlacesUrl();
+}
+
+// Apply the category fill class to every country path and island dot. Each feature is
+// coloured by its OWN name (territories fill independently of their parent), unlike the
+// quizzes where a parent fills its dependencies too. Called after every draw and cycle.
+function applyPlacesFills() {
+    if (!countriesGroup) return;
+    const sel = gameState.placesSelections || {};
+    const paint = function (d) {
+        const name = d && d.properties && d.properties.name;
+        const cat = name && sel[name];
+        const node = d3.select(this);
+        node.classed('place-visited', cat === 'visited')
+            .classed('place-lived', cat === 'lived')
+            .classed('place-passed', cat === 'passed');
+    };
+    countriesGroup.selectAll('path').each(paint);
+    if (islandMarkersGroup) islandMarkersGroup.selectAll('circle').each(paint);
+}
+
+// ---- Places URL encode/decode ----
+// Compact scheme grouped by category, using ISO codes: "v:us.fr~l:gb~p:ca".
+function encodePlaces(sel) {
+    const groups = { visited: [], lived: [], passed: [] };
+    Object.keys(sel).forEach(name => {
+        const code = placesCodeForName(name);
+        if (code && groups[sel[name]]) groups[sel[name]].push(code);
+    });
+    const parts = [];
+    if (groups.visited.length) parts.push('v:' + groups.visited.sort().join('.'));
+    if (groups.lived.length)   parts.push('l:' + groups.lived.sort().join('.'));
+    if (groups.passed.length)  parts.push('p:' + groups.passed.sort().join('.'));
+    return parts.join('~');
+}
+
+function decodePlaces(str) {
+    const rev = {};   // code → name: current region's data object plus territory codes
+    const obj = gameState.currentDataObj || {};
+    Object.keys(obj).forEach(name => { if (obj[name].code) rev[obj[name].code] = name; });
+    Object.keys(TERRITORY_NAME_BY_CODE).forEach(code => { rev[code] = TERRITORY_NAME_BY_CODE[code]; });
+
+    const catFor = { v: 'visited', l: 'lived', p: 'passed' };
+    const out = {};
+    (str || '').split('~').forEach(seg => {
+        const i = seg.indexOf(':');
+        if (i < 0) return;
+        const cat = catFor[seg.slice(0, i)];
+        if (!cat) return;
+        seg.slice(i + 1).split('.').forEach(code => {
+            const name = rev[code];
+            if (name) out[name] = cat;
+        });
+    });
+    return out;
+}
+
+// Build the query string for the current Places map (mode + region + selections + message).
+function placesQueryString() {
+    const p = new URLSearchParams();
+    p.set('mode', 'places-been');
+    p.set('region', QUIZ_MODES['places-been'].placesRegion || 'world');
+    const enc = encodePlaces(gameState.placesSelections || {});
+    if (enc) p.set('places', enc);
+    if (gameState.placesMessage) p.set('msg', gameState.placesMessage);
+    return p.toString();
+}
+
+// Keep the address bar in sync as the map is edited (no history entry per click).
+function updatePlacesUrl() {
+    history.replaceState(null, '', location.pathname + '?' + placesQueryString());
+}
+
+function sharePlacesLink() {
+    const url = location.origin + location.pathname + '?' + placesQueryString();
+    history.replaceState(null, '', url);
+    copyShareLink(url, 'places-share-status');
+}
+
+// ---- Generic share / challenge plumbing ----
+
+// Reflect a plain quiz mode in the URL so "copy link" shares that mode.
+function syncModeUrl(mode) {
+    const p = new URLSearchParams();
+    p.set('mode', mode);
+    history.replaceState(null, '', location.pathname + '?' + p.toString());
+}
+
+// Copy `url` to the clipboard, reporting success/failure into an optional status element
+// (falls back to a toast when no status id is given).
+function copyShareLink(url, statusId) {
+    const report = ok => {
+        const text = ok ? 'Link copied to clipboard!' : 'Copy failed — the link is in your address bar.';
+        const status = statusId && document.getElementById(statusId);
+        if (status) status.textContent = text;
+        else showToast(text);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => report(true)).catch(() => report(false));
+    } else {
+        report(false);
+    }
+}
+
+// Share the current quiz as a challenge: the mode plus, once the game has ended, the score.
+function shareCurrentGame() {
+    const mc = QUIZ_MODES[gameState.mode];
+    if (mc && mc.placesMode) { sharePlacesLink(); return; }
+    const p = new URLSearchParams();
+    p.set('mode', gameState.mode);
+    if (gameState.ended) {
+        p.set('score', String(gameState.score));
+        const max = gameState.totalQuestions * maxSubForMode(mc);
+        if (isFinite(max) && max > 0) p.set('max', String(max));
+    }
+    const url = location.origin + location.pathname + '?' + p.toString();
+    history.replaceState(null, '', url);
+    copyShareLink(url, null);
+}
+
+// Small transient toast in the corner (used for share confirmations).
+function showToast(text) {
+    let toast = document.getElementById('app-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'app-toast';
+        toast.className = 'app-toast';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = text;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+// On load, start the mode named in the URL (?mode=...). Returns true if it handled routing.
+function routeFromUrl() {
+    const p = new URLSearchParams(location.search);
+    const mode = p.get('mode');
+    if (!mode) return false;
+
+    if (mode === 'places-been') {
+        const region = p.get('region') === 'us' ? 'us' : 'world';
+        startPlacesMode(region, { selectionsStr: p.get('places') || '', message: p.get('msg') || '' });
+        return true;
+    }
+
+    // A challenge link (score present) shows a banner before starting the quiz.
+    const score = p.get('score');
+    if (score != null && QUIZ_MODES[mode]) {
+        showChallengeBanner(mode, score, p.get('max'));
+    }
+    if (QUIZ_MODES[mode] && !QUIZ_MODES[mode].placesMode) {
+        startGameWithMode(mode);
+        return true;
+    }
+    return false;
+}
+
+// Banner shown when someone opens a challenge link, naming the score to beat.
+function showChallengeBanner(mode, score, max) {
+    const name = (QUIZ_MODES[mode] && QUIZ_MODES[mode].name) || mode;
+    const target = max ? `${score}/${max}` : `${score}`;
+    let banner = document.getElementById('challenge-banner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'challenge-banner';
+        banner.className = 'challenge-banner';
+        document.body.appendChild(banner);
+    }
+    banner.innerHTML = `<span>🏆 You've been challenged in <strong>${name}</strong> — beat <strong>${target}</strong>!</span>
+        <button type="button" class="challenge-banner-close" aria-label="Dismiss">&times;</button>`;
+    banner.classList.add('show');
+    banner.querySelector('.challenge-banner-close').addEventListener('click', () => banner.classList.remove('show'));
+    clearTimeout(showChallengeBanner._t);
+    showChallengeBanner._t = setTimeout(() => banner.classList.remove('show'), 8000);
+}
+
+// Tear down any live in-game view (the spaceship WebGL canvas + inset, side panels, layout
+// classes, running timers) so a sub-selector opened from the in-game top bar doesn't leave
+// the previous mode showing behind it — notably the spaceship canvas when opening Places.
+function teardownActiveGame() {
+    disposeOrbital();
+    removeSpaceshipInset();
+    stopNameAllTimer();
+    stopGlobeSpin();
+    document.body.classList.remove('spaceship-active');
+    document.querySelector('.container').classList.remove('globe-side-layout');
+    document.querySelector('.container').classList.remove('explore-overlay-layout');
+    closeCountryPopup();
+    const placesPanel = document.getElementById('places-panel');
+    if (placesPanel) placesPanel.remove();
+    d3.select('#globe').selectAll('*').remove();
+    d3.select('#globe-world').selectAll('*').remove();
+    ['map-container', 'controls', 'question-container', 'multiple-choice-container',
+     'world-quiz-layout', 'world-quiz-question-bar', 'game-info'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+    });
+}
+
+// Show the region picker (World / USA) for Places-been.
+function showPlacesModeSelector() {
+    teardownActiveGame();
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Places I've Been</h2>
+        <p class="selector-sub">Fill in the map with everywhere you've been, then share it.</p>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-places-region="world">
+                <span class="mode-icon material-symbols-outlined">public</span>
+                <span class="mode-name">World</span>
+                <span class="mode-desc">Mark the countries you've been to</span>
+            </button>
+            <button class="mode-btn" data-places-region="us">
+                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
+                <span class="mode-name">USA</span>
+                <span class="mode-desc">Mark the US states you've been to</span>
+            </button>
+        </div>
+        <button id="back-from-places-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    modeSelector.querySelectorAll('[data-places-region]').forEach(btn => {
+        btn.addEventListener('click', (e) => startPlacesMode(e.currentTarget.dataset.placesRegion));
+    });
+    document.getElementById('back-from-places-btn').addEventListener('click', resetModeSelector);
+}
+
 // Show country popup with stats and flag
 function showCountryPopup(countryName) {
     // Territories carry the sovereign parent's flag/capital/population and are
@@ -3950,6 +4643,14 @@ function showCountryPopup(countryName) {
         });
     }
 
+    // In Free Explore the popup belongs to the floating top-right panel (stacked under the
+    // "Explore the Globe" prompt) rather than centred over the page, so it never covers the
+    // globe it is describing. Anywhere else it stays a centred body-level dialog.
+    const host = document.querySelector('.container.explore-overlay-layout')
+        ? document.getElementById('globe-side-panel')
+        : document.body;
+    if (host && popup.parentNode !== host) host.appendChild(popup);
+
     popup.innerHTML = popupHtml;
     popup.style.display = 'block';
 
@@ -3976,12 +4677,104 @@ function closeCountryPopup() {
 
 // ==================== COUNTRY SHAPE ID MODE ====================
 
+// ---- Framing core: the country minus its far-flung specks ----
+// A country's bounding box is only as tight as its most remote scrap of land, and several
+// countries own a rock thousands of km from everything else: South Africa's Prince Edward
+// Islands (0.02% of its area, 1400 km south-east), Norway's Bouvet Island (in the Southern
+// Ocean), Ecuador's Galápagos, mainland Netherlands vs Bonaire, France vs French Guiana.
+// Fitting the Shape-ID silhouette to THAT box shrinks the actual country to an unreadable
+// blob. shapeFramingCore returns just the parts worth framing — an invisible bounding box,
+// since the full geometry is still what gets drawn (anything excluded simply falls outside
+// the viewport). Also used for the shape DESCRIPTOR, so aspect/compactness describe the
+// country people would recognise rather than its outlier-stretched box.
+const CORE_MIN_AREA_FRAC = 0.005; // ignore parts under 0.5% of the country's area…
+const CORE_BIG_PART_FRAC = 0.25;  // …unless they rival the main landmass, then always keep
+const CORE_MIN_GAP_KM = 200;      // never treat something this close as "far-flung"
+const CORE_MIN_KEPT_FRAC = 0.6;   // kept <60% of the area? the country really is scattered
+const DEG_KM = 111.32;
+
+// A part's bounds as [w, s, e, n] in degrees RELATIVE to lon0, so a country straddling
+// ±180° (New Zealand's Chatham Islands) measures as one continuous span. This mirrors the
+// rotate-to-centroid the projection itself does before fitting.
+function partRelBounds(coords, lon0) {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const ring of coords) {
+        for (const p of ring) {
+            let dl = p[0] - lon0;
+            while (dl > 180) dl -= 360;
+            while (dl < -180) dl += 360;
+            if (dl < w) w = dl;
+            if (dl > e) e = dl;
+            if (p[1] < s) s = p[1];
+            if (p[1] > n) n = p[1];
+        }
+    }
+    return [w, s, e, n];
+}
+
+// Longest side of a [w,s,e,n] box, in km (longitude shrunk by latitude).
+function boxExtentKm(b) {
+    const midLat = (b[1] + b[3]) / 2 * Math.PI / 180;
+    return Math.max((b[3] - b[1]) * DEG_KM, (b[2] - b[0]) * DEG_KM * Math.cos(midLat));
+}
+
+// Km of empty space between two boxes (0 if they overlap or touch).
+function boxGapKm(a, b) {
+    const midLat = (Math.max(a[1], b[1]) + Math.min(a[3], b[3])) / 2 * Math.PI / 180;
+    const dLat = Math.max(0, b[1] - a[3], a[1] - b[3]) * DEG_KM;
+    const dLon = Math.max(0, b[0] - a[2], a[0] - b[2]) * DEG_KM * Math.cos(isFinite(midLat) ? midLat : 0);
+    return Math.hypot(dLat, dLon);
+}
+
+function shapeFramingCore(feature) {
+    const parts = featureParts(feature);
+    if (parts.length < 2) return feature;
+
+    const items = parts.map(c => {
+        const poly = { type: 'Polygon', coordinates: c };
+        return { c, a: d3.geoArea(poly), centroid: d3.geoCentroid(poly) };
+    });
+    const total = items.reduce((sum, it) => sum + it.a, 0);
+    if (!(total > 0)) return feature;
+
+    items.sort((x, y) => y.a - x.a);
+    const lon0 = items[0].centroid[0];
+    items.forEach(it => { it.b = partRelBounds(it.c, lon0); });
+
+    // Grow outward from the largest landmass, biggest part first: a part joins the core if
+    // it is comparable in size to the main mass, or near enough to what's accumulated so
+    // far. Testing against the GROWING box (not just the main part) is what keeps genuinely
+    // strung-out countries whole — Indonesia reaches Papua island by island.
+    const main = items[0];
+    let box = main.b.slice();
+    let keptArea = main.a;
+    const kept = [main.c];
+    for (let i = 1; i < items.length; i++) {
+        const it = items[i];
+        const keep = it.a >= CORE_BIG_PART_FRAC * main.a ||
+            (it.a >= CORE_MIN_AREA_FRAC * total &&
+                boxGapKm(box, it.b) <= Math.max(CORE_MIN_GAP_KM, boxExtentKm(box)));
+        if (!keep) continue;
+        kept.push(it.c);
+        keptArea += it.a;
+        box = [Math.min(box[0], it.b[0]), Math.min(box[1], it.b[1]),
+               Math.max(box[2], it.b[2]), Math.max(box[3], it.b[3])];
+    }
+
+    // Countries that genuinely ARE a scatter of islands (Kiribati spans 4000 km of Pacific
+    // with no main landmass at all) would be reduced to a single atoll — leave them whole.
+    if (keptArea < CORE_MIN_KEPT_FRAC * total) return feature;
+    return { type: 'MultiPolygon', coordinates: kept };
+}
+
 // Shape descriptors used to offer Shape-ID distractors that LOOK like the target.
 // Built once from the loaded (10m) geometry and cached until new map data loads.
 let shapeDescriptorCache = null;
 
-// Size / elongation / compactness descriptor for a country feature.
-function computeShapeDescriptor(f) {
+// Size / elongation / compactness descriptor for a country feature. Measured on the
+// framing core, so an offshore speck can't report South Africa as a tall, mostly-empty box.
+function computeShapeDescriptor(feature) {
+    const f = shapeFramingCore(feature);
     const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
     const [[w, s], [e, n]] = d3.geoBounds(f);
     let lonSpan = e - w;
@@ -4077,12 +4870,17 @@ function renderCountryShapeIdQuestion() {
     );
 
     // Fit the Mercator projection to just this country. Rotate to its centroid
-    // longitude first so shapes that straddle the antimeridian stay intact.
+    // longitude first so shapes that straddle the antimeridian stay intact. The fit uses
+    // the framing CORE, not the raw feature — otherwise a remote islet (Prince Edward for
+    // South Africa, the Galápagos for Ecuador) sets the bounds and the country itself
+    // shrinks to a smudge. The full geometry is still what's drawn below; excluded parts
+    // just land outside the viewport.
     if (target && projection && projection.fitExtent) {
-        const c = d3.geoCentroid(target);
+        const core = shapeFramingCore(target);
+        const c = d3.geoCentroid(core);
         if (c && isFinite(c[0])) projection.rotate([-c[0], 0]);
         const pad = Math.min(width, height) * 0.12;
-        projection.fitExtent([[pad, pad], [width - pad, height - pad]], target);
+        projection.fitExtent([[pad, pad], [width - pad, height - pad]], core);
     }
 
     // Draw ONLY the target as a single borderless silhouette. Rendering the whole
@@ -4413,8 +5211,13 @@ function renderOrderingMode() {
         document.getElementById('question-container').appendChild(orderingContainer);
     }
 
-    // Clear container
+    // Clear container and drop any result-grid state from the previous round.
+    orderingContainer.classList.remove('results-mode');
     orderingContainer.innerHTML = '';
+    if (gameState._orderArrowResize) {
+        window.removeEventListener('resize', gameState._orderArrowResize);
+        gameState._orderArrowResize = null;
+    }
 
     // Create draggable items with flag
     const items = selectedCountries.map(country => {
@@ -4476,34 +5279,31 @@ function checkOrderingAnswer() {
     gameState.score += points;
     document.getElementById('score').textContent = gameState.score; syncScoreDisplay();
 
-    // Show feedback
+    // Show feedback (the short score message only — the correct order is now shown in-place
+    // as a grid via renderOrderingResult, not repeated as a list here).
     const feedback = document.getElementById('feedback');
-
-    // Display correct order with populations
-    let correctOrderHTML = '<div class="correct-order"><strong>Correct Order:</strong><ol>';
-    correctOrder.forEach(country => {
-        const pop = gameState.currentDataObj[country].population;
-        const formattedPop = pop.toLocaleString();
-        correctOrderHTML += `<li>${country}: <strong>${formattedPop}</strong></li>`;
-    });
-    correctOrderHTML += '</ol></div>';
-
     if (score === 100) {
         feedback.innerHTML = `<div class="feedback correct">
             Perfect! 🎉 You got 100% of pairs in the correct order! (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     } else if (score >= 70) {
         feedback.innerHTML = `<div class="feedback partial">
             Good! You got ${score}% of pairs in the correct order. (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     } else {
         feedback.innerHTML = `<div class="feedback incorrect">
             You got ${score}% of pairs in the correct order. (+${points} points)
-        </div>${correctOrderHTML}`;
+        </div>`;
     }
 
-    // Disable submit button
-    document.getElementById('submit-order-btn').disabled = true;
+    // Replace the draggable bubbles with the result grid: the player's order as a flag-only
+    // column on the left, the correct order (flag · name · population) filling the rest, and
+    // arrows mapping each guess to where that country actually belongs.
+    renderOrderingResult(userOrder, correctOrder);
+
+    // Hide the submit button — the round is decided.
+    const submitBtn = document.getElementById('submit-order-btn');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.style.display = 'none'; }
 
     // Show next button as a manual skip, then auto-advance after a pause. Advancing goes
     // through the shared goToNextQuestion() (via scheduleAutoAdvance/the Next button), which
@@ -4512,6 +5312,102 @@ function checkOrderingAnswer() {
     document.getElementById('next-btn').style.display = 'inline-block';
     document.getElementById('next-btn').disabled = false;
     scheduleAutoAdvance();
+}
+
+// Replace the draggable bubbles with a result grid: the player's submitted order as a
+// flag-only column on the left, the correct order (flag · name · population) filling the
+// rest, and curved arrows linking each guess to the country's true position.
+function renderOrderingResult(userOrder, correctOrder) {
+    const container = document.getElementById('ordering-container');
+    if (!container) return;
+    const dataObj = gameState.currentDataObj;
+
+    const correctIndexOf = {};
+    correctOrder.forEach((c, j) => { correctIndexOf[c] = j; });
+
+    const guessRows = userOrder.map(c => `
+        <div class="order-guess" data-country="${c}">
+            <img src="${getFlagUrl(c)}" alt="${c}" class="order-flag">
+        </div>`).join('');
+
+    const correctRows = correctOrder.map((c, j) => `
+        <div class="order-correct-row" data-country="${c}">
+            <span class="oc-rank">${j + 1}</span>
+            <img src="${getFlagUrl(c)}" alt="${c}" class="order-flag">
+            <span class="oc-name">${c}</span>
+            <span class="oc-pop">${dataObj[c].population.toLocaleString()}</span>
+        </div>`).join('');
+
+    container.classList.add('results-mode');
+    container.innerHTML = `
+        <div class="order-result">
+            <div class="order-guesses" aria-label="Your order">${guessRows}</div>
+            <div class="order-correct" aria-label="Correct order">${correctRows}</div>
+            <svg class="order-arrows" aria-hidden="true">
+                <defs>
+                    <marker id="order-arrowhead-correct" viewBox="0 0 10 10" refX="8" refY="5"
+                            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path class="ah-correct" d="M0,0 L10,5 L0,10 z"></path>
+                    </marker>
+                    <marker id="order-arrowhead-moved" viewBox="0 0 10 10" refX="8" refY="5"
+                            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path class="ah-moved" d="M0,0 L10,5 L0,10 z"></path>
+                    </marker>
+                </defs>
+            </svg>
+        </div>`;
+
+    // Draw arrows from measured DOM positions. Row heights are fixed by CSS (independent of
+    // flag-image load), so getBoundingClientRect is accurate immediately — draw synchronously
+    // rather than relying on requestAnimationFrame (which is throttled when the tab isn't
+    // visible). A follow-up rAF re-draw absorbs any late layout shift (e.g. web-font swap).
+    const redraw = () => drawOrderArrows(container, correctIndexOf);
+    redraw();
+    requestAnimationFrame(redraw);
+    if (gameState._orderArrowResize) window.removeEventListener('resize', gameState._orderArrowResize);
+    gameState._orderArrowResize = () => {
+        if (!container.querySelector('.order-arrows')) {
+            window.removeEventListener('resize', gameState._orderArrowResize);
+            gameState._orderArrowResize = null;
+            return;
+        }
+        drawOrderArrows(container, correctIndexOf);
+    };
+    window.addEventListener('resize', gameState._orderArrowResize);
+}
+
+// Draw one curved arrow per guess, from the right edge of the guess flag to the left edge
+// of the matching correct-order row. Correctly-placed guesses are green, moved ones muted.
+function drawOrderArrows(container, correctIndexOf) {
+    const result = container.querySelector('.order-result');
+    const svg = container.querySelector('.order-arrows');
+    if (!result || !svg) return;
+
+    const rect = result.getBoundingClientRect();
+    svg.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+    svg.setAttribute('width', rect.width);
+    svg.setAttribute('height', rect.height);
+    svg.querySelectorAll('path.order-connector').forEach(n => n.remove());
+
+    const rowByCountry = {};
+    result.querySelectorAll('.order-correct-row').forEach(r => { rowByCountry[r.dataset.country] = r; });
+
+    result.querySelectorAll('.order-guess').forEach((g, i) => {
+        const country = g.dataset.country;
+        const target = rowByCountry[country];
+        if (!target) return;
+        const gr = g.getBoundingClientRect(), tr = target.getBoundingClientRect();
+        const x1 = gr.right - rect.left, y1 = gr.top + gr.height / 2 - rect.top;
+        const x2 = tr.left - rect.left, y2 = tr.top + tr.height / 2 - rect.top;
+        const dx = Math.max(24, (x2 - x1) * 0.5);   // horizontal control-point pull for the curve
+
+        const correct = correctIndexOf[country] === i;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2 - 2} ${y2}`);
+        path.setAttribute('class', 'order-connector ' + (correct ? 'is-correct' : 'is-moved'));
+        path.setAttribute('marker-end', correct ? 'url(#order-arrowhead-correct)' : 'url(#order-arrowhead-moved)');
+        svg.appendChild(path);
+    });
 }
 
 
@@ -4525,6 +5421,19 @@ function getCountryCentroid(countryName) {
     return null;
 }
 
+// d3.interpolate for a projection.rotate() array that always takes the SHORT way around
+// each axis, so spinning to a country never crosses the whole globe when the target is just
+// across the ±180° seam. Each target angle is nudged by ±360° so its delta lands in [-180,180].
+function interpolateRotateShortest(from, to) {
+    const adjusted = to.map((v, i) => {
+        let d = (v - from[i]) % 360;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return from[i] + d;
+    });
+    return d3.interpolate(from, adjusted);
+}
+
 // Rotate globe to show target country
 function rotateToCountry(countryName) {
     if (!isGlobeView()) return; // No rotation in flat (Mercator) view
@@ -4534,7 +5443,7 @@ function rotateToCountry(countryName) {
     d3.transition()
         .duration(1000)
         .tween('rotate', () => {
-            const r = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
+            const r = interpolateRotateShortest(projection.rotate(), [-centroid[0], -centroid[1]]);
             return t => {
                 projection.rotate(r(t));
                 countriesGroup.selectAll('path').attr('d', path);
@@ -4558,7 +5467,7 @@ function zoomAndRotateToCountry(countryName, duration = 800) {
         d3.transition()
             .duration(duration)
             .tween('zoom-rotate', () => {
-                const r = d3.interpolate(projection.rotate(), [-centroid[0], -centroid[1]]);
+                const r = interpolateRotateShortest(projection.rotate(), [-centroid[0], -centroid[1]]);
                 const s = d3.interpolate(projection.scale(), 400); // Zoom in a bit
                 return t => {
                     projection.rotate(r(t));
@@ -4695,14 +5604,15 @@ versor.rotation = function(q) {
 function endGame() {
     // Stop globe spinning
     stopGlobeSpin();
+    gameState.ended = true;
 
     const modeConfig = QUIZ_MODES[gameState.mode];
 
-    // Distance-scored modes (Find the Capital, Where Is My Spaceship?).
-    if (modeConfig.findCapitalMode || modeConfig.spaceshipMode) {
+    // Distance-scored modes (Find the Capital, Where Is My Spaceship?, Place the Countries).
+    if (modeConfig.findCapitalMode || modeConfig.spaceshipMode || modeConfig.placeCountriesMode) {
         document.getElementById('question-text').innerHTML = 'Game Over!';
         clearMultipleChoice();
-        const unit = modeConfig.spaceshipMode ? 'locations' : 'capitals';
+        const unit = modeConfig.spaceshipMode ? 'locations' : modeConfig.placeCountriesMode ? 'countries' : 'capitals';
         const total = Math.round(gameState.totalDistanceKm || 0);
         const avg = Math.round((gameState.totalDistanceKm || 0) / gameState.totalQuestions);
         const feedback = document.getElementById('feedback');
@@ -4711,6 +5621,7 @@ function endGame() {
         feedback.className = 'feedback ' + (avg < 1000 ? 'correct' : 'incorrect');
         document.getElementById('next-btn').disabled = true;
         document.getElementById('give-up-btn').style.display = 'none';
+        appendChallengeButton(feedback);
         return;
     }
 
@@ -4726,6 +5637,20 @@ function endGame() {
     feedback.className = percentage >= 70 ? 'feedback correct' : 'feedback incorrect';
 
     document.getElementById('next-btn').disabled = true;
+    appendChallengeButton(feedback);
+}
+
+// Add a "Challenge a friend" button under the final-score feedback: copies a link that
+// carries this mode + score so the recipient sees a beat-my-score banner.
+function appendChallengeButton(feedback) {
+    if (!feedback) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn challenge-share-btn';
+    btn.textContent = '🏆 Challenge a friend';
+    btn.addEventListener('click', shareCurrentGame);
+    feedback.appendChild(document.createElement('br'));
+    feedback.appendChild(btn);
 }
 
 // Restart game
@@ -4772,6 +5697,12 @@ function goHome() {
     disposeOrbital();
     document.body.classList.remove('spaceship-active');
     document.querySelector('.container').classList.remove('globe-side-layout');
+    document.querySelector('.container').classList.remove('explore-overlay-layout');
+
+    // Tear down the Places panel and return to a clean, mode-less URL.
+    const placesPanel = document.getElementById('places-panel');
+    if (placesPanel) placesPanel.remove();
+    history.replaceState(null, '', location.pathname);
 
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
@@ -4804,6 +5735,10 @@ function setupEventListeners() {
                 showIdentifyModeSelector();
             } else if (mode === 'name-all') {
                 showNameAllModeSelector();
+            } else if (mode === 'places') {
+                showPlacesModeSelector();
+            } else if (mode === 'place-quiz') {
+                showPlaceCountriesSelector();
             } else {
                 startGameWithMode(mode);
             }
@@ -4912,6 +5847,9 @@ function setupEventListeners() {
     document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
+            // Places-been needs a region choice first, so open its selector rather than
+            // starting a mode directly.
+            if (mode === 'places') { showPlacesModeSelector(); return; }
             if (mode) switchToMode(mode);
         });
     });
@@ -4926,6 +5864,10 @@ function setupEventListeners() {
         }
         if (mc && mc.spaceshipMode && !gameState.capitalSubmitted) {
             submitSpaceshipGuess();
+            return;
+        }
+        if (mc && mc.placeCountriesMode && !gameState.capitalSubmitted) {
+            submitPlaceGuess();
             return;
         }
         // Move to next item (also cancels any pending auto-advance)
@@ -5068,6 +6010,18 @@ function setupEventListeners() {
             updateIslandMarkers();
         });
     }
+    // Place-the-Countries Medium: fraction (1/N) of each shoreline shown.
+    const placeFragSlider = document.getElementById('tune-place-frag');
+    if (placeFragSlider) {
+        const label = document.getElementById('tune-place-frag-val');
+        placeFragSlider.addEventListener('input', function () {
+            placeFragmentDenominator = +this.value;
+            if (label) label.textContent = this.value;
+            // Re-apply live if a Medium round is on screen.
+            const mc = QUIZ_MODES[gameState.mode];
+            if (mc && mc.placeCountriesMode && mc.placeDifficulty === 'medium' && countriesGroup) applyFragmentDash();
+        });
+    }
     // Settings pop-up: open/close the tuning-slider modal.
     const settingsBtn = document.getElementById('settings-btn');
     const settingsOverlay = document.getElementById('settings-overlay');
@@ -5081,6 +6035,11 @@ function setupEventListeners() {
         settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) closeSettings(); });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
     }
+
+    // Share button: copy a link to the current mode (or, once a game has ended, a challenge
+    // link carrying the score). Places-been routes to its own richer share.
+    const shareBtn = document.getElementById('share-btn');
+    if (shareBtn) shareBtn.addEventListener('click', shareCurrentGame);
 
     // Debug validity overlay toggle (button + 'd' keyboard shortcut)
     const debugBtn = document.getElementById('debug-validity-toggle');
@@ -5221,6 +6180,270 @@ function capitalRating(avgKm) {
     return 'Back to the atlas! 📚';
 }
 
+// ==================== PLACE THE COUNTRIES ====================
+// A blank static world map (difficulty controls how much is shown). Each round asks the
+// player to place a country by clicking; scored by the total great-circle distance from
+// each click to the nearest point of that country's outline (0 if the click lands inside).
+
+// [lon,lat] rings for a Polygon/MultiPolygon geometry.
+function geomRings(geom) {
+    if (!geom) return [];
+    if (geom.type === 'Polygon') return geom.coordinates;
+    if (geom.type === 'MultiPolygon') return geom.coordinates.reduce((a, poly) => a.concat(poly), []);
+    return [];
+}
+
+// Great-circle distance (km) from a guess [lon,lat] to a country feature: 0 if the guess is
+// inside it, else the distance to the nearest boundary vertex (stored for the reveal line).
+function distanceToCountryKm(guess, feature) {
+    if (!feature) return 0;
+    gameState.placeNearest = null;
+    if (d3.geoContains(feature, guess)) return 0;
+    let min = Infinity;
+    for (const ring of geomRings(feature.geometry)) {
+        for (const pt of ring) {
+            const d = d3.geoDistance(guess, pt);
+            if (d < min) { min = d; gameState.placeNearest = pt; }
+        }
+    }
+    return (min === Infinity ? 0 : min * 6371);
+}
+
+// Draw the difficulty-appropriate blank-map seeds into countriesGroup (called by drawCountries).
+function drawPlaceSeeds() {
+    const mc = QUIZ_MODES[gameState.mode];
+    const diff = mc.placeDifficulty || 'easy';
+
+    // Ocean backdrop so the empty map reads as water (also catches clicks over the sea).
+    countriesGroup.append('rect').attr('class', 'place-ocean')
+        .attr('x', 0).attr('y', 0).attr('width', width).attr('height', height);
+
+    const featureByName = name => gameState.countries.find(c => c.properties && c.properties.name === name);
+
+    if (diff === 'hard') {
+        // Just the UK as the single reference.
+        const uk = featureByName('United Kingdom');
+        if (uk) {
+            countriesGroup.append('path').datum(uk).attr('class', 'place-anchor').attr('d', path);
+            drawPlaceLabel(uk, 'UK');
+        }
+        return;
+    }
+
+    // Easy + Medium: all coastlines/borders as thin outlines (Medium shows only fragments).
+    const cls = diff === 'medium' ? 'place-shoreline place-fragment' : 'place-shoreline';
+    countriesGroup.selectAll('path.place-shoreline')
+        .data(gameState.countries).enter().append('path')
+        .attr('class', cls).attr('d', path);
+    if (diff === 'medium') applyFragmentDash();
+
+    // Easy also seeds + labels one anchor country per continent.
+    if (diff === 'easy') {
+        PLACE_ANCHORS.forEach(name => {
+            const f = featureByName(name);
+            if (!f) return;
+            countriesGroup.append('path').datum(f).attr('class', 'place-anchor').attr('d', path);
+            drawPlaceLabel(f, name === 'United States of America' ? 'USA' : name);
+        });
+    }
+}
+
+// Medium difficulty: reveal only ~1/N of each outline via a dash pattern (N is tunable).
+function applyFragmentDash() {
+    const N = Math.max(2, placeFragmentDenominator | 0);
+    const dash = 5;
+    countriesGroup.selectAll('path.place-fragment').style('stroke-dasharray', `${dash} ${dash * (N - 1)}`);
+}
+
+function drawPlaceLabel(feature, label) {
+    if (!feature) return;
+    const c = path.centroid(feature);
+    if (!c || isNaN(c[0])) return;
+    countriesGroup.append('text').attr('class', 'place-label')
+        .attr('x', c[0]).attr('y', c[1]).attr('text-anchor', 'middle').text(label);
+}
+
+function renderPlaceCountriesQuestion() {
+    gameState.questionType = 'place-countries';
+    gameState.capitalSubmitted = false;   // reuse the distance-mode "submitted" flag
+    gameState.currentGuess = null;
+    gameState.placeNearest = null;
+    if (gameState.totalDistanceKm == null) gameState.totalDistanceKm = 0;
+
+    clearCapitalMarkers();
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+
+    const mc = QUIZ_MODES['place-countries'];
+    const submode = mc.placeSubmode || 'named';
+    const anchors = mc.placeDifficulty === 'easy' ? new Set(PLACE_ANCHORS) : new Set();
+
+    // Placeable = has geometry on the map, not already used, not a shown anchor.
+    const pool = gameState.currentQuizList.filter(n =>
+        gameState.countries.some(c => c.properties && c.properties.name === n) &&
+        !gameState.usedCountries.has(n) && !anchors.has(n));
+    if (!pool.length) { endGame(); return; }
+
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.textContent = 'Submit Guess'; nextBtn.disabled = true; nextBtn.style.display = 'inline-block';
+    const giveUpBtn = document.getElementById('give-up-btn');
+    giveUpBtn.style.display = 'inline-block'; giveUpBtn.textContent = 'Skip';
+
+    const progress = `Round ${gameState.currentQuestion}/${gameState.totalQuestions}`;
+    const totalLine = `<br><span style="font-size:.85em;opacity:.8">Total distance so far: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km</span>`;
+    const qEl = document.getElementById('question-text');
+
+    if (submode === 'choose') {
+        const sorted = pool.slice().sort((a, b) => a.localeCompare(b));
+        gameState.placeTarget = sorted[0];
+        qEl.innerHTML = `${progress} — Choose a country, then click the map to place it.` +
+            `<br><select id="place-choose" class="place-choose">` +
+            sorted.map(n => `<option value="${escAttr(n)}">${escAttr(n)}</option>`).join('') +
+            `</select>` + totalLine;
+        const sel = document.getElementById('place-choose');
+        sel.addEventListener('change', () => { gameState.placeTarget = sel.value; });
+    } else {
+        gameState.placeTarget = pool[Math.floor(Math.random() * pool.length)];
+        qEl.innerHTML = `${progress} — Place <strong>${gameState.placeTarget}</strong> on the map, then Submit.` + totalLine;
+    }
+}
+
+function handlePlaceGuessClick(event) {
+    const mc = QUIZ_MODES[gameState.mode];
+    if (!mc || !mc.placeCountriesMode || gameState.capitalSubmitted) return;
+    const p = d3.pointer(event, svg.node());
+    const geo = projection.invert(p);
+    if (!geo || isNaN(geo[0])) return;
+    gameState.currentGuess = geo;
+    const grp = ensureCapitalMarkersGroup();
+    let m = grp.select('.guess-marker');
+    if (m.empty()) m = grp.append('circle').attr('class', 'guess-marker').attr('r', 6);
+    m.attr('cx', p[0]).attr('cy', p[1]);
+    document.getElementById('next-btn').disabled = false;
+}
+
+// Reveal the target country's outline, the guess marker, and a line to the nearest point.
+function revealPlaceAnswer(feature) {
+    const grp = ensureCapitalMarkersGroup();
+    if (feature) grp.append('path').datum(feature).attr('class', 'place-reveal').attr('d', path);
+    if (gameState.currentGuess) {
+        const gp = projection(gameState.currentGuess);
+        if (gameState.placeNearest) {
+            const np = projection(gameState.placeNearest);
+            grp.append('line').attr('class', 'guess-line')
+                .attr('x1', gp[0]).attr('y1', gp[1]).attr('x2', np[0]).attr('y2', np[1]);
+        }
+        grp.append('circle').attr('class', 'guess-marker').attr('r', 6).attr('cx', gp[0]).attr('cy', gp[1]);
+    }
+    const nextBtn = document.getElementById('next-btn');
+    nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
+    nextBtn.disabled = false;
+    document.getElementById('give-up-btn').style.display = 'none';
+    scheduleAutoAdvance();
+}
+
+function submitPlaceGuess() {
+    if (gameState.capitalSubmitted || !gameState.currentGuess || !gameState.placeTarget) return;
+    gameState.capitalSubmitted = true;
+    gameState.usedCountries.add(gameState.placeTarget);
+
+    const feature = gameState.countries.find(c => c.properties && c.properties.name === gameState.placeTarget);
+    const dKm = distanceToCountryKm(gameState.currentGuess, feature);
+    gameState.totalDistanceKm += dKm;
+
+    const feedback = document.getElementById('feedback');
+    const hit = dKm < 1;
+    feedback.innerHTML = `<strong>${gameState.placeTarget}</strong> — ` +
+        (hit ? 'spot on! (0 km)' : `your click was <strong>${Math.round(dKm).toLocaleString()} km</strong> away.`) +
+        ` &nbsp;Total: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km`;
+    feedback.className = 'feedback ' + (dKm < 500 ? 'correct' : 'incorrect');
+    if (dKm < 500) { gameState.score++; document.getElementById('score').textContent = gameState.score; syncScoreDisplay(); }
+
+    revealPlaceAnswer(feature);
+}
+
+function skipPlaceGuess() {
+    if (gameState.capitalSubmitted) return;
+    if (gameState.currentGuess) { submitPlaceGuess(); return; }
+    gameState.capitalSubmitted = true;
+    if (gameState.placeTarget) gameState.usedCountries.add(gameState.placeTarget);
+    gameState.totalDistanceKm += 5000; // skip penalty
+    const feature = gameState.countries.find(c => c.properties && c.properties.name === gameState.placeTarget);
+    const feedback = document.getElementById('feedback');
+    feedback.innerHTML = `Skipped. <strong>${gameState.placeTarget}</strong> is shown (+5,000 km penalty).` +
+        ` &nbsp;Total: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km`;
+    feedback.className = 'feedback incorrect';
+    revealPlaceAnswer(feature);
+}
+
+// Difficulty + sub-mode picker for Place-the-Countries.
+function showPlaceCountriesSelector() {
+    teardownActiveGame();
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+
+    const modeSelector = document.getElementById('mode-selector');
+    modeSelector.classList.remove('hidden');
+    modeSelector.innerHTML = `
+        <h2>Place the Countries</h2>
+        <p class="selector-sub">Click a blank map to place each country — scored by distance.</p>
+        <div class="place-setup">
+            <div class="place-setup-group">
+                <div class="place-setup-label">Difficulty</div>
+                <div class="scope-toggle" id="place-diff">
+                    <button class="scope-btn active" data-diff="easy">Easy</button>
+                    <button class="scope-btn" data-diff="medium">Medium</button>
+                    <button class="scope-btn" data-diff="hard">Hard</button>
+                </div>
+                <div class="place-setup-hint" id="place-diff-hint"></div>
+            </div>
+            <div class="place-setup-group">
+                <div class="place-setup-label">Mode</div>
+                <div class="scope-toggle" id="place-submode">
+                    <button class="scope-btn active" data-sub="named">Name given</button>
+                    <button class="scope-btn" data-sub="choose">Choose from list</button>
+                </div>
+            </div>
+        </div>
+        <div class="mode-buttons">
+            <button class="mode-btn" id="place-start-btn">
+                <span class="mode-icon material-symbols-outlined">public</span>
+                <span class="mode-name">Start</span>
+                <span class="mode-desc">Begin placing countries</span>
+            </button>
+        </div>
+        <button id="back-from-place-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
+    `;
+
+    const hints = {
+        easy: 'All coastlines drawn, plus one labelled anchor country per continent.',
+        medium: 'Only fragments of the coastlines (tunable in Settings), no anchors.',
+        hard: 'Just the UK is shown — nothing else.'
+    };
+    const state = { diff: 'easy', sub: 'named' };
+    const hintEl = document.getElementById('place-diff-hint');
+    hintEl.textContent = hints.easy;
+
+    modeSelector.querySelectorAll('#place-diff .scope-btn').forEach(b => b.addEventListener('click', () => {
+        state.diff = b.dataset.diff;
+        hintEl.textContent = hints[state.diff];
+        modeSelector.querySelectorAll('#place-diff .scope-btn').forEach(x => x.classList.toggle('active', x === b));
+    }));
+    modeSelector.querySelectorAll('#place-submode .scope-btn').forEach(b => b.addEventListener('click', () => {
+        state.sub = b.dataset.sub;
+        modeSelector.querySelectorAll('#place-submode .scope-btn').forEach(x => x.classList.toggle('active', x === b));
+    }));
+    document.getElementById('place-start-btn').addEventListener('click', () => startPlaceCountriesMode(state.diff, state.sub));
+    document.getElementById('back-from-place-btn').addEventListener('click', resetModeSelector);
+}
+
+function startPlaceCountriesMode(difficulty, submode) {
+    const m = QUIZ_MODES['place-countries'];
+    m.placeDifficulty = difficulty || 'easy';
+    m.placeSubmode = submode || 'named';
+    startGameWithMode('place-countries');
+}
+
 // ==================== WHERE IS MY SPACESHIP? ====================
 // A photographic low-Earth-orbit view: a three.js textured sphere (NASA Blue Marble)
 // seen through a perspective camera placed at ISS altitude over a random coastal
@@ -5235,7 +6458,7 @@ let orbitalTexLow = null;      // cached THREE.Texture (2048 low-res base sphere
 let orbCam = null;             // current camera params { lat, lon, heading, tilt, roll, fov }
 let orbDrag = null;            // pointer-drag state for look-around
 let orbitalResizeBound = false;
-let orbitAltitudeKm = 400;        // camera altitude — ISS-class default; tunable via the Orbit-height slider
+let orbitAltitudeKm = 250;        // camera altitude — tunable via the Orbit-height slider
 const SPACESHIP_FOV = 48;         // vertical field of view (degrees)
 const EARTH_R_KM = 6371;
 // Distance ratio (R+h)/R and the derived viewing geometry. The camera-nadir→horizon
@@ -5695,15 +6918,15 @@ function orbitalLoadCap(target) {
 // two flanking "Horizon (blue/white)" stops get dragged to. The editor keeps every other
 // stop ascending and clamped to its neighbours (see setAtmoPos).
 const ATMO_MIN_GAP = 0.01;           // min separation between stops (smoothstep needs edge0 < edge1)
-let atmoSpreadSpaceKm = 150;         // space-side reach, capped at 600 km
-let atmoSpreadEarthKm = 400;         // earth-side reach, capped at 1500 km
+let atmoSpreadSpaceKm = 120;         // space-side reach, capped at 600 km
+let atmoSpreadEarthKm = 200;         // earth-side reach, capped at 1500 km
 let atmoEarthTangentFade = false;    // false = linear earth-side fade, true = tangent-warped
 let atmoStops = [
     { label: 'Space',           pos: 0.00, color: '#5b9dff', alpha: 0.00 },
     { label: 'Horizon (blue)',  pos: 0.32, color: '#4a90ff', alpha: 0.60 },
     { label: 'Horizon',         pos: 0.50, color: '#ffffff', alpha: 0.90, fixed: true },
-    { label: 'Horizon (white)', pos: 0.66, color: '#eaf4ff', alpha: 0.75 },
-    { label: 'Earth',           pos: 1.00, color: '#dceeff', alpha: 0.00 }
+    { label: 'Horizon (white)', pos: 0.66, color: '#eaf4ff', alpha: 0.52 },
+    { label: 'Earth',           pos: 1.00, color: '#dceeff', alpha: 0.12 }
 ];
 
 // '#rrggbb' → [r,g,b] in 0..1. Deliberately NOT via THREE.Color: colour management would
@@ -6627,10 +7850,25 @@ function resetModeSelector() {
                 <span class="mode-name">Free Explore</span>
                 <span class="mode-desc">Explore the globe and click to learn about countries</span>
             </button>
+            <button class="mode-btn" data-mode="places">
+                <span class="mode-icon material-symbols-outlined">travel_explore</span>
+                <span class="mode-name">Places I've Been</span>
+                <span class="mode-desc">Fill in the map with your travels and share it</span>
+            </button>
+            <button class="mode-btn" data-mode="place-quiz">
+                <span class="mode-icon material-symbols-outlined">map</span>
+                <span class="mode-name">Place the Countries</span>
+                <span class="mode-desc">Click a blank map to place each country</span>
+            </button>
             <button class="mode-btn" data-mode="country-shape-id">
                 <span class="mode-icon material-symbols-outlined">extension</span>
                 <span class="mode-name">Country Shape ID</span>
                 <span class="mode-desc">Identify countries by their shape</span>
+            </button>
+            <button class="mode-btn" data-mode="flag-id">
+                <span class="mode-icon material-symbols-outlined">flag</span>
+                <span class="mode-name">US Flag ID</span>
+                <span class="mode-desc">Name the US state from its flag</span>
             </button>
             <button class="mode-btn" data-mode="find-capital">
                 <span class="mode-icon material-symbols-outlined">location_city</span>
@@ -6662,6 +7900,10 @@ function resetModeSelector() {
                 showIdentifyModeSelector();
             } else if (mode === 'name-all') {
                 showNameAllModeSelector();
+            } else if (mode === 'places') {
+                showPlacesModeSelector();
+            } else if (mode === 'place-quiz') {
+                showPlaceCountriesSelector();
             } else {
                 startGameWithMode(mode);
             }

@@ -86,6 +86,7 @@
                 <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
                 <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
                 <button class="mode-icon-btn" data-mode="free-explore" title="Free Explore"><span class="material-symbols-outlined">explore</span></button>
+                <button class="mode-icon-btn" data-mode="places" title="Places I've Been"><span class="material-symbols-outlined">travel_explore</span></button>
                 <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">extension</span></button>
                 <button class="mode-icon-btn" data-mode="find-capital" title="Find the Capital"><span class="material-symbols-outlined">location_city</span></button>
                 <button class="mode-icon-btn" data-mode="spaceship" title="Where Is My Spaceship?"><span class="material-symbols-outlined">rocket_launch</span></button>
@@ -138,10 +139,25 @@
                     <span class="mode-name">Free Explore</span>
                     <span class="mode-desc">Explore the globe and click to learn about countries</span>
                 </button>
+                <button class="mode-btn" data-mode="places">
+                    <span class="mode-icon material-symbols-outlined">travel_explore</span>
+                    <span class="mode-name">Places I've Been</span>
+                    <span class="mode-desc">Fill in the map with your travels and share it</span>
+                </button>
+                <button class="mode-btn" data-mode="place-quiz">
+                    <span class="mode-icon material-symbols-outlined">map</span>
+                    <span class="mode-name">Place the Countries</span>
+                    <span class="mode-desc">Click a blank map to place each country</span>
+                </button>
                 <button class="mode-btn" data-mode="country-shape-id">
                     <span class="mode-icon material-symbols-outlined">extension</span>
                     <span class="mode-name">Country Shape ID</span>
                     <span class="mode-desc">Identify countries by their shape</span>
+                </button>
+                <button class="mode-btn" data-mode="flag-id">
+                    <span class="mode-icon material-symbols-outlined">flag</span>
+                    <span class="mode-name">US Flag ID</span>
+                    <span class="mode-desc">Name the US state from its flag</span>
                 </button>
                 <button class="mode-btn" data-mode="find-capital">
                     <span class="mode-icon material-symbols-outlined">location_city</span>
@@ -291,6 +307,7 @@
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
             <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
             <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
+            <button id="share-btn" class="btn secondary" title="Copy a link to this mode / challenge a friend"><span class="material-symbols-outlined">share</span> Share</button>
             <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
         </div>
 
@@ -305,19 +322,19 @@
                     <div class="tuning-group" id="spaceship-tuning" style="display:none">
                         <div class="tuning-group-title">Spaceship</div>
                         <label class="tuning-item" title="Camera altitude (lower = more grazing horizon). Capped at 500 km.">
-                            <span class="tuning-label">Orbit height</span> <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="400"><span id="tune-orbit-height-val">400 km</span>
+                            <span class="tuning-label">Orbit height</span> <input type="range" id="tune-orbit-height" min="150" max="500" step="10" value="250"><span id="tune-orbit-height-val">250 km</span>
                         </label>
                         <label class="tuning-item" title="Fetch NASA's full 500 m Blue Marble tiles live and stitch the visible cap (sharpest, but each round pulls tens of MB — not bundled with the app). Off = a lighter single-globe crop.">
                             <span class="tuning-label">500 m tiles</span> <input type="checkbox" id="tune-hires-500m">
                         </label>
                         <label class="tuning-item" title="How far the atmosphere gradient reaches ABOVE the horizon (space side), measured as a view ray's tangent altitude above the surface. Capped at 600 km.">
-                            <span class="tuning-label">Atmo spread (space)</span> <input type="range" id="tune-atmo-spread-space" min="20" max="600" step="10" value="150"><span id="tune-atmo-spread-space-val">150 km</span>
+                            <span class="tuning-label">Atmo spread (space)</span> <input type="range" id="tune-atmo-spread-space" min="20" max="600" step="10" value="120"><span id="tune-atmo-spread-space-val">120 km</span>
                         </label>
                         <label class="tuning-item" title="How far the atmosphere gradient reaches BELOW the horizon (earth side). Capped at 1500 km — ground haze reads much further than the space-side glow.">
-                            <span class="tuning-label">Atmo spread (earth)</span> <input type="range" id="tune-atmo-spread-earth" min="50" max="1500" step="50" value="400"><span id="tune-atmo-spread-earth-val">400 km</span>
+                            <span class="tuning-label">Atmo spread (earth)</span> <input type="range" id="tune-atmo-spread-earth" min="50" max="1500" step="50" value="200"><span id="tune-atmo-spread-earth-val">200 km</span>
                         </label>
-                        <label class="tuning-item" title="The space side always fades linearly with distance from the horizon. Check this to warp the earth side through a tangent curve instead, to compare the two shapes.">
-                            <span class="tuning-label">Tangent earth fade</span> <input type="checkbox" id="tune-atmo-tan-earth">
+                        <label class="tuning-item" title="The space side always fades linearly with distance from the horizon. Check this to warp the earth side through a curve that simulates looking through progressively more atmosphere as you look closer to the ground.">
+                            <span class="tuning-label">Atmospheric depth</span> <input type="checkbox" id="tune-atmo-tan-earth">
                         </label>
                         <!-- 5-stop atmosphere gradient. Left = space, the tick = the horizon, right = down
                              into the earth's disc. The centre "Horizon" stop is pinned at the limb and
@@ -363,6 +380,9 @@
                         </label>
                         <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
                             <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
+                        </label>
+                        <label class="tuning-item" title="Place the Countries (Medium): show only 1/N of each shoreline">
+                            <span class="tuning-label">Shoreline 1/N</span> <input type="range" id="tune-place-frag" min="2" max="12" step="1" value="4"><span id="tune-place-frag-val">4</span>
                         </label>
                     </div>
                 </div>
