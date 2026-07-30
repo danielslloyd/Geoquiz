@@ -634,6 +634,85 @@ header h1 .material-symbols-outlined {
     grid-template-columns: 1fr;
 }
 
+/* Free Explore has no questions or answer buttons — only a one-line prompt and, on click,
+   a country popup. Reserving a 300px side column for that wasted a third of the screen, so
+   here the map fills the whole area and the panel floats over its top-right corner (the
+   part of a globe view that is always empty). The panel itself is click-through so drags
+   that start over it still rotate the globe; its cards re-enable pointer events. */
+.container.explore-overlay-layout .globe-layout {
+    display: block;
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+
+.container.explore-overlay-layout .map-container {
+    height: 100%;
+    margin-bottom: 0;
+}
+
+.container.explore-overlay-layout .globe-side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 5;
+    width: 280px;
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+    pointer-events: none;
+}
+
+.container.explore-overlay-layout .globe-side-panel > * {
+    pointer-events: auto;
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+.container.explore-overlay-layout .question-container {
+    padding: 10px 14px;
+    backdrop-filter: blur(2px);
+}
+
+.container.explore-overlay-layout .question h2 {
+    font-size: 1rem;
+}
+
+/* Docked popup: the fixed centred dialog becomes a normal card in the floating column. */
+#globe-side-panel .explore-popup {
+    position: static;
+    transform: none;
+    width: 100%;
+    max-width: none;
+    animation: popupFadeIn 0.25s ease-out;
+}
+
+#globe-side-panel .explore-popup-content {
+    padding: 14px;
+}
+
+#globe-side-panel .explore-popup-content h3 {
+    margin-bottom: 10px;
+    font-size: 1.2rem;
+}
+
+@keyframes popupFadeIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* Too narrow for a floating column beside the globe — span the width instead. */
+@media (max-width: 600px) {
+    .container.explore-overlay-layout .globe-side-panel {
+        left: 8px;
+        right: 8px;
+        width: auto;
+    }
+}
+
 @media (max-width: 1024px) {
     .container.globe-side-layout .globe-layout {
         flex-direction: column;
@@ -1136,10 +1215,13 @@ header h1 .material-symbols-outlined {
     max-width: 400px;
 }
 
+/* Capped on BOTH axes, not just width: a width-only cap let Nepal's pennant (taller than
+   it is wide) render half again as tall as every other flag and shove the answer buttons
+   down the panel. Anything up to 3:2 now lands at exactly max-height. */
 .flag-display img {
-    width: 100%;
+    width: auto;
     max-width: 300px;
-    height: auto;
+    max-height: 200px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
@@ -1422,7 +1504,8 @@ header h1 .material-symbols-outlined {
 .flag-option img {
     width: 120px;
     max-width: 120px;
-    height: auto;
+    height: 80px;                     /* fixed box + contain: see .bubble-flag */
+    object-fit: contain;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-sm);
@@ -1454,6 +1537,7 @@ header h1 .material-symbols-outlined {
     .flag-option img {
         width: 100px;
         max-width: 100px;
+        height: 67px;
     }
 }
 
@@ -1756,9 +1840,15 @@ header h1 .material-symbols-outlined {
     gap: 15px;
 }
 
+/* Flags are NOT all 3:2 — Nepal is a taller-than-wide pennant, Switzerland/Vatican are
+   square, Qatar is 11:28. Sizing by width alone therefore gave every row a different
+   height and broke the list's rhythm. Every flag now gets the same fixed box with
+   object-fit: contain, so odd ratios letterbox inside it instead of resizing the row. */
 .bubble-flag {
     width: 50px;
-    height: auto;
+    height: 34px;
+    object-fit: contain;
+    flex: 0 0 auto;
     border-radius: 5px;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
@@ -1842,7 +1932,9 @@ header h1 .material-symbols-outlined {
 
 .order-flag {
     width: 38px;
-    height: auto;
+    height: 26px;                     /* fixed box + contain: see .bubble-flag */
+    object-fit: contain;
+    flex: 0 0 auto;
     border-radius: 4px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
@@ -2309,6 +2401,7 @@ header h1 .material-symbols-outlined {
 
     .bubble-flag {
         width: 40px;
+        height: 27px;
     }
 
     .draggable-item {

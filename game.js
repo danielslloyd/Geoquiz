@@ -1026,8 +1026,12 @@ function startGameWithMode(mode) {
     // map/globe maximised with question/flag/multiple-choice in a narrow side panel —
     // see .globe-layout/.globe-side-panel in style.css. Places-been uses the same side
     // layout (its category lists live in that panel) even for the flat US map.
+    // Free Explore goes a step further: the globe takes the FULL width and the same panel
+    // floats over its (otherwise unused) top-right corner — see explore-overlay-layout.
     document.querySelector('.container').classList.toggle(
-        'globe-side-layout', (!!modeConfig.useGlobe || !!modeConfig.placesMode) && !modeConfig.spaceshipMode);
+        'globe-side-layout', (!!modeConfig.useGlobe || !!modeConfig.placesMode) &&
+        !modeConfig.spaceshipMode && !modeConfig.freeExploreMode);
+    document.querySelector('.container').classList.toggle('explore-overlay-layout', !!modeConfig.freeExploreMode);
 
     // Drop any leftover Places panel when switching to a different mode.
     const stalePlacesPanel = document.getElementById('places-panel');
@@ -1861,20 +1865,46 @@ function loadMapData() {
         });
 }
 
+// Snapshot the per-feature marks a redraw would otherwise wipe: the class attribute
+// (target / found / places categories) AND any inline fill (the flag pattern painted by
+// fillCountryWithFlag). Covers the country paths and the island dots alike — dots are
+// rebuilt from scratch by drawIslandMarkers, so unlike the paths they lose *everything*.
+function captureFeatureMarks() {
+    const marks = { paths: [], dots: [] };
+    const grab = (bucket, baseClass) => function (d) {
+        const cls = this.getAttribute('class') || '';
+        const fill = this.style.fill || '';
+        const stroke = this.style.stroke || '';
+        if (cls === baseClass && !fill && !stroke) return;   // untouched feature: nothing to restore
+        const name = d && d.properties && d.properties.name;
+        if (name) bucket.push({ name, cls, fill, stroke });
+    };
+    if (countriesGroup) countriesGroup.selectAll('path').each(grab(marks.paths, 'country'));
+    if (islandMarkersGroup) islandMarkersGroup.selectAll('circle').each(grab(marks.dots, 'country island-marker'));
+    return marks;
+}
+
+// Re-apply a captureFeatureMarks() snapshot after the geometry has been redrawn.
+function restoreFeatureMarks(marks) {
+    if (!marks) return;
+    const apply = (sel, list) => list.forEach(m => {
+        const hit = sel.filter(d => d && d.properties && d.properties.name === m.name);
+        hit.attr('class', m.cls);
+        if (m.fill) hit.style('fill', m.fill);
+        if (m.stroke) hit.style('stroke', m.stroke);
+    });
+    if (countriesGroup) apply(countriesGroup.selectAll('path'), marks.paths);
+    if (islandMarkersGroup) apply(islandMarkersGroup.selectAll('circle'), marks.dots);
+}
+
 // Reload the world geometry at the current detail level WITHOUT starting a new
 // question — preserves rotation/scale and any in-progress highlight.
 function reloadWorldDetail() {
     const modeConfig = QUIZ_MODES[gameState.mode];
     if (!countriesGroup || !modeConfig || modeConfig.mapObject !== 'countries') return;
 
-    // Capture per-feature highlight classes so they can be restored after redraw.
-    const highlights = [];
-    countriesGroup.selectAll('path').each(function (d) {
-        const cls = this.getAttribute('class') || '';
-        if (cls !== 'country' && cls !== 'lake') {
-            highlights.push({ name: d && d.properties && d.properties.name, cls });
-        }
-    });
+    // Capture highlight classes + flag fills (paths AND dots) to restore after the redraw.
+    const marks = captureFeatureMarks();
 
     const rot = projection.rotate(), sc = projection.scale(), tr = projection.translate();
     fetchWorldTopo(worldCountriesUrl()).then(data => {
@@ -1887,11 +1917,7 @@ function reloadWorldDetail() {
         projection.rotate(rot).scale(sc).translate(tr);
         countriesGroup.selectAll('*').remove();
         drawCountries(); // redraws land + lakes + island dots
-        highlights.forEach(h => {
-            countriesGroup.selectAll('path')
-                .filter(d => d && d.properties && d.properties.name === h.name)
-                .attr('class', h.cls);
-        });
+        restoreFeatureMarks(marks);
         updateIslandMarkers();
     }).catch(err => console.error('Detail reload failed:', err));
 }
@@ -2612,18 +2638,8 @@ function reprojectMap() {
     if (!countriesGroup || !gameState.countries) return;
 
     // Capture current per-feature highlight state so it can be restored after redraw.
-    const highlights = [];
-    countriesGroup.selectAll('path').each(function (d) {
-        const cls = this.getAttribute('class') || '';
-        if (cls !== 'country') {
-            highlights.push({
-                name: d && d.properties && d.properties.name,
-                cls: cls,
-                fill: this.style.fill,
-                stroke: this.style.stroke
-            });
-        }
-    });
+    // Includes the island dots, which setupGlobe/drawCountries rebuild from scratch.
+    const marks = captureFeatureMarks();
 
     stopGlobeSpin();
     setupGlobe();
@@ -2637,17 +2653,7 @@ function reprojectMap() {
     gameState.initialScale = projection.scale();
 
     // Restore highlights (the debug overlay is re-applied by drawCountries).
-    if (!debugValidityOn) {
-        highlights.forEach(h => {
-            countriesGroup.selectAll('path')
-                .filter(d => d && d.properties && d.properties.name === h.name)
-                .each(function () {
-                    this.setAttribute('class', h.cls);
-                    if (h.fill) this.style.fill = h.fill;
-                    if (h.stroke) this.style.stroke = h.stroke;
-                });
-        });
-    }
+    if (!debugValidityOn) restoreFeatureMarks(marks);
 
     // In the globe view, re-center on the target for auto-rotate modes.
     if (isGlobeView() && QUIZ_MODES[gameState.mode].autoRotate && gameState.targetCountry) {
@@ -4552,6 +4558,8 @@ function teardownActiveGame() {
     stopGlobeSpin();
     document.body.classList.remove('spaceship-active');
     document.querySelector('.container').classList.remove('globe-side-layout');
+    document.querySelector('.container').classList.remove('explore-overlay-layout');
+    closeCountryPopup();
     const placesPanel = document.getElementById('places-panel');
     if (placesPanel) placesPanel.remove();
     d3.select('#globe').selectAll('*').remove();
@@ -4635,6 +4643,14 @@ function showCountryPopup(countryName) {
         });
     }
 
+    // In Free Explore the popup belongs to the floating top-right panel (stacked under the
+    // "Explore the Globe" prompt) rather than centred over the page, so it never covers the
+    // globe it is describing. Anywhere else it stays a centred body-level dialog.
+    const host = document.querySelector('.container.explore-overlay-layout')
+        ? document.getElementById('globe-side-panel')
+        : document.body;
+    if (host && popup.parentNode !== host) host.appendChild(popup);
+
     popup.innerHTML = popupHtml;
     popup.style.display = 'block';
 
@@ -4661,12 +4677,104 @@ function closeCountryPopup() {
 
 // ==================== COUNTRY SHAPE ID MODE ====================
 
+// ---- Framing core: the country minus its far-flung specks ----
+// A country's bounding box is only as tight as its most remote scrap of land, and several
+// countries own a rock thousands of km from everything else: South Africa's Prince Edward
+// Islands (0.02% of its area, 1400 km south-east), Norway's Bouvet Island (in the Southern
+// Ocean), Ecuador's Galápagos, mainland Netherlands vs Bonaire, France vs French Guiana.
+// Fitting the Shape-ID silhouette to THAT box shrinks the actual country to an unreadable
+// blob. shapeFramingCore returns just the parts worth framing — an invisible bounding box,
+// since the full geometry is still what gets drawn (anything excluded simply falls outside
+// the viewport). Also used for the shape DESCRIPTOR, so aspect/compactness describe the
+// country people would recognise rather than its outlier-stretched box.
+const CORE_MIN_AREA_FRAC = 0.005; // ignore parts under 0.5% of the country's area…
+const CORE_BIG_PART_FRAC = 0.25;  // …unless they rival the main landmass, then always keep
+const CORE_MIN_GAP_KM = 200;      // never treat something this close as "far-flung"
+const CORE_MIN_KEPT_FRAC = 0.6;   // kept <60% of the area? the country really is scattered
+const DEG_KM = 111.32;
+
+// A part's bounds as [w, s, e, n] in degrees RELATIVE to lon0, so a country straddling
+// ±180° (New Zealand's Chatham Islands) measures as one continuous span. This mirrors the
+// rotate-to-centroid the projection itself does before fitting.
+function partRelBounds(coords, lon0) {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const ring of coords) {
+        for (const p of ring) {
+            let dl = p[0] - lon0;
+            while (dl > 180) dl -= 360;
+            while (dl < -180) dl += 360;
+            if (dl < w) w = dl;
+            if (dl > e) e = dl;
+            if (p[1] < s) s = p[1];
+            if (p[1] > n) n = p[1];
+        }
+    }
+    return [w, s, e, n];
+}
+
+// Longest side of a [w,s,e,n] box, in km (longitude shrunk by latitude).
+function boxExtentKm(b) {
+    const midLat = (b[1] + b[3]) / 2 * Math.PI / 180;
+    return Math.max((b[3] - b[1]) * DEG_KM, (b[2] - b[0]) * DEG_KM * Math.cos(midLat));
+}
+
+// Km of empty space between two boxes (0 if they overlap or touch).
+function boxGapKm(a, b) {
+    const midLat = (Math.max(a[1], b[1]) + Math.min(a[3], b[3])) / 2 * Math.PI / 180;
+    const dLat = Math.max(0, b[1] - a[3], a[1] - b[3]) * DEG_KM;
+    const dLon = Math.max(0, b[0] - a[2], a[0] - b[2]) * DEG_KM * Math.cos(isFinite(midLat) ? midLat : 0);
+    return Math.hypot(dLat, dLon);
+}
+
+function shapeFramingCore(feature) {
+    const parts = featureParts(feature);
+    if (parts.length < 2) return feature;
+
+    const items = parts.map(c => {
+        const poly = { type: 'Polygon', coordinates: c };
+        return { c, a: d3.geoArea(poly), centroid: d3.geoCentroid(poly) };
+    });
+    const total = items.reduce((sum, it) => sum + it.a, 0);
+    if (!(total > 0)) return feature;
+
+    items.sort((x, y) => y.a - x.a);
+    const lon0 = items[0].centroid[0];
+    items.forEach(it => { it.b = partRelBounds(it.c, lon0); });
+
+    // Grow outward from the largest landmass, biggest part first: a part joins the core if
+    // it is comparable in size to the main mass, or near enough to what's accumulated so
+    // far. Testing against the GROWING box (not just the main part) is what keeps genuinely
+    // strung-out countries whole — Indonesia reaches Papua island by island.
+    const main = items[0];
+    let box = main.b.slice();
+    let keptArea = main.a;
+    const kept = [main.c];
+    for (let i = 1; i < items.length; i++) {
+        const it = items[i];
+        const keep = it.a >= CORE_BIG_PART_FRAC * main.a ||
+            (it.a >= CORE_MIN_AREA_FRAC * total &&
+                boxGapKm(box, it.b) <= Math.max(CORE_MIN_GAP_KM, boxExtentKm(box)));
+        if (!keep) continue;
+        kept.push(it.c);
+        keptArea += it.a;
+        box = [Math.min(box[0], it.b[0]), Math.min(box[1], it.b[1]),
+               Math.max(box[2], it.b[2]), Math.max(box[3], it.b[3])];
+    }
+
+    // Countries that genuinely ARE a scatter of islands (Kiribati spans 4000 km of Pacific
+    // with no main landmass at all) would be reduced to a single atoll — leave them whole.
+    if (keptArea < CORE_MIN_KEPT_FRAC * total) return feature;
+    return { type: 'MultiPolygon', coordinates: kept };
+}
+
 // Shape descriptors used to offer Shape-ID distractors that LOOK like the target.
 // Built once from the loaded (10m) geometry and cached until new map data loads.
 let shapeDescriptorCache = null;
 
-// Size / elongation / compactness descriptor for a country feature.
-function computeShapeDescriptor(f) {
+// Size / elongation / compactness descriptor for a country feature. Measured on the
+// framing core, so an offshore speck can't report South Africa as a tall, mostly-empty box.
+function computeShapeDescriptor(feature) {
+    const f = shapeFramingCore(feature);
     const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
     const [[w, s], [e, n]] = d3.geoBounds(f);
     let lonSpan = e - w;
@@ -4762,12 +4870,17 @@ function renderCountryShapeIdQuestion() {
     );
 
     // Fit the Mercator projection to just this country. Rotate to its centroid
-    // longitude first so shapes that straddle the antimeridian stay intact.
+    // longitude first so shapes that straddle the antimeridian stay intact. The fit uses
+    // the framing CORE, not the raw feature — otherwise a remote islet (Prince Edward for
+    // South Africa, the Galápagos for Ecuador) sets the bounds and the country itself
+    // shrinks to a smudge. The full geometry is still what's drawn below; excluded parts
+    // just land outside the viewport.
     if (target && projection && projection.fitExtent) {
-        const c = d3.geoCentroid(target);
+        const core = shapeFramingCore(target);
+        const c = d3.geoCentroid(core);
         if (c && isFinite(c[0])) projection.rotate([-c[0], 0]);
         const pad = Math.min(width, height) * 0.12;
-        projection.fitExtent([[pad, pad], [width - pad, height - pad]], target);
+        projection.fitExtent([[pad, pad], [width - pad, height - pad]], core);
     }
 
     // Draw ONLY the target as a single borderless silhouette. Rendering the whole
@@ -5584,6 +5697,7 @@ function goHome() {
     disposeOrbital();
     document.body.classList.remove('spaceship-active');
     document.querySelector('.container').classList.remove('globe-side-layout');
+    document.querySelector('.container').classList.remove('explore-overlay-layout');
 
     // Tear down the Places panel and return to a clean, mode-less URL.
     const placesPanel = document.getElementById('places-panel');
