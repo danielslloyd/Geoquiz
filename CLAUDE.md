@@ -162,12 +162,15 @@ be answered any other way than by picturing the map:
   against the seed alone lets the extremes sit 9× apart, and then the odd one out is simply the
   biggest picture) and no more elongated than 2.6:1 — the question is about area, and Chile at a
   shared scale is a hair nobody can weigh against a blob. **On the reveal all four are brought
-  onto one scale**, normalised UPWARD: the shared scale is the largest any tile is currently
-  drawn at, so the under-scaled ones grow into place and nothing that was already correct
-  shrinks. Shrinking to the honest scale is the same arithmetic and the wrong reading — three
-  countries visibly getting smaller as the answer arrives looks like a correction to *them*.
-  The tiles stop clipping and lose their frames for it, since a shape that grows past its box
-  is exactly what "drawn too big" means. Verified: 0.544/1.142/0.544/0.544 → all four at 1.142.
+  onto one scale**: the scale at which the BIGGEST of them exactly fills its tile, with the
+  others at their honest fraction of it. That is the largest scale at which all four still fit,
+  so the comparison uses every pixel there is and nothing runs off its card. Normalising to
+  whatever the largest DRAWN tile happened to be is not the same thing — when the lie was an
+  over-scaled country, it made every honest one grow to match a size that was wrong to begin
+  with. The cap is measured on what is DRAWN, not on the framing core: a country whose full
+  geometry runs past its core (a remote islet) overflowed its card by up to 35% when the core
+  set it, and with every tile on one scale that spills into the tile beside it. Verified over
+  six rounds — one scale every time, the largest filling its tile exactly, nothing over.
 * **Fewest Borders** — the shortest path between two countries, counted in crossings. Its
   adjacency is **not** `playableNeighbours`: that one is honestly topological and says France
   borders Brazil and Suriname, which is true via French Guiana and useless for a question about
@@ -683,6 +686,13 @@ reach them in — and a ring is not drawn at all until it has earned three, whic
 the islands arrive one at a time instead of together as slivers. The count rises geometrically
 (3 to 6 changes the shape completely; 3,000 to 3,003 changes nothing), eased to linger at the
 low end. Measured on South Korea: 3, 3, 4, 5, 7, 9, 13.
+
+The growing shape is **stroked as well as filled**: at three points it is a triangle, and a bare
+fill says almost nothing about where its corners are, so the outline is what makes each new
+point visibly arrive. Both it and the framing sandbox also **redraw themselves from state**
+inside `drawCountries` rather than being drawn once — any caller reaching that function (a
+resize, a projection change) would otherwise replace their board with the ordinary world map and
+the country would simply vanish.
 
 One thing that had to be handled: `vwWeights` returns **Infinity** for a ring's two endpoints,
 because for an open polyline the ends can never be dropped. A ring has no ends — the "endpoints"
