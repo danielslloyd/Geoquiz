@@ -92,13 +92,69 @@ Layout: the tray lives in `#globe-side-panel`, so the puzzle opts into the exist
 
 ## Sandbox category
 
-Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (fourteen of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
+Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (twenty-four of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
 
-Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds fourteen tiles of its own.
+Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds twenty-four tiles of its own.
 
 ## Sandbox quizzes (Quick Quizzes)
 
-Fourteen short modes, almost all **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
+Twenty-four short modes, almost all **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
+
+### The second wave
+
+Ten more, all built on the same registry. The thread through them is that the answer has to be
+reached by **picturing the map**, not by recalling a number — where a place lands if you turn
+the planet inside out, what you hit if you never turn the wheel, which silhouette is drawn at a
+lie of a scale.
+
+| Mode | The question | Engine |
+|---|---|---|
+| **Dig Straight Down** | Click the antipode of a capital | pinpoint |
+| **Straight On** | Leave due east/west/north/south and never turn — what do you hit? | pickOne |
+| **How Far?** | Two marks and a line — how many km? | estimate |
+| **Out of Scale** | Four outlines at one shared scale, except one | fact |
+| **Sun Overhead** | Given the date and the clock, click the subsolar point | pinpoint |
+| **You Are Here** | A pin on a borderless map — whose country? | pickOne |
+| **Fewest Borders** | Shortest path between two countries, in crossings | fact |
+| **The Bridge** | Every country touching both of these two | multi |
+| **Further North?** | Two cities a couple of degrees apart, on different continents | fact |
+| **Read the Band** | Three highlighted countries share a parallel — which one? | latitude |
+
+Notes worth keeping:
+* **Adjacency for the two graph rounds is not `playableNeighbours`.** That one is honestly
+  topological and therefore says France borders Brazil and Suriname — true via French Guiana,
+  and completely wrong for a question about crossing borders on the ground (Spain to Brazil
+  came out at two hops). At 110m the atlas ships France as ONE MultiPolygon with Guiana inside
+  it, so there is no geometry to filter and the test has to be geometric: `sbLandNeighbours`
+  keeps a pair only when their LARGEST parts' bounding boxes come within a degree of each
+  other. Measured across nine countries it drops exactly Brazil and Suriname from France and
+  nothing else at all — Russia 14/14, China 14/14, India 6/6.
+* **Out of Scale needs a genuinely equal-area projection.** "The same scale" has to survive
+  measurement, and a Mercator divided by cos(centroid latitude) does not: the stretch varies
+  across a country, so Finland (60–70°N) came out 23% off while being drawn perfectly
+  honestly. Azimuthal equal-area centred on each country makes drawn area exactly proportional
+  to true area — verified by rasterising the rendered tiles: the three honest ones share one
+  km²-per-pixel to **0.6%**, and the liar is off by 4.40× against an expected 4.34×.
+  Candidates are also within 3× of each other **pairwise** (filtering against the seed alone
+  lets the extremes sit 9× apart, and then the odd one out is simply the biggest picture) and
+  no more elongated than 2.6:1 — the question is about area, and Chile at a shared scale is a
+  hair nobody can weigh against a blob.
+* **How Far?'s high-latitude bias must be decided ONCE, before the search.** Tossing the coin
+  per candidate biases nothing at all — each pair is simply accepted half the time whatever its
+  latitude — and the mix stayed at whatever the pool happened to hold, measured at **0%**
+  high-latitude over twenty draws. Decided up front it lands at 55%.
+* **Nearest-point distance is memoised and computed in Cartesian.** Comparing squared chord
+  lengths on the unit sphere ranks identically to comparing great-circle distances and costs
+  three multiplies instead of a `geoDistance` call. With that and a pair cache, Near to Far's
+  sixty-attempt retry loop went from **22.2 s to 0.29 s** — it was freezing the page for
+  twenty seconds on a bad draw.
+* **`sbLatCrossers` is cached and stepped at 1.5°**, for the same reason: the uncached
+  half-degree walk cost 1.3 s a draw inside a synchronous retry loop (8.0 s → 0.27 s for
+  twenty draws).
+* **Markers and walked tracks belong to the round, not the engine.** `q.pins` and `q.track` are
+  drawn by `renderSandboxQuizQuestion` for every engine rather than repeated in each renderer —
+  a pin on the map is as much part of a pinpoint question as of a multiple-choice one — and
+  both ride in `.sb-anchored`, so they follow pan and zoom for free.
 
 `SB_QUIZZES` is the registry and the single source of truth: each entry carries its label/icon/description **and** a `build()` returning one round. `QUIZ_MODES` entries are generated from it in a loop, and `showSandboxQuizSelector` renders its grid from the same object, so adding a quiz means adding one key.
 
@@ -755,7 +811,7 @@ Exactly one view rotates its Mercator projection as you interact with it: **`isF
 | `spaceship-sandbox` | A flat world plotting every sub-point the orbital view could pick (400 live samples of `pickCoastalTarget`) with each chosen spot's heading spoke, plus a seed editor that freezes 10 spots into a shareable hash (`sandboxMode`). See Spaceship sandbox below |
 | `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
 | `skyline-id` | **Hidden from the menu** (photo pool not yet vetted) — the mode, data, and CSS are all intact; only its 3 entry points (top-bar icon in `index.html`, landing card in `index.html` **and** in `resetModeSelector()`'s template in `game.js`) are HTML-commented out. Reachable directly via `startGameWithMode('skyline-id')`. Uncomment those 3 blocks to bring it back. A real photograph of a large city's skyline — name the city from 4 choices (`skylineIdMode`). **No map at all.** Photos are fetched live from **Wikimedia Commons** (`commonsSearch`; CORS-open via `origin=*`, and every file carries machine-readable licensing). `skylineLicenceOk` keeps only PD/CC0/CC-BY/CC-BY-SA — NonCommercial, NoDerivatives and unrecognised licences are dropped — and the photographer + licence + Commons link are shown **only after the round is decided** (`revealSkylineCredit`, called from `handleCorrectAnswer` and `giveUp`), because the file title almost always names the city. `skylineQuery` appends the state/country from the entry's `label`: without it `"Toledo" skyline` returns Toledo **Spain** above Toledo Ohio, and `"St. Petersburg"` lands in Russia; the term costs ~5% of hits and fixes the wrong-city answers. `skylineCandidates` drops non-photos (SVG/portrait/maps/logos) and *ranks* rather than rejects on whether the title names the city. Whether a city has a usable photo is only knowable after searching, so `resolveSkylineTarget` retries with another city on a miss and remembers barren ones in `skylineNoPhoto`; it reserves its pick in `usedCountries` **before** the search returns so `prefetchNextSkyline` (which resolves the next round in the background — a search takes 0.5–6 s) can't collide with a live pick. Distractors are ranked by `skylineDistractorScore`: same country dominates, then same region, then closeness in **log** population — so Abidjan draws Addis Ababa/Casablanca/Alexandria, never a suburb. Options are display `label`s, not keys |
-| `sb-*` (14 keys) | The **Quick Quizzes** under Sandbox — `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-daylight-lat`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-missing`, `sb-fake-flag`, `sb-upside-down`. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
+| `sb-*` (24 keys) | The **Quick Quizzes** under Sandbox — `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-daylight-lat`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-missing`, `sb-fake-flag`, `sb-upside-down`, plus the second wave: `sb-antipode`, `sb-straight-on`, `sb-how-far`, `sb-out-of-scale`, `sb-subsolar`, `sb-blind-drop`, `sb-border-hops`, `sb-bridge`, `sb-further-north`, `sb-read-band`. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
 
 ## UI Structure
 

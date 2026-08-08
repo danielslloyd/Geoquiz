@@ -12236,8 +12236,15 @@ function sbKmBetween(a, b) {
 // Every boundary vertex against every boundary vertex is too much at 10m, so each ring is
 // walked at a stride that keeps roughly SB_NEAR_SAMPLES points, and the result is exact to
 // within that spacing — far below the 650 km separation the round already insists on.
-const SB_NEAR_SAMPLES = 260;
+// 140 points per country puts consecutive samples ~50-150 km apart on a big country, which is
+// far below the 650 km separation Near to Far already insists on between consecutive answers.
+// Every pair is memoised as well: the round retries up to sixty times and each attempt asks
+// for five distances, so without the cache one draw could spend twenty seconds recomputing the
+// same country pairs and freeze the page while it did.
+const SB_NEAR_SAMPLES = 140;
 const sbNearCache = new Map();
+const sbAparCache = new Map();
+const sbPairKey = (a, b) => (a < b ? a + ' ' + b : b + ' ' + a);
 function sbCountryPoints(name) {
     if (sbNearCache.has(name)) return sbNearCache.get(name);
     const f = sbFeature(name);
@@ -12254,32 +12261,47 @@ function sbCountryPoints(name) {
     return pts;
 }
 // The two points that realise sbKmApart, so a reveal can draw the line it measured.
+const sbPairCache = new Map();
 function sbNearestPair(a, b) {
+    const key = sbPairKey(a, b);
+    if (sbPairCache.has(key)) return sbPairCache.get(key);
     const pa = sbCountryPoints(a), pb = sbCountryPoints(b);
+    let out = null;
     if (!pa || !pb) {
         const ca = getCountryCentroid(a), cb = getCountryCentroid(b);
-        return (ca && cb) ? [ca, cb] : null;
+        out = (ca && cb) ? [ca, cb] : null;
+    } else {
+        // Cartesian on the unit sphere: comparing squared chord lengths ranks identically to
+        // comparing great-circle distances and costs three multiplies instead of a geoDistance
+        // call, which matters at 140x140 pairs.
+        const xyz = pts => pts.map(([lo, la]) => {
+            const p = lo * DEG, t = la * DEG, c = Math.cos(t);
+            return [c * Math.cos(p), c * Math.sin(p), Math.sin(t)];
+        });
+        const A = xyz(pa), B = xyz(pb);
+        let best = Infinity, bi = 0, bj = 0;
+        for (let i = 0; i < A.length; i++) {
+            const [ax, ay, az] = A[i];
+            for (let j = 0; j < B.length; j++) {
+                const b2 = B[j];
+                const dx = ax - b2[0], dy = ay - b2[1], dz = az - b2[2];
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < best) { best = d; bi = i; bj = j; }
+            }
+        }
+        out = [pa[bi], pb[bj]];
     }
-    let best = Infinity, out = null;
-    for (const p of pa) for (const q of pb) {
-        const d = d3.geoDistance(p, q);
-        if (d < best) { best = d; out = [p, q]; }
-    }
+    sbPairCache.set(key, out);
     return out;
 }
 
 function sbKmApart(a, b) {
-    const pa = sbCountryPoints(a), pb = sbCountryPoints(b);
-    if (!pa || !pb) {
-        const ca = getCountryCentroid(a), cb = getCountryCentroid(b);
-        return (ca && cb) ? sbKmBetween(ca, cb) : Infinity;
-    }
-    let best = Infinity;
-    for (const p of pa) for (const q of pb) {
-        const d = d3.geoDistance(p, q);
-        if (d < best) best = d;
-    }
-    return best * SB_EARTH_R_KM;
+    const key = sbPairKey(a, b);
+    if (sbAparCache.has(key)) return sbAparCache.get(key);
+    const pair = sbNearestPair(a, b);
+    const km = pair ? sbKmBetween(pair[0], pair[1]) : Infinity;
+    sbAparCache.set(key, km);
+    return km;
 }
 
 // Only countries that are BOTH in the quiz list and actually drawn — otherwise a round can ask
@@ -12358,6 +12380,182 @@ function sbArc(a, b, n) {
 }
 
 // Which drawn countries a path passes through, in order, ignoring the endpoints' own countries.
+// Which country is under a point. Bounding boxes first: `geoContains` walks a whole ring,
+// `geoBounds` is measured once per feature and rejects almost everything in four comparisons.
+function sbCountryAt(pt) {
+    for (const ft of (gameState.countries || [])) {
+        let bb = ft.__bb;
+        if (!bb) { bb = d3.geoBounds(ft); ft.__bb = bb; }
+        const [[w, s2], [e, n2]] = bb;
+        if (pt[1] < s2 - 0.2 || pt[1] > n2 + 0.2) continue;
+        const inLon = w <= e ? (pt[0] >= w - 0.2 && pt[0] <= e + 0.2)
+                             : (pt[0] >= w - 0.2 || pt[0] <= e + 0.2);
+        if (!inLon) continue;
+        if (d3.geoContains(ft, pt)) return ft.properties.parent || ft.properties.name;
+    }
+    return null;
+}
+
+// Set off from `from` and keep going in one cardinal direction, never turning: east and west
+// hold a parallel, north and south hold a meridian. Returns the first country reached that
+// isn't the one you started in, and the track walked to get there.
+//
+// Holding a PARALLEL is the whole point of the east/west case — it is a rhumb line, not a
+// great circle, which is exactly the "keep going due east" a globe-illiterate intuition
+// imagines and exactly what makes the answer surprising.
+const SB_WALK_STEP_DEG = 0.25;
+function sbStraightOn(from, dir) {
+    const start = sbCountryAt(from);
+    const track = [from.slice()];
+    const lat0 = from[1];
+    let lon = from[0], lat = lat0;
+    const steps = (dir === 'east' || dir === 'west') ? Math.round(360 / SB_WALK_STEP_DEG)
+                                                     : Math.round(180 / SB_WALK_STEP_DEG);
+    let leftHome = false;
+    for (let i = 1; i <= steps; i++) {
+        if (dir === 'east') lon += SB_WALK_STEP_DEG;
+        else if (dir === 'west') lon -= SB_WALK_STEP_DEG;
+        else if (dir === 'north') lat += SB_WALK_STEP_DEG;
+        else lat -= SB_WALK_STEP_DEG;
+        if (lat > 90 || lat < -90) break;                 // walked off the top or bottom
+        if (lon > 180) lon -= 360;
+        if (lon < -180) lon += 360;
+        const pt = [lon, lat];
+        track.push(pt);
+        const here = sbCountryAt(pt);
+        if (!here) { leftHome = true; continue; }
+        if (!leftHome && start && namesMatch(here, start)) continue;   // still crossing home
+        leftHome = true;
+        if (start && namesMatch(here, start)) continue;   // came back to it — keep going
+        return { hit: here, track, start };
+    }
+    return null;
+}
+
+// Adjacency with the overseas territories left out.
+//
+// `playableNeighbours` is honestly topological and therefore says France borders Brazil and
+// Suriname — which is true, via French Guiana, and completely wrong for a question about
+// crossing borders on the ground: a shortest path from Spain to Brazil came out at two hops.
+// At 110m the atlas ships France as ONE MultiPolygon with Guiana inside it, so there is no
+// geometry to filter; the test has to be geometric.
+//
+// It is a bounding-box test on each country's LARGEST part, expanded by a degree. Two main
+// parts whose boxes do not come within a degree of each other cannot share a border, and any
+// pair that topojson already calls neighbours AND whose main parts sit next to each other is a
+// real overland border. Cheap enough to run inside a BFS, which an all-pairs vertex test is
+// not.
+const sbMainBoxCache = new Map();
+function sbMainPartBox(name) {
+    if (sbMainBoxCache.has(name)) return sbMainBoxCache.get(name);
+    const f = sbFeature(name);
+    let box = null;
+    if (f) {
+        let best = null;
+        featureParts(f).forEach(coords => {
+            const poly = { type: 'Polygon', coordinates: coords };
+            const a = d3.geoArea(poly);
+            if (!best || a > best.a) best = { a, poly };
+        });
+        if (best) {
+            const b = d3.geoBounds(best.poly);
+            if (isFinite(b[0][0]) && isFinite(b[1][1])) box = b;
+        }
+    }
+    sbMainBoxCache.set(name, box);
+    return box;
+}
+function sbMainlandAdjacent(a, b) {
+    const ba = sbMainPartBox(a), bb = sbMainPartBox(b);
+    if (!ba || !bb) return true;                      // unknown: don't reject a real border
+    const pad = 1;
+    if (ba[1][1] + pad < bb[0][1] || bb[1][1] + pad < ba[0][1]) return false;   // no latitude overlap
+    // A box that wraps the antimeridian reports west > east; treat it as spanning everything
+    // rather than trying to split it, since only Russia and Fiji do this and neither case
+    // turns on the longitude test.
+    const wrapA = ba[0][0] > ba[1][0], wrapB = bb[0][0] > bb[1][0];
+    if (wrapA || wrapB) return true;
+    return !(ba[1][0] + pad < bb[0][0] || bb[1][0] + pad < ba[0][0]);
+}
+function sbLandNeighbours(name) {
+    return playableNeighbours(name).filter(n => sbMainlandAdjacent(name, n));
+}
+
+// Fewest border crossings from `a` to `b`, and the chain that achieves it. Plain BFS over the
+// adjacency the arc table already gives us — the question is a shortest path on a graph that
+// happens to be drawn on the wall.
+function sbBorderHops(a, b) {
+    if (namesMatch(a, b)) return null;
+    const seen = new Map([[normalizeName(a), null]]);
+    let front = [a];
+    for (let depth = 1; depth <= 8 && front.length; depth++) {
+        const next = [];
+        for (const cur of front) {
+            for (const nb of sbLandNeighbours(cur)) {
+                const k = normalizeName(nb);
+                if (seen.has(k)) continue;
+                seen.set(k, cur);
+                if (namesMatch(nb, b)) {
+                    const chain = [nb];
+                    let back = cur;
+                    while (back) { chain.unshift(back); back = seen.get(normalizeName(back)); }
+                    return { hops: depth, chain };
+                }
+                next.push(nb);
+            }
+        }
+        front = next;
+    }
+    return null;
+}
+
+// Every country the parallel at `lat` passes through.
+// Every country the parallel at `lat` passes through. Cached, and stepped at 1.5 degrees:
+// only the countries WIDE enough to be worth naming should appear anyway, and the uncached
+// half-degree walk cost 1.3 s a draw, which is a visible stall on a synchronous retry loop.
+const sbLatCrossCache = new Map();
+function sbLatCrossers(lat) {
+    if (sbLatCrossCache.has(lat)) return sbLatCrossCache.get(lat);
+    const out = [];
+    for (let lon = -179.5; lon < 180; lon += 1.5) {
+        const n = sbCountryAt([lon, lat]);
+        if (n && !out.some(x => namesMatch(x, n))) out.push(n);
+    }
+    sbLatCrossCache.set(lat, out);
+    return out;
+}
+
+// The subsolar point at a UTC instant — where the sun is straight overhead. `solarPosition`
+// already computes it for the Sun & Moon map; this is only a convenience wrapper.
+function sbSubsolar(date) {
+    const sp = solarPosition(date);
+    return (sp && sp.sub) ? sp.sub : null;
+}
+
+// A labelled marker on the map. Rides in `.sb-anchored`, so sbUpdateOverlay re-places it on
+// any pan, wheel or pinch without this knowing anything about the round that drew it.
+function sbDrawPins(pins) {
+    if (!projection) return;
+    const layer = sbOverlay();
+    (pins || []).forEach(pin => {
+        const pt = projection(pin.at);
+        const grp = layer.append('g').datum({ at: pin.at, dy: 0 })
+            .attr('class', 'sb-anchored sb-pin ' + (pin.kind || ''));
+        if (!pt || !isFinite(pt[0])) grp.attr('display', 'none');
+        else grp.attr('transform', `translate(${pt[0]}, ${pt[1]})`);
+        grp.append('circle').attr('r', 6);
+        if (pin.label) grp.append('text').attr('y', -11).attr('text-anchor', 'middle').text(pin.label);
+    });
+}
+
+// A walked track (a parallel, a meridian, a border chain) drawn as a line the round can point
+// at. Stored as its own geometry, so it re-paths with the map like everything else.
+function sbDrawTrack(pts, cls) {
+    if (!pts || pts.length < 2) return;
+    const d = sbLine(pts);
+    if (d) sbOverlay().append('path').datum(pts).attr('class', 'sb-route ' + (cls || 'r0 solo')).attr('d', d);
+}
+
 // Which countries a great circle actually passes over.
 //
 // The sampling has to be fine enough for the NARROWEST country on the route, not for a typical
@@ -12474,8 +12672,10 @@ function sbGeomArcIds(geom, out) {
 // corresponds to it, doubled.
 const SB_MISSING_MIN_KM2 = 2 * 3000;
 
-// How many names Every Neighbour puts on offer, real ones included.
+// How many names Every Neighbour and The Bridge put on offer, real answers included. A list
+// that shrinks with the answer count tells you how many to pick before you have looked.
 const SB_NEIGHBOUR_OPTIONS = 12;
+const SB_BRIDGE_OPTIONS = 12;
 
 // Build the modified world. Returns {features, absorbers} or null if this country cannot be
 // eaten cleanly (an arc with no second owner, i.e. a coast).
@@ -13163,7 +13363,7 @@ const SB_QUIZZES = {
 
     // ---------- the sky ----------
     'sb-daylight-lat': {
-        engine: 'latitude', icon: 'straighten', label: 'Read the Daylight',
+        engine: 'latitude', icon: 'wb_twilight', label: 'Read the Daylight',
         desc: 'From hours of daylight, place the latitude on the arc',
         noMap: true,
         build() {
@@ -13518,6 +13718,406 @@ const SB_QUIZZES = {
                          `The others are ${picks.filter((_, i) => i !== idx).join(', ')}, the right way round.`
             };
         }
+    },
+    // ================= the ten below are the second wave =================
+    // Every one of them is a question you answer by picturing the map rather than by recalling
+    // a number: where a place would land if you turned the planet inside out, what you would
+    // hit if you never turned, how far apart two marks really are, which shape is drawn at a
+    // lie of a scale.
+
+    // ---------- turn the planet inside out ----------
+    'sb-antipode': {
+        engine: 'pinpoint', flat: true, icon: 'swap_vert', label: 'Dig Straight Down',
+        desc: 'Straight through the centre of the earth — where do you come out?',
+        build() {
+            const pool = sbPool().filter(n => sbCapitalLonLat(n));
+            const name = sbRandom(pool);
+            if (!name) return null;
+            const from = sbCapitalLonLat(name);
+            // The antipode is the one spatial transform nobody's intuition survives: flip the
+            // latitude, swing the longitude half a turn. Almost everywhere lands in ocean,
+            // which is itself the lesson.
+            const to = [from[0] > 0 ? from[0] - 180 : from[0] + 180, -from[1]];
+            const under = sbCountryAt(to);
+            return {
+                highlight: [], target: to, scaleKm: 2200,
+                pins: [{ at: from, label: getCapital(effectiveDataName(name)) || displayLabelForName(name), kind: 'origin' }],
+                prompt: `Dig straight down through the centre of the earth from ` +
+                        `<strong>${getCapital(effectiveDataName(name)) || displayLabelForName(name)}</strong>. ` +
+                        `Click where you come out.`,
+                explain: under
+                    ? `You surface in ${displayLabelForName(under)}. Flip the latitude, swing the longitude half a turn.`
+                    : `You surface in open ocean — which is what happens almost everywhere, since land and sea ` +
+                      `are antipodal to each other over most of the planet.`
+            };
+        }
+    },
+
+    // ---------- never turn the wheel ----------
+    'sb-straight-on': {
+        engine: 'fact', flat: true, icon: 'straight', label: 'Straight On',
+        desc: 'Set off in one direction and never turn — what do you hit?',
+        build() {
+            const dirs = ['east', 'west', 'south', 'north'];
+            const pool = sbPool().filter(n => sbCapitalLonLat(n));
+            for (let t = 0; t < 30; t++) {
+                const name = sbRandom(pool);
+                const dir = sbRandom(dirs);
+                if (!name) continue;
+                const from = sbCapitalLonLat(name);
+                const walked = sbStraightOn(from, dir);
+                if (!walked || !walked.hit) continue;
+                if (namesMatch(walked.hit, name)) continue;
+                // A neighbour you share a border with is not a question — you can see the
+                // answer without leaving the country. The interesting ones cross an ocean.
+                if (playableNeighbours(name).some(n => namesMatch(n, walked.hit))) continue;
+                return {
+                    highlight: [], pickOne: true,
+                    correct: displayLabelForName(walked.hit),
+                    options: sbPool().map(displayLabelForName),
+                    revealTrack: walked.track,
+                    revealHit: walked.hit,
+                    pins: [{ at: from, label: getCapital(effectiveDataName(name)) || displayLabelForName(name), kind: 'origin' }],
+                    prompt: `Leave <strong>${getCapital(effectiveDataName(name)) || displayLabelForName(name)}</strong> ` +
+                            `heading <strong>due ${dir}</strong> and never turn. Which country do you reach first?`,
+                    explain: `${displayLabelForName(walked.hit)}. ` +
+                             ((dir === 'east' || dir === 'west')
+                                ? `Due east and due west hold a line of latitude, which is not the shortest path ` +
+                                  `on a globe — it is the line the map draws straight and the planet does not.`
+                                : `Due north and due south hold a meridian, the one bearing where the map and the ` +
+                                  `globe agree.`)
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- how big is the gap ----------
+    'sb-how-far': {
+        engine: 'estimate', flat: true, icon: 'straighten', label: 'How Far?',
+        desc: 'Two marks on the map — how many kilometres apart?',
+        build() {
+            const pool = sbPool().filter(n => sbCapitalLonLat(n));
+            // Half the rounds are deliberately at high latitude, where the map's own ruler lies
+            // by a factor of two or more: the whole skill is reading a distance off a projection
+            // that stretches with the cosine of where you are looking.
+            //
+            // The coin is tossed ONCE, before the search. Tossing it per candidate (which is
+            // what this did first) biases nothing at all — each pair is simply accepted half
+            // the time whatever its latitude — so the mix stayed at whatever the pool happened
+            // to hold, measured at 0% high-latitude over twenty draws.
+            const wantHigh = Math.random() < 0.5;
+            for (let t = 0; t < 150; t++) {
+                const a = sbRandom(pool), b = sbRandom(pool);
+                if (!a || !b || namesMatch(a, b)) continue;
+                const pa = sbCapitalLonLat(a), pb = sbCapitalLonLat(b);
+                const km = sbKmBetween(pa, pb);
+                if (km < 700 || km > 17000) continue;
+                const lo = Math.min(Math.abs(pa[1]), Math.abs(pb[1]));
+                const high = lo > 45;
+                if (wantHigh ? !high : lo > 30) continue;
+                const ca = getCapital(effectiveDataName(a)) || displayLabelForName(a);
+                const cb = getCapital(effectiveDataName(b)) || displayLabelForName(b);
+                return {
+                    highlight: [], truth: km, min: 2.7, max: 4.35, unit: 'km',
+                    track: sbArc(pa, pb, 90),
+                    pins: [{ at: pa, label: ca, kind: 'origin' }, { at: pb, label: cb, kind: 'origin' }],
+                    format: v => Math.round(v).toLocaleString(),
+                    prompt: `How far is it from <strong>${ca}</strong> to <strong>${cb}</strong>, ` +
+                            `measured the short way round the globe?`,
+                    explain: `${sbFormatKm(km)}.` + (high
+                        ? ` Both sit above 45°, where a Mercator stretches everything by 1/cos(latitude) — the ` +
+                          `line looks far longer on screen than it is on the ground.`
+                        : ``)
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- one of these is drawn at a lie ----------
+    'sb-out-of-scale': {
+        engine: 'fact', hiRes: true, icon: 'photo_size_select_large', label: 'Out of Scale', noMap: true,
+        desc: 'Four countries at one scale — except one',
+        build() {
+            const pool = sbPool().filter(n => {
+                const f = sbFeature(n);
+                if (!f) return false;
+                const km = sbAreaKm2(n);
+                if (!km || km < 20000 || km > 3000000) return false;
+                const parts = featureParts(f);
+                if (parts.length > 1) {
+                    const areas = parts.map(c => d3.geoArea({ type: 'Polygon', coordinates: c }));
+                    const tot = d3.sum(areas);
+                    if (!tot || Math.max(...areas) / tot < 0.8) return false;
+                }
+                // Nothing too elongated. The question is about AREA, and a country three times
+                // longer than it is wide reads as a line rather than as a quantity — Chile at a
+                // shared scale is a hair, and nobody can weigh a hair against a blob.
+                const core = shapeFramingCore(f) || f;
+                const cc = d3.geoCentroid(core);
+                const bb = d3.geoPath(d3.geoAzimuthalEqualArea().rotate([-cc[0], -cc[1]])).bounds(core);
+                const w = bb[1][0] - bb[0][0], h = bb[1][1] - bb[0][1];
+                if (!isFinite(w) || !isFinite(h) || !w || !h) return false;
+                if (Math.max(w / h, h / w) > 2.6) return false;
+                return true;
+            });
+            if (pool.length < 12) return null;
+            for (let t = 0; t < 40; t++) {
+                const seed = sbRandom(pool);
+                const ka = sbAreaKm2(seed);
+                // Within a factor of three of EACH OTHER, checked pairwise. Filtering only
+                // against the seed lets the extremes sit 9x apart (Chile against the Republic
+                // of the Congo), and then the odd one out is simply the biggest picture.
+                const near = pool.filter(n => !namesMatch(n, seed) &&
+                    sbAreaKm2(n) / ka < 1.8 && ka / sbAreaKm2(n) < 1.8);
+                if (near.length < 3) continue;
+                const picks = shuffleArray([seed, ...shuffleArray(near).slice(0, 3)]);
+                const areas = picks.map(sbAreaKm2);
+                if (Math.max(...areas) / Math.min(...areas) > 3) continue;
+                const idx = Math.floor(Math.random() * 4);
+                const factor = sbRandom([2.1, 2.4, 1 / 2.1, 1 / 2.4]);
+                return {
+                    highlight: [],
+                    scaleOptions: picks.map((n, i) => ({ label: displayLabelForName(n), name: n,
+                                                         factor: i === idx ? factor : 1 })),
+                    correct: displayLabelForName(picks[idx]),
+                    options: picks.map(displayLabelForName),
+                    prompt: 'These four outlines are drawn at <strong>one shared scale</strong> — except one. ' +
+                            'Which is the wrong size?',
+                    explain: `${displayLabelForName(picks[idx])} is drawn ${factor > 1 ? factor.toFixed(1) + '× too big' : (1 / factor).toFixed(1) + '× too small'}. ` +
+                             `True areas: ` + picks.map(n => `${displayLabelForName(n)} ${Math.round(sbAreaKm2(n)).toLocaleString()} km²`).join(', ') + '.'
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- where is the sun ----------
+    'sb-subsolar': {
+        engine: 'pinpoint', flat: true, icon: 'wb_sunny', label: 'Sun Overhead',
+        desc: 'Given the date and the clock, where is the sun straight up?',
+        build() {
+            const day = 1 + Math.floor(Math.random() * 365);
+            const hour = Math.floor(Math.random() * 24);
+            const date = new Date(Date.UTC(2024, 0, day, hour, 0, 0));
+            const sub = sbSubsolar(date);
+            if (!sub || !isFinite(sub[0])) return null;
+            const stamp = date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' });
+            const hh = String(hour).padStart(2, '0');
+            return {
+                highlight: [], target: sub, scaleKm: 2200, revealDeclination: sub[1],
+                prompt: `It is <strong>${hh}:00 UTC</strong> on <strong>${stamp}</strong>. ` +
+                        `Click the point where the sun is <strong>directly overhead</strong>.`,
+                explain: `${sbFormatLat(sub[1])}, ${Math.abs(sub[0]).toFixed(1)}°${sub[0] < 0 ? 'W' : 'E'}. ` +
+                         `The latitude is the sun's declination, which the date fixes; the longitude is the clock — ` +
+                         `noon UTC puts it on Greenwich and it runs 15° west every hour.`
+            };
+        }
+    },
+
+    // ---------- borders from memory ----------
+    'sb-blind-drop': {
+        engine: 'fact', flat: true, coastOnly: true, icon: 'my_location', label: 'You Are Here',
+        desc: 'A pin on a map with no borders — whose country is it?',
+        build() {
+            const pool = sbPool().filter(n => sbAreaKm2(n) > 90000);
+            for (let t = 0; t < 40; t++) {
+                const name = sbRandom(pool);
+                const f = name && sbFeature(name);
+                if (!f) continue;
+                // Somewhere genuinely INSIDE, not a coastal sliver: the pole of inaccessibility
+                // is the point furthest from any of its own edges, which is exactly the spot
+                // where the coastline helps you least.
+                const geom = f.geometry;
+                const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+                const [[, s0], [, n0]] = d3.geoBounds(f);
+                const kx = 111.320 * Math.cos((s0 + n0) / 2 * Math.PI / 180) || 1, ky = 110.574;
+                let best = null;
+                for (const poly of polys) {
+                    const rings = poly.map(r => r.map(pt => [pt[0] * kx, pt[1] * ky]));
+                    const c = largestInscribedCircle(rings);
+                    if (!best || c.radius > best.radius) best = c;
+                }
+                if (!best || !isFinite(best.x)) continue;
+                const at = [best.x / kx, best.y / ky];
+                if (!namesMatch(sbCountryAt(at) || '', name)) continue;
+                return {
+                    highlight: [], pickOne: true, coastOnly: true,
+                    correct: displayLabelForName(name),
+                    options: sbPool().map(displayLabelForName),
+                    pins: [{ at, kind: 'target' }],
+                    revealNames: [name],
+                    prompt: 'The borders are gone — only coastlines and lakes are left. ' +
+                            'Which country is the pin standing in?',
+                    explain: `${displayLabelForName(name)}.`
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- shortest path on a graph drawn on the wall ----------
+    'sb-border-hops': {
+        engine: 'fact', flat: true, icon: 'route', label: 'Fewest Borders',
+        desc: 'Drive from one country to another — how many crossings?',
+        build() {
+            const facts = ensureCountryFacts();
+            if (!facts) return null;
+            const pool = sbPool().filter(n => sbLandNeighbours(n).length >= 1 && sbAreaKm2(n) > 20000);
+            for (let t = 0; t < 40; t++) {
+                const a = sbRandom(pool), b = sbRandom(pool);
+                if (!a || !b || namesMatch(a, b)) continue;
+                const found = sbBorderHops(a, b);
+                // Two is a glance and six is a slog; three to five is a route you have to
+                // actually trace in your head.
+                if (!found || found.hops < 3 || found.hops > 5) continue;
+                const opts = [found.hops - 1, found.hops, found.hops + 1, found.hops + 2]
+                    .filter(v => v >= 1);
+                return {
+                    highlight: [a, b],
+                    correct: String(found.hops),
+                    options: shuffleArray(opts.map(String)),
+                    revealChain: found.chain,
+                    prompt: `Driving from <strong>${displayLabelForName(a)}</strong> to ` +
+                            `<strong>${displayLabelForName(b)}</strong>, how few <strong>borders</strong> ` +
+                            `can you cross?`,
+                    explain: `${found.hops}. The shortest way is ${found.chain.map(displayLabelForName).join(' → ')}.`
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- the country in the middle ----------
+    // (SB_BRIDGE_OPTIONS names on offer, always — see the padding in build().)
+    'sb-bridge': {
+        engine: 'multi', flat: true, icon: 'commit', label: 'The Bridge',
+        desc: 'Which countries touch both of these?',
+        build() {
+            const pool = sbPool();
+            for (let t = 0; t < 80; t++) {
+                const a = sbRandom(pool);
+                if (!a) continue;
+                const na = sbLandNeighbours(a);
+                if (na.length < 2) continue;
+                // Two steps away: far enough that the answer is not simply "they are next to
+                // each other", close enough that something sits between them.
+                const two = [];
+                na.forEach(m => sbLandNeighbours(m).forEach(x => {
+                    if (namesMatch(x, a) || na.some(y => namesMatch(y, x))) return;
+                    if (!two.some(y => namesMatch(y, x))) two.push(x);
+                }));
+                const b = sbRandom(two);
+                if (!b) continue;
+                const nb = new Set(sbLandNeighbours(b).map(normalizeName));
+                const bridges = na.filter(n => nb.has(normalizeName(n)));
+                if (!bridges.length || bridges.length > 4) continue;
+                const bridgeSet = new Set(bridges.map(normalizeName));
+                // The wrong answers are the countries that ALMOST bridge: neighbours of one
+                // but not the other, then the nearest countries to either end. A distractor
+                // from elsewhere is dismissed without looking — but the round must still
+                // always offer SB_BRIDGE_OPTIONS names, or the option count tells you how many
+                // to pick before you have looked at the map.
+                const taken = new Set([normalizeName(a), normalizeName(b), ...bridgeSet]);
+                const uniqueAlmost = [];
+                const add = n => {
+                    const k = normalizeName(n);
+                    if (taken.has(k)) return;
+                    taken.add(k);
+                    uniqueAlmost.push(n);
+                };
+                [...na, ...sbLandNeighbours(b)].forEach(add);
+                const need = SB_BRIDGE_OPTIONS - bridges.length;
+                if (uniqueAlmost.length < need) {
+                    const mid = getCountryCentroid(a) && getCountryCentroid(b)
+                        ? d3.geoInterpolate(getCountryCentroid(a), getCountryCentroid(b))(0.5) : null;
+                    if (mid) {
+                        pool.map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(mid, getCountryCentroid(n)) : Infinity }))
+                            .filter(x => isFinite(x.d)).sort((x, y) => x.d - y.d)
+                            .forEach(x => { if (uniqueAlmost.length < need) add(x.n); });
+                    }
+                }
+                if (uniqueAlmost.length < need) continue;
+                const opts = [...bridges, ...shuffleArray(uniqueAlmost).slice(0, need)];
+                return {
+                    highlight: [a, b], pickList: true,
+                    correctSet: bridges.map(displayLabelForName),
+                    revealNeighbours: true,
+                    neighbourNames: bridges,
+                    bridgeEnds: [a, b],
+                    labelToName: Object.fromEntries([a, b, ...opts].map(n => [displayLabelForName(n), n])),
+                    options: shuffleArray(opts.map(displayLabelForName)),
+                    prompt: `Pick <strong>every</strong> country that borders <strong>both</strong> ` +
+                            `${displayLabelForName(a)} <strong>and</strong> ${displayLabelForName(b)}.`,
+                    explain: `${bridges.map(displayLabelForName).join(', ')} ` +
+                             `${bridges.length > 1 ? 'each touch' : 'touches'} both.`
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- latitude has no respect for your mental map ----------
+    'sb-further-north': {
+        engine: 'fact', flat: true, icon: 'north', label: 'Further North?',
+        desc: 'Two cities, one answer, and your instincts are no help',
+        build() {
+            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbContinentOf(n));
+            for (let t = 0; t < 60; t++) {
+                const a = sbRandom(pool), b = sbRandom(pool);
+                if (!a || !b || namesMatch(a, b)) continue;
+                if (sbContinentOf(a) === sbContinentOf(b)) continue;   // same continent is easy
+                const pa = sbCapitalLonLat(a), pb = sbCapitalLonLat(b);
+                if (pa[1] < 0 !== pb[1] < 0) continue;                 // opposite hemispheres is easy
+                const gap = Math.abs(pa[1] - pb[1]);
+                if (gap < 1 || gap > 7) continue;                      // close enough to be a question
+                if (Math.abs(pa[0] - pb[0]) < 40) continue;            // and far enough apart to feel unrelated
+                const north = pa[1] > pb[1] ? a : b;
+                const ca = getCapital(effectiveDataName(a)) || displayLabelForName(a);
+                const cb = getCapital(effectiveDataName(b)) || displayLabelForName(b);
+                const cn = getCapital(effectiveDataName(north)) || displayLabelForName(north);
+                return {
+                    highlight: [],
+                    correct: cn,
+                    options: shuffleArray([ca, cb]),
+                    revealParallels: [{ at: pa, label: ca }, { at: pb, label: cb }],
+                    pins: [{ at: pa, label: ca, kind: 'origin' }, { at: pb, label: cb, kind: 'origin' }],
+                    prompt: `Which is further <strong>${pa[1] < 0 ? 'south' : 'north'}</strong> — ` +
+                            `<strong>${ca}</strong> or <strong>${cb}</strong>?`,
+                    explain: `${cn}. ${ca} is at ${sbFormatLat(pa[1])}, ${cb} at ${sbFormatLat(pb[1])} — ` +
+                             `${gap.toFixed(1)}° apart, which a world map spreads across half its width and ` +
+                             `your mental one usually gets backwards.`
+                };
+            }
+            return null;
+        }
+    },
+
+    // ---------- read the band ----------
+    'sb-read-band': {
+        engine: 'latitude', flat: true, icon: 'horizontal_rule', label: 'Read the Band',
+        desc: 'Three countries on one line of latitude — which line?',
+        build() {
+            for (let t = 0; t < 40; t++) {
+                const lat = Math.round((Math.random() * 130 - 60) / 5) * 5;
+                if (Math.abs(lat) < 5) continue;
+                const crossers = sbLatCrossers(lat);
+                const named = crossers.filter(n => sbPool().some(x => namesMatch(x, n)));
+                if (named.length < 3) continue;
+                const show = shuffleArray(named).slice(0, 3);
+                return {
+                    highlight: show, truthLat: lat, dec: declinationForDay(172), day: 172,
+                    hours: sunPathDayHours(lat, declinationForDay(172)),
+                    correct: sbFormatLat(lat),
+                    prompt: `One line of latitude runs through all three highlighted countries. ` +
+                            `Slide the marker to <strong>which line</strong>.`,
+                    explain: `${sbFormatLat(lat)} — it crosses ${named.slice(0, 6).map(displayLabelForName).join(', ')}` +
+                             `${named.length > 6 ? ' and more' : ''}.`
+                };
+            }
+            return null;
+        }
     }
 };
 
@@ -13661,6 +14261,12 @@ function renderSandboxQuizQuestion() {
     // Board-replacing rounds re-cut from scratch: the map finishes loading before the first
     // question exists, so the initial drawCountries never saw a `solo`/`coastOnly` to honour.
     if (q.solo || q.coastOnly || q.surgery) drawCountries();
+
+    // Markers and walked tracks belong to the ROUND, not to an engine — a pin on the map is
+    // as much a part of a pinpoint question as of a multiple-choice one — so they are drawn
+    // here rather than repeated in each renderer.
+    if (q.pins) sbDrawPins(q.pins);
+    if (q.track) sbDrawTrack(q.track, q.trackClass);
 
     const head = `Round ${gameState.currentQuestion}/${gameState.totalQuestions} — `;
     if (spec.engine === 'fact') return sbRenderFact(q, head);
@@ -13958,6 +14564,9 @@ function sbRevealNeighbourMap(q, picked) {
         .map(l => (q.labelToName && q.labelToName[l]) || l);
     const marks = {};
     if (target) marks[target] = 'target';
+    // The Bridge has TWO ends rather than one subject, and both have to read as the question
+    // rather than as answers.
+    (q.bridgeEnds || []).forEach(n => { marks[n] = 'target'; });
     (q.neighbourNames || []).forEach(n => {
         marks[n] = (picked || []).some(l => namesMatch((q.labelToName && q.labelToName[l]) || l, n))
             ? 'right' : 'missed';
@@ -14350,6 +14959,7 @@ function sbRenderFact(q, head) {
     if (q.lake) sbDrawLake(q.lake);
     document.getElementById('question-text').innerHTML = head + q.prompt;
     if (q.imageOptions) sbRenderImageOptions(q.imageOptions, q.correct);
+    else if (q.scaleOptions) sbRenderScaleOptions(q.scaleOptions, q.correct);
     else if (q.shapeOptions) sbRenderShapeOptions(q.shapeOptions, q.correct);
     else if (q.routeOptions) sbRenderRouteOptions(q.routeOptions, q.correct);
     else if (q.pickOne) sbRenderPickOne(q);
@@ -14596,6 +15206,51 @@ function sbRenderShapeOptions(opts, correct) {
     });
 }
 
+// Four outlines at ONE shared scale — which is the whole question, so the tiles must not each
+// fit their own shape the way Upside Down's do. A common km-per-unit is chosen from the largest
+// of the four, every shape is drawn at it, and one is quietly multiplied by a factor.
+//
+// The tiles are all the same size and every shape is centred in its own, so nothing about the
+// LAYOUT carries size information — only the drawing does. That is what makes the round a claim
+// about how big these countries really are relative to each other, rather than a claim about
+// which picture happens to be biggest.
+function sbRenderScaleOptions(opts, correct) {
+    const grid = sbOptionGrid('sb-shape-grid sb-scale-grid');
+    const W = 170, H = 128, pad = 10;
+    // An EQUAL-AREA projection, centred on each country's own middle. "The same scale" has to
+    // be a statement that survives measurement, and a Mercator divided by cos(centroid) does
+    // not: the stretch varies across a country, so Finland (60-70 degrees N) came out 23% off
+    // while being drawn perfectly honestly. Azimuthal equal-area at a shared scale makes drawn
+    // area exactly proportional to true area, with no correction to get wrong.
+    const measured = opts.map(o => {
+        const f = sbFeature(o.name);
+        if (!f) return null;
+        const core = shapeFramingCore(f) || f;
+        const c = d3.geoCentroid(core);
+        const proj = d3.geoAzimuthalEqualArea().scale(1000).translate([0, 0]).rotate([-c[0], -c[1]]);
+        const pth = d3.geoPath(proj);
+        const b = pth.bounds(core);
+        if (!isFinite(b[0][0]) || !isFinite(b[1][1])) return null;
+        return { o, f, pth, w: b[1][0] - b[0][0], h: b[1][1] - b[0][1],
+                 cx: (b[0][0] + b[1][0]) / 2, cy: (b[0][1] + b[1][1]) / 2 };
+    });
+    if (measured.some(m => !m)) { sbRenderShapeOptions(opts, correct); return; }
+    // One scale for the lot, set so the biggest - after its lie is applied - still fits.
+    const S = Math.min(...measured.map(m =>
+        Math.min((W - 2 * pad) / (m.w * m.o.factor), (H - 2 * pad) / (m.h * m.o.factor))));
+    measured.forEach(m => {
+        const b = document.createElement('button');
+        b.className = 'option-btn sb-shape';
+        const z = S * m.o.factor;
+        const d = m.pth(m.f) || '';
+        b.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><g transform="translate(${W / 2},${H / 2}) ` +
+            `scale(${z}) translate(${-m.cx},${-m.cy})"><path class="sb-shape-path" d="${d}"></path></g></svg>` +
+            `<span>${m.o.label}</span>`;
+        b.onclick = () => handleMultipleChoiceAnswer(m.o.label, correct, b);
+        grid.appendChild(b);
+    });
+}
+
 // On the reveal, turn the odd tile back the right way round — saying "mirrored top-to-bottom"
 // is a claim, and watching it swing back is the proof.
 const SB_RIGHT_MS = 950;
@@ -14673,6 +15328,49 @@ function sbPlayRevealAnimation() {
     let hold = 0;
     if (q.equatorPair) { sbRevealEquator(q.equatorPair); hold = SB_EQ_REVEAL_MS + 1800; }
     if (q.shapeOptions) { sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
+    // Straight On: draw the line you were told you would follow, and light up what it hit.
+    if (q.revealTrack) {
+        sbDrawTrack(q.revealTrack, 'r1 solo');
+        if (q.revealHit) { q.boardMarks = { marks: { [q.revealHit]: 'right' } }; sbApplyBoardMarks(); }
+        hold = Math.max(hold, 1500);
+    }
+    // You Are Here: the borders come back, with the answer picked out of them.
+    if (q.coastOnly && q.revealNames) {
+        q.coastOnly = false;
+        q.boardMarks = { marks: { [q.revealNames[0]]: 'right' } };
+        drawCountries();
+        hold = Math.max(hold, 1500);
+    }
+    // Fewest Borders: the chain itself, country by country, which is the only way to see that
+    // the number was a route rather than a guess.
+    if (q.revealChain) {
+        const marks = {};
+        q.revealChain.forEach((n, i) => {
+            marks[n] = (i === 0 || i === q.revealChain.length - 1) ? 'target' : 'right';
+        });
+        q.boardMarks = { marks };
+        sbFitToFeatures(q.revealChain, 0.09);
+        drawCountries();
+        hold = Math.max(hold, 2200);
+    }
+    // Further North?: both parallels ruled right across the map, which settles it at a glance
+    // and is the only picture that makes the answer feel obvious afterwards.
+    // Sun Overhead: rule the sun's own parallel across the map. The latitude of the answer is
+    // the declination and nothing else, so seeing the line is seeing the rule.
+    if (q.revealDeclination != null) {
+        const line = d3.range(-180, 181, 2).map(l => [l, q.revealDeclination]);
+        sbOverlay().append('path').datum(line)
+            .attr('class', 'sb-route sb-parallel-mark r0').attr('d', sbLine(line));
+        hold = Math.max(hold, 1200);
+    }
+    if (q.revealParallels) {
+        q.revealParallels.forEach((r, i) => {
+            const line = { type: 'LineString', coordinates: d3.range(-180, 181, 2).map(l => [l, r.at[1]]) };
+            sbOverlay().append('path').datum(line.coordinates)
+                .attr('class', 'sb-route sb-parallel-mark r' + i).attr('d', sbLine(line.coordinates));
+        });
+        hold = Math.max(hold, 1500);
+    }
     if (hold) setTimeout(() => {
         if (gameState.sbQuestion === q) scheduleAutoAdvance(hold);
     }, 0);
@@ -14754,6 +15452,9 @@ function sbSubmitPinpoint() {
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
     document.getElementById('give-up-btn').style.display = 'none';
+    // Pinpoint rounds have reveals of their own now (Sun Overhead rules the sun's parallel),
+    // and this is the one hook that lets a round push the advance back for them.
+    sbPlayRevealAnimation();
     scheduleAutoAdvance();
 }
 

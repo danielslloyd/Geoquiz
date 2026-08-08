@@ -3869,3 +3869,20 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 /* (Who's Missing no longer needs a hide rule: the eaten country is removed from the feature
    list outright, so nothing ever draws it. The old `.sb-gone { display: none !important }`
    existed to out-rank the inline `display` updateIslandMarkers writes for small countries.) */
+
+/* ---- second-wave quick quizzes ------------------------------------------------------- */
+/* A labelled marker the round plants on the map: the place you set off from, the pin you are
+   being asked to name. Rides in .sb-anchored so it follows pan and zoom. */
+.sb-pin { pointer-events: none; }
+.sb-pin circle { fill: var(--accent, #d08a2c); stroke: #fff; stroke-width: 2;
+    vector-effect: non-scaling-stroke; }
+.sb-pin.target circle { fill: var(--incorrect, #c0503f); }
+.sb-pin text { font-size: 11px; font-weight: 700; fill: #fff;
+    paint-order: stroke; stroke: rgba(0, 0, 0, 0.78); stroke-width: 3px; stroke-linejoin: round; }
+
+/* Further North?'s two parallels, ruled right across the map on the reveal. */
+.sb-parallel-mark { stroke-dasharray: 7 5; stroke-width: 2; }
+
+/* Out of Scale: all four tiles are the same size and every shape is centred in its own, so
+   nothing about the LAYOUT can carry size information — only the drawing does. */
+.sb-scale-grid .option-btn.sb-shape svg { width: 100%; max-width: 170px; }
