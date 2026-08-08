@@ -550,6 +550,71 @@ viewport, and without it the controls bar is cut off and there is no way to subm
 
 Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
 
+## Find the Capital: the game on one map
+
+Ten rounds are scored as a running total and each round's markers are wiped before the next,
+so the mode could tell you *how far off* you were and never *how* you were wrong.
+`logCapitalRound` keeps every round; `drawCapitalSummaryMap` ends the game by refitting the
+world and drawing all of them at once — each answer a dot, each guess tied to it by a line
+coloured through `puzzleErrorColor`, so "green is close" means the same thing here as in the
+blind puzzle.
+
+`capitalBias` is the number that makes it worth keeping. It averages the **signed** east/west
+and north/south offsets, not the distances: distances always average to something positive and
+say nothing, while the signed mean is exactly the part of the error that survives ten rounds —
+most people carry a constant pull toward the middle of whatever map they learned on. Reported
+only above 120 km, and reported as its absence otherwise ("no consistent direction — they
+scatter evenly"), since a bias readout that always finds a bias is a horoscope. Verified by
+playing ten rounds with a fixed 6° west / 3° north offset: it reports 596 km west and 332 km
+north, and 3° × 110.574 = 331.7.
+
+## Name All: practise what you missed
+
+The miss list was a column of names. Two things make it useful instead:
+
+* **The names are written on the map**, over their own shapes (`labelMissedOnMap`). It has to
+  **zoom first** — at the scale a world round is played most of Europe is a few pixels across,
+  and the size guard threw away 31 of 40 labels, so the feature worked perfectly and showed
+  almost nothing. Framing the misses (skipped when they are scattered over more than 140°, where
+  no frame helps) took Europe from 9 labels to 26. On a globe it rotates to their centroid
+  first, because `fitExtent` only scales and translates and would otherwise fit a hemisphere the
+  countries cannot appear in. The type shrinks with the country rather than the label being
+  dropped: a small name written small still says which shape it belongs to. Re-drawing for the
+  zoom rebuilds the paths, so the red highlight has to be re-applied afterwards.
+* **A "Practise the N you missed" button** starts an Identify round over exactly that list
+  (`startPractiseMissed`). Identify already takes its whole configuration from another mode's
+  entry — this is `startIdentifyMode`'s pattern with an explicit list instead of a region's
+  full one — and it asks *all* of them rather than a sample of ten, because the list is
+  already the set worth asking about. `name-all` stashes `sourceRegion` so the drill can borrow
+  the same map and data; its config is rewritten in place per region, so by the time the round
+  ends there is otherwise nothing left to say where it came from.
+
+## Shape ID difficulty
+
+`SHAPE_ID_TIERS` — **Outline** (as before), **Turned** (the whole outline at a random angle),
+**Fragment** (one contiguous run of ~42% of the boundary, also turned). Nothing about the
+*question* changes: same countries, same shape-similar distractors, only how much of the shape
+you are given. Reached through `showShapeIdSelector()`, which makes `country-shape-id` the
+seventh selector trigger that is also a real mode key and so must be intercepted in all three
+dispatch points.
+
+Three things it has to get right:
+* **Rotate in SCREEN space, not by re-projecting.** Re-projecting would refit the country to its
+  new bounding box, so how much of the viewport it fills would itself become a clue.
+* **Shrink so the turned shape still fits.** The projection fitted the country upright, so a
+  tall one spun a quarter turn needs the viewport's width for its height — Tonga came out
+  1,064 px tall in a 600 px box. The room a w×h box needs at angle a is
+  (w|cos a| + h|sin a|) by (w|sin a| + h|cos a|); solving that gives the factor. Measured over
+  30 rounds of the two turned tiers: **zero overflow of the framing core**, fit factors 0.60 to
+  1.00.
+* **A fragment is a RUN, not a sample.** A random scatter of boundary points is a dotted version
+  of the whole outline and gives away just as much; one unbroken stretch is a piece of coast —
+  the character of a border with none of the overall form.
+
+`revealShapeIdTruth` turns it back upright and fills the fragment in once the round is decided,
+with the usual `setTimeout` backstop, since withholding through the answer would only make the
+answer unverifiable.
+
 ## Draw the Border
 
 The board shows context **without the answer**, and `drawBorderBoard()` builds it with `topojson.mesh`'s filter rather than by drawing features and hiding one. Mesh hands the filter the two geometries sharing each arc (the same one twice for an exterior arc), so both rules are just predicates on that pair:
@@ -562,6 +627,19 @@ Drawing per-feature cannot express this: a neighbour's outline still traces the 
 **Both cases use the same rule** — `(a, b) => a === b && !isTarget(a)`, exterior arcs only. On a state map that means the coast plus the international border of the whole union and *no state lines at all*: a state is as hard to place among its neighbours as a country is, which is the point. A landlocked target therefore leaves no trace on either board (West Virginia removes nothing, because it owns no exterior arc).
 
 **Which way is the sea** is answered by `shadeCoastline`: the same wide blurred stroke drawn twice, once clipped to the land polygons (brown, fading inland) and once through a mask of everything-but-land (blue, fading seaward). Clipping is what makes it two-sided — a stroke alone has no idea which of its flanks is water.
+
+**Scored as position and shape, separately.** The same error splits two ways and people fail
+in one or the other rather than both: the right shape in the wrong place, or the right place
+with the wrong shape. One averaged number describes neither. `scoreDrawnBorder` returns both —
+**position** is the gap between the two loops' centroids, **form** is the symmetric mean again
+measured after sliding the drawn loop onto the true centroid, which removes exactly the
+placement error and leaves size and shape. Five points each (`DRAW_BORDER_SCALE_KM` 250 for
+position, `DRAW_BORDER_FORM_SCALE_KM` 180 for form — tighter, because once the loop is in the
+right place being 200 km out on its outline is a much worse trace than being 200 km out on
+where you put it). Verified on a Philippines round: a perfect trace scores 5 + 5; the same trace
+shifted 4° east scores **0.9 for position and a full 5 for shape**, where the old single number
+gave it 3.5/10 and no way to tell which half was wrong; a correctly-placed circle of the right
+size scores 1.1 and 0.4.
 
 **Zoom** is bounded to 0.65×–3.5× of the scale this round was fitted at (`DRAW_ZOOM_MIN/MAX`), anchored on the cursor. That forced the stroke to be stored in **lon/lat rather than pixels**: a pixel-recorded stroke drifts off the map the moment it zooms, and would then score against the wrong place. Verified — tracing the true outline scores 1.15 km, and zooming 3.5× afterwards still scores 1.15 km.
 

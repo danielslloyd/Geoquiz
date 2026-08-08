@@ -3886,3 +3886,19 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 /* Out of Scale: all four tiles are the same size and every shape is centred in its own, so
    nothing about the LAYOUT can carry size information — only the drawing does. */
 .sb-scale-grid .option-btn.sb-shape svg { width: 100%; max-width: 170px; }
+
+/* ---- Find the Capital: the whole game on one map ------------------------------------- */
+/* Every answer as a dot, every guess tied to it by a line coloured by how far off it was.
+   Stroke colours are set inline from the blind puzzle's error ramp, so "green is close" means
+   the same thing in both modes. */
+.capital-markers.capital-summary .summary-line { stroke-width: 2; stroke-opacity: 0.85;
+    vector-effect: non-scaling-stroke; }
+.capital-markers.capital-summary .summary-guess { fill: none; stroke-width: 2;
+    vector-effect: non-scaling-stroke; }
+.capital-markers.capital-summary .summary-answer { fill: var(--text); fill-opacity: 0.9;
+    stroke: #fff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+/* ---- Name All: the misses, written where they belong --------------------------------- */
+.name-all-labels { pointer-events: none; }
+.name-all-label { font-size: 10px; font-weight: 700; fill: #fff;
+    paint-order: stroke; stroke: rgba(0, 0, 0, 0.8); stroke-width: 3px; stroke-linejoin: round; }

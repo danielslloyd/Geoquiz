@@ -3408,6 +3408,8 @@ function handleCorrectAnswer(element, award = true) {
     // The round is decided (this also runs for the auto-reveal after a wrong answer), so the
     // photo credit can finally be shown without its title spoiling the city.
     if (gameState.questionType === 'skyline-id') revealSkylineCredit();
+    // Same idea for Shape ID's harder tiers: the silhouette turns back upright and fills in.
+    if (gameState.questionType === 'country-shape-id') revealShapeIdTruth();
 
     // Determine max sub-questions based on mode
     const modeConfig = QUIZ_MODES[gameState.mode];
@@ -4226,6 +4228,8 @@ function renderNameAllMode() {
         .style('stroke-width', null)
         .style('opacity', 1);       // Ensure full opacity
 
+    if (g) g.selectAll('g.name-all-labels').remove();
+
     // Reset and reposition island-dot markers for this fresh game.
     if (islandMarkersGroup) {
         islandMarkersGroup.selectAll('circle')
@@ -4426,6 +4430,11 @@ function handleNameAllGiveUp(timedOut) {
     const totalItems = gameState.currentQuizList.length;
     const itemWord = (QUIZ_MODES[gameState.mode].itemLabelPlural) || 'countries';
 
+    // The names, ON THE MAP. A column of forty names is a list of words; the same forty
+    // written where they belong is the thing you were being asked to know, and it is the only
+    // version you have any chance of remembering.
+    labelMissedOnMap(missedItems);
+
     const feedback = document.getElementById('feedback');
     feedback.innerHTML = `
         <div>
@@ -4438,8 +4447,114 @@ function handleNameAllGiveUp(timedOut) {
     `;
     feedback.className = 'feedback incorrect';
 
+    // The whole point of a miss list is what you do with it next. This turns it into a drill
+    // over exactly those items rather than leaving the player to go and find them.
+    if (missedItems.length) appendPractiseButton(feedback, missedItems.slice());
+
     // Update button states
     document.getElementById('give-up-btn').style.display = 'none';
+}
+
+// Write each missed name across its own shape.
+//
+// It has to ZOOM first. At the scale a world round is played, most of Europe is a few pixels
+// across and the size guard threw away 31 of 40 labels — the feature was working perfectly and
+// showing almost nothing. Framing the misses makes them big enough to write on, and is what
+// you would do by hand anyway. Skipped when they are scattered across the planet, where there
+// is no frame that helps and the whole world is already the right answer.
+const NAME_ALL_LABEL_MIN_PX = 16;
+function labelMissedOnMap(missed) {
+    if (!g || !countriesGroup || !path) return;
+    g.selectAll('g.name-all-labels').remove();
+    const want = new Set(missed.map(normalizeName));
+    const feats = (gameState.countries || []).filter(f =>
+        f && f.properties && want.has(normalizeName(f.properties.name)));
+    if (!feats.length) return;
+
+    const fc = { type: 'FeatureCollection', features: feats };
+    let span = 360;
+    try {
+        const bb = d3.geoBounds(fc);
+        span = Math.max(Math.abs(bb[1][0] - bb[0][0]), Math.abs(bb[1][1] - bb[0][1]));
+    } catch (_) { /* leave it as the whole world */ }
+    if (span < 140 && projection && projection.fitExtent) {
+        try {
+            // Rotate first on a globe: fitExtent only scales and translates, so anything on the
+            // far side of an orthographic would be fitted to a hemisphere it cannot appear in.
+            if (typeof projection.rotate === 'function' && isGlobeView()) {
+                const c = d3.geoCentroid(fc);
+                if (c && isFinite(c[0])) {
+                    projection.rotate([-c[0], gammaLocked ? 0 : -c[1], 0]);
+                    r_unconstrained = projection.rotate().slice();
+                }
+            }
+            const pad = Math.min(width, height) * 0.08;
+            projection.fitExtent([[pad, pad], [width - pad, height - pad]], fc);
+            drawCountries();
+            // drawCountries rebuilds the paths and the dots, so the red highlight has to go
+            // back on afterwards or the zoom silently undoes it.
+            countriesGroup.selectAll('path')
+                .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
+            if (islandMarkersGroup) islandMarkersGroup.selectAll('circle')
+                .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
+        } catch (_) { /* keep the framing we had */ }
+    }
+
+    const layer = g.append('g').attr('class', 'name-all-labels');
+    const seen = new Set();
+    countriesGroup.selectAll('path').each(function (d) {
+        const nm = d && d.properties && d.properties.name;
+        if (!nm || !want.has(normalizeName(nm)) || seen.has(normalizeName(nm))) return;
+        let b;
+        try { b = path.bounds(d); } catch (_) { return; }
+        if (!b || !isFinite(b[0][0])) return;
+        const w = b[1][0] - b[0][0], h = b[1][1] - b[0][1];
+        if (Math.max(w, h) < NAME_ALL_LABEL_MIN_PX) return;
+        seen.add(normalizeName(nm));
+        // The type shrinks with the country rather than the label being dropped: a small name
+        // written small still says which shape it belongs to, and dropping it says nothing.
+        const size = Math.max(7, Math.min(12, Math.max(w, h) / 4.5));
+        layer.append('text').attr('class', 'name-all-label')
+            .attr('x', (b[0][0] + b[1][0]) / 2).attr('y', (b[0][1] + b[1][1]) / 2)
+            .attr('font-size', size + 'px')
+            .attr('text-anchor', 'middle').text(displayLabelForName(nm));
+    });
+}
+
+function appendPractiseButton(host, missed) {
+    const wrap = document.createElement('div');
+    wrap.style.marginTop = '10px';
+    const btn = document.createElement('button');
+    btn.className = 'control-btn';
+    btn.textContent = `Practise the ${missed.length} you missed`;
+    btn.addEventListener('click', () => startPractiseMissed(missed));
+    wrap.appendChild(btn);
+    host.appendChild(wrap);
+}
+
+// An Identify round restricted to exactly the items that were missed. Identify already takes
+// its whole configuration from another mode's entry (startIdentifyMode does the same thing for
+// a region), so this is that pattern with an explicit list instead of a region's full one.
+function startPractiseMissed(missed) {
+    const nm = QUIZ_MODES['name-all'];
+    const id = QUIZ_MODES.identify;
+    id.quizList = missed;
+    id.dataObjKey = nm.dataObjKey;
+    id.useGlobe = nm.useGlobe;
+    id.useAlbersUsa = nm.useAlbersUsa || false;
+    id.mapUrl = nm.mapUrl;
+    id.mapObject = nm.mapObject;
+    id.itemLabel = nm.itemLabel;
+    id.itemLabelPlural = nm.itemLabelPlural;
+    // Every one of them, not a sample: the list IS the set worth asking about.
+    id.totalQuestions = missed.length;
+    stopNameAllTimer();
+    document.querySelector('.container').classList.remove('name-all-mode');
+    const box = document.getElementById('name-all-input-container');
+    if (box) box.remove();
+    const counter = document.querySelector('.score-item:has(#current-question)');
+    if (counter) counter.style.display = '';
+    startGameWithMode('identify');
 }
 
 // ==================== MYSTERY FLAG MODE ====================
@@ -5328,10 +5443,23 @@ function generateShapeIdOptions(correctAnswer) {
 
 // Render country shape ID question — show ONLY the target country's outline as a
 // flat Mercator silhouette (no globe, neighbours, lakes or dots), then pick the name.
+// Three ways to show one silhouette, from the outline plainly to a scrap of it at an angle.
+// Nothing about the QUESTION changes — same countries, same shape-similar distractors — only
+// how much of the shape you are given to work from.
+const SHAPE_ID_TIERS = {
+    outline:  { label: 'Outline', desc: 'The country, upright and whole' },
+    turned:   { label: 'Turned',  desc: 'The whole outline, at an unknown angle', rotate: true },
+    fragment: { label: 'Fragment', desc: 'A piece of the outline, at an unknown angle', rotate: true, keep: 0.42 }
+};
+let shapeIdTier = 'outline';
+
 function renderCountryShapeIdQuestion() {
     gameState.questionType = 'country-shape-id';
+    const tier = SHAPE_ID_TIERS[shapeIdTier] || SHAPE_ID_TIERS.outline;
 
-    document.getElementById('question-text').innerHTML = `Which country is highlighted?`;
+    document.getElementById('question-text').innerHTML = tier.rotate
+        ? `Which country is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
+        : `Which country is highlighted?`;
     const flagDisplay = document.getElementById('flag-display');
     if (flagDisplay) flagDisplay.style.display = 'none';
 
@@ -5358,17 +5486,107 @@ function renderCountryShapeIdQuestion() {
     // 10m world (~250k vertices) just to show one country is far too heavy, so the
     // other features are never added to the DOM (drawCountries skips them).
     countriesGroup.selectAll('path').remove();
+    g.selectAll('g.shape-id-layer').remove();
     if (target) {
-        countriesGroup.append('path')
+        // The harder tiers wrap the silhouette in a group that is rotated about the viewport
+        // centre. Rotating in SCREEN space rather than re-projecting is what keeps the framing
+        // identical across tiers — re-projecting would refit the country to its new bounding
+        // box, so the amount of the viewport it fills would itself become a clue.
+        let host = countriesGroup;
+        if (tier.rotate) {
+            const ang = Math.round(Math.random() * 360);
+            // Shrink far enough that the TURNED shape still fits. The projection was fitted to
+            // the country upright, so a tall one spun a quarter turn needs the viewport's width
+            // for its height and runs off the edge — Tonga came out 1,064 px tall in a 600 px
+            // box. The room a w x h box needs at angle a is (w|cos|+h|sin|) by (w|sin|+h|cos|).
+            let f = 1;
+            try {
+                const b = path.bounds(shapeFramingCore(target) || target);
+                const w0 = b[1][0] - b[0][0], h0 = b[1][1] - b[0][1];
+                const r = ang * DEG, ca = Math.abs(Math.cos(r)), sa = Math.abs(Math.sin(r));
+                const pad2 = Math.min(width, height) * 0.12;
+                f = Math.min(1, (width - 2 * pad2) / (w0 * ca + h0 * sa),
+                                (height - 2 * pad2) / (w0 * sa + h0 * ca));
+            } catch (_) { f = 1; }
+            gameState.shapeIdAngle = ang;
+            gameState.shapeIdFit = f;
+            host = g.append('g').attr('class', 'shape-id-layer')
+                .attr('transform', `rotate(${ang}, ${width / 2}, ${height / 2}) ` +
+                                   `translate(${width / 2},${height / 2}) scale(${f}) translate(${-width / 2},${-height / 2})`);
+        }
+        gameState.shapeIdTarget = target;
+        host.append('path')
             .datum(target)
             .attr('class', 'country shape-target')
-            .attr('d', path);
+            .attr('d', tier.keep ? shapeIdFragmentPath(target, tier.keep) : path(target));
     }
 
     // Multiple-choice options: the answer plus 2 distractors chosen for LOOKING like
     // the target shape (+ a random fill), so the wrong answers are genuinely tricky.
     const options = generateShapeIdOptions(gameState.targetCountry);
     renderMultipleChoice(options, gameState.targetCountry);
+}
+
+// A contiguous run of the country's outline, drawn as an open line rather than a filled shape.
+// A RUN, not a scatter: a random sample of the boundary is a dotted version of the whole
+// outline, which gives away as much as the outline does. One unbroken stretch is a piece of
+// coast — you get the character of a border and none of the overall form.
+function shapeIdFragmentPath(feature, keep) {
+    const parts = featureParts(feature);
+    let ring = null, best = 0;
+    parts.forEach(pp => { if (pp[0] && pp[0].length > best) { best = pp[0].length; ring = pp[0]; } });
+    if (!ring || ring.length < 12) return path(feature);
+    const n = ring.length;
+    const take = Math.max(6, Math.round(n * keep));
+    const start = Math.floor(Math.random() * n);
+    const run = [];
+    for (let i = 0; i < take; i++) run.push(ring[(start + i) % n]);
+    return path({ type: 'LineString', coordinates: run }) || path(feature);
+}
+
+// Once the round is decided, put the country back the way round it really is — and whole. The
+// tier withholds information to make the question hard; keeping it withheld through the answer
+// would just make the answer unverifiable.
+function revealShapeIdTruth() {
+    const tier = SHAPE_ID_TIERS[shapeIdTier];
+    if (!tier || !tier.rotate || !g || !gameState.shapeIdTarget) return;
+    const layer = g.select('g.shape-id-layer');
+    if (layer.empty()) return;
+    layer.select('path.shape-target').attr('d', path(gameState.shapeIdTarget));
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const dur = reduce ? 0 : 700;
+    const end = `rotate(0, ${width / 2}, ${height / 2}) ` +
+                `translate(${width / 2},${height / 2}) scale(1) translate(${-width / 2},${-height / 2})`;
+    if (dur) layer.transition().duration(dur).ease(d3.easeCubicInOut).attr('transform', end);
+    // d3 transitions are rAF-driven and a backgrounded tab never fires it, so the finished
+    // state is set unconditionally — the same backstop the puzzle's piece `settle` documents.
+    setTimeout(() => { if (layer.node() && layer.node().isConnected) { layer.interrupt(); layer.attr('transform', end); } }, dur + 60);
+}
+
+// One tile per tier, in the same shape as the puzzle's difficulty picker.
+function showShapeIdSelector() {
+    teardownActiveGame();
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+    const sel = document.getElementById('mode-selector');
+    sel.classList.remove('hidden');
+    sel.innerHTML = `
+        <h2>Name the Shape</h2>
+        <p class="selector-sub">One silhouette, no map around it — how much of it do you want?</p>
+        <div class="mode-buttons">
+            ${Object.keys(SHAPE_ID_TIERS).map(k => `
+            <button class="mode-btn" data-shapetier="${k}">
+                <span class="mode-icon material-symbols-outlined">pentagon</span>
+                <span class="mode-name">${SHAPE_ID_TIERS[k].label}</span>
+                <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
+            </button>`).join('')}
+        </div>`;
+    sel.querySelectorAll('[data-shapetier]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            shapeIdTier = btn.dataset.shapetier;
+            startGameWithMode('country-shape-id');
+        });
+    });
 }
 
 // ==================== SKYLINE ID MODE ====================
@@ -6143,8 +6361,21 @@ function endGame() {
         const total = Math.round(gameState.totalDistanceKm || 0);
         const avg = Math.round((gameState.totalDistanceKm || 0) / gameState.totalQuestions);
         const feedback = document.getElementById('feedback');
+        let biasLine = '';
+        if (modeConfig.findCapitalMode) {
+            drawCapitalSummaryMap();
+            const bias = capitalBias(gameState.capitalLog);
+            if (bias) {
+                const parts = [];
+                if (Math.abs(bias.ew) > 120) parts.push(`<strong>${Math.round(Math.abs(bias.ew)).toLocaleString()} km ${bias.ew < 0 ? 'west' : 'east'}</strong>`);
+                if (Math.abs(bias.ns) > 120) parts.push(`<strong>${Math.round(Math.abs(bias.ns)).toLocaleString()} km ${bias.ns < 0 ? 'south' : 'north'}</strong>`);
+                biasLine = parts.length
+                    ? `<br><span style="font-size:.9em">On average you guessed ${parts.join(' and ')} of the truth.</span>`
+                    : `<br><span style="font-size:.9em">No consistent direction to your misses — they scatter evenly around the answers.</span>`;
+            }
+        }
         feedback.innerHTML = `Total distance: <strong>${total.toLocaleString()} km</strong> over ${gameState.totalQuestions} ${unit}<br>` +
-            `Average: <strong>${avg.toLocaleString()} km</strong> per guess — ${capitalRating(avg)}`;
+            `Average: <strong>${avg.toLocaleString()} km</strong> per guess — ${capitalRating(avg)}` + biasLine;
         feedback.className = 'feedback ' + (avg < 1000 ? 'correct' : 'incorrect');
         document.getElementById('next-btn').disabled = true;
         document.getElementById('give-up-btn').style.display = 'none';
@@ -6331,6 +6562,8 @@ function setupEventListeners() {
                 showPlacesModeSelector();
             } else if (mode === 'state-puzzle') {
                 showStatePuzzleSelector();
+            } else if (mode === 'country-shape-id') {
+                showShapeIdSelector();
             } else if (mode === 'capitals') {
                 showCapitalsSelector();
             } else if (mode === 'flags') {
@@ -6451,6 +6684,7 @@ function setupEventListeners() {
             // difficulty), so open their selectors rather than starting a mode directly.
             if (mode === 'places') { showPlacesModeSelector(); return; }
             if (mode === 'state-puzzle') { showStatePuzzleSelector(); return; }
+            if (mode === 'country-shape-id') { showShapeIdSelector(); return; }
             if (mode === 'capitals') { showCapitalsSelector(); return; }
             if (mode === 'flags') { showFlagsSelector(); return; }
             if (mode === 'spaceship') { showSpaceshipSelector(); return; }
@@ -6779,6 +7013,7 @@ function submitCapitalGuess() {
     gameState.capitalSubmitted = true;
     const dKm = d3.geoDistance(gameState.currentGuess, gameState.capitalAnswer) * 6371;
     gameState.totalDistanceKm += dKm;
+    logCapitalRound(gameState.currentGuess, dKm);
 
     const data = gameState.currentDataObj[gameState.targetCountry];
     const feedback = document.getElementById('feedback');
@@ -6795,12 +7030,76 @@ function skipCapitalGuess() {
     if (gameState.currentGuess) { submitCapitalGuess(); return; }
     gameState.capitalSubmitted = true;
     gameState.totalDistanceKm += 5000; // skip penalty
+    logCapitalRound(null, null);
     const data = gameState.currentDataObj[gameState.targetCountry];
     const feedback = document.getElementById('feedback');
     feedback.innerHTML = `Skipped. <strong>${data.capital}</strong> is marked on the map (+5,000 km penalty).` +
         ` &nbsp;Total: ${Math.round(gameState.totalDistanceKm).toLocaleString()} km`;
     feedback.className = 'feedback incorrect';
     revealCapitalAnswer();
+}
+
+// Every round is kept, because the score is a running total and each round's map is wiped
+// before you can learn anything from it. Ten numbers added up tell you how you did; ten guesses
+// drawn on one map tell you HOW you were wrong, which is a different and more useful thing.
+function logCapitalRound(guess, km) {
+    gameState.capitalLog = gameState.capitalLog || [];
+    gameState.capitalLog.push({
+        country: gameState.targetCountry,
+        capital: (gameState.currentDataObj[gameState.targetCountry] || {}).capital,
+        answer: gameState.capitalAnswer.slice(),
+        guess: guess ? guess.slice() : null,
+        km: km
+    });
+}
+
+// The systematic part of the error, in kilometres east/west and north/south. A mean over
+// SIGNED offsets, not over distances: distances always average to something positive and say
+// nothing, while the signed mean is exactly the bias that survives ten rounds — most people
+// carry a constant pull toward the middle of whatever map they learned on.
+function capitalBias(log) {
+    const kept = (log || []).filter(r => r.guess);
+    if (kept.length < 3) return null;
+    let ew = 0, ns = 0;
+    kept.forEach(r => {
+        let dLon = r.guess[0] - r.answer[0];
+        if (dLon > 180) dLon -= 360;
+        if (dLon < -180) dLon += 360;
+        const midLat = (r.guess[1] + r.answer[1]) / 2;
+        ew += dLon * 111.320 * Math.cos(midLat * DEG);
+        ns += (r.guess[1] - r.answer[1]) * 110.574;
+    });
+    return { ew: ew / kept.length, ns: ns / kept.length, n: kept.length };
+}
+
+// The whole game on one map: every answer as a dot, every guess tied to it by a line coloured
+// by how far off it was. Reuses the blind puzzle's error ramp, so "green is close" means the
+// same thing in both modes.
+function drawCapitalSummaryMap() {
+    const log = gameState.capitalLog || [];
+    if (!log.length || !svg || !projection || !g) return;
+    if (projection.center) fitCapitalWorld(projection);
+    drawCountries();
+    clearCapitalMarkers();
+    const grp = ensureCapitalMarkersGroup();
+    grp.classed('capital-summary', true);
+    log.forEach(r => {
+        const ap = projection(r.answer);
+        if (!ap || !isFinite(ap[0])) return;
+        if (r.guess) {
+            const gp = projection(r.guess);
+            if (gp && isFinite(gp[0])) {
+                grp.append('line').attr('class', 'summary-line')
+                    .attr('stroke', puzzleErrorColor(r.km))
+                    .attr('x1', gp[0]).attr('y1', gp[1]).attr('x2', ap[0]).attr('y2', ap[1]);
+                grp.append('circle').attr('class', 'summary-guess')
+                    .attr('stroke', puzzleErrorColor(r.km))
+                    .attr('r', 4).attr('cx', gp[0]).attr('cy', gp[1]);
+            }
+        }
+        grp.append('circle').attr('class', 'summary-answer').attr('r', 3.2)
+            .attr('cx', ap[0]).attr('cy', ap[1]);
+    });
 }
 
 function capitalRating(avgKm) {
@@ -8129,19 +8428,47 @@ function scoreDrawnBorder() {
     const drawn = st.points.slice();   // already lon/lat
     if (drawn.length < 5) return null;
 
-    const meanNearest = (from, to) => {
-        let sum = 0;
-        for (const p of from) {
-            let best = Infinity;
-            for (const q of to) {
-                const d = d3.geoDistance(p, q);
-                if (d < best) best = d;
-            }
-            sum += best;
-        }
-        return sum / from.length * EARTH_R_KM;
+    const sym = (a, b) => (drawMeanNearest(a, b) + drawMeanNearest(b, a)) / 2;
+    const overall = sym(drawn, truth);
+
+    // The same error splits two ways, and people fail in one way or the other rather than in
+    // both: the right shape in the wrong place, or the right place with the wrong shape. One
+    // number averages those into something that describes neither.
+    //
+    // POSITION is the gap between the two loops' centroids. FORM is the symmetric mean again,
+    // measured after sliding the drawn loop onto the true centroid — which removes exactly the
+    // placement error and leaves whatever is left over, i.e. size and shape.
+    const cen = pts => {
+        let x = 0, y = 0, z = 0;
+        pts.forEach(([lo, la]) => {
+            const p = lo * DEG, t = la * DEG, c = Math.cos(t);
+            x += c * Math.cos(p); y += c * Math.sin(p); z += Math.sin(t);
+        });
+        const r = Math.hypot(x, y, z) || 1;
+        return [Math.atan2(y, x) / DEG, Math.asin(z / r) / DEG];
     };
-    return (meanNearest(drawn, truth) + meanNearest(truth, drawn)) / 2;
+    const cd = cen(drawn), ct = cen(truth);
+    const positionKm = d3.geoDistance(cd, ct) * EARTH_R_KM;
+    // Slide, don't rotate: a lon/lat offset is what "you drew it in the wrong place" means, and
+    // the cos correction keeps the shift a real distance rather than a number of degrees.
+    const dLat = ct[1] - cd[1];
+    const dLon = (ct[0] - cd[0]);
+    const shifted = drawn.map(([lo, la]) => [lo + dLon, Math.max(-89, Math.min(89, la + dLat))]);
+    const formKm = sym(shifted, truth);
+    return { overall, positionKm, formKm };
+}
+
+function drawMeanNearest(from, to) {
+    let sum = 0;
+    for (const p of from) {
+        let best = Infinity;
+        for (const q of to) {
+            const d = d3.geoDistance(p, q);
+            if (d < best) best = d;
+        }
+        sum += best;
+    }
+    return sum / from.length * EARTH_R_KM;
 }
 
 // Evenly-ish spaced points along the feature's largest ring.
@@ -8164,21 +8491,32 @@ function revealDrawnBorder() {
     svg.on('pointerdown.draw', null);
     g.select('.draw-border-truth').style('display', null).attr('d', path(st.target));
 
-    const km = scoreDrawnBorder();
+    const res = scoreDrawnBorder();
     const feedback = document.getElementById('feedback');
-    if (km == null) {
+    if (res == null) {
         feedback.textContent = 'Nothing drawn — the outline is shown in green.';
         feedback.className = 'feedback partial';
     } else {
-        // Same exp(-x/scale) shape the other distance modes use.
-        const points = Math.round(10 * Math.exp(-km / DRAW_BORDER_SCALE_KM));
+        // Five points for putting it in the right place and five for getting the shape right,
+        // rather than ten for a single averaged miss. Scoring the two separately is what makes
+        // the split worth reporting: a good outline dropped in the wrong country used to be
+        // worth almost nothing, which told the player their trace was bad when it was their
+        // placement that was.
+        const posPts = 5 * Math.exp(-res.positionKm / DRAW_BORDER_SCALE_KM);
+        const formPts = 5 * Math.exp(-res.formKm / DRAW_BORDER_FORM_SCALE_KM);
+        const points = Math.round(posPts + formPts);
         gameState.score += points;
-        gameState.drawErrors = (gameState.drawErrors || []).concat(km);
+        gameState.drawErrors = (gameState.drawErrors || []).concat(res.overall);
         document.getElementById('score').textContent = gameState.score;
         syncScoreDisplay();
-        feedback.innerHTML = `Average miss <strong>${Math.round(km).toLocaleString()} km</strong> ` +
-            `(+${points} points)`;
-        feedback.className = 'feedback ' + (km < DRAW_BORDER_SCALE_KM ? 'correct' : 'incorrect');
+        const word = (v, good, ok) => v < good ? 'good' : (v < ok ? 'close' : 'off');
+        feedback.innerHTML =
+            `<strong>+${points}</strong> — average miss ${Math.round(res.overall).toLocaleString()} km<br>` +
+            `<span style="font-size:.9em">Position <strong>${Math.round(posPts)}/5</strong> ` +
+            `(centre ${Math.round(res.positionKm).toLocaleString()} km ${word(res.positionKm, 150, 400)}) ` +
+            `· Shape <strong>${Math.round(formPts)}/5</strong> ` +
+            `(${Math.round(res.formKm).toLocaleString()} km ${word(res.formKm, 120, 320)})</span>`;
+        feedback.className = 'feedback ' + (points >= 7 ? 'correct' : points >= 4 ? 'partial' : 'incorrect');
     }
     const next = document.getElementById('next-btn');
     next.textContent = gameState.currentQuestion >= gameState.totalQuestions ? 'See Results' : 'Next';
@@ -8186,7 +8524,10 @@ function revealDrawnBorder() {
     document.getElementById('give-up-btn').style.display = 'none';
 }
 
-const DRAW_BORDER_SCALE_KM = 250;   // average miss at which a round scores ~37%
+const DRAW_BORDER_SCALE_KM = 250;   // centre offset at which the position half scores ~37%
+// Form is judged tighter than position: once the loop is sitting on the right place, being
+// 200 km out on its outline is a much worse trace than being 200 km out on where you put it.
+const DRAW_BORDER_FORM_SCALE_KM = 180;
 
 // ==================== SUN & MOON ====================
 // View-only: where the sun and moon are directly overhead right now (or at any date/time you
@@ -17201,6 +17542,10 @@ const NAME_ALL_STATE_MODES = ['us-states', 'indian-states', 'german-states', 'uk
 // own quizList/dataObj/map borrowed wholesale from that mode's own QUIZ_MODES entry).
 function startNameAllMode(region) {
     const nm = QUIZ_MODES['name-all'];
+    // Kept so "practise the ones you missed" can borrow the same map and data. The name-all
+    // config is rewritten in place for whichever region is chosen, so by the time the round
+    // ends there is nothing left to say where it came from.
+    nm.sourceRegion = region;
     if (NAME_ALL_STATE_MODES.includes(region)) {
         const base = QUIZ_MODES[region];
         nm.quizList = base.quizList;
@@ -17546,6 +17891,8 @@ function resetModeSelector() {
                 showPlacesModeSelector();
             } else if (mode === 'state-puzzle') {
                 showStatePuzzleSelector();
+            } else if (mode === 'country-shape-id') {
+                showShapeIdSelector();
             } else if (mode === 'capitals') {
                 showCapitalsSelector();
             } else if (mode === 'flags') {
