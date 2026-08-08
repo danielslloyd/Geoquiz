@@ -3703,8 +3703,8 @@ body.sun-path-active #sun-path-panel .sandbox-title {
    rules deliberately leave `fill` alone for the hatched pair. */
 .sb-fly-fill { stroke-width: 1.2; vector-effect: non-scaling-stroke; pointer-events: none; }
 .sb-fly-fill.hit { fill: var(--correct, #3d8f5f); fill-opacity: 0.45; stroke: var(--correct, #3d8f5f); }
-.sb-fly-fill.missed { stroke: var(--correct, #3d8f5f); stroke-dasharray: 5 3; }
-.sb-fly-fill.wrong { stroke: var(--incorrect, #c0503f); stroke-dasharray: 5 3; }
+.sb-fly-fill.missed { stroke: var(--correct, #3d8f5f); }
+.sb-fly-fill.wrong { stroke: var(--incorrect, #c0503f); }
 .sb-fly-lab text, .sb-marklab text, .sb-dist-lab text {
     font-size: 11px; font-weight: 700; fill: #fff;
     paint-order: stroke; stroke: rgba(0, 0, 0, 0.78); stroke-width: 3px; stroke-linejoin: round; }
@@ -3718,9 +3718,13 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .country.sb-mark-right { fill: var(--correct, #3d8f5f); fill-opacity: 0.75; }
 /* Same three-state reading as Flyover, so the two reveals mean the same thing: named it =
    solid, missed it = green hatch, named one that isn't = red hatch. The hatch fill is set
-   inline from a <pattern>, so these rules leave `fill` alone for the hatched pair. */
-.country.sb-mark-missed { stroke: var(--correct, #3d8f5f); stroke-dasharray: 5 3; }
-.country.sb-mark-wrong { stroke: var(--incorrect, #c0503f); stroke-dasharray: 5 3; }
+   inline from a <pattern>, so these rules leave `fill` alone for the hatched pair.
+
+   A thin plain edge, not a dashed one. The dashes were what the eye actually landed on, so the
+   reveal read as a set of outlined borders when the answer it is giving is about which
+   COUNTRIES — and a country is a shape, not an edge. The shading does the work now. */
+.country.sb-mark-missed { stroke: var(--correct, #3d8f5f); stroke-width: 0.8; }
+.country.sb-mark-wrong { stroke: var(--incorrect, #c0503f); stroke-width: 0.8; }
 
 /* Near to Far: one spoke per country. Hairline — the spokes are there to say WHICH pair of
    points each distance was measured between, and at 2px five of them converging on the anchor

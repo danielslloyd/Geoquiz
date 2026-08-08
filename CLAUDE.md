@@ -261,82 +261,95 @@ ratio and pushes the shape off the edges — which is exactly what made Pin the 
 
 ### Who's Missing
 
-A country is removed and its land handed to its neighbours. The surgery happens at the **arc
-level**, which is what makes it invisible: TopoJSON stores each shared border once and both
-countries point at it, so rewriting one arc moves exactly one border and leaves every other
-vertex of every other country **bit-identical**. An absorber's own arc is replaced by the whole
-outline of the land it has taken, and the borders inside that outline which did NOT move (a
-coastline, a crowded-out neighbour's border) are copied verbatim, so they are drawn twice in
-exactly the same place and no seam can open. Everything is deterministic — the same country
-always divides the same way.
+A country is removed and its land handed to its neighbours. Every neighbour takes a **bite**, and
+the size of its bite is its share of the country's land border — whoever holds most of the
+frontier ends up with most of the land, which is the rule a person would guess. Bites go round
+biggest share first; whoever is left at the end keeps what has not been eaten, so nothing has to
+be reconciled afterwards and there is never a leftover stranded in the middle.
 
-**Coastal countries divide too**, which matters because 151 of the world's countries have a
-shore and the earlier version could only eat the 40 that don't. A border that cannot move simply
-stays put and whoever is opposite comes all the way in to it. The only structural requirement
-left is one land neighbour: an island has nobody to give the land to.
+**The shape of each bite is lifted from a real land border somewhere else in the world**
+(`sbBorderShapes`, one pass over every arc that two countries share), stretched across the two
+tripoints at the ends of the biter's frontier. A bite has to be a curve of some kind, and every
+curve anyone would invent looks invented; a border that already exists looks like a border
+because it is one. On top of the borrowed wiggle sits a single smooth bulge whose depth is
+bisected until the piece has the area that neighbour is owed — so the shape comes from geography
+and only the size is arithmetic. Each bite tries several borrowed borders in both directions and
+keeps the one leaving the most **compact** remainder, which is what stops the region degenerating
+into a ribbon by the third bite.
 
-**The fewest neighbours holding 80% of the land border take it** (`SB_ABSORB_COVER`), longest
-border first; the rest are crowded out, which is what a small neighbour of a big one looks like
-anyway and keeps the division legible instead of shattering a country into eight slivers.
+Three things the construction has to get right, each of which was wrong first and each caught by
+an audit rather than by looking:
 
-**The land is divided along a guide axis** — the longest straight segment that fits inside the
-country, found by scanning 36 directions × 24 parallel chords and keeping the longest interior
-interval. Each tripoint runs a spoke in to a point on that axis, and two absorbers meeting meet
-*along* the line rather than at a point. That is the entire reason for it: an earlier version
-sent every border in to the country's pole of inaccessibility, which tiles perfectly and looks
-wrong, because seven borders converging on one spot is a thing that exists nowhere on earth and
-Burkina Faso's neighbours all met in a visible starburst.
+* **The cut starts from the FRONTIER, not from the chord between the tripoints.** A concave
+  frontier has its own chord lying outside the country: Germany's Czech border is bowed, so the
+  chord ran through Czechia, every candidate cut failed containment, and Germany came out divided
+  between two of its nine neighbours. `lam` 0 is a copy of the real frontier (inside by
+  construction, zero area), 1 is the straight chord with the borrowed wiggle fully faded in, and
+  beyond that a bulge pushes on into the country. Area grows with `lam` throughout, which is what
+  makes one bisection enough.
+* **Every interior vertex of a cut has to be tested for CONTAINMENT, not just for crossing.** A
+  cut's two ends sit *on* the ring, so the ring edges meeting them have to be exempt from the
+  crossing test — and that exemption is a hole you can drive a country through. A cut that dived
+  straight out of the region at one tripoint and came back in at the other crossed only the exempt
+  edges and was waved past; it then enclosed the OUTSIDE, so the bisection cheerfully found "the
+  right area" on a lobe of somebody else's land and the remainder *grew*. France took 70,270 km²
+  of a 31,208 km² Belgium. Requiring the vertices to be on home soil says what the crossing test
+  was only implying.
+* **A bite that cannot have everything it is owed takes what it can reach, not nothing.** A share
+  of the *original* country is a large share of what is *left* by the third or fourth bite, so the
+  depth it asks for often sweeps clean across the remainder and out the far side. Feasibility
+  falls off with depth, so backing off is a second bisection — on whether the cut fits rather than
+  on how big it is. Average absorbers per country went from 2.07 to 2.64.
 
-Three things the construction has to get right, each of which was wrong first time and each
-caught by an audit rather than by looking:
+**A neighbour touching this one in two separate places bites from its longest frontier** and its
+other arcs stay where they are, becoming its border with whoever ends up behind them. At 110m an
+alternating run of arcs is common, and disqualifying a neighbour for it cost Poland both Germany
+and Slovakia. The one country that cannot be split like that is the **leftover** — it never bites,
+so its piece is whatever remains, and that region can contain its own second frontier, whose arc
+would then be both referenced by its ring and copied into the outline. So the leftover is chosen
+up front as the *biggest* neighbour touching in exactly one place: it absorbs every bite that
+came up short, and the country with the longest frontier is the one that should hold the surplus.
+Making it the smallest handed Czechia 76% of Germany. **Biting smallest-first was tried and is
+worse** on every count — the big bites then cut across a region three small ones have already
+nibbled the edges off, and back off to slivers (Burkina Faso came out 92/8 between two neighbours
+instead of 79/20/1 between three).
 
-* **The feet go round the axis in the same cyclic order as their tripoints go round the
-  boundary**, forced monotonic. Feet at the *nearest* point of the axis do not: at Germany's
-  eastern tip the nearest point lies along the Czech border, so the spoke ran parallel to the
-  border it was meant to be cutting away from. With the order guaranteed, tiling is a property
-  of the construction rather than a hope.
-* **A straight spoke is not always inside the country.** From the tip of the Zittau salient the
-  direct line to the middle of Germany leaves through the neck and comes back, so the border it
-  drew ran 30 km through Czechia. Each spoke therefore tries a series of curves — bowed along the
-  axis, then swung out along its tripoint's **interior angle bisector**, which at Zittau points
-  straight up the salient, i.e. the way you would have to walk — and takes the least swing that
-  stays on home soil. That one change took the pass rate from 101 countries to **125**.
-* **The axis collapses to a point as a fallback** (`frac` 1 → 0.55 → 0.25 → 0), which is the old
-  fan. A country whose neighbours surround it on all sides has no long axis worth dividing along,
-  and degrading to a fan is the right answer rather than a failure.
+The surgery is still at the **arc level**, which is what makes it invisible: TopoJSON stores each
+shared border once and both countries point at it, so rewriting one arc moves exactly one border
+and leaves every other vertex of every other country **bit-identical**. An absorber's own arc is
+replaced by the whole outline of the land it has taken; the borders inside that outline which did
+not move (a coastline, a crowded-out neighbour) are copied verbatim, so they are drawn twice in
+exactly the same place and no seam can open. **Coastal countries divide as readily as landlocked
+ones** — a shore simply cannot be pushed inland, so whoever is opposite comes all the way up to
+it. The only structural requirement left is one land neighbour.
 
-The tripoint's inward direction is the **interior angle bisector**, not the normal to the
-boundary: a tripoint is a corner, the normal is undefined at one, and taking the average tangent
-instead sends the new border straight back across the old one within a few hundred metres.
+Everything is **deterministic**: the same country always divides the same way.
 
-Two audits, and they catch different things. Every region loop is checked for
-**self-intersection** — a fold through another absorber's frontier is exactly what an area total
-cannot see, since one gains what the other loses — and the finished geometry is **area-audited**
-against the vanished country to within 3%, testing what will actually be drawn rather than a
-proxy for it.
+Measured over the 191-country pool at 110m: **144 divide cleanly** in 0.9 s for the lot, 18 are
+islands with no land neighbour, 22 are too small to have a boundary worth cutting, 4 contain an
+enclave, 1 has no neighbour touching it in a single place, and 2 will not tile. Audited on ten
+countries at ~760 interior sample points each — **7,619 points, every one of them in exactly one
+absorber: zero gaps, zero overlaps** — with area conserved to 100.0%, identical output on repeat
+runs, and every untouched country bit-identical (the one exception per round is Australia, whose
+antimeridian ring re-decodes differently because the rebuilt topology carries absolute
+coordinates rather than a quantization transform).
 
-**Islands of the vanished country go whole to the nearest absorber**: there is nothing to divide,
-and a rock left ownerless is a hole in the map exactly like the country was.
+**Known limit: the shares are approximate.** Bites that back off leave their shortfall to the
+leftover, so the country with the longest frontier tends to end up with rather more than its
+share (Germany → Czechia 68%, Netherlands 18%, France 14%). The ordering is right and every
+neighbour that can bite does; closing the gap needs the bites to iterate rather than take one
+pass.
 
-Measured over the 191-country pool at 110m: **125 divide cleanly**, 18 are islands with no land
-neighbour, 22 are too small to have a boundary worth cutting, 4 contain an enclave, and 17 will
-not tile under any of the twelve axis attempts. Within the quiz's own size band that is **102 of
-117**. Spot-checked on eight countries, coastal and landlocked: identical output on repeat runs
-every time, area conserved to **99.7–100.3%**, and every untouched country bit-identical (195/196
-for Germany — the one exception is Australia, whose antimeridian ring re-decodes differently
-because the rebuilt topology carries absolute coordinates rather than a quantization transform).
-
-Candidates must be at least **twice the area at which the map would draw them as a dot rather
-than an outline** (`SB_MISSING_MIN_KM2`) — "which one is missing" is not a question about
-something that was never visible — and under 900,000 km².
+Candidates for the quiz must be at least **twice the area at which the map would draw them as a
+dot rather than an outline** (`SB_MISSING_MIN_KM2`) — "which one is missing" is not a question
+about something that was never visible — and under 900,000 km².
 
 Answers come from a **filterable list of every country**, not from four options
-(`pickOne` on the spec, rendered by `sbRenderPickOne` — the picker engine's chips wired to the
-plain right/wrong handler). Four options made this a question about the distractors: three of
-them were visibly still on the map, so the round collapsed to "which of these four can I not
-see". The chips carry `option-btn` as well as `sb-pick-btn` so the shared wrong-answer reveal
-can find the right one by text — which is also why answering clears the filter and repaints the
-full list first, then scrolls the answer into view.
+(`pickOne` on the spec, rendered by `sbRenderPickOne`). Four options made this a question about
+the distractors: three of them were visibly still on the map, so the round collapsed to "which of
+these four can I not see". The chips carry `option-btn` as well as `sb-pick-btn` so the shared
+wrong-answer reveal can find the right one by text — which is also why answering clears the filter
+and repaints the full list first, then scrolls the answer into view.
 
 **The eaten country is absent from `gameState.countries`, not hidden.** Everything else — dots,
 lakes, highlights, clicks — then behaves normally with no knowledge of the surgery.
@@ -463,7 +476,10 @@ Notes worth keeping:
     u = 1 is the same final framing, with everything between anchored on the shapes.
 
   The **answer is painted on the shapes**: the bigger country fills green and a wrong pick is
-  hatched red, so the right answer and the mistake are on screen together. Labels are children of
+  hatched red, so the right answer and the mistake are on screen together. As an inline **style**,
+  not an attribute — `.sb-equator-shape` sets `fill` in the stylesheet, and a CSS declaration beats
+  a presentation attribute however specific the attribute looks, so the colours were being
+  computed correctly and then thrown away and every shape came out plain amber. Labels are children of
   the layer rather than of their shape, so they **share one baseline** — hung off each shape they
   sat at different heights and read as two separate captions. They are serif, unbold and
   unhaloed: the pair is alone on a cleared map by then, so there is nothing for a stroked label
@@ -545,9 +561,9 @@ and clicking one performs the operation. It exists because the eligibility rules
 obvious from outside — "landlocked, two neighbours or more, and the finished geometry has to
 audit clean" sounds like small print until you see it rule out four countries in five.
 
-Measured at 110m: **125 removable**, of which 102 sit inside the quiz's size band; 17 divide
-badly, 22 are too small to have a boundary worth cutting, 4 contain an enclave, and 18 are
-islands with no land neighbour — the only structural bar left. The classification is **chunked** (40 ms
+Measured at 110m: **144 removable**; 22 are too small to have a boundary worth cutting, 18 are
+islands with no land neighbour (the only structural bar left), 4 contain an enclave, and 3 will
+not divide. The whole classification takes 0.9 s. The classification is **chunked** (40 ms
 of work, then yield): the surgery is ~30 ms a country and forty in one pass is a second and a
 half of frozen page, on a tool whose whole point is that you can poke at it. The cheap
 structural rules are settled first so the map is already meaningful while the audit fills in
@@ -643,7 +659,11 @@ re-applied at the end of every `drawCountries`, which is the one place every red
 * **Flyover** cannot use board marks (its board is coastlines only, with no country paths at
   all), so it paints into the overlay — but it says the same three things: a country you named
   is **solid**, one you missed is **hatched green**, one you named that the flight never crossed
-  is **hatched red**. A hatch rather than a second flat colour because each country has to
+  is **hatched red**. The hatch sits on a **wash** of its own colour and the wash is most of the
+  reading: at a thin backing the country was really being marked by the dashed outline these
+  reveals used to carry, which is the wrong thing to look at, because the answer is about which
+  COUNTRIES and a country is a shape rather than an edge. The dashes are gone and the edge is a
+  thin plain line. A hatch rather than a second flat colour because each country has to
   report two things at once, what it is and whether you got it, and solid-next-to-hatched reads
   without a legend. Every Neighbour uses the same three states, so the two reveals mean the same
   thing. Take-off and landing are now **guessable** rather than excluded: being told IST and then
@@ -707,6 +727,26 @@ hundreds per round, which took `build()` from **606 ms to 0.3 ms**. `sbWholeCach
 for "is this country's framing core the whole country".
 
 Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
+
+## Static boards, and the click at the end of a drag
+
+`isStaticMapMode()` is the list of modes whose map must not pan or zoom, and it was consulted in
+three places live and **one place up front**: the drag was attached or not attached in
+`setupGlobe`. That runs when the map loads, which for a sandbox round is *before the round
+exists* — so `gameState.sbQuestion` was undefined, the test said "not static", and every solo
+board (Pin the Capital, Every Neighbour, Name the Lake) got a live pan handler attached for good.
+The board is fitted to one shape, so a drag slid that shape straight off the edge and the round
+looked like it had vanished. The drag now tests at drag time, like the wheel and touch handlers
+always did.
+
+The other half is **the click browsers fire at the end of a drag**. On a globe mode d3-drag
+swallows it once the pointer passes `clickDistance`, but a static board has no d3-drag installed
+to do the swallowing — so a stray swipe re-pinned a guess somewhere the player never aimed, or
+spent a step of detail. And it is the most likely accident there is on a board that does not pan:
+the map does not move, so a drag feels like nothing happened at all. `svgClickDragged(event)`
+compares the click against the pointerdown that started it, with the same 8 px the touch handlers
+already use to tell a tap from a drag, and Pin the Capital, Find the Capital and Coming Into
+Focus all consult it.
 
 ## Type-to-filter lists are keyboard-driven
 
@@ -798,14 +838,23 @@ Three things it has to get right:
 **Coming Into Focus** draws the country at **three points** and you add detail **by hand**, a
 press at a time, until you are ready to name it.
 
-By hand, not on a clock. On a 26-second timer the round was a race against an animation — you
-were not deciding how much of the country you needed, you were waiting for it — and the score
-line ("named at 47 points") was reporting the stopwatch rather than the player. With a button,
-spending detail is a choice and the number means what it says. Each press **multiplies** the
-budget rather than adding to it, with the ratio set so any country reaches full resolution in
-about `SHAPE_UNFOLD_STEPS` (24) presses whatever its vertex count: measured on Papua New Guinea,
-3 → 4, 5, 7, 9, 12, 16, 21, 28, 38, 51 out of 3,366. The `setInterval` this replaced is gone,
-and with it the reason it had to be `setInterval` rather than `requestAnimationFrame`.
+By hand, not on a clock, and **the shape is the button** — clicking the map is what adds detail.
+A separate control put the thing you press somewhere other than the thing you are looking at, and
+this board has nothing else on it to click. (The click is guarded by `svgClickDragged`, since a
+static board fires a click at the end of any stray swipe.)
+
+On a 26-second timer the round was a race against an animation — you were not deciding how much of
+the country you needed, you were waiting for it — and the score line ("named at 47 points") was
+reporting the stopwatch rather than the player.
+
+The first presses follow a fixed run — **3, 7, 12, 18, 25** — whose steps grow by one each time.
+That is the part anyone is actually reading, and at those sizes every single point is a visible
+corner, so the increments want to be chosen rather than derived. After that a constant ratio
+(1.35) takes over, because equal absolute steps stop meaning anything: 3 points to 7 changes the
+shape completely and 3,000 to 3,004 changes nothing, and on the fixed run alone a 3,000-vertex
+country would need eighty presses. Taking whichever of the two is larger hands over by itself, at
+about 25 points, with no seam. The `setInterval` this replaced is gone, and with it the reason it
+had to be `setInterval` rather than `requestAnimationFrame`.
 
 Three POINTS, not three percent. A percentage makes the budget hostage to a country's islands:
 South Korea is 53 polygons of which 51 are islets, so one percent of its vertices was already an
@@ -878,7 +927,7 @@ shifted 4° east scores **0.9 for position and a full 5 for shape**, where the o
 gave it 3.5/10 and no way to tell which half was wrong; a correctly-placed circle of the right
 size scores 1.1 and 0.4.
 
-**Zoom** is bounded to 0.65×–3.5× of the scale this round was fitted at (`DRAW_ZOOM_MIN/MAX`), anchored on the cursor. That forced the stroke to be stored in **lon/lat rather than pixels**: a pixel-recorded stroke drifts off the map the moment it zooms, and would then score against the wrong place. Verified — tracing the true outline scores 1.15 km, and zooming 3.5× afterwards still scores 1.15 km.
+**Zoom** is bounded to 0.3×–3.5× of the scale this round was fitted at (`DRAW_ZOOM_MIN/MAX`), anchored on the cursor. The floor is well below 1 because pulling BACK is how you place a shape: the round fits the neighbourhood, and to know whether you are drawing Uruguay in the right part of South America you have to be able to see South America. That forced the stroke to be stored in **lon/lat rather than pixels**: a pixel-recorded stroke drifts off the map the moment it zooms, and would then score against the wrong place. Verified — tracing the true outline scores 1.15 km, and zooming 3.5× afterwards still scores 1.15 km.
 
 GeoJSON regions (India, Germany, England, Mexico) ship no arcs to filter, so they fall back to outlining the others and painting out the target's edge along its own path (`.draw-erase`) — the same result with a blunter instrument. `gameState.mapTopology` is stashed by `loadMapData` precisely so the mesh filter has something to work with, since the state atlases are fetched with plain `d3.json` and never touched `worldTopoCache`.
 

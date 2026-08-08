@@ -1733,6 +1733,22 @@ function fitFlatWorld(proj) {
 // guess markers as pixel coordinates; the puzzle board has to keep matching its pieces;
 // and Country Shape ID fits the projection to one country per question, so any pan drags
 // the silhouette straight off the viewport (which reads as the country vanishing).
+// A click that MOVED is not a click. Browsers still fire one at the end of a drag, and on the
+// static boards there is no d3.drag installed to swallow it (d3-drag suppresses the click itself
+// once the pointer passes `clickDistance`) — so a stray swipe re-pinned a guess somewhere the
+// player never aimed, or spent a detail step. Which is the most likely accident there is on a
+// board that does not pan: the map does not move, so a drag feels like nothing happened.
+// The threshold matches the 8 px the touch handlers already use to tell a tap from a drag.
+const SVG_CLICK_SLOP = 8;
+let svgPointerFrom = null;
+function svgClickDragged(event) {
+    const from = svgPointerFrom;
+    svgPointerFrom = null;
+    if (!from || typeof svg === 'undefined' || !svg) return false;
+    const p = d3.pointer(event, svg.node());
+    return Math.hypot(p[0] - from[0], p[1] - from[1]) > SVG_CLICK_SLOP;
+}
+
 function isStaticMapMode(mc) {
     // A sandbox round showing ONE shape is framed to that shape and nothing else, so a wheel
     // or a drag has nowhere to go but off the edge — scrolling on Every Neighbour simply made
@@ -1844,27 +1860,32 @@ function setupGlobe() {
     // (the orbital view has its own pointer handlers on the WebGL canvas).
     // Static-map modes get NO map drag at all: the puzzle stores its pieces in projected
     // board coordinates and the guess/silhouette modes pin their markers the same way, so a
-    // pan or a rotate would slide the map out from under them. This mirrors the same
-    // isStaticMapMode() guard already on the wheel and touch handlers below.
-    if (isStaticMapMode(modeConfig)) {
-        // Also kill the browser's native drag/select of the SVG, so a drag across the board
-        // is inert rather than smearing a selection over the pieces.
-        svg.on('dragstart', (event) => event.preventDefault());
-        svg.style('user-select', 'none');
-    } else if (globeView && !spaceship) {
+    // pan or a rotate would slide the map out from under them.
+    //
+    // The test is made AT DRAG TIME, not here. setupGlobe runs when the map loads, which for a
+    // sandbox round is before the round exists — so `gameState.sbQuestion` was undefined,
+    // isStaticMapMode said no, and every solo board (Pin the Capital, Every Neighbour, Name the
+    // Lake) got a live pan handler attached for good. The board is fitted to one shape, so a
+    // drag slid that shape straight off the edge and the round looked like it had vanished. The
+    // wheel and touch handlers always tested live; only the drag was decided up front.
+    svg.on('dragstart', (event) => event.preventDefault());
+    svg.style('user-select', 'none');
+    svg.on('pointerdown.clickslop', (event) => { svgPointerFrom = d3.pointer(event, svg.node()); });
+    const staticNow = () => isStaticMapMode(QUIZ_MODES[gameState.mode]);
+    if (globeView && !spaceship) {
         const drag = d3.drag()
-            .on('start', dragStart)
-            .on('drag', dragging)
-            .on('end', dragEnd);
+            .on('start', (...a) => { if (!staticNow()) dragStart(...a); })
+            .on('drag', (...a) => { if (!staticNow()) dragging(...a); })
+            .on('end', (...a) => { if (!staticNow()) dragEnd(...a); });
 
         svg.call(drag);
     } else if (modeConfig.useGlobe) {
         // Flat (Mercator) view of a globe mode: drag to pan
         let panLast = null;
         const flatDrag = d3.drag()
-            .on('start', (event) => { panLast = [event.x, event.y]; })
+            .on('start', (event) => { panLast = staticNow() ? null : [event.x, event.y]; })
             .on('drag', (event) => {
-                if (gameState.scrollLocked || !panLast) return;
+                if (gameState.scrollLocked || !panLast || staticNow()) return;
                 const dx = event.x - panLast[0];
                 const dy = event.y - panLast[1];
                 if (isFlatWorldView()) {
@@ -5663,6 +5684,7 @@ function renderCountryShapeIdQuestion() {
     gameState.questionType = 'country-shape-id';
     const tier = SHAPE_ID_TIERS[shapeIdTier] || SHAPE_ID_TIERS.outline;
     stopShapeUnfold();
+    if (svg) svg.on('click.shapestep', null);
 
     const what = (QUIZ_MODES['country-shape-id'] || {}).itemLabel || 'country';
     document.getElementById('question-text').innerHTML = tier.unfold
@@ -5745,13 +5767,13 @@ function renderCountryShapeIdQuestion() {
         // you are sure is the moment you actually recognised it.
         sbRenderPickOne({ options: gameState.currentQuizList.map(displayLabelForName),
                           correct: displayLabelForName(gameState.targetCountry) });
-        // The detail control sits with the question, not in the controls bar: it is part of
-        // asking, and every press is a point off the score.
+        // The shape IS the button. A separate control put the thing you press somewhere other
+        // than the thing you are looking at, and this board has nothing else on it to click.
         document.getElementById('question-text').innerHTML +=
-            ` <span class="shape-step-wrap"><button class="control-btn" id="shape-step-btn">More detail</button>` +
-            `<span class="shape-step-read">Points: <span id="shape-detail-read">3</span></span></span>`;
-        const step = document.getElementById('shape-step-btn');
-        if (step) step.addEventListener('click', stepShapeUnfold);
+            ` <span class="shape-step-wrap"><span class="shape-step-read">Points: ` +
+            `<span id="shape-detail-read">3</span> — <span id="shape-step-hint">click the map for more</span>` +
+            `</span></span>`;
+        if (svg) svg.on('click.shapestep', (event) => { if (!svgClickDragged(event)) stepShapeUnfold(); });
         syncShapeUnfoldReadout();
         return;
     }
@@ -5782,11 +5804,15 @@ function renderCountryShapeIdQuestion() {
 // — and the score line ("you needed 47 points") was reporting the stopwatch rather than the
 // player. With a button, spending detail is a choice and the number means what it says.
 //
-// Each press multiplies the budget rather than adding to it: 3 points to 6 changes the shape
-// completely and 3,000 to 3,003 changes nothing, so equal absolute steps would spend most of the
-// round showing the same finished outline. The ratio is set so a country reaches full resolution
-// in about SHAPE_UNFOLD_STEPS presses whatever its vertex count.
-const SHAPE_UNFOLD_STEPS = 24;
+// The first presses follow a fixed hand-picked run — 3, 7, 12, 18, 25 — whose steps grow by one
+// each time. That is the part of the round anyone is actually reading, and at those sizes every
+// single point is a visible corner, so the increments want to be chosen rather than derived.
+//
+// After that a constant RATIO takes over, because equal absolute steps stop meaning anything:
+// 3 points to 7 changes the shape completely and 3,000 to 3,004 changes nothing, and on the
+// fixed run alone a 3,000-vertex country would need eighty presses. Taking whichever of the two
+// is larger hands over by itself, at about 25 points, with no seam.
+const SHAPE_UNFOLD_RATIO = 1.35;
 const SHAPE_UNFOLD_START = 3;     // where it starts: a triangle
 // Parts under this are left out entirely. It is not a rendering nicety: counting detail as a
 // PERCENTAGE of a country's points made the budget hostage to its islands — South Korea's
@@ -5838,18 +5864,20 @@ function startShapeUnfold(target) {
     order.sort((x, y) => y.w - x.w);
 
     const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
-    const total = order.length;
-    const ratio = Math.max(1.08, Math.pow(Math.max(2, total / SHAPE_UNFOLD_START), 1 / SHAPE_UNFOLD_STEPS));
-    shapeUnfold = { target, prepared, order, total, layer, ratio, points: SHAPE_UNFOLD_START };
+    shapeUnfold = { target, prepared, order, total: order.length, layer,
+                    points: SHAPE_UNFOLD_START, gap: 4 };
     drawShapeUnfold(SHAPE_UNFOLD_START);
 }
 
-// One press: the next visible amount of country. Always at least one more point, so a small
-// country with few vertices still advances rather than rounding back onto itself.
+// One press: the next visible amount of country. The fixed run's step grows by one each time
+// (+4, +5, +6, +7 … giving 3, 7, 12, 18, 25) and the ratio takes over as soon as it asks for
+// more, so the two never fight and the handover needs no threshold.
 function stepShapeUnfold() {
     if (!shapeUnfold || gameState.questionType !== 'country-shape-id') return;
-    if (gameState.answeredCorrectly) return;
-    const next = Math.max(shapeUnfold.points + 1, Math.round(shapeUnfold.points * shapeUnfold.ratio));
+    if (gameState.answeredCorrectly || shapeUnfold.points >= shapeUnfold.total) return;
+    const next = Math.max(shapeUnfold.points + shapeUnfold.gap,
+                          Math.round(shapeUnfold.points * SHAPE_UNFOLD_RATIO));
+    shapeUnfold.gap++;
     shapeUnfold.points = Math.min(shapeUnfold.total, next);
     drawShapeUnfold(shapeUnfold.points);
     syncShapeUnfoldReadout();
@@ -5859,12 +5887,8 @@ function syncShapeUnfoldReadout() {
     if (!shapeUnfold) return;
     const el = document.getElementById('shape-detail-read');
     if (el) el.textContent = shapeUnfold.points.toLocaleString();
-    const btn = document.getElementById('shape-step-btn');
-    if (btn) {
-        const done = shapeUnfold.points >= shapeUnfold.total;
-        btn.disabled = done;
-        btn.textContent = done ? 'Full detail' : 'More detail';
-    }
+    const hint = document.getElementById('shape-step-hint');
+    if (hint && shapeUnfold.points >= shapeUnfold.total) hint.textContent = 'full detail';
 }
 
 // The `n` heaviest points in the country, wherever they fall. ONE budget shared across all the
@@ -7380,6 +7404,7 @@ function renderFindCapitalQuestion() {
 function handleCapitalGuessClick(event) {
     const mc = QUIZ_MODES[gameState.mode];
     if (!mc || !mc.findCapitalMode || gameState.capitalSubmitted) return;
+    if (svgClickDragged(event)) return;   // a swipe across a static board is not a guess
     const p = d3.pointer(event, svg.node());
     const geo = projection.invert(p);
     if (!geo || isNaN(geo[0])) return;
@@ -8801,9 +8826,11 @@ function redrawDrawBorder() {
     if (drawBorderState.done) g.select('.draw-border-truth').attr('d', path(drawBorderState.target));
 }
 
-// A little zoom, about the cursor, bounded either side of the framing this round was fitted
-// to — enough to check a coastline, not enough to lose the country.
-const DRAW_ZOOM_MIN = 0.65, DRAW_ZOOM_MAX = 3.5;
+// Zoom, about the cursor, bounded either side of the framing this round was fitted to. The
+// floor is well below 1 because pulling BACK is how you place a shape: the round fits the
+// neighbourhood, and to know whether you are drawing Uruguay in the right part of South America
+// you have to be able to see South America.
+const DRAW_ZOOM_MIN = 0.3, DRAW_ZOOM_MAX = 3.5;
 function zoomDrawBorder(event) {
     if (!drawBorderState || drawBorderState.drawing) return;
     const base = drawBorderState.baseScale || projection.scale();
@@ -13373,48 +13400,94 @@ const SB_MISSING_MIN_KM2 = 2 * 3000;
 // with the answer count tells you how many to pick before you have looked at the map.
 const SB_NEIGHBOUR_OPTIONS = 12;
 
-// Fewest neighbours who between them hold this share of the LAND border take the country. The
-// rest are crowded out, which is what a small neighbour of a big one looks like anyway — and it
-// keeps the division legible instead of shattering a country into eight slivers.
-const SB_ABSORB_COVER = 0.8;
-
-// The guide axis is searched over this many directions, at this many parallel offsets each.
-const SB_AXIS_DIRS = 36;
-const SB_AXIS_OFFSETS = 24;
-
-// Build the modified world. Returns {features, absorbers} or null if this country cannot be
-// divided cleanly.
-//
-// The land is divided along a GUIDE AXIS: the longest straight segment that fits inside the
-// country. Each absorbing neighbour's own border is pushed in towards that axis, and where two
-// of them meet they meet ALONG it rather than at a point — which is the whole reason for it.
-// The first version of this sent every border in to the country's pole of inaccessibility; that
-// tiles perfectly and looks wrong, because seven borders converging on one spot is a thing that
-// exists nowhere on earth and Burkina Faso's neighbours all met in a visible starburst. A line
-// is what a watershed or a range actually looks like, and it is also what lets a long country
-// be divided lengthways instead of in a pinwheel.
-//
-// Everything else follows from that:
-//   * A border that CANNOT move — a coastline, or a neighbour that was crowded out — simply
-//     stays where it is, and whoever is opposite pushes past the axis and takes the land all
-//     the way up to it. So a coastal country divides exactly as readily as a landlocked one,
-//     which is the point: 151 of the world's countries have a shore.
-//   * Where two absorbers' stretches overlap, the longer border wins the contested ground.
-//   * The pushed-in borders are drawn as quadratic curves leaving the tripoint along the old
-//     border's inward normal, so the new inland border arrives at the axis without a crease.
-//
-// The surgery is still at the ARC level, which is what makes it invisible. TopoJSON stores each
-// shared border once and both countries point at it, so rewriting one arc moves exactly one
-// border and leaves every other vertex of every other country bit-identical. An absorber's own
-// arc is replaced by the whole outline of the land it has taken; the fixed borders inside that
-// outline are copied verbatim, so they are drawn twice in exactly the same place and no seam
-// can open. Everything is deterministic — the same country always divides the same way.
 // Why the last attempt was refused, so the sandbox can say which rule stopped it rather than
 // shrugging. 'island' — no land neighbour to give it to; 'enclave' — it has a hole in it, and a
 // hole has to be handed to somebody in particular; 'twoplaces' — a neighbour touches it in two
 // separate places, which its own outline cannot express; 'divides' — the land would not tile.
 let sbEatWhy = '';
 const sbNo = w => { sbEatWhy = w; return null; };
+
+// A neighbour holding less of the land border than this is crowded out rather than handed a
+// splinter, and its share goes to the others.
+const SB_BITE_MIN_SHARE = 0.05;
+// Stop biting once this little of the country is left and give the rest away whole. Chasing the
+// last few per cent produces slivers, and a sliver is the one thing that looks edited.
+const SB_BITE_STOP_FRAC = 0.05;
+// How many borrowed border shapes each bite tries before taking the best.
+const SB_BITE_CURVES = 5;
+// Points along a bite. Enough for a borrowed border to keep its character, few enough that
+// checking it against the whole region is cheap.
+const SB_BITE_SAMPLES = 33;
+
+// Real land borders from elsewhere in the world, normalised to a unit span, used as the SHAPE
+// of every bite. A new border invented from a smooth curve looks invented: real ones wander,
+// double back and then run straight for a while, and there is no shortage of them lying around
+// in the same topology. Each is reduced to a list of perpendicular offsets measured as a
+// fraction of its own end-to-end span, so it can be stretched across any chord.
+//
+// Offsets are taken in raw lon/lat rather than in a local metric, so a borrowed wiggle is very
+// slightly sheared by the latitude it came from. That is invisible and beside the point: what
+// is being borrowed is the CHARACTER of a border, not a particular border.
+let sbBorderShapeCache = { src: null, list: null };
+function sbBorderShapes(topo, owners, arcs) {
+    if (sbBorderShapeCache.src === topo && sbBorderShapeCache.list) return sbBorderShapeCache.list;
+    const out = [];
+    owners.forEach((gs, id) => {
+        if (gs.length !== 2) return;                    // a coast, or a three-way arc
+        const pts = arcs[id];
+        if (!pts || pts.length < 12) return;
+        const n = pts.length;
+        const ax = pts[0][0], ay = pts[0][1];
+        const bx = pts[n - 1][0] - ax, by = pts[n - 1][1] - ay;
+        const L = Math.hypot(bx, by);
+        if (!(L > 0.6)) return;                         // nearly closed: no span to stretch
+        const ux = bx / L, uy = by / L;
+        const ys = [];
+        let big = 0;
+        for (let i = 0; i < SB_BITE_SAMPLES; i++) {
+            const k = Math.round(i * (n - 1) / (SB_BITE_SAMPLES - 1));
+            const dx = pts[k][0] - ax, dy = pts[k][1] - ay;
+            const y = (-uy * dx + ux * dy) / L;
+            ys.push(y);
+            big = Math.max(big, Math.abs(y));
+        }
+        // A ruler has nothing to lend, and a hook mapped onto a chord folds back over itself.
+        if (big < 0.02 || big > 0.28) return;
+        ys[0] = 0; ys[SB_BITE_SAMPLES - 1] = 0;
+        out.push(ys);
+    });
+    sbBorderShapeCache = { src: topo, list: out };
+    return out;
+}
+
+// Build the modified world. Returns {features, absorbers} or null if this country cannot be
+// divided cleanly.
+//
+// Every neighbour takes a BITE, and the size of its bite is its share of the country's land
+// border. That is the whole rule, and it is the one a person would guess: whoever holds most of
+// the frontier ends up with most of the land. Bites go round largest share first; whoever is
+// left at the end keeps what has not been eaten, so nothing has to be reconciled afterwards and
+// there is never a leftover stranded in the middle.
+//
+// The SHAPE of each bite is lifted from a real land border somewhere else in the world
+// (`sbBorderShapes`), stretched across the chord between the two tripoints at the ends of the
+// biter's frontier. A bite has to be a curve of some kind, and every curve anyone would invent
+// looks invented; a border that already exists looks like a border because it is one. On top of
+// the borrowed wiggle sits a single smooth bulge whose depth is solved by bisection until the
+// piece has exactly the area that neighbour is owed — so the shape comes from geography and only
+// the size is arithmetic.
+//
+// Each bite tries several borrowed borders, in both directions, and keeps the one that leaves
+// the most COMPACT remainder. That is what stops the region degenerating into a ribbon after
+// two or three bites, with nowhere sensible for the fourth to go.
+//
+// The surgery is still at the ARC level, which is what makes it invisible. TopoJSON stores each
+// shared border once and both countries point at it, so rewriting one arc moves exactly one
+// border and leaves every other vertex of every other country bit-identical. An absorber's own
+// arc is replaced by the whole outline of the land it has taken; the borders inside that outline
+// which did not move (a coastline, a crowded-out neighbour) are copied verbatim, so they are
+// drawn twice in exactly the same place and no seam can open. Everything is deterministic — the
+// same country always divides the same way.
 function sbEatCountry(rawTopo, goneName) {
     sbEatWhy = '';
     // Simplify FIRST, then cut. The other order shifts the global simplification quantile and
@@ -13440,7 +13513,7 @@ function sbEatCountry(rawTopo, goneName) {
     const arcs = sbDecodeArcs(topo);
     const feat = topojson.feature(topo, goneGeom);
     const [[, s0], [, n0]] = d3.geoBounds(feat);
-    // A locally equal-ish metric, so "push in 40 km" means the same in both axes.
+    // A locally equal-ish metric, so "a bite of 40,000 km²" means the same in both axes.
     const kx = 111.320 * Math.cos((s0 + n0) / 2 * Math.PI / 180) || 1, ky = 110.574;
     const toM = p => [p[0] * kx, p[1] * ky];
     const toDeg = p => [p[0] / kx, p[1] / ky];
@@ -13460,9 +13533,8 @@ function sbEatCountry(rawTopo, goneName) {
     const main = allRings[0];
     if (!main || main.pts.length < 5) return sbNo('tiny');
     // A hole in the country is an enclave, and an enclave has to be handed to somebody in
-    // particular rather than to whichever region the partition happens to reach. Refuse.
+    // particular rather than to whichever region the division happens to reach. Refuse.
     if (allRings.some(r => (r.signed > 0) !== (main.signed > 0))) return sbNo('enclave');
-    const ccw = main.signed > 0;
 
     // ---------------- the boundary, leg by leg ----------------
     // A TopoJSON ring's arcs already chain tip to tail, so there is no chaining to do and no
@@ -13471,7 +13543,7 @@ function sbEatCountry(rawTopo, goneName) {
     for (const ref of main.refs) {
         const id = ref < 0 ? ~ref : ref;
         const others = (owners.get(id) || []).filter(gm => gm !== goneGeom);
-        if (others.length > 1) return sbNo('topology');                 // a three-way arc
+        if (others.length > 1) return sbNo('topology');
         const pts = refPts(ref);
         if (!pts || pts.length < 2) return sbNo('topology');
         legs.push({ ref, id, name: others.length ? sbGeomName(others[0]) : null, pts, len: lenOf(pts) });
@@ -13497,355 +13569,312 @@ function sbEatCountry(rawTopo, goneName) {
         return groups;
     };
 
-    // ---------------- who absorbs ----------------
+    // ---------------- who bites, and how big ----------------
     const borderKm = new Map();
     legs.forEach(l => { if (l.name) borderKm.set(l.name, (borderKm.get(l.name) || 0) + l.len); });
-    if (!borderKm.size) return sbNo('island');                        // an island: nobody to give it to
-    // A country touching this one in two separate places would need two of its arcs rewritten
-    // at once, which its own outline cannot express. It is not an absorber; its border simply
-    // stays put and somebody else takes the land behind it.
-    const eligible = [...borderKm.keys()].filter(n => groupsOf(n).length === 1);
-    if (!eligible.length) return sbNo('twoplaces');
-    const totalLand = [...borderKm.values()].reduce((a, b) => a + b, 0);
-    // The fewest of them who between them hold SB_ABSORB_COVER of the land border. Ties broken
-    // by name so the answer never depends on the order the atlas happened to list them in.
-    const ranked = eligible.sort((a, b) => (borderKm.get(b) - borderKm.get(a)) || (a < b ? -1 : 1));
-    const absorbers = [];
-    let cum = 0;
-    for (const n of ranked) {
-        absorbers.push(n);
-        cum += borderKm.get(n);
-        if (cum > SB_ABSORB_COVER * totalLand) break;
-    }
-
-    // ---------------- assign every leg to an absorber ----------------
-    // Legs that cannot move (coast, or a neighbour that was crowded out) go to whichever
-    // absorber reaches them first along the boundary, a long border reaching proportionally
-    // further than a short one.
-    const ringLen = legs.reduce((a, l) => a + l.len, 0) || 1;
-    const mid = [];
-    let run = 0;
-    legs.forEach(l => { mid.push(run + l.len / 2); run += l.len; });
-    const gap = (i, j) => { const d = Math.abs(mid[i] - mid[j]); return Math.min(d, ringLen - d); };
-
-    const seat = new Map();                                 // absorber -> its own leg indices
-    absorbers.forEach(a => seat.set(a, groupsOf(a)[0]));
-    const assign = new Array(m).fill(null);
-    absorbers.forEach(a => seat.get(a).forEach(i => { assign[i] = a; }));
-    for (let i = 0; i < m; i++) {
-        if (assign[i]) continue;
-        let best = null, bestD = Infinity;
-        for (const a of absorbers) {
-            const d = Math.min(...seat.get(a).map(j => gap(i, j))) / borderKm.get(a);
-            if (d < bestD) { bestD = d; best = a; }
-        }
-        assign[i] = best;
-    }
-    // Contiguity repair. The weighted reach almost always produces one run per absorber, but a
-    // stray leg on the far side would need a second outline, so it is handed to its neighbour.
-    for (let pass = 0; pass < 6; pass++) {
-        let fixed = false;
-        for (const a of absorbers) {
-            const idx = [];
-            for (let i = 0; i < m; i++) if (assign[i] === a) idx.push(i);
-            const groups = [];
-            let cur = [idx[0]];
-            for (let k = 1; k < idx.length; k++) {
-                if (idx[k] === idx[k - 1] + 1) cur.push(idx[k]); else { groups.push(cur); cur = [idx[k]]; }
-            }
-            if (idx.length) groups.push(cur);
-            if (groups.length > 1 && groups[0][0] === 0 && groups[groups.length - 1].slice(-1)[0] === m - 1) {
-                groups[0] = groups.pop().concat(groups[0]);
-            }
-            if (groups.length <= 1) continue;
-            // Keep the group holding this absorber's own border; give the others away.
-            const own = new Set(seat.get(a));
-            groups.sort((x, y) => (y.some(i => own.has(i)) ? 1 : 0) - (x.some(i => own.has(i)) ? 1 : 0));
-            groups.slice(1).forEach(gp => {
-                const before = assign[(gp[0] - 1 + m) % m], after = assign[(gp.slice(-1)[0] + 1) % m];
-                const give = (before && before !== a) ? before : ((after && after !== a) ? after : null);
-                if (give) { gp.forEach(i => { assign[i] = give; }); fixed = true; }
-            });
-        }
-        if (!fixed) break;
-    }
-    const live = absorbers.filter(a => assign.includes(a));
-    if (!live.length) return sbNo('island');
-
-    // Runs in boundary order.
-    let start = 0;
-    while (start < m && assign[start] === assign[(start - 1 + m) % m]) start++;
-    if (start === m) start = 0;                             // one run, the whole ring
-    const runs = [];
-    for (let k = 0; k < m; k++) {
-        const i = (start + k) % m;
-        if (!runs.length || assign[i] !== runs[runs.length - 1].name) runs.push({ name: assign[i], idx: [] });
-        runs[runs.length - 1].idx.push(i);
-    }
-    // A single absorber taking everything must start its run at its own border, so the outline
-    // it is handed runs from one end of that border right round to the other.
-    if (runs.length === 1) {
-        const own = seat.get(runs[0].name);
-        const at = runs[0].idx.indexOf(own[0]);
-        if (at > 0) runs[0].idx = runs[0].idx.slice(at).concat(runs[0].idx.slice(0, at));
-    }
-
-    // ---------------- the guide axis ----------------
-    // The longest straight segment that fits inside the country: scan parallel chords in every
-    // direction and keep the longest interval that lies in the interior. Straightforward, and
-    // exactly what "the longest axis you could draw within the country" means.
-    const ring = main.pts;
-    const axisCandidates = [];
-    for (let d = 0; d < SB_AXIS_DIRS; d++) {
-        const th = Math.PI * d / SB_AXIS_DIRS;
-        const u = [Math.cos(th), Math.sin(th)], v = [-u[1], u[0]];
-        let lo = Infinity, hi = -Infinity;
-        for (const p of ring) { const s = p[0] * v[0] + p[1] * v[1]; if (s < lo) lo = s; if (s > hi) hi = s; }
-        let bestHere = null;
-        for (let k = 1; k < SB_AXIS_OFFSETS; k++) {
-            const s = lo + (hi - lo) * k / SB_AXIS_OFFSETS;
-            const ts = [];
-            for (let i = 1; i < ring.length; i++) {
-                const a = ring[i - 1], b = ring[i];
-                const sa = a[0] * v[0] + a[1] * v[1] - s, sb = b[0] * v[0] + b[1] * v[1] - s;
-                if ((sa > 0) !== (sb > 0)) {
-                    const w = sa / (sa - sb);
-                    const x = a[0] + (b[0] - a[0]) * w, y = a[1] + (b[1] - a[1]) * w;
-                    ts.push(x * u[0] + y * u[1]);
-                }
-            }
-            ts.sort((p, q) => p - q);
-            for (let i = 0; i + 1 < ts.length; i += 2) {
-                const L = ts[i + 1] - ts[i];
-                if (!bestHere || L > bestHere.L) bestHere = { L, u, v, s, t0: ts[i], t1: ts[i + 1] };
-            }
-        }
-        if (bestHere) axisCandidates.push(bestHere);
-    }
-    if (!axisCandidates.length) return sbNo('divides');
-    axisCandidates.sort((a, b) => b.L - a.L);
-
-    // ---------------- push each border in to the axis ----------------
-    const K = runs.length;
-    const junctionAt = q => {
-        const first = legs[runs[q].idx[0]];
-        const prevRun = runs[(q - 1 + K) % K];
-        const prev = legs[prevRun.idx[prevRun.idx.length - 1]];
-        const P = first.pts[0];
-        // The direction the new border leaves the tripoint in. It has to be the INTERIOR ANGLE
-        // BISECTOR of the two old borders meeting there, not the normal to the boundary: a
-        // tripoint is a corner, the normal is undefined at one, and taking the average tangent
-        // instead sends the new border straight back across the old one within a few hundred
-        // metres — which is what a self-intersection check reports and what a reader would see
-        // as a border briefly leaving the country and coming back in.
-        const before = prev.pts[prev.pts.length - 2], after = first.pts[1];
-        const na = (a, b) => { const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[0] - a[0]) / L, (b[1] - a[1]) / L]; };
-        const ia = na(P, before), ob = na(P, after);
-        let w = [ia[0] + ob[0], ia[1] + ob[1]];
-        let wl = Math.hypot(w[0], w[1]);
-        // A straight run through the tripoint has no bisector; fall back to the normal there.
-        const tx = after[0] - before[0], ty = after[1] - before[1], tl = Math.hypot(tx, ty) || 1;
-        const nrm = ccw ? [-ty / tl, tx / tl] : [ty / tl, -tx / tl];
-        if (wl < 1e-9) { w = nrm; wl = 1; }
-        w = [w[0] / wl, w[1] / wl];
-        // The bisector of a reflex corner points out of the country, not into it.
-        if (w[0] * nrm[0] + w[1] * nrm[1] < 0) w = [-w[0], -w[1]];
-        return { P, n: w };
-    };
-    const joints = [];
-    for (let q = 0; q < K; q++) joints.push(junctionAt(q));
-
-    // Is this point on home soil? Plain ray casting over the boundary, used to keep the new
-    // inland borders inside the country they are dividing.
-    const inside = p => {
-        let hit = false;
-        for (let i = 1; i < ring.length; i++) {
-            const a = ring[i - 1], b = ring[i];
-            if ((a[1] > p[1]) !== (b[1] > p[1]) &&
-                p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) hit = !hit;
-        }
-        return hit;
-    };
-
-    // The axis is a SEGMENT of centres rather than a single one, and that is the only difference
-    // between this and a fan. Each tripoint runs a spoke in to a point on it; the region between
-    // two consecutive spokes belongs to the absorber whose border lies between their tripoints.
-    // Wedges built that way tile exactly, for the same reason a fan does — provided the feet
-    // come round the axis in the SAME cyclic order as their tripoints come round the boundary.
-    // Feet at the nearest point of the axis do not: at Germany's eastern tip the nearest point
-    // lies along the Czech border rather than across the country, and the spoke ran parallel to
-    // the border it was supposed to be cutting away from. So the feet are laid out in boundary
-    // order and forced monotonic, which makes the tiling a property of the construction.
+    if (!borderKm.size) return sbNo('island');
+    // A country can touch this one in two separate places — at 110m an alternating run of arcs
+    // is common, and Poland alone lost Germany and Slovakia to it when that disqualified a
+    // neighbour outright. It bites from its LONGEST frontier and its other arcs simply stay
+    // where they are, becoming its border with whoever ends up behind them.
     //
-    // `frac` shrinks the axis about its midpoint. At 0 it is a point and this IS the old fan —
-    // the fallback for a country whose neighbours surround it, which has no long axis worth
-    // dividing along anyway.
-    const buildCuts = (axis, frac) => {
-        const { u, v, s, t0, t1 } = axis;
-        const mid = (t0 + t1) / 2, half = (t1 - t0) / 2 * frac;
-        const a0 = mid - half, a1 = mid + half;
-        const span = a1 - a0;
-        const onAxis = t => [u[0] * t + v[0] * s, u[1] * t + v[1] * s];
-        // Round the axis loop: out along it on one side of the country, back along it on the
-        // other. Which side is which is decided by whichever reading needs fewer corrections.
-        const lamFor = o => joints.map(({ P }) => {
-            const t = Math.max(a0, Math.min(a1, P[0] * u[0] + P[1] * u[1]));
-            const g = span > 0 ? (t - a0) / span : 0;
-            return ((P[0] * v[0] + P[1] * v[1] - s) * o >= 0) ? g * 0.5 : 1 - g * 0.5;
-        });
-        const kinks = lam => {
-            let bad = 0;
-            const st = lam.indexOf(Math.min(...lam));
-            for (let i = 1; i < K; i++) if (lam[(st + i) % K] < lam[(st + i - 1) % K]) bad++;
-            return { bad, st };
-        };
-        const A = lamFor(1), B = lamFor(-1);
-        const ka = kinks(A), kb = kinks(B);
-        const lam = ka.bad <= kb.bad ? A : B, st = (ka.bad <= kb.bad ? ka : kb).st;
-        for (let i = 1; i < K; i++) {
-            const a = (st + i) % K, b = (st + i - 1) % K;
-            if (lam[a] < lam[b]) lam[a] = Math.min(1, lam[b]);
-        }
-        const footT = l => (l <= 0.5 ? a0 + (l / 0.5) * span : a1 - ((l - 0.5) / 0.5) * span);
-        const feet = lam.map(footT);
-        const spokes = joints.map(({ P, n }, q) => {
-            const t = feet[q];
-            const F = onAxis(t);
-            const dx = F[0] - P[0], dy = F[1] - P[1];
-            const L = Math.hypot(dx, dy);
-            if (!(L > 0)) return { F, t, pts: [P, F] };
-            // A dead-straight ruled line is not what a border looks like, so the spoke is bowed
-            // along the axis, the way its tripoint's interior bisector leans. The bow is capped
-            // at a share of the gap to the nearest neighbouring foot, so two spokes that were
-            // going to stay apart still do.
-            let room = Infinity;
-            feet.forEach((f2, j) => { if (j !== q) room = Math.min(room, Math.abs(f2 - t)); });
-            const lean = n[0] * u[0] + n[1] * u[1];
-            const amp = Math.sign(lean || 1) * Math.min(L * 0.14, Number.isFinite(room) ? room * 0.35 : L * 0.14);
-            const bow = b => {
-                const pts = [];
-                for (let i = 0; i <= 16; i++) {
-                    const k = i / 16, o = b * Math.sin(Math.PI * k);
-                    pts.push([P[0] + dx * k + u[0] * o, P[1] + dy * k + u[1] * o]);
-                }
-                return pts;
-            };
-            const arc = b => {
-                const C = [P[0] + n[0] * b, P[1] + n[1] * b], pts = [];
-                for (let i = 0; i <= 16; i++) {
-                    const k = i / 16, ik = 1 - k;
-                    pts.push([ik * ik * P[0] + 2 * ik * k * C[0] + k * k * F[0],
-                              ik * ik * P[1] + 2 * ik * k * C[1] + k * k * F[1]]);
-                }
-                return pts;
-            };
-            // A straight run from the tripoint to the axis is not always inside the country.
-            // Germany's is the clearest case: from the tip of the Zittau salient the direct line
-            // to the middle of the country leaves through the neck and comes back, so the border
-            // it draws runs for 30 km through Czechia. Where that happens the spoke is swung out
-            // along its tripoint's interior bisector — which at Zittau points straight up the
-            // salient, i.e. the way you would actually have to walk — taking the least swing
-            // that stays on home soil.
-            for (const cand of [bow(amp), arc(0.25 * L), arc(0.5 * L), arc(0.8 * L), arc(1.2 * L), arc(1.8 * L),
-                                bow(0.35 * L), bow(-0.35 * L), bow(0.7 * L), bow(-0.7 * L)]) {
-                if (cand.every((p, i) => i === 0 || inside(p))) return { F, t, pts: cand };
-            }
-            return { F, t, pts: bow(amp) };
-        });
-        if (K === 1) return { cuts: [[]], spokes };
-        const cuts = [];
-        for (let q = 0; q < K; q++) {
-            const nx = (q + 1) % K;
-            const out = spokes[nx].pts.slice();
-            const back = spokes[q].pts.slice().reverse();
-            // The stretch of axis between the two feet, shared bit for bit with whatever lies
-            // on the other side of it.
-            if (Math.abs(spokes[nx].t - spokes[q].t) > 1e-9) out.push(back[0]);
-            for (let i = 1; i < back.length; i++) out.push(back[i]);
-            cuts.push(out);
-        }
-        return { cuts, spokes };
-    };
+    // The one country that cannot be split like that is the LEFTOVER: it never bites, so its
+    // piece is whatever remains, and that region can contain the country's own second frontier
+    // — whose arc would then be both referenced by its own ring and copied into the outline, and
+    // counted twice. So the leftover is chosen up front, as the smallest neighbour that touches
+    // this one in exactly one place.
+    const mainGroup = new Map([...borderKm.keys()].map(n => {
+        const gs = groupsOf(n);
+        gs.sort((x, y) => y.reduce((t, i) => t + legs[i].len, 0) - x.reduce((t, i) => t + legs[i].len, 0));
+        return [n, gs[0] || []];
+    }));
+    let totalLand = [...borderKm.values()].reduce((a, b) => a + b, 0);
+    let eligible = [...borderKm.keys()].filter(n => borderKm.get(n) / totalLand >= SB_BITE_MIN_SHARE);
+    if (!eligible.length) eligible = [...borderKm.keys()];
+    totalLand = eligible.reduce((a, n) => a + borderKm.get(n), 0);
+    // Ties broken by name, so the answer never depends on the order the atlas listed them in.
+    const queue = eligible.sort((a, b) => (borderKm.get(b) - borderKm.get(a)) || (a < b ? -1 : 1));
+    // The leftover is the BIGGEST neighbour that touches this one in one place. It never bites,
+    // so it keeps whatever is left — which means it also absorbs every bite that failed, and the
+    // country with the longest frontier is the one that should be holding the surplus. Making it
+    // the smallest instead handed Czechia 76% of Germany.
+    const firstSingle = queue.findIndex(n => groupsOf(n).length === 1);
+    if (firstSingle < 0) return sbNo('twoplaces');
+    // Biggest bites first. Smallest-first was tried and is worse on every count — the big bites
+    // then have to cut across a region three small ones have already nibbled the edges off, and
+    // back off to slivers (Burkina Faso came out 92/8 between two neighbours instead of 79/20/1
+    // between three).
+    queue.push(queue.splice(firstSingle, 1)[0]);
+    const shareOf = n => borderKm.get(n) / totalLand;
 
-    // The regions must tile the country: no gap in the middle, no two of them overlapping. A
-    // fold is invisible to an area total that balances, so each loop is checked for simplicity
-    // as well. A country the longest axis divides badly is retried on the next-longest.
-    const target = Math.abs(main.signed);
+    // ---------------- the region, as a walkable ring ----------------
+    // One entry per vertex: the point, and the leg that owns the edge STARTING there (-1 for an
+    // edge a bite created). Carrying the leg through the cutting is what lets the arc rewrite
+    // find each absorber's own frontier afterwards without having to match coordinates.
+    //
+    // The ring is left in the vanished country's OWN direction, whichever way that winds. The
+    // arc rewrite depends on it, and nothing else does: the inward normal of a bite is found
+    // from the remainder's centroid rather than from the winding, and every area is taken
+    // absolute.
+    const ring = [];
+    legs.forEach((l, li) => {
+        for (let i = 0; i < l.pts.length - 1; i++) ring.push({ p: l.pts[i], leg: li });
+    });
+    const closed = r => r.map(v => v.p).concat([r[0].p]);
+    const area0 = Math.abs(areaOf(closed(ring)));
+    if (!(area0 > 0)) return sbNo('tiny');
+
+    const shapes = sbBorderShapes(topo, owners, arcs);
+    if (!shapes.length) return sbNo('topology');
+
     const cross = (p, q, r, t) => {
         const d = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
         const d1 = d(p, q, r), d2 = d(p, q, t), d3_ = d(r, t, p), d4 = d(r, t, q);
         return ((d1 > 0) !== (d2 > 0)) && ((d3_ > 0) !== (d4 > 0));
     };
-    const simple = loop => {
-        const n = loop.length - 1;
-        if (n > 700) return true;                           // the area audit still guards
-        for (let i = 0; i < n; i++)
-            for (let j = i + 2; j < n; j++) {
-                if (i === 0 && j === n - 1) continue;
-                if (cross(loop[i], loop[i + 1], loop[j], loop[j + 1])) return false;
-            }
-        return true;
+    const compactness = pts => {
+        const per = lenOf(pts);
+        return per > 0 ? 4 * Math.PI * Math.abs(areaOf(pts)) / (per * per) : 0;
     };
-    let picked = null;
-    for (const axis of axisCandidates.slice(0, 3)) {
-        for (const frac of [1, 0.55, 0.25, 0]) {
-            const { cuts } = buildCuts(axis, frac);
-            let sum = 0, ok = true;
-            for (let q = 0; q < K && ok; q++) {
-                const loop = joinPts(runs[q].idx.map(i => legs[i].pts).concat(cuts[q].length ? [cuts[q]] : []));
-                if (loop.length < 4) { ok = false; break; }
-                if (Math.hypot(loop[0][0] - loop[loop.length - 1][0], loop[0][1] - loop[loop.length - 1][1]) > 1e-6) loop.push(loop[0]);
-                if (!simple(loop)) { ok = false; break; }
-                sum += Math.abs(areaOf(loop));
+
+    // One bite: cut the region between the tripoints at either end of a frontier running from
+    // vertex i0 to vertex i1, taking `want` km² behind it. Returns {piece, rest} or null.
+    const bite = (r, i0, i1, want, seed) => {
+        const n = r.length;
+        const P = r[i0].p, Q = r[i1].p;
+        const dx = Q[0] - P[0], dy = Q[1] - P[1];
+        const span = Math.hypot(dx, dy);
+        if (!(span > 0)) return null;
+        const runV = [], restV = [];
+        for (let k = i0; ; k = (k + 1) % n) { runV.push(r[k]); if (k === i1) break; }
+        for (let k = i1; ; k = (k + 1) % n) { restV.push(r[k]); if (k === i0) break; }
+        const run = runV.map(v => v.p);
+        // Inward normal: from the chord's midpoint towards the middle of what is left.
+        const mid = [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2];
+        let cx = 0, cy = 0;
+        restV.forEach(v => { cx += v.p[0] / restV.length; cy += v.p[1] / restV.length; });
+        let nx = -dy / span, ny = dx / span;
+        if (nx * (cx - mid[0]) + ny * (cy - mid[1]) < 0) { nx = -nx; ny = -ny; }
+
+        // The frontier itself, resampled by arc length. This is where every bite STARTS.
+        //
+        // Basing the cut on the straight chord between the two tripoints does not work, and the
+        // reason is ordinary geography: a concave frontier has its own chord lying outside the
+        // country. Germany's Czech border is bowed, so the chord ran through Czechia, every
+        // candidate cut failed containment, and Germany ended up divided between two of its nine
+        // neighbours. Starting from the frontier and morphing outward means the shallowest bite
+        // is a copy of a real border and is inside by construction.
+        const total = lenOf(run);
+        const fr = [];
+        {
+            let seg = 1, acc = 0;
+            for (let i = 0; i < SB_BITE_SAMPLES; i++) {
+                const want2 = total * i / (SB_BITE_SAMPLES - 1);
+                while (seg < run.length - 1 && acc + Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) < want2) {
+                    acc += Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]);
+                    seg++;
+                }
+                const segLen = Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) || 1;
+                const u = Math.max(0, Math.min(1, (want2 - acc) / segLen));
+                fr.push([run[seg - 1][0] + (run[seg][0] - run[seg - 1][0]) * u,
+                         run[seg - 1][1] + (run[seg][1] - run[seg - 1][1]) * u]);
             }
-            if (ok && Math.abs(sum / target - 1) < 0.02) { picked = cuts; break; }
+            fr[0] = P; fr[SB_BITE_SAMPLES - 1] = Q;
         }
-        if (picked) break;
+        // lam 0 → the frontier, so no land at all; lam 1 → the straight chord, with the borrowed
+        // border's wiggle fully faded in; beyond that a smooth bulge pushes on into the country.
+        // Area grows with lam throughout, which is what makes one bisection enough.
+        const build = (ys, lam) => {
+            const w = Math.min(1, lam), extra = Math.max(0, lam - 1);
+            const out = [];
+            for (let i = 0; i < SB_BITE_SAMPLES; i++) {
+                const t = i / (SB_BITE_SAMPLES - 1);
+                const bx = fr[i][0] + (P[0] + dx * t - fr[i][0]) * w;
+                const by = fr[i][1] + (P[1] + dy * t - fr[i][1]) * w;
+                const off = span * (ys[i] * w + extra * Math.sin(Math.PI * t));
+                out.push([bx + nx * off, by + ny * off]);
+            }
+            out[0] = P; out[SB_BITE_SAMPLES - 1] = Q;
+            return out;
+        };
+        const pieceRing = cut => run.concat(cut.slice(1, -1).reverse()).concat([P]);
+        // Is this point on the region's own land? Plain ray casting over the ring.
+        const within = q => {
+            let hit = false;
+            for (let k = 0, j = n - 1; k < n; j = k++) {
+                const a = r[k].p, b = r[j].p;
+                if ((a[1] > q[1]) !== (b[1] > q[1]) &&
+                    q[0] < (b[0] - a[0]) * (q[1] - a[1]) / (b[1] - a[1]) + a[0]) hit = !hit;
+            }
+            return hit;
+        };
+        // Two tests, and the containment one is the important half. A cut's ends sit ON the ring,
+        // so the ring edges meeting them have to be exempt from the crossing test — and that
+        // exemption is a hole you can drive a country through: a cut that dived straight out of
+        // the region at one tripoint and came back in at the other crossed only the exempt edges
+        // and was waved past. It then enclosed the OUTSIDE, so the bisection happily "found" the
+        // right area on a lobe of somebody else's land and the remainder grew instead of
+        // shrinking (France took 70,270 km² of a 31,208 km² Belgium). Requiring every interior
+        // vertex to be inside the region says the thing the crossing test was only implying.
+        const fits = cut => {
+            // The two vertices either side of each tripoint are exempt: the cut meets the ring
+            // exactly there, so whether a point a few hundred metres away counts as inside is a
+            // question about rounding rather than about geography, and the crossing test below
+            // still covers them. Every other vertex must be on home soil.
+            for (let c = 3; c < cut.length - 3; c++) if (!within(cut[c])) return false;
+            const skip = new Set([(i0 - 1 + n) % n, i0, (i1 - 1 + n) % n, i1]);
+            for (let c = 0; c + 1 < cut.length; c++) {
+                const endish = (c === 0 || c === cut.length - 2);
+                for (let k = 0; k < n; k++) {
+                    if (endish && skip.has(k)) continue;
+                    if (cross(cut[c], cut[c + 1], r[k].p, r[(k + 1) % n].p)) return false;
+                }
+            }
+            for (let a = 0; a + 1 < cut.length; a++)
+                for (let b = a + 2; b + 1 < cut.length; b++)
+                    if (cross(cut[a], cut[a + 1], cut[b], cut[b + 1])) return false;
+            return true;
+        };
+
+        let best = null;
+        for (let s = 0; s < SB_BITE_CURVES; s++) {
+            const base = shapes[(seed + s * 37) % shapes.length];
+            for (const flip of [1, -1]) {
+                const ys = base.map(v => v * flip);
+                // How deep to go for the share this neighbour is owed. The area behind the cut
+                // grows with lam throughout, so one bisection finds it.
+                let lo = 0, hi = 8.0;
+                for (let it = 0; it < 22; it++) {
+                    const mid2 = (lo + hi) / 2;
+                    if (Math.abs(areaOf(pieceRing(build(ys, mid2)))) < want) lo = mid2; else hi = mid2;
+                }
+                const lam = (lo + hi) / 2;
+                // ...and then as much of that as will actually fit. A share of the ORIGINAL
+                // country is a large share of what is LEFT by the third or fourth bite, so the
+                // depth it asks for often sweeps clean across the remainder and out the far
+                // side. Refusing there is what left Germany divided between two of its nine
+                // neighbours: a bite that cannot have everything it is owed should take what it
+                // can reach, not nothing. Feasibility falls off with depth — near lam 0 the cut
+                // is a copy of the real frontier and is inside by construction — so backing off
+                // is another bisection, on whether it fits rather than on how big it is.
+                let cut = build(ys, lam);
+                if (!fits(cut)) {
+                    let bad = lam, good = 0, found = null;
+                    for (let it = 0; it < 8; it++) {
+                        const mid2 = (good + bad) / 2;
+                        const c2 = build(ys, mid2);
+                        if (fits(c2)) { good = mid2; found = c2; } else bad = mid2;
+                    }
+                    if (!found || good < lam * 0.12) continue;   // barely a scratch: crowded out
+                    cut = found;
+                }
+                const leftRing = restV.map(v => v.p).concat(cut.slice(1, -1)).concat([restV[0].p]);
+                const score = compactness(leftRing);
+                if (!best || score > best.score) best = { score, cut };
+            }
+        }
+        if (!best) return null;
+        const cut = best.cut;
+        // Both halves as vertex lists. The vertex where each half turns onto the cut owns a cut
+        // edge, so its leg becomes -1; every other vertex keeps the leg it came in with.
+        const piece = runV.map((v, i) => ({ p: v.p, leg: i === runV.length - 1 ? -1 : v.leg }));
+        for (let i = cut.length - 2; i >= 1; i--) piece.push({ p: cut[i], leg: -1 });
+        const rest = restV.map((v, i) => ({ p: v.p, leg: i === restV.length - 1 ? -1 : v.leg }));
+        for (let i = 1; i < cut.length - 1; i++) rest.push({ p: cut[i], leg: -1 });
+        return { piece, rest };
+    };
+
+    // ---------------- go round, biggest share first ----------------
+    const pieces = new Map();
+    let liveRing = ring;
+    const seedOf = nm => { let h = 0; for (let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0; return h; };
+    for (let qi = 0; qi < queue.length - 1; qi++) {
+        const nm = queue[qi];
+        if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
+        const own = new Set(mainGroup.get(nm));
+        const L = liveRing.length;
+        let start = -1;
+        for (let i = 0; i < L; i++) {
+            const prev = liveRing[(i - 1 + L) % L];
+            if (own.has(liveRing[i].leg) && !own.has(prev.leg)) { start = i; break; }
+        }
+        if (start < 0) continue;
+        let end = start;
+        while (own.has(liveRing[end].leg)) end = (end + 1) % L;
+        // Owed a share of the whole country, but never more than most of what is still there:
+        // a bite that swallows the entire remainder leaves the next neighbour nothing to bite
+        // into and the one after that nothing at all.
+        const left = Math.abs(areaOf(closed(liveRing)));
+        const got = bite(liveRing, start, end, Math.min(shareOf(nm) * area0, left * 0.62), seedOf(nm));
+        if (!got) continue;                              // crowded out
+        pieces.set(nm, got.piece);
+        liveRing = got.rest;
     }
-    if (!picked) return sbNo('divides');
+    // Whoever has not bitten keeps what is left, whole. Which is also why the last in the queue
+    // never bites: there is nothing to reconcile and no leftover in the middle by construction.
+    const leftover = queue.find(n => !pieces.has(n));
+    if (!leftover) return sbNo('divides');
+    pieces.set(leftover, liveRing);
+
+    // Every scrap accounted for, and no piece folded through another. The area check is exact by
+    // construction — each bite splits a region in two — so a failure here means a fold.
+    let sum = 0;
+    for (const [, pv] of pieces) sum += Math.abs(areaOf(closed(pv)));
+    if (Math.abs(sum / area0 - 1) > 0.02) return sbNo('divides');
 
     // ---------------- rewrite the arcs ----------------
-    // Each absorber's own arc becomes the whole outline of what it has taken: the rest of its
-    // run of the old boundary, then the cut, then the front of its run. Where the absorber owns
+    // Each absorber's own arc becomes the whole outline of what it has taken: its piece, walked
+    // from the end of its own frontier all the way round to the start. Where the absorber owns
     // several consecutive arcs, the outline goes into the last of them and the others collapse
     // to a point at the join, since an arc cannot be deleted without rewriting a ring.
-    // The absorber reads this arc in the OPPOSITE direction to the country that just vanished —
+    //
+    // The absorber reads that arc in the OPPOSITE direction to the country that just vanished —
     // they were on either side of it — so the outline goes in back to front relative to how the
     // old boundary was walked.
     const writeArc = (leg, pts) => { arcs[leg.id] = (leg.ref < 0 ? pts : pts.slice().reverse()).map(toDeg); };
-    for (let q = 0; q < K; q++) {
-        const r = runs[q];
-        const own = r.idx.filter(i => legs[i].name && namesMatch(legs[i].name, r.name));
-        if (!own.length) return sbNo('topology');
-        const at0 = r.idx.indexOf(own[0]), at1 = r.idx.indexOf(own[own.length - 1]);
-        if (at1 - at0 !== own.length - 1) return sbNo('twoplaces');       // not contiguous inside the run
-        const tailIdx = r.idx.slice(at1 + 1);
-        const headIdx = r.idx.slice(0, at0);
-        const path = joinPts(tailIdx.map(i => legs[i].pts)
-            .concat(picked[q].length ? [picked[q]] : [])
-            .concat(headIdx.map(i => legs[i].pts)));
+    for (const [nm, pv] of pieces) {
+        const own = new Set(mainGroup.get(nm));
+        const L = pv.length;
+        let a = -1;
+        for (let i = 0; i < L; i++) {
+            if (own.has(pv[i].leg) && !own.has(pv[(i - 1 + L) % L].leg)) { a = i; break; }
+        }
+        if (a < 0) return sbNo('divides');
+        let b = a;
+        while (own.has(pv[(b + 1) % L].leg)) b = (b + 1) % L;
+        // The frontier's legs, in the order they are walked.
+        const order = [];
+        for (let k = a; ; k = (k + 1) % L) {
+            const li = pv[k].leg;
+            if (!order.length || order[order.length - 1] !== li) order.push(li);
+            if (k === b) break;
+        }
+        // Everything else, from the far end of the frontier round to its near end.
+        const path = [];
+        for (let k = (b + 1) % L; ; k = (k + 1) % L) { path.push(pv[k].p); if (k === a) break; }
         if (path.length < 2) return sbNo('divides');
-        const anchor = legs[r.idx[at0]].pts[0];
-        for (let k = at0; k < at1; k++) writeArc(legs[r.idx[k]], [anchor, anchor]);
-        writeArc(legs[r.idx[at1]], path);
+        const anchor = pv[a].p;
+        for (let k = 0; k < order.length - 1; k++) writeArc(legs[order[k]], [anchor, anchor]);
+        writeArc(legs[order[order.length - 1]], path);
     }
 
     // Islands of the vanished country go whole to the nearest absorber — there is nothing to
     // divide, and a rock left ownerless is a hole in the map exactly like the country was.
     const geomsOut = geoms.filter(gm => gm !== goneGeom);
+    const absorbers = [...pieces.keys()];
     if (allRings.length > 1) {
-        const centre = new Map(live.map(a => {
-            const gm = geomsOut.find(x => namesMatch(sbGeomName(x), a));
-            return [a, gm ? d3.geoCentroid(topojson.feature(topo, gm)) : null];
+        const centre = new Map(absorbers.map(a2 => {
+            const gm = geomsOut.find(x => namesMatch(sbGeomName(x), a2));
+            return [a2, gm ? d3.geoCentroid(topojson.feature(topo, gm)) : null];
         }));
         allRings.slice(1).forEach(r => {
             const c = toDeg(r.pts.reduce((acc, p) => [acc[0] + p[0] / r.pts.length, acc[1] + p[1] / r.pts.length], [0, 0]));
             let best = null, bestD = Infinity;
-            live.forEach(a => {
-                const cc = centre.get(a);
+            absorbers.forEach(a2 => {
+                const cc = centre.get(a2);
                 if (!cc) return;
                 const d = d3.geoDistance(c, cc);
-                if (d < bestD) { bestD = d; best = a; }
+                if (d < bestD) { bestD = d; best = a2; }
             });
             if (!best) return;
             const i = geomsOut.findIndex(x => namesMatch(sbGeomName(x), best));
@@ -13876,7 +13905,7 @@ function sbEatCountry(rawTopo, goneName) {
     const goneArea = d3.geoArea(feat) * R2;
     const byName = new Map(features.map(f => [f.properties.name, f]));
     let gain = 0;
-    for (const n of live) {
+    for (const n of absorbers) {
         const after = byName.get(n);
         const before = geoms.find(gm => namesMatch(sbGeomName(gm), n));
         if (!after || !before) return sbNo('divides');
@@ -13890,7 +13919,7 @@ function sbEatCountry(rawTopo, goneName) {
     splitDisputedGlacier(features);
     tagTerritories(features);
     fixCountryWinding(features);
-    return { features, absorbers: live.slice() };
+    return { features, absorbers };
 }
 
 // Airports, fetched on demand exactly as the lakes are — only one round wants them, and the
@@ -15873,6 +15902,11 @@ function sbSubmitMulti() {
 // to say two things at once about each country — what it is, and whether you got it — and a
 // solid green next to a hatched green reads as "right" and "right, but you missed it" without
 // a legend.
+//
+// The hatch sits on a WASH of its own colour, and the wash is most of the reading. At a thin
+// backing the country was really being marked by the dashed outline these reveals used to carry,
+// which is the wrong thing to look at: the answer is about which COUNTRIES, and a country is a
+// shape rather than an edge.
 function sbHatchPattern(id, colour) {
     let defs = svg.select('defs');
     if (defs.empty()) defs = svg.append('defs');
@@ -15880,9 +15914,9 @@ function sbHatchPattern(id, colour) {
     const pat = defs.append('pattern').attr('id', id)
         .attr('width', 7).attr('height', 7).attr('patternUnits', 'userSpaceOnUse')
         .attr('patternTransform', 'rotate(45)');
-    pat.append('rect').attr('width', 7).attr('height', 7).attr('fill', colour).attr('fill-opacity', 0.16);
+    pat.append('rect').attr('width', 7).attr('height', 7).attr('fill', colour).attr('fill-opacity', 0.42);
     pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 7)
-        .attr('stroke', colour).attr('stroke-width', 3).attr('stroke-opacity', 0.75);
+        .attr('stroke', colour).attr('stroke-width', 3.4).attr('stroke-opacity', 0.85);
     return `url(#${id})`;
 }
 
@@ -16784,6 +16818,7 @@ function sbRenderPinpoint(q, head) {
 
 function sbPinpointClick(event) {
     if (gameState.questionType !== 'sandbox-pinpoint' || gameState.sbAnswered) return;
+    if (svgClickDragged(event)) return;
     const p = d3.pointer(event, svg.node());
     const geo = projection.invert && projection.invert(p);
     if (!geo || !isFinite(geo[0]) || !isFinite(geo[1])) return;   // off the globe's disc
@@ -17205,8 +17240,13 @@ function sbRevealEquator(pair) {
             .attr('d', mkPath(it.lon, it.lat, 0)(it.f));
         // The answer, painted on the shape itself: the bigger country fills green, and a wrong
         // pick is hatched red so both the right answer and the mistake are on screen at once.
-        if (it.right) p.attr('fill', green).attr('fill-opacity', 0.55);
-        else if (it.mine && wrongPick) p.attr('fill', sbHatchPattern('sb-hatch-red', red));
+        //
+        // As an inline STYLE, not an attribute. `.sb-equator-shape` sets `fill` in the
+        // stylesheet, and a CSS declaration beats a presentation attribute however specific the
+        // attribute looks — so the colours were being computed correctly and then thrown away,
+        // and every shape came out plain amber.
+        if (it.right) p.style('fill', green).style('fill-opacity', 0.6);
+        else if (it.mine && wrongPick) p.style('fill', sbHatchPattern('sb-hatch-red', red));
         return { it, wrap, p };
     });
     // Labels are children of the LAYER, not of their shape, so they can share one baseline —
@@ -17359,6 +17399,7 @@ function sbTeardown() {
     sbStopClock();
     if (typeof svg !== 'undefined' && svg) {
         svg.on('click.sbpin', null);
+        svg.on('click.shapestep', null);
         svg.select('g.sb-overlay').remove();
     }
     if (gameState) {
