@@ -696,6 +696,20 @@ const QUIZ_MODES = {
         autoRotate: false,
         flagPlaceMode: true
     },
+    'missing-sandbox': {
+        name: "Who's Missing Sandbox",
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        missingSandboxMode: true   // click any country to dissolve it into its neighbours
+    },
     'free-explore': {
         name: 'Free Explore',
         quizList: quizCountries,
@@ -1302,6 +1316,7 @@ function startGameWithMode(mode) {
     removePuzzleTray();
     removeFlagTray();
     removeSandboxPanel();
+    removeMissingSandbox();
     removeSunMoonPanel();
     removeSunPathMode();
     drawBorderState = null;
@@ -1411,6 +1426,16 @@ function startGameWithMode(mode) {
         hintBtn.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
     }
 
+    // Five-colour map: offered where adjacency is the thing being looked at.
+    const colourBtn = document.getElementById('map-colour-toggle');
+    if (colourBtn) {
+        const wants = gameState.mode === 'sb-missing' || !!modeConfig.missingSandboxMode;
+        colourBtn.style.display = wants ? '' : 'none';
+        if (!wants && mapColourOn) { mapColourOn = false; }
+        mapColourCache = null;
+        colourBtn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
+    }
+
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
     if (projToggle) {
@@ -1456,6 +1481,9 @@ function startGameWithMode(mode) {
     } else {
         if (modeConfig.spaceshipMode) flatGlobeView = false; // always orthographic for the LEO view
         if (modeConfig.sbQuizMode) flatGlobeView = !!modeConfig.sbFlat;  // see sbFlat
+        // The surgery is a world-scale thing to look at, and an orthographic globe can only
+        // ever show half of it.
+        if (modeConfig.missingSandboxMode) flatGlobeView = true;
         setupGlobe();
         loadMapData();
     }
@@ -2519,6 +2547,7 @@ function drawCountries() {
     // A sandbox reveal that hands the board back to the ordinary drawing path still needs its
     // countries picked out, and this is the one place every redraw goes through.
     if (mc && mc.sbQuizMode) sbApplyBoardMarks();
+    if (mapColourOn) applyMapColouring();
 
     // Re-apply the debug validity overlay if it is currently on
     if (debugValidityOn) applyDebugValidity();
@@ -3228,6 +3257,11 @@ function handleCountryClick(event, d) {
     // any mode-specific early-returns, so it works no matter what question is active.
     if (debugValidityOn) drawDebugBoundingBoxes(d);
 
+    if (gameState.questionType === 'missing-sandbox') {
+        msHandleClick(d.properties.parent || d.properties.name);
+        return;
+    }
+
     // Handle free explore mode clicks
     if (gameState.questionType === 'free-explore') {
         const countryName = d.properties.name;
@@ -3473,7 +3507,6 @@ function giveUp() {
         if (modeConfig.sbEngine === 'multi') { sbSubmitMulti(); return; }
         if (modeConfig.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
         if (modeConfig.sbEngine === 'picker') { sbSubmitPicker(); return; }
-        if (modeConfig.sbEngine === 'latitude') { sbSubmitLatitude(); return; }
         const q = gameState.sbQuestion;
         gameState.sbAnswered = true;
         const feedback = document.getElementById('feedback');
@@ -3699,6 +3732,12 @@ function startNewQuestion() {
 
     if (modeConfig.drawBorderMode) {
         renderDrawBorderQuestion();
+        return;
+    }
+
+    // No target and no scoring — the whole map IS the question.
+    if (modeConfig.missingSandboxMode) {
+        renderMissingSandbox();
         return;
     }
 
@@ -5447,17 +5486,22 @@ function generateShapeIdOptions(correctAnswer) {
 // Nothing about the QUESTION changes — same countries, same shape-similar distractors — only
 // how much of the shape you are given to work from.
 const SHAPE_ID_TIERS = {
-    outline:  { label: 'Outline', desc: 'The country, upright and whole' },
-    turned:   { label: 'Turned',  desc: 'The whole outline, at an unknown angle', rotate: true },
-    fragment: { label: 'Fragment', desc: 'A piece of the outline, at an unknown angle', rotate: true, keep: 0.42 }
+    outline: { label: 'Outline', desc: 'The country, upright and whole' },
+    turned:  { label: 'Turned',  desc: 'The whole outline, at an unknown angle', rotate: true },
+    // Starts as a handful of corners and grows back into the real coastline while you watch.
+    // Answer whenever you are sure; the score is how little of it you needed.
+    unfold:  { label: 'Coming Into Focus', desc: 'A few corners, sharpening to the true coastline — name it as early as you dare', unfold: true }
 };
 let shapeIdTier = 'outline';
 
 function renderCountryShapeIdQuestion() {
     gameState.questionType = 'country-shape-id';
     const tier = SHAPE_ID_TIERS[shapeIdTier] || SHAPE_ID_TIERS.outline;
+    stopShapeUnfold();
 
-    document.getElementById('question-text').innerHTML = tier.rotate
+    document.getElementById('question-text').innerHTML = tier.unfold
+        ? `Name it as soon as you can.`
+        : tier.rotate
         ? `Which country is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
         : `Which country is highlighted?`;
     const flagDisplay = document.getElementById('flag-display');
@@ -5493,7 +5537,10 @@ function renderCountryShapeIdQuestion() {
         // identical across tiers — re-projecting would refit the country to its new bounding
         // box, so the amount of the viewport it fills would itself become a clue.
         let host = countriesGroup;
-        if (tier.rotate) {
+        // The unfolding tier draws itself, frame by frame, and owns the path for the round.
+        // It must NOT return out of the whole function — the answer list is still to come.
+        if (tier.unfold) startShapeUnfold(target);
+        else if (tier.rotate) {
             const ang = Math.round(Math.random() * 360);
             // Shrink far enough that the TURNED shape still fits. The projection was fitted to
             // the country upright, so a tall one spun a quarter turn needs the viewport's width
@@ -5514,34 +5561,121 @@ function renderCountryShapeIdQuestion() {
                 .attr('transform', `rotate(${ang}, ${width / 2}, ${height / 2}) ` +
                                    `translate(${width / 2},${height / 2}) scale(${f}) translate(${-width / 2},${-height / 2})`);
         }
-        gameState.shapeIdTarget = target;
-        host.append('path')
-            .datum(target)
-            .attr('class', 'country shape-target')
-            .attr('d', tier.keep ? shapeIdFragmentPath(target, tier.keep) : path(target));
+        if (!tier.unfold) {
+            gameState.shapeIdTarget = target;
+            host.append('path')
+                .datum(target)
+                .attr('class', 'country shape-target')
+                .attr('d', path(target));
+        }
     }
 
     // Multiple-choice options: the answer plus 2 distractors chosen for LOOKING like
     // the target shape (+ a random fill), so the wrong answers are genuinely tricky.
+    if (tier.unfold) {
+        // The whole list, not four names. Four options and a growing outline are the same
+        // question asked twice — you would wait for the detail that separates those four and
+        // answer then, which is not the game. Against every country in the world, the moment
+        // you are sure is the moment you actually recognised it.
+        sbRenderPickOne({ options: gameState.currentQuizList.map(displayLabelForName),
+                          correct: displayLabelForName(gameState.targetCountry) });
+        document.getElementById('question-text').innerHTML +=
+            ` <span style="opacity:.75;font-size:.85em">Detail: <span id="shape-detail-read">1%</span></span>`;
+        return;
+    }
     const options = generateShapeIdOptions(gameState.targetCountry);
     renderMultipleChoice(options, gameState.targetCountry);
 }
 
-// A contiguous run of the country's outline, drawn as an open line rather than a filled shape.
-// A RUN, not a scatter: a random sample of the boundary is a dotted version of the whole
-// outline, which gives away as much as the outline does. One unbroken stretch is a piece of
-// coast — you get the character of a border and none of the overall form.
-function shapeIdFragmentPath(feature, keep) {
-    const parts = featureParts(feature);
-    let ring = null, best = 0;
-    parts.forEach(pp => { if (pp[0] && pp[0].length > best) { best = pp[0].length; ring = pp[0]; } });
-    if (!ring || ring.length < 12) return path(feature);
-    const n = ring.length;
-    const take = Math.max(6, Math.round(n * keep));
-    const start = Math.floor(Math.random() * n);
-    const run = [];
-    for (let i = 0; i < take; i++) run.push(ring[(start + i) % n]);
-    return path({ type: 'LineString', coordinates: run }) || path(feature);
+// ---- Coming Into Focus -------------------------------------------------------------------
+// The country is drawn at almost no resolution — a few corners — and the detail is put back a
+// little at a time until it is the real coastline. You answer whenever you are sure, and the
+// score is how little of it you needed.
+//
+// It runs on the same Visvalingam-Whyatt pass the coastline model uses (`vwWeights`), which is
+// what makes it work as a QUESTION rather than as a blur: VW drops the point whose triangle
+// with its neighbours is smallest, so what survives at low detail is the country's actual
+// corners — the cape, the bend in the river, the elbow of the border — in the order a person
+// would draw them. A pixellated or smoothed version would degrade the outline into something
+// no country ever had; this degrades it into a sketch of the right country.
+//
+// Two properties of that pass matter here and neither is incidental:
+//   * the weights are forced monotonically increasing, so every threshold gives a NESTED
+//     subset. Points can only ever be added as the detail rises — nothing that has appeared
+//     ever disappears again, which is what stops the shape flickering as it grows.
+//   * a removal that would make the ring cross itself is refused outright, so even at three
+//     percent detail the silhouette is a simple polygon rather than a knot.
+const SHAPE_UNFOLD_MS = 26000;    // low detail to full, if you never answer
+const SHAPE_UNFOLD_MIN = 0.012;   // where it starts: a few corners
+let shapeUnfold = null;
+
+function startShapeUnfold(target) {
+    stopShapeUnfold();
+    gameState.shapeIdTarget = target;
+    // Rings, each with its own VW weights. Every part is kept: dropping the small ones would
+    // silently answer "which country has islands".
+    const rings = featureParts(target).map(poly => poly[0]).filter(r => r && r.length > 4);
+    if (!rings.length) {
+        countriesGroup.append('path').datum(target).attr('class', 'country shape-target').attr('d', path(target));
+        return;
+    }
+    const prepared = rings.map(ring => {
+        const w = vwWeights(ring);
+        const finite = Array.from(w).filter(v => isFinite(v)).sort((a, b) => a - b);
+        return { ring, w, finite };
+    });
+    const layer = countriesGroup.append('path').attr('class', 'country shape-target');
+    shapeUnfold = { target, prepared, layer, t0: Date.now(), detail: SHAPE_UNFOLD_MIN, timer: null };
+    drawShapeUnfold(SHAPE_UNFOLD_MIN);
+    const tick = () => {
+        if (!shapeUnfold || gameState.questionType !== 'country-shape-id') { stopShapeUnfold(); return; }
+        if (gameState.answeredCorrectly) return;
+        const t = Math.min(1, (Date.now() - shapeUnfold.t0) / SHAPE_UNFOLD_MS);
+        // Eased so the early, informative jumps are slow and the last few thousand vertices —
+        // which change nothing anyone can see — go by quickly.
+        const detail = SHAPE_UNFOLD_MIN + (1 - SHAPE_UNFOLD_MIN) * (t * t);
+        shapeUnfold.detail = detail;
+        drawShapeUnfold(detail);
+        const el = document.getElementById('shape-detail-read');
+        if (el) el.textContent = (detail * 100).toFixed(detail < 0.1 ? 1 : 0) + '%';
+        if (t >= 1) stopShapeUnfold();
+    };
+    // setInterval, not requestAnimationFrame. rAF does not fire in a backgrounded tab, which
+    // would freeze the outline at three percent and leave the round unanswerable until the
+    // player came back — and this is a 26-second animation, exactly the length someone is most
+    // likely to tab away from. 60 ms is smooth enough for a shape that changes this slowly.
+    shapeUnfold.timer = setInterval(tick, 60);
+}
+
+// Keep the `frac` heaviest points of each ring. The weight ordering is what VW computed, so
+// this is a threshold rather than a resampling: the points that survive are the ones the
+// algorithm says carry the shape.
+function drawShapeUnfold(frac) {
+    if (!shapeUnfold) return;
+    const polys = [];
+    shapeUnfold.prepared.forEach(({ ring, w, finite }) => {
+        if (!finite.length) { polys.push([ring]); return; }
+        const idx = Math.min(finite.length - 1,
+            Math.max(0, Math.floor((1 - frac) * finite.length)));
+        const cut = finite[idx];
+        const kept = [];
+        for (let i = 0; i < ring.length; i++) if (w[i] >= cut) kept.push(ring[i]);
+        // A ring needs four points to be a ring at all; below that it is a line and geoPath
+        // fills nothing.
+        if (kept.length < 4) {
+            const step = Math.max(1, Math.floor(ring.length / 6));
+            kept.length = 0;
+            for (let i = 0; i < ring.length; i += step) kept.push(ring[i]);
+        }
+        if (kept[0] !== kept[kept.length - 1]) kept.push(kept[0]);
+        polys.push([kept]);
+    });
+    shapeUnfold.layer.attr('d', path({ type: 'MultiPolygon', coordinates: polys }) || '');
+}
+
+function stopShapeUnfold() {
+    if (shapeUnfold && shapeUnfold.timer) clearInterval(shapeUnfold.timer);
+    shapeUnfold = null;
 }
 
 // Once the round is decided, put the country back the way round it really is — and whole. The
@@ -5549,6 +5683,20 @@ function shapeIdFragmentPath(feature, keep) {
 // would just make the answer unverifiable.
 function revealShapeIdTruth() {
     const tier = SHAPE_ID_TIERS[shapeIdTier];
+    if (tier && tier.unfold) {
+        // Freeze the detail the answer was given at, note it, then snap to the real coastline.
+        if (shapeUnfold) {
+            const used = shapeUnfold.detail;
+            gameState.shapeDetails = (gameState.shapeDetails || []).concat(used);
+            const layer = shapeUnfold.layer, target = shapeUnfold.target;
+            stopShapeUnfold();
+            layer.datum(target).attr('d', path(target));
+            const fb = document.getElementById('feedback');
+            if (fb) fb.innerHTML = `<strong>${displayLabelForName(gameState.targetCountry)}</strong>` +
+                ` — named at <strong>${(used * 100).toFixed(used < 0.1 ? 1 : 0)}%</strong> of its detail.`;
+        }
+        return;
+    }
     if (!tier || !tier.rotate || !g || !gameState.shapeIdTarget) return;
     const layer = g.select('g.shape-id-layer');
     if (layer.empty()) return;
@@ -6712,7 +6860,6 @@ function setupEventListeners() {
             if (mc.sbEngine === 'multi') { sbSubmitMulti(); return; }
             if (mc.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
             if (mc.sbEngine === 'picker') { sbSubmitPicker(); return; }
-            if (mc.sbEngine === 'latitude') { sbSubmitLatitude(); return; }
         }
         // Draw the Border: the first press scores the traced loop and reveals the real one.
         if (mc && mc.drawBorderMode && drawBorderState && !drawBorderState.done) {
@@ -6815,6 +6962,9 @@ function setupEventListeners() {
             this.textContent = 'Outlines: ' + (orbitalHintOn ? 'On' : 'Off');
         });
     }
+
+    const colourBtn = document.getElementById('map-colour-toggle');
+    if (colourBtn) colourBtn.addEventListener('click', () => setMapColour(!mapColourOn));
 
     // Orbital scoring-weight sliders.
     [
@@ -12426,21 +12576,30 @@ function showFlagsSelector() {
 // ==================== SANDBOX CATEGORY ====================
 // Newer, rougher modes live behind one tile rather than cluttering the landing grid — plus
 // the spaceship sandbox, which moved here from the orbit tile.
+// One flat grid. There was a Quick Quizzes tile that opened a second grid of its own, so a
+// short round — the whole point of which is that it starts fast — took three clicks to reach.
+// Sun & Moon and Who's Missing moved OUT of here entirely, up to the landing page.
 const SANDBOX_SUBMODES = [
-    { key: 'sun-moon', icon: 'wb_twilight', label: 'Sun & Moon',
-      desc: 'Day, night and the sunrise line at any date and time' },
     { key: 'sun-path', icon: 'routine', label: 'Sun Path',
       desc: 'How sunrise and sunset move through the year at any latitude' },
     { key: 'odd-one-out', icon: 'filter_alt', label: 'Odd One Out',
       desc: 'Four countries, three with something in common' },
     { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
       desc: 'Trace a missing outline; scored by how close you get' },
+    { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",
+      desc: 'Dissolve any country into its neighbours; see which ones can go' },
     { key: 'spaceship-sandbox', icon: 'tune', label: 'Spaceship Sandbox',
-      desc: 'Every spot the orbital quiz can pick; build and share a seed' },
-    // Opens its own picker: a grid of them would swamp this one.
-    { key: 'sandbox-quizzes', icon: 'quiz', label: 'Quick Quizzes',
-      desc: 'Short rounds — borders, distances, flags, daylight' }
+      desc: 'Every spot the orbital quiz can pick; build and share a seed' }
 ];
+
+// The quick quizzes, as sandbox tiles of their own. Generated from SB_QUIZZES so the registry
+// stays the single source of truth; Who's Missing is skipped because it now has its own tile on
+// the landing page.
+function sandboxQuizTiles() {
+    return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing').map(k => ({
+        key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
+    }));
+}
 
 // Draw the Border runs over any of the geographies, so the tile opens a region picker first
 // (the same reconfigure-then-start pattern as the puzzle and identify).
@@ -12502,7 +12661,7 @@ function showSandboxSelector() {
         <h2>Sandbox</h2>
         <p class="selector-sub">Experiments and tools — rougher edges than the main modes.</p>
         <div class="mode-buttons">
-            ${SANDBOX_SUBMODES.map(m => `
+            ${SANDBOX_SUBMODES.concat(sandboxQuizTiles()).map(m => `
             <button class="mode-btn" data-sandbox-mode="${m.key}">
                 <span class="mode-icon material-symbols-outlined">${m.icon}</span>
                 <span class="mode-name">${m.label}</span>
@@ -12513,10 +12672,8 @@ function showSandboxSelector() {
     `;
     modeSelector.querySelectorAll('[data-sandbox-mode]').forEach(b =>
         b.addEventListener('click', () => {
-            // Draw the Border picks a geography first and Quick Quizzes picks a quiz; the
-            // rest start straight away.
+            // Draw the Border picks a geography first; the rest start straight away.
             if (b.dataset.sandboxMode === 'draw-border') showDrawBorderSelector();
-            else if (b.dataset.sandboxMode === 'sandbox-quizzes') showSandboxQuizSelector();
             else startGameWithMode(b.dataset.sandboxMode);
         }));
     document.getElementById('back-from-sandbox-btn').addEventListener('click', resetModeSelector);
@@ -12721,58 +12878,6 @@ function sbArc(a, b, n) {
 }
 
 // Which drawn countries a path passes through, in order, ignoring the endpoints' own countries.
-// Which country is under a point. Bounding boxes first: `geoContains` walks a whole ring,
-// `geoBounds` is measured once per feature and rejects almost everything in four comparisons.
-function sbCountryAt(pt) {
-    for (const ft of (gameState.countries || [])) {
-        let bb = ft.__bb;
-        if (!bb) { bb = d3.geoBounds(ft); ft.__bb = bb; }
-        const [[w, s2], [e, n2]] = bb;
-        if (pt[1] < s2 - 0.2 || pt[1] > n2 + 0.2) continue;
-        const inLon = w <= e ? (pt[0] >= w - 0.2 && pt[0] <= e + 0.2)
-                             : (pt[0] >= w - 0.2 || pt[0] <= e + 0.2);
-        if (!inLon) continue;
-        if (d3.geoContains(ft, pt)) return ft.properties.parent || ft.properties.name;
-    }
-    return null;
-}
-
-// Set off from `from` and keep going in one cardinal direction, never turning: east and west
-// hold a parallel, north and south hold a meridian. Returns the first country reached that
-// isn't the one you started in, and the track walked to get there.
-//
-// Holding a PARALLEL is the whole point of the east/west case — it is a rhumb line, not a
-// great circle, which is exactly the "keep going due east" a globe-illiterate intuition
-// imagines and exactly what makes the answer surprising.
-const SB_WALK_STEP_DEG = 0.25;
-function sbStraightOn(from, dir) {
-    const start = sbCountryAt(from);
-    const track = [from.slice()];
-    const lat0 = from[1];
-    let lon = from[0], lat = lat0;
-    const steps = (dir === 'east' || dir === 'west') ? Math.round(360 / SB_WALK_STEP_DEG)
-                                                     : Math.round(180 / SB_WALK_STEP_DEG);
-    let leftHome = false;
-    for (let i = 1; i <= steps; i++) {
-        if (dir === 'east') lon += SB_WALK_STEP_DEG;
-        else if (dir === 'west') lon -= SB_WALK_STEP_DEG;
-        else if (dir === 'north') lat += SB_WALK_STEP_DEG;
-        else lat -= SB_WALK_STEP_DEG;
-        if (lat > 90 || lat < -90) break;                 // walked off the top or bottom
-        if (lon > 180) lon -= 360;
-        if (lon < -180) lon += 360;
-        const pt = [lon, lat];
-        track.push(pt);
-        const here = sbCountryAt(pt);
-        if (!here) { leftHome = true; continue; }
-        if (!leftHome && start && namesMatch(here, start)) continue;   // still crossing home
-        leftHome = true;
-        if (start && namesMatch(here, start)) continue;   // came back to it — keep going
-        return { hit: here, track, start };
-    }
-    return null;
-}
-
 // Adjacency with the overseas territories left out.
 //
 // `playableNeighbours` is honestly topological and therefore says France borders Brazil and
@@ -12848,53 +12953,6 @@ function sbBorderHops(a, b) {
         front = next;
     }
     return null;
-}
-
-// Every country the parallel at `lat` passes through.
-// Every country the parallel at `lat` passes through. Cached, and stepped at 1.5 degrees:
-// only the countries WIDE enough to be worth naming should appear anyway, and the uncached
-// half-degree walk cost 1.3 s a draw, which is a visible stall on a synchronous retry loop.
-const sbLatCrossCache = new Map();
-function sbLatCrossers(lat) {
-    if (sbLatCrossCache.has(lat)) return sbLatCrossCache.get(lat);
-    const out = [];
-    for (let lon = -179.5; lon < 180; lon += 1.5) {
-        const n = sbCountryAt([lon, lat]);
-        if (n && !out.some(x => namesMatch(x, n))) out.push(n);
-    }
-    sbLatCrossCache.set(lat, out);
-    return out;
-}
-
-// The subsolar point at a UTC instant — where the sun is straight overhead. `solarPosition`
-// already computes it for the Sun & Moon map; this is only a convenience wrapper.
-function sbSubsolar(date) {
-    const sp = solarPosition(date);
-    return (sp && sp.sub) ? sp.sub : null;
-}
-
-// A labelled marker on the map. Rides in `.sb-anchored`, so sbUpdateOverlay re-places it on
-// any pan, wheel or pinch without this knowing anything about the round that drew it.
-function sbDrawPins(pins) {
-    if (!projection) return;
-    const layer = sbOverlay();
-    (pins || []).forEach(pin => {
-        const pt = projection(pin.at);
-        const grp = layer.append('g').datum({ at: pin.at, dy: 0 })
-            .attr('class', 'sb-anchored sb-pin ' + (pin.kind || ''));
-        if (!pt || !isFinite(pt[0])) grp.attr('display', 'none');
-        else grp.attr('transform', `translate(${pt[0]}, ${pt[1]})`);
-        grp.append('circle').attr('r', 6);
-        if (pin.label) grp.append('text').attr('y', -11).attr('text-anchor', 'middle').text(pin.label);
-    });
-}
-
-// A walked track (a parallel, a meridian, a border chain) drawn as a line the round can point
-// at. Stored as its own geometry, so it re-paths with the map like everything else.
-function sbDrawTrack(pts, cls) {
-    if (!pts || pts.length < 2) return;
-    const d = sbLine(pts);
-    if (d) sbOverlay().append('path').datum(pts).attr('class', 'sb-route ' + (cls || 'r0 solo')).attr('d', d);
 }
 
 // Which countries a great circle actually passes over.
@@ -13013,10 +13071,9 @@ function sbGeomArcIds(geom, out) {
 // corresponds to it, doubled.
 const SB_MISSING_MIN_KM2 = 2 * 3000;
 
-// How many names Every Neighbour and The Bridge put on offer, real answers included. A list
-// that shrinks with the answer count tells you how many to pick before you have looked.
+// How many names Every Neighbour puts on offer, real answers included. A list that shrinks
+// with the answer count tells you how many to pick before you have looked at the map.
 const SB_NEIGHBOUR_OPTIONS = 12;
-const SB_BRIDGE_OPTIONS = 12;
 
 // Build the modified world. Returns {features, absorbers} or null if this country cannot be
 // eaten cleanly (an arc with no second owner, i.e. a coast).
@@ -13251,6 +13308,298 @@ function sbAirports() {
         }).catch(() => { window.__sbAirports = []; });
     }
     return (a && a.length) ? a : null;
+}
+
+// ==================== FIVE-COLOUR MAP ====================
+// No two neighbours share a colour — the oldest thing anyone ever proved about maps, and by
+// far the most useful way to look at one when the question is about which country is next to
+// which. Who's Missing is exactly that question, and on a plain single-fill map the seam where
+// a country was absorbed is invisible; with the neighbours in different colours the new border
+// is the only place two blocks of the same colour meet.
+//
+// Greedy in descending order of degree (Welsh-Powell). Five is a proof for planar graphs and
+// four is a much harder one, but this graph is not quite planar anyway — the atlas has
+// territories, and France really is adjacent to Brazil — so the fallback is to reuse the
+// least-conflicting colour rather than to add a sixth and pretend.
+const MAP_COLOURS = 5;
+let mapColourOn = false;
+let mapColourCache = null;
+
+function computeMapColouring() {
+    const names = (gameState.countries || [])
+        .map(f => f && f.properties && f.properties.name).filter(Boolean);
+    const uniq = [...new Set(names)];
+    const nbOf = new Map();
+    uniq.forEach(n => nbOf.set(n, playableNeighbours(n)));
+    const order = uniq.slice().sort((a, b) => (nbOf.get(b) || []).length - (nbOf.get(a) || []).length);
+    const colour = new Map();
+    order.forEach(n => {
+        const taken = new Set((nbOf.get(n) || []).map(m => colour.get(msName(m))).filter(c => c != null));
+        let pick = 0;
+        while (pick < MAP_COLOURS && taken.has(pick)) pick++;
+        if (pick === MAP_COLOURS) {
+            // Every colour is already on a neighbour. Take whichever clashes least rather than
+            // inventing a sixth: one repeated adjacency in a corner of the map is a far smaller
+            // lie than a legend that grows.
+            const counts = new Array(MAP_COLOURS).fill(0);
+            (nbOf.get(n) || []).forEach(m => { const c = colour.get(msName(m)); if (c != null) counts[c]++; });
+            pick = counts.indexOf(Math.min(...counts));
+        }
+        colour.set(n, pick);
+    });
+
+    // A repair sweep. One greedy pass left two clashing pairs out of 615 adjacencies, and they
+    // are entirely an artefact of the ORDER it visited: a country coloured early boxes in a
+    // country coloured late. Re-examining the clashers once the whole map is coloured almost
+    // always finds a free colour, because by then every neighbour is known rather than half of
+    // them. Repeated a few times, since fixing one vertex can free another.
+    for (let pass = 0; pass < 4; pass++) {
+        let fixed = 0;
+        uniq.forEach(n => {
+            const mine = colour.get(n);
+            const nb = (nbOf.get(n) || []).map(m => colour.get(msName(m)));
+            if (!nb.some(c => c === mine)) return;             // no clash here
+            const taken = new Set(nb.filter(c => c != null));
+            for (let c = 0; c < MAP_COLOURS; c++) {
+                if (!taken.has(c)) { colour.set(n, c); fixed++; break; }
+            }
+        });
+        if (!fixed) break;
+    }
+    return colour;
+}
+
+function applyMapColouring() {
+    if (!countriesGroup) return;
+    const paths = countriesGroup.selectAll('path.country');
+    for (let i = 0; i < MAP_COLOURS; i++) paths.classed('mc-' + i, false);
+    if (!mapColourOn) return;
+    if (!mapColourCache) mapColourCache = computeMapColouring();
+    paths.each(function (d) {
+        const nm = d && d.properties && (d.properties.parent || d.properties.name);
+        const c = nm != null ? mapColourCache.get(nm) : null;
+        if (c != null) d3.select(this).classed('mc-' + c, true);
+    });
+}
+
+function setMapColour(on) {
+    mapColourOn = !!on;
+    // The colouring is a property of who borders whom, and Who's Missing rewrites exactly that
+    // — so it is recomputed per round rather than cached across one.
+    mapColourCache = null;
+    applyMapColouring();
+    const btn = document.getElementById('map-colour-toggle');
+    if (btn) btn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
+}
+
+// ==================== WHO'S MISSING SANDBOX ====================
+// The quiz picks a country, dissolves it into its neighbours and asks which one went. This is
+// the same surgery with the question taken away: every country is colour-coded by whether it
+// CAN be removed and, if not, by what stops it — then clicking one performs the operation so
+// you can look at the result.
+//
+// It exists because the eligibility rules are not obvious from the outside. "Landlocked, two
+// neighbours or more, and the finished geometry has to audit clean" sounds like three small
+// print items until you see that it rules out four countries in five, and that some of the
+// survivors fail for reasons you can only understand by watching the borders move.
+
+// In the order they are checked. Coastline and neighbour count are structural — no amount of
+// cleverness would let the land divide — while the size band is the QUIZ's own taste and the
+// audit is about this particular country's geometry.
+const MS_STATES = {
+    ok:       { cls: 'ms-ok',       label: 'Removable',            hint: 'Landlocked, divides cleanly, and inside the sizes the quiz asks about' },
+    okBig:    { cls: 'ms-ok-out',   label: 'Removable, unused',    hint: 'Divides cleanly, but outside the quiz’s size band' },
+    fails:    { cls: 'ms-fails',    label: 'Divides badly',        hint: 'Landlocked, but the land will not tile — a gap or an overlap' },
+    coastal:  { cls: 'ms-coastal',  label: 'Has a coastline',      hint: 'Its shore belongs to no neighbour, so there is nobody to give it to' },
+    few:      { cls: 'ms-few',      label: 'Too few neighbours',   hint: 'Fewer than two, so there is no division to make' }
+};
+
+let msState = null;   // { verdicts: Map<name, key>, shown: name|null, world: features }
+
+function renderMissingSandbox() {
+    gameState.questionType = 'missing-sandbox';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+    const restart = document.getElementById('restart-btn');
+    if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
+    document.getElementById('question-text').innerHTML =
+        `<strong>Who’s Missing — sandbox.</strong> Click any country to dissolve it into its neighbours.`;
+    msState = { verdicts: new Map(), shown: null, world: gameState.countries };
+    msBuildPanel();
+    msClassify();
+}
+
+// The verdicts, worked out in the background.
+//
+// Chunked rather than looped: the surgery is ~30 ms a country and forty of them in one pass is
+// a second and a half of frozen page — on a tool whose whole point is that you can poke at it.
+// The cheap structural rules are settled first so the map is already meaningful (and already
+// mostly correct) while the expensive audit fills in behind them.
+function msClassify() {
+    const topo = worldTopoCache[worldCountriesUrl()];
+    const facts = ensureCountryFacts();
+    if (!topo || !facts) { setTimeout(msClassify, 250); return; }
+    const named = new Set(topo.objects.countries.geometries.map(sbGeomName).filter(Boolean));
+    const pool = sbPool();
+    const candidates = [];
+    pool.forEach(n => {
+        if (facts.coastal.has(n)) { msState.verdicts.set(n, 'coastal'); return; }
+        if (playableNeighbours(n).length < 2) { msState.verdicts.set(n, 'few'); return; }
+        if (!named.has(n)) { msState.verdicts.set(n, 'few'); return; }
+        candidates.push(n);
+    });
+    msPaint();
+
+    let i = 0;
+    const step = () => {
+        if (!msState || gameState.questionType !== 'missing-sandbox') return;
+        const t0 = Date.now();
+        while (i < candidates.length && Date.now() - t0 < 40) {
+            const n = candidates[i++];
+            let eaten = null;
+            try { eaten = sbEatCountry(topo, n); } catch (_) { eaten = null; }
+            const km = sbAreaKm2(n) || 0;
+            const inBand = km >= SB_MISSING_MIN_KM2 && km < 900000;
+            msState.verdicts.set(n, eaten ? (inBand ? 'ok' : 'okBig') : 'fails');
+        }
+        msPaint();
+        if (i < candidates.length) setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
+}
+
+function msPaint() {
+    if (!msState || !countriesGroup) return;
+    const cls = Object.keys(MS_STATES).map(k => MS_STATES[k].cls);
+    const apply = sel => sel.each(function (d) {
+        const nm = d && d.properties && (d.properties.parent || d.properties.name);
+        const v = nm && msState.verdicts.get(msName(nm));
+        const el = d3.select(this);
+        cls.forEach(c => el.classed(c, false));
+        el.classed('ms-shown', !!(msState.shown && namesMatch(msState.shown, nm)));
+        if (v) el.classed(MS_STATES[v].cls, true);
+    });
+    apply(countriesGroup.selectAll('path.country'));
+    if (islandMarkersGroup) apply(islandMarkersGroup.selectAll('circle'));
+    msRefreshCounts();
+}
+
+// The verdict map is keyed by the quiz's own names; a click may arrive with a territory's.
+function msName(nm) {
+    const pool = sbPool();
+    const hit = pool.find(n => namesMatch(n, nm));
+    return hit || nm;
+}
+
+function msBuildPanel() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    let box = document.getElementById('ms-panel');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'ms-panel';
+    box.className = 'ms-panel';
+    box.innerHTML =
+        `<div class="ms-legend">` +
+        Object.keys(MS_STATES).map(k =>
+            `<div class="ms-key" title="${MS_STATES[k].hint}">` +
+            `<span class="ms-swatch ${MS_STATES[k].cls}"></span>` +
+            `<span class="ms-key-label">${MS_STATES[k].label}</span>` +
+            `<span class="ms-count" data-count="${k}">—</span></div>`).join('') +
+        `</div>` +
+        `<div class="ms-detail" id="ms-detail">Pick a country off the map.</div>`;
+    host.appendChild(box);
+}
+
+function msRefreshCounts() {
+    const tally = {};
+    msState.verdicts.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+    Object.keys(MS_STATES).forEach(k => {
+        const el = document.querySelector(`[data-count="${k}"]`);
+        if (el) el.textContent = tally[k] || 0;
+    });
+}
+
+function msSay(html) {
+    const el = document.getElementById('ms-detail');
+    if (el) el.innerHTML = html;
+}
+
+// Click on the map. Anything can be clicked; the ones that cannot be removed say why, which is
+// the more interesting half of the tool.
+function msHandleClick(name) {
+    if (!msState) return;
+    const nm = msName(name);
+    if (msState.shown && namesMatch(msState.shown, nm)) { msRestore(); return; }
+    msRestore(true);
+    const verdict = msState.verdicts.get(nm);
+    if (!verdict) { msSay(`<strong>${displayLabelForName(nm)}</strong> — still working that one out…`); return; }
+    if (verdict === 'coastal' || verdict === 'few') {
+        msSay(`<strong>${displayLabelForName(nm)}</strong><br><span class="ms-verdict ${MS_STATES[verdict].cls}">` +
+              `${MS_STATES[verdict].label}</span><br><span class="ms-hint">${MS_STATES[verdict].hint}</span>`);
+        return;
+    }
+    const topo = worldTopoCache[worldCountriesUrl()];
+    let eaten = null;
+    try { eaten = sbEatCountry(topo, nm); } catch (_) { eaten = null; }
+    if (!eaten) {
+        msState.verdicts.set(nm, 'fails');
+        msPaint();
+        msSay(`<strong>${displayLabelForName(nm)}</strong><br><span class="ms-verdict ms-fails">` +
+              `${MS_STATES.fails.label}</span><br><span class="ms-hint">${MS_STATES.fails.hint}. ` +
+              `The nibble is random, so the same country can succeed on another try — click again.</span>`);
+        return;
+    }
+    // Do it.
+    msState.shown = nm;
+    gameState.countries = eaten.features;
+    drawCountries();
+    const R2 = SB_EARTH_R_KM * SB_EARTH_R_KM;
+    const before = worldTopoForDetail(topo);
+    const goneFeat = topojson.feature(before,
+        before.objects.countries.geometries.find(gm => namesMatch(sbGeomName(gm), nm)));
+    const total = d3.geoArea(goneFeat) * R2;
+    const shares = eaten.absorbers.map(a => {
+        const after = eaten.features.find(f => f.properties.name === a);
+        const was = before.objects.countries.geometries.find(gm => namesMatch(sbGeomName(gm), a));
+        const gain = (after && was) ? d3.geoArea(after) * R2 - d3.geoArea(topojson.feature(before, was)) * R2 : 0;
+        return { a, pct: total ? gain / total * 100 : 0 };
+    }).sort((x, y) => y.pct - x.pct);
+    // Frame the neighbourhood — this is the sandbox, so there is no answer to give away.
+    if (sbFitToFeatures([nm, ...eaten.absorbers], 0.1)) drawCountries();
+    msPaint();
+    countriesGroup.selectAll('path.country').classed('ms-absorber', d => {
+        const n2 = d && d.properties && (d.properties.parent || d.properties.name);
+        return !!n2 && eaten.absorbers.some(a => namesMatch(a, n2));
+    });
+    msSay(`<strong>${displayLabelForName(nm)}</strong> is gone — ` +
+          `${Math.round(total).toLocaleString()} km² shared out.<br>` +
+          `<div class="ms-shares">` + shares.map(sv =>
+            `<div class="ms-share"><span>${displayLabelForName(sv.a)}</span>` +
+            `<span class="ms-bar"><i style="width:${Math.max(1, Math.round(sv.pct))}%"></i></span>` +
+            `<span class="ms-pct">${sv.pct < 1 ? '<1' : Math.round(sv.pct)}%</span></div>`).join('') +
+        `</div><button class="control-btn ms-restore" id="ms-restore">Put it back</button>`);
+    const btn = document.getElementById('ms-restore');
+    if (btn) btn.addEventListener('click', () => msRestore());
+}
+
+function msRestore(quiet) {
+    if (!msState || !msState.shown) return;
+    msState.shown = null;
+    gameState.countries = msState.world;
+    if (projection && projection.center) fitFlatWorld(projection);
+    drawCountries();
+    msPaint();
+    if (!quiet) msSay('Pick a country off the map.');
+}
+
+function removeMissingSandbox() {
+    const box = document.getElementById('ms-panel');
+    if (box) box.remove();
+    if (msState && msState.shown) gameState.countries = msState.world;
+    msState = null;
 }
 
 // ==================== INVENTED FLAGS ====================
@@ -13571,10 +13920,12 @@ const SB_QUIZZES = {
                     options: shuffleArray([displayLabelForName(a), displayLabelForName(b)]),
                     prompt: `Which really has the larger <strong>area</strong> — ` +
                             `${displayLabelForName(a)} or ${displayLabelForName(b)}?`,
-                    explain: `${a} is ${Math.round(ka).toLocaleString()} km², ${b} is ${Math.round(kb).toLocaleString()} km². ` +
-                             (lies
-                                ? `Mercator stretches everything by 1/cos²(latitude), which is why ${looksBigger} wins on screen and loses in fact.`
-                                : `Here the map is telling the truth — ${truthBigger} really is bigger, even though it sits nearer the equator where Mercator flatters it least.`)
+                    // Bare numbers. The animation carries the two countries down to the
+                    // equator at their honest sizes — it makes the point far better than a
+                    // sentence about 1/cos²(latitude), and next to it the sentence read as an
+                    // apology for the picture.
+                    explain: `${displayLabelForName(a)} ${Math.round(ka).toLocaleString()} km² · ` +
+                             `${displayLabelForName(b)} ${Math.round(kb).toLocaleString()} km²`
                 };
                 if (found.lie && found.honest) break;
             }
@@ -13703,32 +14054,6 @@ const SB_QUIZZES = {
     },
 
     // ---------- the sky ----------
-    'sb-daylight-lat': {
-        engine: 'latitude', icon: 'wb_twilight', label: 'Read the Daylight',
-        desc: 'From hours of daylight, place the latitude on the arc',
-        noMap: true,
-        build() {
-            for (let t = 0; t < 40; t++) {
-                const day = sbRandom([79, 172, 265, 355, 20, 120, 220, 320]);
-                const dec = declinationForDay(day);
-                const lat = Math.round((Math.random() * 130 - 65) / 5) * 5;
-                const h = sunPathDayHours(lat, dec);
-                if (h <= 0.2 || h >= 23.8) continue;                 // polar cases give it away
-                const stamp = new Date(Date.UTC(2024, 0, day)).toLocaleDateString(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' });
-                return {
-                    highlight: [], truthLat: lat, dec, day, hours: h,
-                    correct: sbFormatLat(lat),
-                    prompt: `On <strong>${stamp}</strong> this place gets <strong>${h.toFixed(1)} hours</strong> of daylight. ` +
-                            `Slide the marker to its <strong>latitude</strong>.`,
-                    explain: `Day length follows cos H₀ = −tan(latitude)·tan(declination), ` +
-                             `and on this date the declination is ${dec.toFixed(1)}°.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- shape and scale ----------
     'sb-lake': {
         engine: 'fact', hiRes: true, flat: true, icon: 'water_drop', label: 'Name the Lake',
         desc: 'One outline, no map to help you',
@@ -13954,8 +14279,12 @@ const SB_QUIZZES = {
                 if (!gone) continue;
                 const eaten = sbEatCountry(topo, gone);
                 if (!eaten) continue;
+                // The feature itself, kept: the reveal draws the outline of the hole, and by
+                // then the country is gone from gameState.countries so there is nothing left
+                // to look it up from.
+                const goneFeature = sbFeature(gone);
                 return {
-                    highlight: [], surgery: { gone, features: eaten.features, absorbers: eaten.absorbers },
+                    highlight: [], surgery: { gone, features: eaten.features, absorbers: eaten.absorbers, goneFeature },
                     correct: displayLabelForName(gone),
                     // The whole world to choose from, not four names. Four options make this a
                     // question about the distractors — three of them are visibly still on the
@@ -14005,174 +14334,6 @@ const SB_QUIZZES = {
                 explain: `${right.label} — that is ${fake.seed}'s flag with its colours changed (${swaps}). ` +
                          `The others really belong to ${real.join(', ')}.`
             };
-        }
-    },
-
-    // ---------- riffs ----------
-    'sb-upside-down': {
-        engine: 'fact', hiRes: true, icon: 'flip', label: 'Upside Down', noMap: true,
-        desc: 'One of these silhouettes has been turned or flipped',
-        build() {
-            const pool = sbPool().filter(n => {
-                const f = sbFeature(n);
-                if (!f) return false;
-                const km = sbAreaKm2(n);
-                if (!km || km < 1000) return false;
-                if (d3.geoArea(f) >= 0.05) return false;
-                // One recognisable landmass, not confetti. An archipelago drawn at tile size
-                // is a scatter of dots with no orientation to read — turning it over changes
-                // nothing anyone could point at, whether it is the answer or a decoy.
-                const parts = featureParts(f);
-                if (parts.length > 1) {
-                    const areas = parts.map(c => d3.geoArea({ type: 'Polygon', coordinates: c }));
-                    const tot = d3.sum(areas);
-                    if (!tot || Math.max(...areas) / tot < 0.75) return false;
-                }
-                return true;
-            });
-            if (pool.length < 8) return null;
-            const shuffled = shuffleArray(pool);
-            // The odd one out is whichever candidate has a transform that looks most like its
-            // own true outline — that is the one that cannot be caught by shape alone. It has
-            // to land in a band, though: above 0.9 the country is symmetric under its own best
-            // transform and no answer is defensible, and below 0.25 nothing lines up at all,
-            // which only happens for shapes too broken up to have an orientation.
-            let target = null, tf = null;
-            for (const n of shuffled) {
-                const t = sbBestShapeTransform(n);
-                if (t && t.score > 0.25 && t.score < 0.9) { target = n; tf = t; break; }
-            }
-            if (!target) return null;
-            const rest = shuffled.filter(n => !namesMatch(n, target)).slice(0, 3);
-            if (rest.length < 3) return null;
-            const picks = shuffleArray([target, ...rest]);
-            const idx = picks.findIndex(n => namesMatch(n, target));
-            // Options are NAMED, not lettered. A letter is a label for a tile; the country's
-            // own name is the thing being asked about, and it makes the answer sayable.
-            const opts = picks.map((n, i) => ({ label: displayLabelForName(n), name: n,
-                                                mat: i === idx ? tf.mat : null }));
-            return {
-                highlight: [], shapeOptions: opts, correct: displayLabelForName(target),
-                options: opts.map(o => o.label),
-                prompt: 'Each of these is a real country outline, but one has been <strong>turned or flipped</strong>. Which?',
-                explain: `${displayLabelForName(target)} is ${tf.say}. ` +
-                         `The others are ${picks.filter((_, i) => i !== idx).join(', ')}, the right way round.`
-            };
-        }
-    },
-    // ================= the ten below are the second wave =================
-    // Every one of them is a question you answer by picturing the map rather than by recalling
-    // a number: where a place would land if you turned the planet inside out, what you would
-    // hit if you never turned, how far apart two marks really are, which shape is drawn at a
-    // lie of a scale.
-
-    // ---------- turn the planet inside out ----------
-    'sb-antipode': {
-        engine: 'pinpoint', flat: true, icon: 'swap_vert', label: 'Dig Straight Down',
-        desc: 'Straight through the centre of the earth — where do you come out?',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n));
-            const name = sbRandom(pool);
-            if (!name) return null;
-            const from = sbCapitalLonLat(name);
-            // The antipode is the one spatial transform nobody's intuition survives: flip the
-            // latitude, swing the longitude half a turn. Almost everywhere lands in ocean,
-            // which is itself the lesson.
-            const to = [from[0] > 0 ? from[0] - 180 : from[0] + 180, -from[1]];
-            const under = sbCountryAt(to);
-            return {
-                highlight: [], target: to, scaleKm: 2200,
-                pins: [{ at: from, label: getCapital(effectiveDataName(name)) || displayLabelForName(name), kind: 'origin' }],
-                prompt: `Dig straight down through the centre of the earth from ` +
-                        `<strong>${getCapital(effectiveDataName(name)) || displayLabelForName(name)}</strong>. ` +
-                        `Click where you come out.`,
-                explain: under
-                    ? `You surface in ${displayLabelForName(under)}. Flip the latitude, swing the longitude half a turn.`
-                    : `You surface in open ocean — which is what happens almost everywhere, since land and sea ` +
-                      `are antipodal to each other over most of the planet.`
-            };
-        }
-    },
-
-    // ---------- never turn the wheel ----------
-    'sb-straight-on': {
-        engine: 'fact', flat: true, icon: 'straight', label: 'Straight On',
-        desc: 'Set off in one direction and never turn — what do you hit?',
-        build() {
-            const dirs = ['east', 'west', 'south', 'north'];
-            const pool = sbPool().filter(n => sbCapitalLonLat(n));
-            for (let t = 0; t < 30; t++) {
-                const name = sbRandom(pool);
-                const dir = sbRandom(dirs);
-                if (!name) continue;
-                const from = sbCapitalLonLat(name);
-                const walked = sbStraightOn(from, dir);
-                if (!walked || !walked.hit) continue;
-                if (namesMatch(walked.hit, name)) continue;
-                // A neighbour you share a border with is not a question — you can see the
-                // answer without leaving the country. The interesting ones cross an ocean.
-                if (playableNeighbours(name).some(n => namesMatch(n, walked.hit))) continue;
-                return {
-                    highlight: [], pickOne: true,
-                    correct: displayLabelForName(walked.hit),
-                    options: sbPool().map(displayLabelForName),
-                    revealTrack: walked.track,
-                    revealHit: walked.hit,
-                    pins: [{ at: from, label: getCapital(effectiveDataName(name)) || displayLabelForName(name), kind: 'origin' }],
-                    prompt: `Leave <strong>${getCapital(effectiveDataName(name)) || displayLabelForName(name)}</strong> ` +
-                            `heading <strong>due ${dir}</strong> and never turn. Which country do you reach first?`,
-                    explain: `${displayLabelForName(walked.hit)}. ` +
-                             ((dir === 'east' || dir === 'west')
-                                ? `Due east and due west hold a line of latitude, which is not the shortest path ` +
-                                  `on a globe — it is the line the map draws straight and the planet does not.`
-                                : `Due north and due south hold a meridian, the one bearing where the map and the ` +
-                                  `globe agree.`)
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- how big is the gap ----------
-    'sb-how-far': {
-        engine: 'estimate', flat: true, icon: 'straighten', label: 'How Far?',
-        desc: 'Two marks on the map — how many kilometres apart?',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n));
-            // Half the rounds are deliberately at high latitude, where the map's own ruler lies
-            // by a factor of two or more: the whole skill is reading a distance off a projection
-            // that stretches with the cosine of where you are looking.
-            //
-            // The coin is tossed ONCE, before the search. Tossing it per candidate (which is
-            // what this did first) biases nothing at all — each pair is simply accepted half
-            // the time whatever its latitude — so the mix stayed at whatever the pool happened
-            // to hold, measured at 0% high-latitude over twenty draws.
-            const wantHigh = Math.random() < 0.5;
-            for (let t = 0; t < 150; t++) {
-                const a = sbRandom(pool), b = sbRandom(pool);
-                if (!a || !b || namesMatch(a, b)) continue;
-                const pa = sbCapitalLonLat(a), pb = sbCapitalLonLat(b);
-                const km = sbKmBetween(pa, pb);
-                if (km < 700 || km > 17000) continue;
-                const lo = Math.min(Math.abs(pa[1]), Math.abs(pb[1]));
-                const high = lo > 45;
-                if (wantHigh ? !high : lo > 30) continue;
-                const ca = getCapital(effectiveDataName(a)) || displayLabelForName(a);
-                const cb = getCapital(effectiveDataName(b)) || displayLabelForName(b);
-                return {
-                    highlight: [], truth: km, min: 2.7, max: 4.35, unit: 'km',
-                    track: sbArc(pa, pb, 90),
-                    pins: [{ at: pa, label: ca, kind: 'origin' }, { at: pb, label: cb, kind: 'origin' }],
-                    format: v => Math.round(v).toLocaleString(),
-                    prompt: `How far is it from <strong>${ca}</strong> to <strong>${cb}</strong>, ` +
-                            `measured the short way round the globe?`,
-                    explain: `${sbFormatKm(km)}.` + (high
-                        ? ` Both sit above 45°, where a Mercator stretches everything by 1/cos(latitude) — the ` +
-                          `line looks far longer on screen than it is on the ground.`
-                        : ``)
-                };
-            }
-            return null;
         }
     },
 
@@ -14234,70 +14395,6 @@ const SB_QUIZZES = {
         }
     },
 
-    // ---------- where is the sun ----------
-    'sb-subsolar': {
-        engine: 'pinpoint', flat: true, icon: 'wb_sunny', label: 'Sun Overhead',
-        desc: 'Given the date and the clock, where is the sun straight up?',
-        build() {
-            const day = 1 + Math.floor(Math.random() * 365);
-            const hour = Math.floor(Math.random() * 24);
-            const date = new Date(Date.UTC(2024, 0, day, hour, 0, 0));
-            const sub = sbSubsolar(date);
-            if (!sub || !isFinite(sub[0])) return null;
-            const stamp = date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' });
-            const hh = String(hour).padStart(2, '0');
-            return {
-                highlight: [], target: sub, scaleKm: 2200, revealDeclination: sub[1],
-                prompt: `It is <strong>${hh}:00 UTC</strong> on <strong>${stamp}</strong>. ` +
-                        `Click the point where the sun is <strong>directly overhead</strong>.`,
-                explain: `${sbFormatLat(sub[1])}, ${Math.abs(sub[0]).toFixed(1)}°${sub[0] < 0 ? 'W' : 'E'}. ` +
-                         `The latitude is the sun's declination, which the date fixes; the longitude is the clock — ` +
-                         `noon UTC puts it on Greenwich and it runs 15° west every hour.`
-            };
-        }
-    },
-
-    // ---------- borders from memory ----------
-    'sb-blind-drop': {
-        engine: 'fact', flat: true, coastOnly: true, icon: 'my_location', label: 'You Are Here',
-        desc: 'A pin on a map with no borders — whose country is it?',
-        build() {
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 90000);
-            for (let t = 0; t < 40; t++) {
-                const name = sbRandom(pool);
-                const f = name && sbFeature(name);
-                if (!f) continue;
-                // Somewhere genuinely INSIDE, not a coastal sliver: the pole of inaccessibility
-                // is the point furthest from any of its own edges, which is exactly the spot
-                // where the coastline helps you least.
-                const geom = f.geometry;
-                const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
-                const [[, s0], [, n0]] = d3.geoBounds(f);
-                const kx = 111.320 * Math.cos((s0 + n0) / 2 * Math.PI / 180) || 1, ky = 110.574;
-                let best = null;
-                for (const poly of polys) {
-                    const rings = poly.map(r => r.map(pt => [pt[0] * kx, pt[1] * ky]));
-                    const c = largestInscribedCircle(rings);
-                    if (!best || c.radius > best.radius) best = c;
-                }
-                if (!best || !isFinite(best.x)) continue;
-                const at = [best.x / kx, best.y / ky];
-                if (!namesMatch(sbCountryAt(at) || '', name)) continue;
-                return {
-                    highlight: [], pickOne: true, coastOnly: true,
-                    correct: displayLabelForName(name),
-                    options: sbPool().map(displayLabelForName),
-                    pins: [{ at, kind: 'target' }],
-                    revealNames: [name],
-                    prompt: 'The borders are gone — only coastlines and lakes are left. ' +
-                            'Which country is the pin standing in?',
-                    explain: `${displayLabelForName(name)}.`
-                };
-            }
-            return null;
-        }
-    },
-
     // ---------- shortest path on a graph drawn on the wall ----------
     'sb-border-hops': {
         engine: 'fact', flat: true, icon: 'route', label: 'Fewest Borders',
@@ -14330,134 +14427,56 @@ const SB_QUIZZES = {
         }
     },
 
-    // ---------- the country in the middle ----------
-    // (SB_BRIDGE_OPTIONS names on offer, always — see the padding in build().)
-    'sb-bridge': {
-        engine: 'multi', flat: true, icon: 'commit', label: 'The Bridge',
-        desc: 'Which countries touch both of these?',
+    // ---------- riffs ----------
+    'sb-upside-down': {
+        engine: 'fact', hiRes: true, icon: 'flip', label: 'Upside Down', noMap: true,
+        desc: 'One of these silhouettes has been turned or flipped',
         build() {
-            const pool = sbPool();
-            for (let t = 0; t < 80; t++) {
-                const a = sbRandom(pool);
-                if (!a) continue;
-                const na = sbLandNeighbours(a);
-                if (na.length < 2) continue;
-                // Two steps away: far enough that the answer is not simply "they are next to
-                // each other", close enough that something sits between them.
-                const two = [];
-                na.forEach(m => sbLandNeighbours(m).forEach(x => {
-                    if (namesMatch(x, a) || na.some(y => namesMatch(y, x))) return;
-                    if (!two.some(y => namesMatch(y, x))) two.push(x);
-                }));
-                const b = sbRandom(two);
-                if (!b) continue;
-                const nb = new Set(sbLandNeighbours(b).map(normalizeName));
-                const bridges = na.filter(n => nb.has(normalizeName(n)));
-                if (!bridges.length || bridges.length > 4) continue;
-                const bridgeSet = new Set(bridges.map(normalizeName));
-                // The wrong answers are the countries that ALMOST bridge: neighbours of one
-                // but not the other, then the nearest countries to either end. A distractor
-                // from elsewhere is dismissed without looking — but the round must still
-                // always offer SB_BRIDGE_OPTIONS names, or the option count tells you how many
-                // to pick before you have looked at the map.
-                const taken = new Set([normalizeName(a), normalizeName(b), ...bridgeSet]);
-                const uniqueAlmost = [];
-                const add = n => {
-                    const k = normalizeName(n);
-                    if (taken.has(k)) return;
-                    taken.add(k);
-                    uniqueAlmost.push(n);
-                };
-                [...na, ...sbLandNeighbours(b)].forEach(add);
-                const need = SB_BRIDGE_OPTIONS - bridges.length;
-                if (uniqueAlmost.length < need) {
-                    const mid = getCountryCentroid(a) && getCountryCentroid(b)
-                        ? d3.geoInterpolate(getCountryCentroid(a), getCountryCentroid(b))(0.5) : null;
-                    if (mid) {
-                        pool.map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(mid, getCountryCentroid(n)) : Infinity }))
-                            .filter(x => isFinite(x.d)).sort((x, y) => x.d - y.d)
-                            .forEach(x => { if (uniqueAlmost.length < need) add(x.n); });
-                    }
+            const pool = sbPool().filter(n => {
+                const f = sbFeature(n);
+                if (!f) return false;
+                const km = sbAreaKm2(n);
+                if (!km || km < 1000) return false;
+                if (d3.geoArea(f) >= 0.05) return false;
+                // One recognisable landmass, not confetti. An archipelago drawn at tile size
+                // is a scatter of dots with no orientation to read — turning it over changes
+                // nothing anyone could point at, whether it is the answer or a decoy.
+                const parts = featureParts(f);
+                if (parts.length > 1) {
+                    const areas = parts.map(c => d3.geoArea({ type: 'Polygon', coordinates: c }));
+                    const tot = d3.sum(areas);
+                    if (!tot || Math.max(...areas) / tot < 0.75) return false;
                 }
-                if (uniqueAlmost.length < need) continue;
-                const opts = [...bridges, ...shuffleArray(uniqueAlmost).slice(0, need)];
-                return {
-                    highlight: [a, b], pickList: true,
-                    correctSet: bridges.map(displayLabelForName),
-                    revealNeighbours: true,
-                    neighbourNames: bridges,
-                    bridgeEnds: [a, b],
-                    labelToName: Object.fromEntries([a, b, ...opts].map(n => [displayLabelForName(n), n])),
-                    options: shuffleArray(opts.map(displayLabelForName)),
-                    prompt: `Pick <strong>every</strong> country that borders <strong>both</strong> ` +
-                            `${displayLabelForName(a)} <strong>and</strong> ${displayLabelForName(b)}.`,
-                    explain: `${bridges.map(displayLabelForName).join(', ')} ` +
-                             `${bridges.length > 1 ? 'each touch' : 'touches'} both.`
-                };
+                return true;
+            });
+            if (pool.length < 8) return null;
+            const shuffled = shuffleArray(pool);
+            // The odd one out is whichever candidate has a transform that looks most like its
+            // own true outline — that is the one that cannot be caught by shape alone. It has
+            // to land in a band, though: above 0.9 the country is symmetric under its own best
+            // transform and no answer is defensible, and below 0.25 nothing lines up at all,
+            // which only happens for shapes too broken up to have an orientation.
+            let target = null, tf = null;
+            for (const n of shuffled) {
+                const t = sbBestShapeTransform(n);
+                if (t && t.score > 0.25 && t.score < 0.9) { target = n; tf = t; break; }
             }
-            return null;
-        }
-    },
-
-    // ---------- latitude has no respect for your mental map ----------
-    'sb-further-north': {
-        engine: 'fact', flat: true, icon: 'north', label: 'Further North?',
-        desc: 'Two cities, one answer, and your instincts are no help',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbContinentOf(n));
-            for (let t = 0; t < 60; t++) {
-                const a = sbRandom(pool), b = sbRandom(pool);
-                if (!a || !b || namesMatch(a, b)) continue;
-                if (sbContinentOf(a) === sbContinentOf(b)) continue;   // same continent is easy
-                const pa = sbCapitalLonLat(a), pb = sbCapitalLonLat(b);
-                if (pa[1] < 0 !== pb[1] < 0) continue;                 // opposite hemispheres is easy
-                const gap = Math.abs(pa[1] - pb[1]);
-                if (gap < 1 || gap > 7) continue;                      // close enough to be a question
-                if (Math.abs(pa[0] - pb[0]) < 40) continue;            // and far enough apart to feel unrelated
-                const north = pa[1] > pb[1] ? a : b;
-                const ca = getCapital(effectiveDataName(a)) || displayLabelForName(a);
-                const cb = getCapital(effectiveDataName(b)) || displayLabelForName(b);
-                const cn = getCapital(effectiveDataName(north)) || displayLabelForName(north);
-                return {
-                    highlight: [],
-                    correct: cn,
-                    options: shuffleArray([ca, cb]),
-                    revealParallels: [{ at: pa, label: ca }, { at: pb, label: cb }],
-                    pins: [{ at: pa, label: ca, kind: 'origin' }, { at: pb, label: cb, kind: 'origin' }],
-                    prompt: `Which is further <strong>${pa[1] < 0 ? 'south' : 'north'}</strong> — ` +
-                            `<strong>${ca}</strong> or <strong>${cb}</strong>?`,
-                    explain: `${cn}. ${ca} is at ${sbFormatLat(pa[1])}, ${cb} at ${sbFormatLat(pb[1])} — ` +
-                             `${gap.toFixed(1)}° apart, which a world map spreads across half its width and ` +
-                             `your mental one usually gets backwards.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- read the band ----------
-    'sb-read-band': {
-        engine: 'latitude', flat: true, icon: 'horizontal_rule', label: 'Read the Band',
-        desc: 'Three countries on one line of latitude — which line?',
-        build() {
-            for (let t = 0; t < 40; t++) {
-                const lat = Math.round((Math.random() * 130 - 60) / 5) * 5;
-                if (Math.abs(lat) < 5) continue;
-                const crossers = sbLatCrossers(lat);
-                const named = crossers.filter(n => sbPool().some(x => namesMatch(x, n)));
-                if (named.length < 3) continue;
-                const show = shuffleArray(named).slice(0, 3);
-                return {
-                    highlight: show, truthLat: lat, dec: declinationForDay(172), day: 172,
-                    hours: sunPathDayHours(lat, declinationForDay(172)),
-                    correct: sbFormatLat(lat),
-                    prompt: `One line of latitude runs through all three highlighted countries. ` +
-                            `Slide the marker to <strong>which line</strong>.`,
-                    explain: `${sbFormatLat(lat)} — it crosses ${named.slice(0, 6).map(displayLabelForName).join(', ')}` +
-                             `${named.length > 6 ? ' and more' : ''}.`
-                };
-            }
-            return null;
+            if (!target) return null;
+            const rest = shuffled.filter(n => !namesMatch(n, target)).slice(0, 3);
+            if (rest.length < 3) return null;
+            const picks = shuffleArray([target, ...rest]);
+            const idx = picks.findIndex(n => namesMatch(n, target));
+            // Options are NAMED, not lettered. A letter is a label for a tile; the country's
+            // own name is the thing being asked about, and it makes the answer sayable.
+            const opts = picks.map((n, i) => ({ label: displayLabelForName(n), name: n,
+                                                mat: i === idx ? tf.mat : null }));
+            return {
+                highlight: [], shapeOptions: opts, correct: displayLabelForName(target),
+                options: opts.map(o => o.label),
+                prompt: 'Each of these is a real country outline, but one has been <strong>turned or flipped</strong>. Which?',
+                explain: `${displayLabelForName(target)} is ${tf.say}. ` +
+                         `The others are ${picks.filter((_, i) => i !== idx).join(', ')}, the right way round.`
+            };
         }
     }
 };
@@ -14496,29 +14515,6 @@ Object.keys(SB_QUIZZES).forEach(key => {
     };
 });
 
-function showSandboxQuizSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Quick Quizzes</h2>
-        <p class="selector-sub">Short rounds — every answer worked out from the map itself.</p>
-        <div class="mode-buttons">
-            ${Object.keys(SB_QUIZZES).map(k => `
-            <button class="mode-btn" data-sbquiz="${k}">
-                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
-                <span class="mode-name">${SB_QUIZZES[k].label}</span>
-                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-sbquiz-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-sbquiz]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.sbquiz)));
-    document.getElementById('back-from-sbquiz-btn').addEventListener('click', showSandboxSelector);
-}
 
 // ---- engine: shared entry ----
 // startNewQuestion dispatches every sandbox quiz here; this picks the engine.
@@ -14527,7 +14523,6 @@ function renderSandboxQuizQuestion() {
     if (!spec) return;
     clearAutoAdvance();
     sbClearOverlay();
-    sbDisposeLatitudeGlobe();     // the previous round's reveal owns a WebGL context
     // Put the real world back before build() runs — the pool is derived from gameState.countries,
     // and a previous round's surgery would otherwise make the eaten country unpickable for the
     // rest of the game and hand its land to a neighbour permanently.
@@ -14603,12 +14598,6 @@ function renderSandboxQuizQuestion() {
     // question exists, so the initial drawCountries never saw a `solo`/`coastOnly` to honour.
     if (q.solo || q.coastOnly || q.surgery) drawCountries();
 
-    // Markers and walked tracks belong to the ROUND, not to an engine — a pin on the map is
-    // as much a part of a pinpoint question as of a multiple-choice one — so they are drawn
-    // here rather than repeated in each renderer.
-    if (q.pins) sbDrawPins(q.pins);
-    if (q.track) sbDrawTrack(q.track, q.trackClass);
-
     const head = `Round ${gameState.currentQuestion}/${gameState.totalQuestions} — `;
     if (spec.engine === 'fact') return sbRenderFact(q, head);
     if (spec.engine === 'pinpoint') return sbRenderPinpoint(q, head);
@@ -14616,7 +14605,6 @@ function renderSandboxQuizQuestion() {
     if (spec.engine === 'multi') return sbRenderMulti(q, head);
     if (spec.engine === 'estimate') return sbRenderEstimate(q, head);
     if (spec.engine === 'picker') return sbRenderPicker(q, head);
-    if (spec.engine === 'latitude') return sbRenderLatitude(q, head);
 }
 
 // ---- engine: picker (type to filter, choose any country) ----
@@ -14905,9 +14893,6 @@ function sbRevealNeighbourMap(q, picked) {
         .map(l => (q.labelToName && q.labelToName[l]) || l);
     const marks = {};
     if (target) marks[target] = 'target';
-    // The Bridge has TWO ends rather than one subject, and both have to read as the question
-    // rather than as answers.
-    (q.bridgeEnds || []).forEach(n => { marks[n] = 'target'; });
     (q.neighbourNames || []).forEach(n => {
         marks[n] = (picked || []).some(l => namesMatch((q.labelToName && q.labelToName[l]) || l, n))
             ? 'right' : 'missed';
@@ -15086,207 +15071,46 @@ function sbDrawEstimateScale(q, guess, answered) {
     host.appendChild(wrap);
 }
 
-// ---- engine: latitude (a quarter-circle arc slider, graded on closeness) ----
-// Four options made this a recall question about four numbers. An arc says what latitude
-// actually is — a position on a curved earth — and grading on closeness means a near miss is
-// worth something, which is the honest way to score a question whose answer is continuous.
-function sbFormatLat(v) {
-    const r = Math.round(v);
-    return r === 0 ? '0°' : `${Math.abs(r)}°${r > 0 ? 'N' : 'S'}`;
-}
 
-const SB_LAT_TOL = 12;      // degrees at which the score falls to ~1/e
 
-function sbRenderLatitude(q, head) {
-    gameState.questionType = 'sandbox-latitude';
-    gameState.sbLat = 0;
-    clearMultipleChoice();
-    document.getElementById('question-text').innerHTML = head + q.prompt;
-
-    const grid = document.getElementById('options-grid');
-    grid.className = 'options-grid sb-lat';
-    grid.innerHTML = `
-        <div class="sb-lat-arc">
-            <svg viewBox="0 0 220 260" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-                <path class="sb-lat-meridian" d="${sbLatArcPath()}"></path>
-                <g class="sb-lat-ticks">${sbLatTicks()}</g>
-                <circle class="sb-lat-truth" r="7" cx="-99" cy="-99"></circle>
-                <circle class="sb-lat-knob" id="sb-lat-knob" r="9"></circle>
-            </svg>
-            <div class="sb-lat-read" id="sb-lat-read">0°</div>
-        </div>
-        <input type="range" id="sb-lat" min="-90" max="90" step="1" value="0">`;
-    document.getElementById('multiple-choice-container').classList.remove('hidden');
-
-    const el = document.getElementById('sb-lat');
-    const show = () => {
-        const v = +el.value;
-        gameState.sbLat = v;
-        document.getElementById('sb-lat-read').textContent = sbFormatLat(v);
-        const p = sbLatArcPoint(v);
-        const knob = document.getElementById('sb-lat-knob');
-        if (knob) { knob.setAttribute('cx', p[0]); knob.setAttribute('cy', p[1]); }
-    };
-    el.addEventListener('input', show);
-    show();
-
-    const next = document.getElementById('next-btn');
-    next.textContent = 'Submit'; next.disabled = false; next.style.display = 'inline-block';
-    document.getElementById('give-up-btn').style.display = 'inline-block';
-    document.getElementById('give-up-btn').textContent = 'Give Up';
-}
 
 // The arc is a meridian seen edge-on: 90°N at the top, the equator at the bulge, 90°S at the
 // bottom. Latitude therefore maps to ANGLE, not to a linear slot, which is the whole reason
 // for drawing it rather than using a plain bar.
 const SB_LAT_CX = 60, SB_LAT_CY = 130, SB_LAT_R = 104;
-function sbLatArcPoint(lat) {
-    const a = lat * DEG;
-    return [+(SB_LAT_CX + Math.cos(a) * SB_LAT_R).toFixed(2),
-            +(SB_LAT_CY - Math.sin(a) * SB_LAT_R).toFixed(2)];
-}
-function sbLatArcPath() {
-    const pts = d3.range(-90, 91, 2).map(sbLatArcPoint);
-    return 'M ' + pts.map(p => p.join(' ')).join(' L ');
-}
-function sbLatTicks() {
-    return [90, 60, 30, 0, -30, -60, -90].map(lat => {
-        const p = sbLatArcPoint(lat), q = sbLatArcPoint(lat);
-        const a = lat * DEG;
-        const inner = [SB_LAT_CX + Math.cos(a) * (SB_LAT_R - 7), SB_LAT_CY - Math.sin(a) * (SB_LAT_R - 7)];
-        const lab = [SB_LAT_CX + Math.cos(a) * (SB_LAT_R + 12), SB_LAT_CY - Math.sin(a) * (SB_LAT_R + 12)];
-        return `<line x1="${inner[0].toFixed(1)}" y1="${inner[1].toFixed(1)}" x2="${p[0]}" y2="${q[1]}"></line>` +
-               `<text x="${lab[0].toFixed(1)}" y="${(lab[1] + 4).toFixed(1)}">${sbFormatLat(lat)}</text>`;
-    }).join('');
-}
 
-function sbSubmitLatitude() {
-    const q = gameState.sbQuestion;
-    if (!q || gameState.sbAnswered) return;
-    gameState.sbAnswered = true;
-    const guess = gameState.sbLat || 0;
-    const err = Math.abs(guess - q.truthLat);
-    const pts = Math.max(0, Math.round(10 * Math.exp(-err / SB_LAT_TOL)));
-    gameState.score += pts;
-    document.getElementById('score').textContent = gameState.score;
-    syncScoreDisplay();
-
-    // Mark the truth on the arc the player was just using, so the miss is visible in the same
-    // picture they made it in.
-    const tp = sbLatArcPoint(q.truthLat);
-    const truth = document.querySelector('.sb-lat-truth');
-    if (truth) { truth.setAttribute('cx', tp[0]); truth.setAttribute('cy', tp[1]); }
-    const slider = document.getElementById('sb-lat');
-    if (slider) slider.disabled = true;
-
-    const fb = document.getElementById('feedback');
-    fb.innerHTML = `You said <strong>${sbFormatLat(guess)}</strong>; it is <strong>${sbFormatLat(q.truthLat)}</strong> ` +
-        `(${Math.round(err)}° out) — <strong>${pts}/10</strong>. ${q.explain || ''}`;
-    fb.className = 'feedback ' + sbScoreClass(pts);
-
-    sbShowLatitudeGlobe(q, guess);
-    const next = document.getElementById('next-btn');
-    next.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
-    document.getElementById('give-up-btn').style.display = 'none';
-    scheduleAutoAdvance(SB_LAT_REVEAL_MS);
-}
 
 // The reveal: Sun Path's Earth-in-space pane, tilted to this date's declination, with the two
 // latitudes ringed on it. Seeing both parallels against the terminator is the answer to "why
 // is it that many hours" — the ring nearer the lit pole spends more of its circle in daylight,
 // and you can watch the earth turn under it.
-const SB_LAT_REVEAL_MS = 7000;
 let sbLatGlobe = null;
 
-function sbShowLatitudeGlobe(q, guess) {
-    const host = document.getElementById('map-container');
-    if (!host) return;
-    // This mode runs noMap, so the map box is hidden and has collapsed. Give it back, with
-    // enough height that the globe is not a letterboxed sliver between the arc and the feedback.
-    host.style.display = '';
-    host.style.minHeight = 'min(34vh, 260px)';
-    withThree(() => {
-        const T = window.THREE;
-        if (!T || gameState.sbQuestion !== q) return;
-        sbDisposeLatitudeGlobe();
 
-        let cell = document.getElementById('sb-lat-globe');
-        if (!cell) {
-            cell = document.createElement('div');
-            cell.id = 'sb-lat-globe';
-            cell.className = 'sb-lat-globe';
-            host.appendChild(cell);
-        }
-        cell.innerHTML = '';
-        const canvas = document.createElement('canvas');
-        cell.appendChild(canvas);
-        const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        const scene = new T.Scene();
-        // Orthographic for the same reason Sun Path's pane is: the tilt and the parallels have
-        // to read as true angles wherever they land in the frame.
-        const camera = new T.OrthographicCamera(-2, 2, 2, -2, 0.1, 40);
-        camera.position.set(0, 0, 8);
-        camera.lookAt(0, 0, 0);
-
-        const built = buildEarthInSpace(scene);
-        // Tip the axis by this date's declination — the same sign convention updateGlobeScene
-        // uses — so the lit hemisphere is the one the season actually favours.
-        built.holder.rotation.z = -q.dec * DEG;
-
-        const mark = (lat, colour, text, dy) => {
-            built.holder.add(parallelRing(lat, colour, 1));
-            const lab = makeLabel(text, text === '' ? '#fff' : colour === 0x4fbf7a ? '#8ff0b4' : '#ffcf8a', 0.15);
-            const a = lat * DEG;
-            lab.position.set(0, Math.sin(a) * 1.06 + (dy || 0), Math.cos(a) * 1.06 + 0.35);
-            built.holder.add(lab);
-        };
-        mark(q.truthLat, 0x4fbf7a, `actual ${sbFormatLat(q.truthLat)}`, 0.10);
-        if (Math.abs(guess - q.truthLat) >= 1) mark(guess, 0xe0a03f, `you ${sbFormatLat(guess)}`, -0.10);
-
-        const size = () => {
-            const r = cell.getBoundingClientRect();
-            const w = Math.max(80, r.width), h = Math.max(80, r.height);
-            renderer.setSize(w, h, false);
-            // Locked zoom, exactly as the Sun Path pane does it: the earth is 2 units across, so
-            // a half-height of 1/0.86 keeps it at 86% of the frame however the pane is sized.
-            const halfH = 1 / 0.86, halfW = halfH * (w / h);
-            camera.left = -halfW; camera.right = halfW;
-            camera.top = halfH; camera.bottom = -halfH;
-            camera.updateProjectionMatrix();
-        };
-        size();
-
-        let raf = 0, t0 = performance.now();
-        const tick = () => {
-            if (!sbLatGlobe) return;
-            // Spin the earth under the parallels so the day/night share of each ring is
-            // something you watch happen rather than something you infer from a still.
-            built.earth.rotation.y = (performance.now() - t0) / 1000 * 0.5;
-            renderer.render(scene, camera);
-            raf = requestAnimationFrame(tick);
-        };
-        const ro = new ResizeObserver(() => { size(); renderer.render(scene, camera); });
-        ro.observe(cell);
-        sbLatGlobe = { renderer, cell, ro, stop: () => cancelAnimationFrame(raf) };
-        renderer.render(scene, camera);         // one frame even where rAF never runs
-        tick();
-    });
-}
-
-function sbDisposeLatitudeGlobe() {
-    if (!sbLatGlobe) return;
-    try { sbLatGlobe.stop(); } catch (_) { /* already gone */ }
-    try { sbLatGlobe.ro.disconnect(); } catch (_) { /* already gone */ }
-    try { sbLatGlobe.renderer.dispose(); } catch (_) { /* already gone */ }
-    const cell = document.getElementById('sb-lat-globe');
-    if (cell) cell.remove();
-    const host = document.getElementById('map-container');
-    if (host) host.style.minHeight = '';
-    sbLatGlobe = null;
-}
 
 // ---- engine: fact (highlight + multiple choice) ----
+// The clock, for the rounds that are scored on it. Who's Missing tells you the clock is
+// running and then hides it, which is the worst of both: the pressure without the information.
+// The bonus decays as exp(-seconds / scale), so this also shows what it is currently worth.
+let sbClockTimer = null;
+function sbStartClock(spec) {
+    sbStopClock();
+    if (!spec || !spec.speedBonus) return;
+    const el = document.getElementById('sb-clock');
+    if (!el) return;
+    const tick = () => {
+        if (gameState.sbAnswered) { sbStopClock(); return; }
+        const secs = Math.max(0, (Date.now() - (gameState.sbAskedAt || Date.now())) / 1000);
+        el.innerHTML = `⏱ ${secs.toFixed(1)}s <span class="sb-clock-worth">` +
+                       `→ ${1 + sbSpeedBonus(secs, spec.speedBonus)}/10</span>`;
+    };
+    tick();
+    sbClockTimer = setInterval(tick, 100);
+}
+function sbStopClock() {
+    if (sbClockTimer) { clearInterval(sbClockTimer); sbClockTimer = null; }
+}
+
 function sbRenderFact(q, head) {
     gameState.questionType = 'sandbox-fact';
     gameState.currentAnswer = q.correct;
@@ -15298,7 +15122,10 @@ function sbRenderFact(q, head) {
     if (q.parallel != null) sbDrawParallel(q.parallel);
     if (q.routes) sbDrawRoutes(q.routes);
     if (q.lake) sbDrawLake(q.lake);
-    document.getElementById('question-text').innerHTML = head + q.prompt;
+    const spec = SB_QUIZZES[gameState.mode];
+    document.getElementById('question-text').innerHTML = head + q.prompt +
+        (spec && spec.speedBonus ? ` <span class="sb-clock" id="sb-clock"></span>` : '');
+    if (spec && spec.speedBonus) sbStartClock(spec);
     if (q.imageOptions) sbRenderImageOptions(q.imageOptions, q.correct);
     else if (q.scaleOptions) sbRenderScaleOptions(q.scaleOptions, q.correct);
     else if (q.shapeOptions) sbRenderShapeOptions(q.shapeOptions, q.correct);
@@ -15639,6 +15466,7 @@ function recordSandboxAnswer(picked, correct) {
     const q = gameState.sbQuestion;
     if (!q || gameState.sbAnswered) return;
     gameState.sbAnswered = true;
+    sbStopClock();
     const feedback = document.getElementById('feedback');
     let extra = '';
     // Speed-scored fact rounds (Who's Missing) top up the shared 1-point award. A wrong answer
@@ -15669,21 +15497,39 @@ function sbPlayRevealAnimation() {
     let hold = 0;
     if (q.equatorPair) { sbRevealEquator(q.equatorPair); hold = SB_EQ_REVEAL_MS + 1800; }
     if (q.shapeOptions) { sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
-    // Straight On: draw the line you were told you would follow, and light up what it hit.
-    if (q.revealTrack) {
-        sbDrawTrack(q.revealTrack, 'r1 solo');
-        if (q.revealHit) { q.boardMarks = { marks: { [q.revealHit]: 'right' } }; sbApplyBoardMarks(); }
-        hold = Math.max(hold, 1500);
+    // Who's Missing: close in on the neighbourhood and outline the hole. During the round the
+    // map is deliberately NOT framed — framing it would name the answer — so the zoom is the
+    // first thing the reveal can afford to do. The red outline is the only way to see what the
+    // neighbours actually took, because the seam is invisible by construction: that is the
+    // whole point of dividing the land at the arc level rather than by redrawing polygons.
+    if (q.surgery && q.surgery.goneFeature) {
+        const feat = q.surgery.goneFeature;
+        if (projection && projection.fitExtent) {
+            // Fitted to the COUNTRY, with a wide margin rather than to the whole neighbourhood.
+            // Fitting to every absorber framed the DRC or Kazakhstan and left the country that
+            // vanished as a speck in the middle of it; a generous pad round the country itself
+            // shows the same neighbours and puts the thing being talked about in the middle.
+            const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.34;
+            try {
+                projection.fitExtent([[pad, pad], [w - pad, h - pad]], feat);
+                drawCountries();
+            } catch (_) { /* keep the framing we had */ }
+        }
+        const d = path(feat);
+        if (d) sbOverlay().append('path').datum(feat).attr('class', 'sb-ghost').attr('d', d);
+        const c = d3.geoCentroid(feat);
+        if (c && isFinite(c[0])) {
+            const pt = projection(c);
+            const grp = sbOverlay().append('g').datum({ at: c, dy: 0 })
+                .attr('class', 'sb-anchored sb-ghost-lab');
+            if (!pt || !isFinite(pt[0])) grp.attr('display', 'none');
+            else grp.attr('transform', `translate(${pt[0]}, ${pt[1]})`);
+            grp.append('text').attr('text-anchor', 'middle').text(displayLabelForName(q.surgery.gone));
+        }
+        hold = Math.max(hold, 2200);
     }
-    // You Are Here: the borders come back, with the answer picked out of them.
-    if (q.coastOnly && q.revealNames) {
-        q.coastOnly = false;
-        q.boardMarks = { marks: { [q.revealNames[0]]: 'right' } };
-        drawCountries();
-        hold = Math.max(hold, 1500);
-    }
-    // Fewest Borders: the chain itself, country by country, which is the only way to see that
-    // the number was a route rather than a guess.
+    // Fewest Borders: the chain itself, country by country — the only way to see that the
+    // number was a route rather than a guess.
     if (q.revealChain) {
         const marks = {};
         q.revealChain.forEach((n, i) => {
@@ -15693,24 +15539,6 @@ function sbPlayRevealAnimation() {
         sbFitToFeatures(q.revealChain, 0.09);
         drawCountries();
         hold = Math.max(hold, 2200);
-    }
-    // Further North?: both parallels ruled right across the map, which settles it at a glance
-    // and is the only picture that makes the answer feel obvious afterwards.
-    // Sun Overhead: rule the sun's own parallel across the map. The latitude of the answer is
-    // the declination and nothing else, so seeing the line is seeing the rule.
-    if (q.revealDeclination != null) {
-        const line = d3.range(-180, 181, 2).map(l => [l, q.revealDeclination]);
-        sbOverlay().append('path').datum(line)
-            .attr('class', 'sb-route sb-parallel-mark r0').attr('d', sbLine(line));
-        hold = Math.max(hold, 1200);
-    }
-    if (q.revealParallels) {
-        q.revealParallels.forEach((r, i) => {
-            const line = { type: 'LineString', coordinates: d3.range(-180, 181, 2).map(l => [l, r.at[1]]) };
-            sbOverlay().append('path').datum(line.coordinates)
-                .attr('class', 'sb-route sb-parallel-mark r' + i).attr('d', sbLine(line.coordinates));
-        });
-        hold = Math.max(hold, 1500);
     }
     if (hold) setTimeout(() => {
         if (gameState.sbQuestion === q) scheduleAutoAdvance(hold);
@@ -15793,9 +15621,6 @@ function sbSubmitPinpoint() {
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
     document.getElementById('give-up-btn').style.display = 'none';
-    // Pinpoint rounds have reveals of their own now (Sun Overhead rules the sun's parallel),
-    // and this is the one hook that lets a round push the advance back for them.
-    sbPlayRevealAnimation();
     scheduleAutoAdvance();
 }
 
@@ -16144,20 +15969,36 @@ function sbRevealEquator(pair) {
         // it legible whatever the pair's fit scale turned out to be. It fades in with the zoom,
         // once the shapes have stopped moving and there is something stable to label.
         lab.attr('x', it.cx).attr('y', it.cy)
-            .attr('font-size', (13 / (it.k * S)) + 'px')
-            .attr('dy', ((it.h / it.k) / 2 + 16 / (it.k * S)) + 'px')
+            .attr('font-size', (15 / (it.k * S)) + 'px')
+            .attr('dy', ((it.h / it.k) / 2 + 34 / (it.k * S)) + 'px')
             .attr('opacity', 0)
             .transition().delay(moveMs).duration(zoomMs).attr('opacity', 1);
     });
     // Phase two: the pair closes up side by side AND the camera comes in, together — one
     // gesture, because they are the same gesture. (Phase one deliberately is not part of it.)
-    layer.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attr('transform', layerEnd);
+    //
+    // The camera has to zoom ABOUT THE PAIR. Interpolating the layer's transform string
+    // straight from `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom
+    // centred on the SVG's top-left corner followed by a pan to catch up — which is exactly
+    // what it looked like: a lunge at a random spot and then a scramble across to the
+    // countries. Written as `translate(p) scale(k) translate(-q)` with p and q interpolated
+    // separately, u = 0 is the identity (the pair does not move at all as the zoom begins) and
+    // u = 1 is the same final framing, with everything in between anchored on the shapes.
+    const mid = [(items[0].cx + items[1].cx) / 2, yEq];
+    const zoomTween = () => u => {
+        const k = Math.exp(Math.log(1) * (1 - u) + Math.log(S) * u);   // geometric, so it reads as even
+        const qx = mid[0] * (1 - u), qy = mid[1] * (1 - u);
+        const px = mid[0] + (W / 2 - mid[0]) * u, py = mid[1] + (H / 2 - mid[1]) * u;
+        return `translate(${px},${py}) scale(${k}) translate(${-qx},${-qy})`;
+    };
+    layer.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attrTween('transform', zoomTween);
 
     // d3 transitions run on requestAnimationFrame, which a backgrounded (or non-compositing)
     // tab does not fire — the same trap the puzzle's piece `settle` documents. setTimeout still
     // runs there, so this makes the finished state unconditional rather than animation-dependent.
     setTimeout(() => {
         if (!layer.node() || !layer.node().isConnected) return;
+        layer.interrupt();
         layer.attr('transform', layerEnd);
         shapes.forEach(({ it, wrap, lab }) => { wrap.attr('transform', it.end); lab.attr('opacity', 1); });
         if (countriesGroup) countriesGroup.style('opacity', 0.06);
@@ -16184,6 +16025,7 @@ function sbUpdateOverlay() {
     g.selectAll('path.sb-lake-hit').attr('d', d => (d ? path(d) : null));
     g.selectAll('path.sb-fly-fill').attr('d', d => (d ? path(d) : null));
     g.selectAll('path.sb-dist-line').attr('d', d => (d ? sbLine(d) : null));
+    g.selectAll('path.sb-ghost').attr('d', d => (d ? path(d) : null));
     // Point-anchored things (route letters, airport markers and their codes) re-project.
     g.selectAll('text.sb-route-lab').each(function (d) {
         const p = d && projection(d);
@@ -16238,7 +16080,7 @@ function sbHighlight(names) {
 // The pinpoint click lives on the shared svg, so it MUST be unbound here — it is namespaced,
 // but a stale listener would still fire under the next mode and rewrite gameState.sbGuess.
 function sbTeardown() {
-    sbDisposeLatitudeGlobe();
+    sbStopClock();
     if (typeof svg !== 'undefined' && svg) {
         svg.on('click.sbpin', null);
         svg.select('g.sb-overlay').remove();
@@ -17856,6 +17698,16 @@ function resetModeSelector() {
                 <span class="mode-icon material-symbols-outlined">pentagon</span>
                 <span class="mode-name">Country Shape ID</span>
                 <span class="mode-desc">Identify countries by their shape</span>
+            </button>
+            <button class="mode-btn" data-mode="sb-missing">
+                <span class="mode-icon material-symbols-outlined">search_off</span>
+                <span class="mode-name">Who's Missing?</span>
+                <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
+            </button>
+            <button class="mode-btn" data-mode="sun-moon">
+                <span class="mode-icon material-symbols-outlined">wb_twilight</span>
+                <span class="mode-name">Sun &amp; Moon</span>
+                <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
             </button>
             <button class="mode-btn" data-mode="spaceship">
                 <span class="mode-icon material-symbols-outlined">rocket_launch</span>

@@ -90,6 +90,8 @@
                 <button class="mode-icon-btn" data-mode="state-puzzle" title="Puzzle"><span class="material-symbols-outlined">extension</span></button>
                 <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">pentagon</span></button>
                 <button class="mode-icon-btn" data-mode="spaceship" title="Where Is My Spaceship?"><span class="material-symbols-outlined">rocket_launch</span></button>
+                <button class="mode-icon-btn" data-mode="sb-missing" title="Who's Missing?"><span class="material-symbols-outlined">search_off</span></button>
+                <button class="mode-icon-btn" data-mode="sun-moon" title="Sun &amp; Moon"><span class="material-symbols-outlined">wb_twilight</span></button>
                 <button class="mode-icon-btn" data-mode="sandbox" title="Sandbox"><span class="material-symbols-outlined">science</span></button>
                 <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
                      see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
@@ -154,6 +156,16 @@
                     <span class="mode-icon material-symbols-outlined">pentagon</span>
                     <span class="mode-name">Country Shape ID</span>
                     <span class="mode-desc">Identify countries by their shape</span>
+                </button>
+                <button class="mode-btn" data-mode="sb-missing">
+                    <span class="mode-icon material-symbols-outlined">search_off</span>
+                    <span class="mode-name">Who's Missing?</span>
+                    <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
+                </button>
+                <button class="mode-btn" data-mode="sun-moon">
+                    <span class="mode-icon material-symbols-outlined">wb_twilight</span>
+                    <span class="mode-name">Sun &amp; Moon</span>
+                    <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
                 </button>
                 <button class="mode-btn" data-mode="spaceship">
                     <span class="mode-icon material-symbols-outlined">rocket_launch</span>
@@ -302,6 +314,7 @@
             <button id="gamma-lock-toggle" class="btn secondary globe-only" title="Toggle globe tilt lock">Tilt: Locked</button>
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
             <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
+            <button id="map-colour-toggle" class="btn secondary" title="Colour the map so no two neighbours share a colour" style="display:none">Colours: Off</button>
             <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
             <button id="share-btn" class="btn secondary" title="Copy a link to this mode / challenge a friend"><span class="material-symbols-outlined">share</span> Share</button>
             <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>

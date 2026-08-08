@@ -3560,8 +3560,10 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .sb-equator-layer { pointer-events: none; }
 .sb-equator-shape { fill: var(--accent, #d08a2c); fill-opacity: 0.9; stroke: var(--text);
                     stroke-width: 0.6; vector-effect: non-scaling-stroke; }
-.sb-equator-label { fill: var(--text); font-weight: 700; paint-order: stroke;
-                    stroke: var(--surface); stroke-width: 3px; }
+/* Serif, unbold, no halo. The pair is alone on a cleared map by the time these appear, so
+   there is nothing for a stroked label to survive against — the outline only made it shout. */
+.sb-equator-label { fill: var(--text); font-family: Georgia, 'Times New Roman', serif;
+                    font-weight: 400; letter-spacing: 0.02em; }
 
 /* Route-lettered answer buttons: a fat colour swatch plus the letter in the same colour, so the
    button and its line on the map read as one object. */
@@ -3727,26 +3729,13 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 /* Read the Daylight: a meridian seen edge-on, so latitude reads as an angle rather than as a
    slot on a bar. The range input underneath is the actual control (keyboard and touch both
    work on it for free); the arc is the readout. */
-.options-grid.sb-lat { display: block; padding: 6px 4px; }
-.sb-lat-arc { position: relative; display: flex; justify-content: center; }
 /* Sized by HEIGHT, not width. The arc is taller than it is wide (220x260 viewBox), so a
    width cap lets it grow past the viewport once the reveal globe is also on screen — and the
    app is `height: 100vh; overflow: hidden`, so anything past the fold is simply lost. */
-.sb-lat-arc svg { height: min(30vh, 230px); width: auto; max-width: 100%; display: block; }
-.sb-lat-meridian { fill: none; stroke: var(--text); stroke-opacity: 0.35; stroke-width: 2.5; }
-.sb-lat-ticks line { stroke: var(--text); stroke-opacity: 0.4; stroke-width: 1.5; }
-.sb-lat-ticks text { fill: var(--text-muted); font-size: 11px; font-weight: 600; }
-.sb-lat-knob { fill: var(--accent, #d08a2c); stroke: var(--surface); stroke-width: 2.5; }
-.sb-lat-truth { fill: var(--correct, #3d8f5f); stroke: var(--surface); stroke-width: 2.5; }
-.sb-lat-read { position: absolute; left: 50%; top: 46%; transform: translate(-30%, -50%);
-    font-weight: 800; font-size: 1.25rem; color: var(--text); pointer-events: none; }
-.options-grid.sb-lat input[type=range] { width: 100%; margin-top: 6px; }
 
 /* Its reveal: a second Earth-in-space pane, borrowed from Sun Path. Square and centred — the
    map box is far wider than it is tall here, and stretching the canvas across it would leave
    the globe a small dot in a wide letterbox. */
-.sb-lat-globe { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; }
-.sb-lat-globe canvas { display: block; height: 100%; aspect-ratio: 1 / 1; max-width: 100%; }
 
 /* The estimate reveal: every country as one bar on a log axis, with the guess and the truth
    ruled across it. */
@@ -3871,17 +3860,7 @@ body.sun-path-active #sun-path-panel .sandbox-title {
    existed to out-rank the inline `display` updateIslandMarkers writes for small countries.) */
 
 /* ---- second-wave quick quizzes ------------------------------------------------------- */
-/* A labelled marker the round plants on the map: the place you set off from, the pin you are
-   being asked to name. Rides in .sb-anchored so it follows pan and zoom. */
-.sb-pin { pointer-events: none; }
-.sb-pin circle { fill: var(--accent, #d08a2c); stroke: #fff; stroke-width: 2;
-    vector-effect: non-scaling-stroke; }
-.sb-pin.target circle { fill: var(--incorrect, #c0503f); }
-.sb-pin text { font-size: 11px; font-weight: 700; fill: #fff;
-    paint-order: stroke; stroke: rgba(0, 0, 0, 0.78); stroke-width: 3px; stroke-linejoin: round; }
 
-/* Further North?'s two parallels, ruled right across the map on the reveal. */
-.sb-parallel-mark { stroke-dasharray: 7 5; stroke-width: 2; }
 
 /* Out of Scale: all four tiles are the same size and every shape is centred in its own, so
    nothing about the LAYOUT can carry size information — only the drawing does. */
@@ -3902,3 +3881,79 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .name-all-labels { pointer-events: none; }
 .name-all-label { font-size: 10px; font-weight: 700; fill: #fff;
     paint-order: stroke; stroke: rgba(0, 0, 0, 0.8); stroke-width: 3px; stroke-linejoin: round; }
+
+/* ---- Who's Missing sandbox ------------------------------------------------------------ */
+/* Colour-coded by whether a country CAN be dissolved into its neighbours and, if not, by what
+   stops it. The two "no" colours are deliberately cool and low-contrast: they are the majority
+   of the map, and they are context rather than the subject. */
+.country.ms-ok      { fill: var(--correct, #3d8f5f); fill-opacity: 0.72; }
+.country.ms-ok-out  { fill: var(--correct, #3d8f5f); fill-opacity: 0.34; }
+.country.ms-fails   { fill: var(--accent, #d08a2c); fill-opacity: 0.6; }
+.country.ms-coastal { fill: var(--text); fill-opacity: 0.13; }
+.country.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity: 0.3; }
+.country.ms-absorber { stroke: var(--accent, #d08a2c); stroke-width: 2;
+    vector-effect: non-scaling-stroke; }
+circle.island-marker.ms-ok      { fill: var(--correct, #3d8f5f); }
+circle.island-marker.ms-ok-out  { fill: var(--correct, #3d8f5f); fill-opacity: 0.45; }
+circle.island-marker.ms-fails   { fill: var(--accent, #d08a2c); }
+circle.island-marker.ms-coastal { fill: var(--text); fill-opacity: 0.3; }
+circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity: 0.5; }
+
+.ms-panel { margin-top: 8px; text-align: left; }
+.ms-legend { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.ms-key { display: flex; align-items: center; gap: 7px; font-size: 0.8rem; }
+.ms-swatch { width: 14px; height: 14px; border-radius: 3px; flex: none;
+    border: 1px solid var(--border); }
+.ms-swatch.ms-ok      { background: var(--correct, #3d8f5f); }
+.ms-swatch.ms-ok-out  { background: var(--correct, #3d8f5f); opacity: 0.45; }
+.ms-swatch.ms-fails   { background: var(--accent, #d08a2c); }
+.ms-swatch.ms-coastal { background: var(--text); opacity: 0.2; }
+.ms-swatch.ms-few     { background: var(--incorrect, #c0503f); opacity: 0.45; }
+.ms-key-label { flex: 1; }
+.ms-count { font-variant-numeric: tabular-nums; font-weight: 700; opacity: 0.75; }
+.ms-detail { font-size: 0.85rem; line-height: 1.45; border-top: 1px solid var(--border);
+    padding-top: 8px; }
+.ms-verdict { display: inline-block; margin: 4px 0; padding: 2px 8px; border-radius: 999px;
+    font-weight: 700; font-size: 0.78rem; color: #fff; }
+.ms-verdict.ms-coastal { background: #6b7684; }
+.ms-verdict.ms-few     { background: var(--incorrect, #c0503f); }
+.ms-verdict.ms-fails   { background: var(--accent, #d08a2c); color: #1b1408; }
+.ms-hint { opacity: 0.8; }
+.ms-shares { margin: 8px 0; display: flex; flex-direction: column; gap: 3px; }
+.ms-share { display: grid; grid-template-columns: 1fr 60px 34px; gap: 6px; align-items: center;
+    font-size: 0.78rem; }
+.ms-bar { display: block; height: 7px; background: var(--surface-2); border-radius: 4px;
+    overflow: hidden; }
+.ms-bar i { display: block; height: 100%; background: var(--accent, #d08a2c); }
+.ms-pct { text-align: right; font-variant-numeric: tabular-nums; }
+.ms-restore { margin-top: 6px; }
+
+/* ---- Who's Missing: the outline of the hole -------------------------------------------- */
+/* The seam where a country was absorbed is invisible by construction — that is the whole point
+   of the surgery — so the reveal has to draw the shape back in rather than point at it. */
+.sb-ghost { fill: none; stroke: var(--incorrect, #c0503f); stroke-width: 2.5;
+    stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.sb-ghost-lab text { font-size: 12px; font-weight: 700; fill: #fff;
+    paint-order: stroke; stroke: rgba(0, 0, 0, 0.8); stroke-width: 3.5px; stroke-linejoin: round; }
+.sb-ghost-lab { pointer-events: none; }
+
+/* ---- Five-colour map ------------------------------------------------------------------- */
+/* Muted on purpose: this is a way of reading adjacency, not a political map, and it has to sit
+   under the marks and outlines the modes draw on top of it. */
+.country.mc-0 { fill: #b9c9a8; }
+.country.mc-1 { fill: #d9c48f; }
+.country.mc-2 { fill: #c3b4cd; }
+.country.mc-3 { fill: #a9c3cc; }
+.country.mc-4 { fill: #dcb5a4; }
+@media (prefers-color-scheme: dark) {
+    .country.mc-0 { fill: #4d5f45; }
+    .country.mc-1 { fill: #6d5e33; }
+    .country.mc-2 { fill: #574d63; }
+    .country.mc-3 { fill: #3f5560; }
+    .country.mc-4 { fill: #6a4a3e; }
+}
+
+/* The running clock on speed-scored rounds — and what the bonus is worth right now. */
+.sb-clock { display: inline-block; margin-left: 8px; font-variant-numeric: tabular-nums;
+    font-size: 0.85em; opacity: 0.9; }
+.sb-clock-worth { opacity: 0.7; }

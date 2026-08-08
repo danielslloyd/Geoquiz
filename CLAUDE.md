@@ -92,6 +92,16 @@ Layout: the tray lives in `#globe-side-panel`, so the puzzle opts into the exist
 
 ## Sandbox category
 
+**The Sandbox is one flat grid.** There used to be a Quick Quizzes tile inside it that opened a
+second grid of its own, so a short round — the whole point of which is that it starts fast —
+took three clicks to reach. The quizzes are now sandbox tiles themselves, generated from
+`SB_QUIZZES` by `sandboxQuizTiles()` so the registry stays the single source of truth. Two things
+moved further, out of the drawer entirely and onto the **landing page**: **Who's Missing**
+(`sb-missing`, which is why `sandboxQuizTiles` skips it) and **Sun & Moon**. Both are real
+`QUIZ_MODES` keys, so the landing grid needs no interception for them — but the grid exists in
+two places (static markup in `index.html` and `resetModeSelector`'s template) and both were
+updated.
+
 Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (twenty-four of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
 
 Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds twenty-four tiles of its own.
@@ -100,61 +110,32 @@ Two entries open **another** picker first: Draw the Border (`showDrawBorderSelec
 
 Twenty-four short modes, almost all **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
 
-### The second wave
+### Two from the second wave
 
-Ten more, all built on the same registry. The thread through them is that the answer has to be
-reached by **picturing the map**, not by recalling a number — where a place lands if you turn
-the planet inside out, what you hit if you never turn the wheel, which silhouette is drawn at a
-lie of a scale.
+Ten more were written and eight were cut again. The two that stayed are the two that could not
+be answered any other way than by picturing the map:
 
-| Mode | The question | Engine |
-|---|---|---|
-| **Dig Straight Down** | Click the antipode of a capital | pinpoint |
-| **Straight On** | Leave due east/west/north/south and never turn — what do you hit? | pickOne |
-| **How Far?** | Two marks and a line — how many km? | estimate |
-| **Out of Scale** | Four outlines at one shared scale, except one | fact |
-| **Sun Overhead** | Given the date and the clock, click the subsolar point | pinpoint |
-| **You Are Here** | A pin on a borderless map — whose country? | pickOne |
-| **Fewest Borders** | Shortest path between two countries, in crossings | fact |
-| **The Bridge** | Every country touching both of these two | multi |
-| **Further North?** | Two cities a couple of degrees apart, on different continents | fact |
-| **Read the Band** | Three highlighted countries share a parallel — which one? | latitude |
+* **Out of Scale** — four outlines at one shared scale, except one. It needs a genuinely
+  **equal-area projection**: "the same scale" has to survive measurement, and a Mercator divided
+  by cos(centroid latitude) does not, because the stretch varies across a country — Finland
+  (60–70°N) came out 23% off while being drawn perfectly honestly. Azimuthal equal-area centred
+  on each country makes drawn area exactly proportional to true area; rasterising the rendered
+  tiles, the three honest ones share one km²-per-pixel to **0.6%** and the liar is off by 4.40×
+  against an expected 4.34×. Candidates are within 3× of each other **pairwise** (filtering
+  against the seed alone lets the extremes sit 9× apart, and then the odd one out is simply the
+  biggest picture) and no more elongated than 2.6:1 — the question is about area, and Chile at a
+  shared scale is a hair nobody can weigh against a blob.
+* **Fewest Borders** — the shortest path between two countries, counted in crossings. Its
+  adjacency is **not** `playableNeighbours`: that one is honestly topological and says France
+  borders Brazil and Suriname, which is true via French Guiana and useless for a question about
+  crossing borders on the ground (Spain to Brazil came out at two hops). At 110m the atlas ships
+  France as one MultiPolygon with Guiana inside it, so there is no geometry to filter and the
+  test has to be geometric: `sbLandNeighbours` keeps a pair only when their LARGEST parts'
+  bounding boxes come within a degree. Measured across nine countries it drops exactly Brazil
+  and Suriname from France and nothing else at all — Russia 14/14, China 14/14, India 6/6.
 
-Notes worth keeping:
-* **Adjacency for the two graph rounds is not `playableNeighbours`.** That one is honestly
-  topological and therefore says France borders Brazil and Suriname — true via French Guiana,
-  and completely wrong for a question about crossing borders on the ground (Spain to Brazil
-  came out at two hops). At 110m the atlas ships France as ONE MultiPolygon with Guiana inside
-  it, so there is no geometry to filter and the test has to be geometric: `sbLandNeighbours`
-  keeps a pair only when their LARGEST parts' bounding boxes come within a degree of each
-  other. Measured across nine countries it drops exactly Brazil and Suriname from France and
-  nothing else at all — Russia 14/14, China 14/14, India 6/6.
-* **Out of Scale needs a genuinely equal-area projection.** "The same scale" has to survive
-  measurement, and a Mercator divided by cos(centroid latitude) does not: the stretch varies
-  across a country, so Finland (60–70°N) came out 23% off while being drawn perfectly
-  honestly. Azimuthal equal-area centred on each country makes drawn area exactly proportional
-  to true area — verified by rasterising the rendered tiles: the three honest ones share one
-  km²-per-pixel to **0.6%**, and the liar is off by 4.40× against an expected 4.34×.
-  Candidates are also within 3× of each other **pairwise** (filtering against the seed alone
-  lets the extremes sit 9× apart, and then the odd one out is simply the biggest picture) and
-  no more elongated than 2.6:1 — the question is about area, and Chile at a shared scale is a
-  hair nobody can weigh against a blob.
-* **How Far?'s high-latitude bias must be decided ONCE, before the search.** Tossing the coin
-  per candidate biases nothing at all — each pair is simply accepted half the time whatever its
-  latitude — and the mix stayed at whatever the pool happened to hold, measured at **0%**
-  high-latitude over twenty draws. Decided up front it lands at 55%.
-* **Nearest-point distance is memoised and computed in Cartesian.** Comparing squared chord
-  lengths on the unit sphere ranks identically to comparing great-circle distances and costs
-  three multiplies instead of a `geoDistance` call. With that and a pair cache, Near to Far's
-  sixty-attempt retry loop went from **22.2 s to 0.29 s** — it was freezing the page for
-  twenty seconds on a bad draw.
-* **`sbLatCrossers` is cached and stepped at 1.5°**, for the same reason: the uncached
-  half-degree walk cost 1.3 s a draw inside a synchronous retry loop (8.0 s → 0.27 s for
-  twenty draws).
-* **Markers and walked tracks belong to the round, not the engine.** `q.pins` and `q.track` are
-  drawn by `renderSandboxQuizQuestion` for every engine rather than repeated in each renderer —
-  a pin on the map is as much part of a pinpoint question as of a multiple-choice one — and
-  both ride in `.sb-anchored`, so they follow pan and zoom for free.
+Deleted with the other eight: the `latitude` engine (Read the Daylight went too), the pin and
+walked-track overlays, `sbCountryAt`, and the second-level Quick Quizzes picker.
 
 `SB_QUIZZES` is the registry and the single source of truth: each entry carries its label/icon/description **and** a `build()` returning one round. `QUIZ_MODES` entries are generated from it in a loop, and `showSandboxQuizSelector` renders its grid from the same object, so adding a quiz means adding one key.
 
@@ -360,6 +341,13 @@ Notes worth keeping:
 * **`sb-lake` holds its answers for the game.** There are only two dozen lakes worth asking
   about, so a ten-round set draws a repeat by chance more often than not; used ones are released
   only when the pool runs dry. Verified: no repeat in fourteen consecutive rounds.
+* **Who's Missing shows its clock**, and what the speed bonus is currently worth. The round
+  told you the clock was running and then hid it, which is the worst of both: the pressure
+  without the information. Its reveal fits the map to **the country**, with a wide margin,
+  rather than to the whole neighbourhood — fitting to every absorber framed the DRC or
+  Kazakhstan and left the country that vanished as a speck in the middle — and outlines the
+  hole in red, which is the only way to see what the neighbours took, because the seam is
+  invisible by construction.
 * **`sb-mercator-lie` asks only two kinds of question, and mixes them 50/50.** Either the
   projection **reverses** the comparison (the one that looks bigger is the smaller, ratio at
   least 1.25 so the reversal is legible) or the two are a **near-tie in real area** (within
@@ -372,7 +360,7 @@ Notes worth keeping:
   lopsided mix that moves whenever either rule is touched (measured at 27% near-ties with a 0.45
   coin, 62% at 0.68, 36% at 0.60, all of them noisy). Searching for both is 50/50 by
   construction — verified at **48% near-ties with the equator shortcut winning 52%**, and **zero
-  failed draws** in 50. On the reversing draws it still rejects pairs the map gets right: Apparent Mercator size goes as `area/cos²(latitude)`, so the build only keeps pairs where the bigger-looking country is the smaller one — the projection is the adversary, not the distractor list. Its reveal (`sbRevealEquator`) then carries both countries down to the equator at their honest size: Mercator's scale factor is `1/cos(latitude)` in both axes, so this is **one uniform scale in projected space** — the same correction the world puzzle applies to a dragged piece (`puzzleLatRatio`), not a re-projection. The path string never changes, so verticals stay vertical and nothing can wrap across the antimeridian mid-animation. Verified: both shapes render at an identical 0.3245 px per km. The reveal runs in **two phases**, split along the axis that carries the meaning. Phase one is a pure **north–south** move: each country drops (or climbs) to the equator and re-scales as it goes, staying over its own longitude, while the rest of the world fades out. That is the lie being undone, and undoing it on its own axis is what makes it legible — sliding sideways at the same time buries the one motion that matters inside a general rearrangement. Phase two closes the pair up side by side **and** brings the camera in, together, because those are the same gesture. (Doing all of it at once meant the shapes were still travelling while the frame closed in on them, so nothing could be read.) Verified on a Germany/Cameroon draw: at the end of phase one both centres sit exactly on the equator's screen y, neither has moved horizontally, and the scales are 0.629 and 0.995 — Germany shrinking to a third of its apparent area while Cameroon barely moves, which is the whole point.
+  failed draws** in 50. On the reversing draws it still rejects pairs the map gets right: Apparent Mercator size goes as `area/cos²(latitude)`, so the build only keeps pairs where the bigger-looking country is the smaller one — the projection is the adversary, not the distractor list. Its reveal (`sbRevealEquator`) then carries both countries down to the equator at their honest size: Mercator's scale factor is `1/cos(latitude)` in both axes, so this is **one uniform scale in projected space** — the same correction the world puzzle applies to a dragged piece (`puzzleLatRatio`), not a re-projection. The path string never changes, so verticals stay vertical and nothing can wrap across the antimeridian mid-animation. Verified: both shapes render at an identical 0.3245 px per km. The reveal runs in **two phases**, split along the axis that carries the meaning. Phase one is a pure **north–south** move: each country drops (or climbs) to the equator and re-scales as it goes, staying over its own longitude, while the rest of the world fades out. That is the lie being undone, and undoing it on its own axis is what makes it legible — sliding sideways at the same time buries the one motion that matters inside a general rearrangement. Phase two closes the pair up side by side **and** brings the camera in, together, because those are the same gesture. The camera has to zoom **about the pair**: interpolating the layer's transform string straight from `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom centred on the SVG's top-left corner followed by a pan to catch up, which is exactly what it looked like — a lunge at a random spot and then a scramble across to the countries. Written as `translate(p) scale(k) translate(-q)` with p and q interpolated separately, u=0 is the identity and u=1 is the same final framing, with everything between anchored on the shapes. The explanation is bare numbers now: the animation carries both countries to the equator at their honest sizes, which makes the point far better than a sentence about 1/cos²(latitude), and next to it the sentence read as an apology for the picture. Labels are serif, unbold and unhaloed, set further below the shapes — the pair is alone on a cleared map by then, so there is nothing for a stroked label to survive against and the outline only made it shout. (Doing all of it at once meant the shapes were still travelling while the frame closed in on them, so nothing could be read.) Verified on a Germany/Cameroon draw: at the end of phase one both centres sit exactly on the equator's screen y, neither has moved horizontally, and the scales are 0.629 and 0.995 — Germany shrinking to a third of its apparent area while Cameroon barely moves, which is the whole point.
 * **`sb-upside-down` uses the transform that changes the silhouette LEAST.** Five are on
   offer — both quarter-turns, the half-turn, and both mirrors — and the one chosen is whichever
   scores highest against the country's own true outline, because that is the one that cannot be
@@ -437,6 +425,38 @@ Notes worth keeping:
 * **`sbUpdateOverlay` re-paths from stored data.** Every overlay element carries the geometry it was drawn from as its d3 datum (and point-anchored things carry `{at, dy}` under `.sb-anchored`), so routes, lake outlines, route letters and airport pins all follow drag, wheel and pinch. Before this they were drawn once and drifted off the map the moment it moved, which is why the rounds using them had to be static.
 * **Reveal animations must not depend on rAF alone.** d3 transitions are rAF-driven and a backgrounded tab does not fire it, so `sbRevealEquator` sets its finished state unconditionally from a `setTimeout` backstop — the same trap the puzzle's piece `settle` documents. Reveals also push the auto-advance back, deferred a tick because the shared answer handlers schedule *their* advance after calling `sbPlayRevealAnimation` and the last write wins.
 * Border lengths are cached per round (`sbMeshLenCache`, reset in the shared entry): a mesh over the whole topology is not free.
+
+### Who's Missing sandbox
+
+`missing-sandbox` is the quiz's surgery with the question taken away: every country is
+colour-coded by whether it CAN be dissolved into its neighbours and, if not, by what stops it,
+and clicking one performs the operation. It exists because the eligibility rules are not
+obvious from outside — "landlocked, two neighbours or more, and the finished geometry has to
+audit clean" sounds like small print until you see it rule out four countries in five.
+
+Measured at 110m: **22 removable**, 6 removable but outside the quiz's size band, 9 that divide
+badly, 151 with a coastline, 5 with too few neighbours. The classification is **chunked** (40 ms
+of work, then yield): the surgery is ~30 ms a country and forty in one pass is a second and a
+half of frozen page, on a tool whose whole point is that you can poke at it. The cheap
+structural rules are settled first so the map is already meaningful while the audit fills in
+behind them. Clicking an ineligible country explains itself rather than doing nothing — that is
+the more interesting half of the tool.
+
+### The five-colour map
+
+`#map-colour-toggle`, offered on Who's Missing and its sandbox. No two neighbours share a
+colour, which is the most useful way to look at a map when the question is about which country
+is next to which — and on a plain single-fill map the seam where a country was absorbed is
+invisible, so with the neighbours coloured the new border is the only place two blocks of one
+colour meet.
+
+Greedy in descending order of degree (Welsh–Powell), then a **repair sweep**. One greedy pass
+left two clashing pairs out of 615 adjacencies, entirely an artefact of visiting order: a
+country coloured early boxes in a country coloured late. Re-examining the clashers once the
+whole map is coloured almost always finds a free colour, because by then every neighbour is
+known rather than half of them. After the sweep: **0 clashes over 609 adjacent pairs**, using
+four of the five. Recomputed per round rather than cached, since Who's Missing rewrites exactly
+the adjacency the colouring is derived from.
 
 ### Resolution
 
@@ -592,7 +612,7 @@ The miss list was a column of names. Two things make it useful instead:
 ## Shape ID difficulty
 
 `SHAPE_ID_TIERS` — **Outline** (as before), **Turned** (the whole outline at a random angle),
-**Fragment** (one contiguous run of ~42% of the boundary, also turned). Nothing about the
+and **Coming Into Focus**, which replaced an earlier Fragment tier. Nothing about the
 *question* changes: same countries, same shape-similar distractors, only how much of the shape
 you are given. Reached through `showShapeIdSelector()`, which makes `country-shape-id` the
 seventh selector trigger that is also a real mode key and so must be intercepted in all three
@@ -607,9 +627,27 @@ Three things it has to get right:
   (w|cos a| + h|sin a|) by (w|sin a| + h|cos a|); solving that gives the factor. Measured over
   30 rounds of the two turned tiers: **zero overflow of the framing core**, fit factors 0.60 to
   1.00.
-* **A fragment is a RUN, not a sample.** A random scatter of boundary points is a dotted version
-  of the whole outline and gives away just as much; one unbroken stretch is a piece of coast —
-  the character of a border with none of the overall form.
+**Coming Into Focus** draws the country at almost no resolution — a few corners — and puts the
+detail back a little at a time until it is the real coastline. You answer whenever you are sure,
+from **the whole country list** rather than four options (four options and a growing outline are
+the same question asked twice: you would wait for the detail that separates those four and
+answer then, which is not the game), and the score line reports how little of it you needed.
+
+It runs on the same Visvalingam–Whyatt pass the coastline model uses, which is what makes it a
+question rather than a blur: VW drops the point whose triangle with its neighbours is smallest,
+so what survives at low detail is the country's actual corners — the cape, the bend in the
+river, the elbow of the border — in the order a person would draw them. Two properties of that
+pass matter here and neither is incidental: the weights are forced **monotonically increasing**,
+so every threshold is a nested subset and points can only ever be *added* (nothing that has
+appeared disappears, which is what stops the shape flickering as it grows — verified: vertex
+count never decreased across a full run, Malaysia 92 → 450 → 2,525); and a removal that would
+make the ring cross itself is **refused outright**, so even at one percent the silhouette is a
+simple polygon rather than a knot.
+
+Driven by `setInterval`, not `requestAnimationFrame`: rAF does not fire in a backgrounded tab,
+which would freeze the outline at one percent and leave the round unanswerable until the player
+came back — and this is a 26-second animation, exactly the length someone is most likely to tab
+away from.
 
 `revealShapeIdTruth` turns it back upright and fills the fragment in once the round is decided,
 with the usual `setTimeout` backstop, since withholding through the answer would only make the
