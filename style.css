@@ -533,7 +533,9 @@ header h1 .material-symbols-outlined {
     box-shadow: var(--shadow-sm);
     text-align: center;
     flex-shrink: 0;
-    overflow: hidden;
+    /* Horizontal only. A blanket `overflow: hidden` also clipped the sandbox quizzes' long
+       explanations once they were tall enough to need more than one line. */
+    overflow-x: hidden;
 }
 
 .question h2 {
@@ -547,6 +549,13 @@ header h1 .material-symbols-outlined {
     font-weight: 700;
 }
 
+/* This box holds two very different things: a one-word "Correct!" badge, and the sandbox
+   quizzes' multi-sentence explanations with inline <strong> runs. It used to be a centred
+   flex ROW, which is right for the badge and wrong for the prose — under `display: flex`
+   every text run and every <strong> becomes its own anonymous flex item laid out side by
+   side, and with no flex-wrap they are squeezed rather than reflowed.
+   Normal flow fixes the prose; the badge still reads as centred because min-height (48px,
+   border-box) minus the 24px of padding leaves exactly one 1.45-line-height line. */
 .feedback {
     margin-top: 12px;
     padding: 12px;
@@ -554,9 +563,10 @@ header h1 .material-symbols-outlined {
     font-weight: 600;
     font-size: 1.05rem;
     min-height: 48px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: block;
+    text-align: center;
+    line-height: 1.45;
+    text-wrap: pretty;
     transition: all 0.3s ease;
 }
 
@@ -614,6 +624,12 @@ header h1 .material-symbols-outlined {
     overflow-y: auto;
 }
 
+/* How Many People: the map's only job is to say WHICH country, which a small globe does as
+   well as a large one. The chart is what the round is actually played on — the slider is read
+   against it — so the two swap their share of the width. */
+body.sb-wide-panel .container.globe-side-layout .map-container { flex: 1 1 0; max-width: 34%; }
+body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0; }
+
 .container.globe-side-layout .globe-side-panel .question-container,
 .container.globe-side-layout .globe-side-panel .multiple-choice-container {
     margin-bottom: 0;
@@ -632,6 +648,19 @@ header h1 .material-symbols-outlined {
 
 .container.globe-side-layout .globe-side-panel .options-grid {
     grid-template-columns: 1fr;
+}
+
+/* ...but the sandbox tile grids mean their column counts literally: a flag or a silhouette is
+   a picture, and one-per-row in a 300px column wastes the panel and shrinks each tile. This
+   rule exists only to out-specify the blanket 1fr above (0-3-0), which it otherwise loses to. */
+.container.globe-side-layout .globe-side-panel .options-grid.sb-img-grid,
+.container.globe-side-layout .globe-side-panel .options-grid.sb-shape-grid,
+.container.globe-side-layout .globe-side-panel .options-grid.sb-route-grid {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.container.globe-side-layout .globe-side-panel .options-grid.sb-multi-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 /* Free Explore has no questions or answer buttons — only a one-line prompt and, on click,
@@ -741,6 +770,12 @@ header h1 .material-symbols-outlined {
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    /* Every overlay mounted in here (#orbital-canvas, #spaceship-inset, .sun-path-stage) is
+       absolutely positioned against it. Without this they anchor to the VIEWPORT instead and
+       paint over the top bar and the controls — which is exactly what the Sun Path panes did.
+       ensureOrbital/ensureSpaceshipInset each set it inline as a guard; declaring it here makes
+       the whole class of bug unexpressible. */
+    position: relative;
 }
 
 .map-container.hidden {
@@ -886,10 +921,14 @@ header h1 .material-symbols-outlined {
     pointer-events: none;
 }
 
-/* Country Shape ID: clean borderless silhouette (no stroke, no glow). */
+/* Country Shape ID: clean borderless silhouette (no stroke, no glow). The answer is picked
+   from the buttons, so the shape is inert — .country's cursor:pointer would otherwise
+   advertise a click that does nothing. */
 .country.shape-target {
     fill: var(--correct);
     stroke: none;
+    cursor: default;
+    pointer-events: none;
 }
 
 /* Orbital "from orbit" view — three.js WebGL canvas overlaid on the map container.
@@ -2215,57 +2254,7 @@ header h1 .material-symbols-outlined {
     font-size: 0.95rem;
 }
 
-/* ==================== PLACE THE COUNTRIES ==================== */
-
-.place-ocean { fill: var(--ocean-1, #aebfca); }
-
-.place-shoreline {
-    fill: none;
-    stroke: rgba(90, 105, 120, 0.85);
-    stroke-width: 0.8;
-    pointer-events: none;   /* clicks fall through to the map (svg) for guessing */
-}
-
-.place-anchor {
-    fill: var(--land, #cdd6cf);
-    stroke: var(--land-stroke, #8a978c);
-    stroke-width: 0.8;
-    pointer-events: none;
-}
-
-.place-label {
-    fill: var(--text);
-    font-size: 11px;
-    font-weight: 700;
-    paint-order: stroke;
-    stroke: var(--surface);
-    stroke-width: 2.5px;
-    pointer-events: none;
-}
-
-/* The target country revealed after a guess is submitted. */
-.place-reveal {
-    fill: var(--correct, #2a9d8f);
-    fill-opacity: 0.55;
-    stroke: var(--correct-dark, #1f7a6d);
-    stroke-width: 1.2;
-    pointer-events: none;
-}
-
-/* "Choose from list" dropdown. */
-.place-choose {
-    margin-top: 8px;
-    padding: 7px 10px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 0.95rem;
-    font-family: inherit;
-    max-width: 100%;
-}
-
-/* Difficulty / mode picker on the setup screen. */
+/* Difficulty picker shared by the mode setup screens. */
 .place-setup {
     display: flex;
     flex-wrap: wrap;
@@ -2409,3 +2398,1474 @@ header h1 .material-symbols-outlined {
         margin-bottom: 12px;
     }
 }
+
+/* ==================== US STATES PUZZLE ====================
+   A jigsaw over the AlbersUSA map: empty slots on the board, pieces in a tray below it,
+   and a fixed-position ghost that follows the cursor mid-drag. */
+
+/* Empty slot: a recessed hole, clearly not-yet-filled. pointer-events:none throughout —
+   nothing on the board is interactive, the drag is driven entirely from the tray. */
+.puzzle-slot {
+    fill: var(--surface-2);
+    stroke: var(--land-stroke);
+    stroke-width: 0.6;
+    stroke-dasharray: 3 2;
+    pointer-events: none;
+}
+
+/* Hard mode's silhouette. There is no union geometry — every state is filled with no
+   internal border, so the shapes merge into one outer shape. The hairline stroke in the
+   SAME colour as the fill closes the antialiasing seams along shared edges. */
+.puzzle-fill {
+    fill: var(--surface-2);
+    stroke: var(--surface-2);
+    stroke-width: 0.8;
+    pointer-events: none;
+}
+.puzzle-silhouette {
+    /* One soft drop shadow around the merged blob rather than 50 overlapping ones. */
+    filter: drop-shadow(0 0 1px var(--land-stroke));
+}
+
+.puzzle-label {
+    font-size: 7px;
+    font-weight: 600;
+    fill: var(--text-muted);
+    paint-order: stroke;
+    stroke: var(--surface-2);
+    stroke-width: 2px;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* A piece that has snapped home: green, so the board fills in with what you got right. */
+.puzzle-placed {
+    fill: var(--correct);
+    fill-opacity: 0.62;
+    stroke: var(--correct-dark);
+    stroke-width: 0.7;
+    pointer-events: none;
+    animation: puzzleSnap 0.22s ease-out;
+}
+/* The piece's own name, drawn once it's home. Bold white over the green fill, with a dark
+   halo so it survives both themes and the paler "Solve It" fill underneath. */
+.puzzle-placed-label {
+    font-size: 7px;
+    font-weight: 700;
+    fill: #fff;
+    paint-order: stroke;
+    stroke: rgba(0, 0, 0, 0.55);
+    stroke-width: 1.8px;
+    stroke-linejoin: round;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* Filled in by "Solve It" rather than by the player — muted so the final board still
+   shows what was actually earned. */
+.puzzle-placed.revealed {
+    fill: var(--surface);
+    stroke: var(--text-muted);
+    stroke-dasharray: 2 2;
+    animation: none;
+}
+
+@keyframes puzzleSnap {
+    from { opacity: 0.35; }
+    to   { opacity: 1; }
+}
+
+/* ---- Blind (Hard) ----
+   Each placement is shown where it was dropped, tinted green-to-red by its error (the fill
+   is set inline by puzzleErrorColor), then cleared before the next state is handed out. */
+.puzzle-blind-drop {
+    fill-opacity: 0.75;
+    stroke: var(--text);
+    stroke-opacity: 0.35;
+    stroke-width: 0.6;
+    pointer-events: none;
+}
+
+@keyframes puzzleBlindFade {
+    0%   { opacity: 0.35; }
+    18%  { opacity: 1; }
+    72%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* End-of-round: the map the player actually built — every state where they put it, still
+   carrying the colour that graded it. */
+.puzzle-reveal {
+    fill-opacity: 0.7;
+    stroke: var(--text);
+    stroke-opacity: 0.35;
+    stroke-width: 0.5;
+    pointer-events: none;
+}
+
+/* Faint leaders back to where each state really belongs. */
+.puzzle-reveal-line {
+    stroke: var(--text-muted);
+    stroke-width: 0.7;
+    stroke-opacity: 0.4;
+    pointer-events: none;
+}
+
+/* ---- Tray ----
+   Lives in #globe-side-panel, so globe-side-layout already makes it a column beside the
+   map on desktop and stacks it below on narrow screens. */
+.puzzle-tray {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.puzzle-tray-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+    flex: 0 0 auto;
+}
+
+.puzzle-tray-title {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.puzzle-tray-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+/* The pile: a wrapping row of pieces, each sized from its own board footprint, so it
+   scrolls when there are more than fit. */
+.puzzle-pieces {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 2px;
+}
+
+/* Each piece is its own <svg> whose viewBox is its bounding box in BOARD user units — that
+   is what lets d3.pointer read a grab straight off it in board coordinates. */
+.puzzle-piece-btn {
+    display: block;
+    cursor: grab;
+    touch-action: none;
+    overflow: visible;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+
+.puzzle-piece-btn:hover .puzzle-piece-shape {
+    fill: var(--land-hover);
+}
+
+/* Held: the ghost is what follows the cursor, so the tray slot just fades back. */
+.puzzle-piece-btn.in-hand {
+    opacity: 0.25;
+    cursor: grabbing;
+}
+
+/* The dragged piece. position:fixed on <body> because the tray sits outside the map — an
+   in-SVG ghost would be clipped, and invisible, for the first half of every drag. */
+.puzzle-ghost {
+    position: fixed;
+    z-index: 1200;
+    pointer-events: none;
+    line-height: 0;              /* an inline SVG sits on a text baseline; this stops the
+                                    wrapper hanging a few px below the cursor */
+    filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.4));
+}
+
+.puzzle-ghost svg {
+    display: block;
+    overflow: visible;
+}
+
+.puzzle-ghost .puzzle-piece-shape {
+    fill: var(--accent);
+    fill-opacity: 1;
+    stroke: var(--text);
+    stroke-opacity: 0.6;
+}
+
+/* Close enough to snap. */
+.puzzle-ghost.will-snap .puzzle-piece-shape {
+    fill: var(--correct);
+    stroke: var(--correct-dark);
+}
+
+
+
+.puzzle-piece-btn.bounced {
+    animation: puzzleBounce 0.35s ease;
+}
+
+@keyframes puzzleBounce {
+    0%, 100% { transform: translateX(0); }
+    25%      { transform: translateX(-4px); }
+    75%      { transform: translateX(4px); }
+}
+
+.puzzle-piece-shape {
+    fill: var(--accent);
+    fill-opacity: 0.92;
+    stroke: var(--text);
+    stroke-opacity: 0.55;
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;   /* board units vary wildly between pieces */
+}
+
+
+
+
+
+/* ---- Puzzle layout ----
+   Side-by-side, because the AlbersUSA board is HEIGHT-constrained on a desktop: with a
+   fixed 800x600 viewBox in a wide container the fit scale is set by the height, so width
+   spent on the tray costs the board nothing until the map narrows past ~870px — whereas a
+   tray below eats the one axis that actually limits it. Measured at 1280x720: this layout
+   gives a board scale of 0.99, the earlier tray-underneath version gave 0.50.
+   The panel is therefore as wide as it can be without shrinking the map. */
+.container.globe-side-layout.state-puzzle-layout .globe-side-panel {
+    flex: 0 1 clamp(260px, 32%, 430px);
+}
+
+/* Status line is one line of text here — it shouldn't steal height from the pile. */
+.container.globe-side-layout.state-puzzle-layout .globe-side-panel .question-container {
+    padding: 8px 10px;
+}
+
+.container.globe-side-layout.state-puzzle-layout .globe-side-panel {
+    overflow: hidden;   /* the piece pile does its own scrolling */
+}
+
+@media (max-width: 1024px) {
+    /* globe-side-layout has already flipped to a column, so the tray is below the map. Give
+       the board a real floor: `body` is height:100vh/overflow:hidden app-wide, so scope an
+       exception and let the page scroll rather than squeeze 50 pieces and a board into one
+       screen. */
+    body.state-puzzle-active,
+    body.sb-tall-active {
+        height: auto;
+        min-height: 100vh;
+        overflow-y: auto;
+    }
+    body.state-puzzle-active .container,
+    body.sb-tall-active .container {
+        height: auto;
+        min-height: 0;
+    }
+    /* Once the page can scroll, the tile grid no longer has to fit a fixed slice of the
+       viewport — let the tiles take their natural height instead of being squeezed. */
+    body.sb-tall-active .options-grid.sb-shape-grid,
+    body.sb-tall-active .options-grid.sb-img-grid {
+        max-height: none;
+        grid-template-rows: none;
+    }
+    .container.globe-side-layout.state-puzzle-layout .map-container {
+        min-height: 52vh;
+    }
+    .container.globe-side-layout.state-puzzle-layout .globe-side-panel {
+        flex: none;
+        overflow: visible;
+    }
+    .puzzle-pieces {
+        max-height: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .puzzle-tray-hint {
+        display: none;
+    }
+}
+
+/* ==================== FLAG MATCH ====================
+   A strip of flags beside the map; drag each onto its country. Shares the puzzle tray's
+   shell (.puzzle-tray) but lays the chips out as a simple wrapping grid — flags are all the
+   same box, so there is nothing to pack cleverly. */
+.flag-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 6px;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 2px;
+}
+
+.flag-chip {
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--surface-2);
+    line-height: 0;
+    cursor: grab;
+    touch-action: none;
+    overflow: hidden;
+}
+
+/* Fixed box + contain, because flags are not all 3:2 (Nepal, Switzerland, Qatar). */
+.flag-chip img {
+    width: 34px;
+    height: 23px;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+}
+
+.flag-chip:hover {
+    border-color: var(--accent);
+}
+
+.flag-chip.in-hand {
+    opacity: 0.25;
+    cursor: grabbing;
+}
+
+.flag-chip.bounced {
+    animation: puzzleBounce 0.35s ease;
+}
+
+.flag-ghost {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 900;
+    pointer-events: none;
+    line-height: 0;
+    filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.35));
+    outline: 2px solid transparent;
+}
+
+.flag-ghost img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+/* Over a country the flag could land on. */
+.flag-ghost.over-country {
+    outline-color: var(--correct);
+}
+
+/* ==================== SPACESHIP SANDBOX ==================== */
+/* The band a spot may sit anywhere within — the actual reachable set. Drawn as a wide
+   stroke along the same shoreline, one path per latitude band so Mercator's inflation is
+   accounted for. */
+.sandbox-strip {
+    fill: none;
+    stroke: var(--accent);
+    stroke-opacity: 0.16;
+    stroke-linecap: butt;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+
+/* The shoreline the strip is measured from. */
+.sandbox-coast {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.1;
+    stroke-opacity: 0.85;
+    pointer-events: none;
+}
+
+/* The ground footprint of the selected spot: the slice of world actually in frame. */
+.sandbox-view-cone {
+    fill: var(--incorrect);
+    fill-opacity: 0.2;
+    stroke: var(--incorrect-dark);
+    stroke-width: 1;
+    stroke-opacity: 0.75;
+    pointer-events: none;
+}
+
+.sandbox-pin {
+    fill: var(--correct);
+    stroke: var(--surface);
+    stroke-width: 1.2;
+    cursor: grab;
+}
+
+/* The handle on the end of the spoke: drag it to spin the view. */
+.sandbox-rotor {
+    fill: var(--surface);
+    stroke: var(--correct-dark);
+    stroke-width: 1.4;
+    cursor: grab;
+}
+
+.sandbox-spot.selected .sandbox-rotor {
+    stroke: var(--incorrect-dark);
+    fill: var(--incorrect);
+}
+
+.sandbox-pin:active,
+.sandbox-rotor:active {
+    cursor: grabbing;
+}
+
+.sandbox-spot.selected .sandbox-pin {
+    fill: var(--incorrect);
+}
+
+.sandbox-heading {
+    stroke: var(--correct-dark);
+    stroke-width: 1.6;
+    marker-end: none;
+}
+
+.sandbox-spot.selected .sandbox-heading {
+    stroke: var(--incorrect-dark);
+    stroke-width: 2.2;
+}
+
+.sandbox-num {
+    font-size: 9px;
+    font-weight: 700;
+    fill: var(--text);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2.5px;
+    pointer-events: none;
+    user-select: none;
+}
+
+.sandbox-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.sandbox-title {
+    font-weight: 700;
+    color: var(--text);
+}
+
+/* Low-res orbital preview of the selected spot (base Blue Marble sphere only). */
+.sandbox-preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: #05070d;
+}
+
+.sandbox-preview canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.sandbox-readout {
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.sandbox-note {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.sandbox-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+/* Per-spot authoring: slide along the coast, spin the camera, re-cut the coastline. */
+.sandbox-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.sandbox-slider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.sandbox-slider > span:first-child {
+    flex: 0 0 34px;
+}
+
+.sandbox-slider input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.sandbox-slider input[type="range"]:disabled {
+    opacity: 0.4;
+}
+
+.sandbox-slider .sandbox-note {
+    flex: 0 0 auto;
+    min-width: 48px;
+    text-align: right;
+}
+
+.sandbox-nudge {
+    display: flex;
+    gap: 4px;
+    padding-left: 42px;
+}
+
+.sandbox-nudge .btn {
+    flex: 1 1 auto;
+    padding: 2px 0;
+    font-size: 0.9rem;
+    line-height: 1.2;
+}
+
+.sandbox-hash {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    resize: vertical;
+    word-break: break-all;
+}
+
+.sandbox-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.sandbox-actions .btn {
+    flex: 1 1 auto;
+    padding: 7px 10px;
+    font-size: 0.85rem;
+}
+
+.sandbox-status {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    min-height: 1.1em;
+}
+
+/* ---- Loose pieces on the board ----
+   Colour is the whole legend: SLOTS are recessed grey holes, LOOSE pieces are warm amber
+   with a dark outline so they read as "in hand, not yet placed", and PLACED pieces are
+   green. No two states of a piece ever share a colour, so the board is never ambiguous. */
+.puzzle-loose {
+    cursor: grab;
+}
+
+.puzzle-loose .puzzle-piece-shape {
+    fill: var(--accent);
+    fill-opacity: 0.92;
+    stroke: var(--text);
+    stroke-opacity: 0.55;
+    stroke-width: 0.7;
+}
+
+.puzzle-loose:hover .puzzle-piece-shape {
+    fill: var(--land-hover);
+}
+
+.puzzle-loose.in-hand {
+    cursor: grabbing;
+    filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.4));
+}
+
+.puzzle-loose.in-hand .puzzle-piece-shape {
+    fill-opacity: 1;
+    stroke-width: 1.1;
+}
+
+/* Close enough to snap. */
+.puzzle-loose.will-snap .puzzle-piece-shape {
+    fill: var(--correct);
+    stroke: var(--correct-dark);
+}
+
+/* ==================== SANDBOX MODES ====================
+   Sun Path, Odd One Out, Draw the Border and Sun & Moon. */
+
+/* ---- Odd One Out: the four candidates, unlabelled — the map IS the question. ---- */
+.country.odd-candidate {
+    fill: var(--accent);
+    fill-opacity: 0.85;
+    stroke: var(--text);
+    stroke-opacity: 0.7;
+    stroke-width: 1.2;
+}
+
+/* ---- Draw the Border ---- */
+.draw-border-ink {
+    fill: var(--accent);
+    fill-opacity: 0.18;
+    stroke: var(--accent);
+    stroke-width: 2.2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    pointer-events: none;
+}
+
+.draw-border-truth {
+    fill: var(--correct);
+    fill-opacity: 0.25;
+    stroke: var(--correct-dark);
+    stroke-width: 1.6;
+    pointer-events: none;
+}
+
+/* ---- Sun & Moon ----
+   Three stacked caps make the twilight bands: each one adds its own alpha over the last,
+   so the night side darkens in steps from the terminator inward. */
+.sun-moon-night {
+    fill: #0a1020;
+    pointer-events: none;
+}
+
+.sun-moon-night.night-0 { fill-opacity: 0.18; }   /* astronomical twilight, 102 deg */
+.sun-moon-night.night-1 { fill-opacity: 0.18; }   /* nautical, 96 deg */
+.sun-moon-night.night-2 { fill-opacity: 0.24; }   /* full night, 90 deg */
+
+.sun-moon-terminator {
+    fill: none;
+    stroke: #ffd28a;
+    stroke-width: 1.4;
+    stroke-opacity: 0.85;
+    pointer-events: none;
+}
+
+.sun-moon-mark circle {
+    stroke: var(--surface);
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+
+.sun-moon-mark.sun circle { fill: #ffcf5c; }
+.sun-moon-mark.moon circle { fill: #dfe6f2; }
+
+.sun-moon-mark text {
+    font-size: 13px;
+    pointer-events: none;
+    user-select: none;
+}
+
+.sun-moon-mark.sun text { fill: #6b4b12; }
+.sun-moon-mark.moon text { fill: #3a4358; }
+
+.sun-moon-zone-line {
+    fill: none;
+    stroke: var(--text);
+    stroke-opacity: 0.28;
+    stroke-width: 0.7;
+    stroke-dasharray: 3 3;
+    pointer-events: none;
+}
+
+.sun-moon-zone-label {
+    font-size: 8px;
+    font-weight: 600;
+    fill: var(--text-muted);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2px;
+    pointer-events: none;
+    user-select: none;
+}
+
+.sun-moon-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.sandbox-slider input[type="date"],
+.sandbox-slider input[type="time"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: inherit;
+    font-size: 0.8rem;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+}
+
+/* Satellite imagery replaces the drawn land, so the vector fills step out of the way and
+   leave only a hairline coast. */
+.container.satellite-map .country {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.28);
+    stroke-width: 0.5;
+}
+
+/* The imagery already shows the lakes; the vector overlay just fights it. */
+.container.satellite-map .lakes {
+    display: none;
+}
+
+/* ---- Sun & Moon: reference latitudes, the moon's phase, you, and the tour caption ---- */
+.sun-moon-latline {
+    fill: none;
+    stroke-width: 0.9;
+    pointer-events: none;
+}
+
+.sun-moon-latline.tropic { stroke: #d9a441; stroke-opacity: 0.75; stroke-dasharray: 6 4; }
+.sun-moon-latline.polar  { stroke: #7fb6d9; stroke-opacity: 0.75; stroke-dasharray: 6 4; }
+.sun-moon-latline.equator { stroke: var(--text); stroke-opacity: 0.35; stroke-dasharray: 2 4; }
+
+.sun-moon-latlabel {
+    font-size: 8px;
+    font-weight: 600;
+    fill: var(--text-muted);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2.5px;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* The moon disc: a dark body with the lit crescent/gibbous laid over it, the whole group
+   rotated so the bright limb faces the sun. */
+.sun-moon-mark.moon .moon-dark {
+    fill: #10151f;
+    stroke: var(--surface);
+    stroke-width: 1.2;
+}
+
+.sun-moon-mark.moon .moon-lit {
+    fill: #ffffff;
+    stroke: none;
+}
+
+.sun-moon-here circle {
+    fill: var(--incorrect);
+    stroke: #fff;
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+
+.sun-moon-here .here-ring {
+    fill: none;
+    stroke: var(--incorrect);
+    stroke-width: 1.2;
+    stroke-opacity: 0.7;
+}
+
+.sun-moon-here text {
+    font-size: 9px;
+    font-weight: 700;
+    fill: var(--text);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 2.5px;
+    pointer-events: none;
+}
+
+/* Tour caption: sits over the map at the four turning points. */
+.sun-moon-caption {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    max-width: min(560px, 88%);
+    background: rgba(12, 16, 28, 0.86);
+    color: #f2f5fa;
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 0.86rem;
+    line-height: 1.4;
+    pointer-events: none;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.sun-moon-caption strong { font-size: 0.95rem; color: #ffd28a; }
+
+.sun-moon-caption.flash { animation: sunCaption 0.45s ease-out; }
+
+@keyframes sunCaption {
+    from { opacity: 0; transform: translate(-50%, 10px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sun-moon-caption.flash { animation: none; }
+}
+
+/* ---- Odd One Out: the end-of-game review ---- */
+.odd-review { text-align: left; margin-top: 6px; }
+
+.odd-review h3 {
+    font-size: 0.95rem;
+    margin: 0 0 6px;
+    color: var(--text);
+}
+
+.odd-review-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.84rem;
+    line-height: 1.35;
+    background: var(--surface-2);
+    margin-bottom: 4px;
+    border-left: 3px solid var(--border);
+}
+
+.odd-review-row.right { border-left-color: var(--correct); }
+.odd-review-row.wrong { border-left-color: var(--incorrect); }
+
+.odd-review-n {
+    flex: 0 0 1.4em;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.odd-review-row em { color: var(--text-muted); }
+
+/* ---- Draw the Border: the context map is lines only, never fills ---- */
+.draw-context {
+    fill: none;
+    stroke: var(--land-stroke);
+    stroke-width: 0.8;
+    stroke-opacity: 0.85;
+    pointer-events: none;
+}
+
+/* GeoJSON regions have no arcs to filter, so the target's own edge is painted out along
+   its path instead — same result, one blunter instrument. */
+.draw-erase {
+    fill: none;
+    stroke: var(--surface);
+    stroke-width: 3;
+    pointer-events: none;
+}
+
+/* ==================== SUN PATH ====================
+   Three linked panels: the sky dome (big), the earth in space, and the horizon POV. */
+.sun-path-stage {
+    position: absolute;
+    inset: 0;
+    z-index: 0;            /* never above the menus that may sit over the map area */
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 8px;
+    padding: 4px;
+}
+
+/* The four panes ARE the mode, so they get the height. Constraining the stage to
+   #map-container (see .map-container position) means it now competes with everything below it,
+   and the readout/sliders left it about 280px — enough to clip the globe out of its own pane.
+   The generic mode blurb is dropped (the panel carries its own title and the panes are
+   self-labelling) and the panel is tightened, which buys the stage back ~200px. */
+body.sun-path-active #question-container {
+    display: none;
+}
+
+body.sun-path-active #map-container {
+    min-height: 50vh;
+}
+
+body.sun-path-active #sun-path-panel {
+    padding: 6px 10px;
+}
+
+body.sun-path-active #sun-path-panel .sandbox-readout {
+    padding: 5px 8px;
+    line-height: 1.3;
+}
+
+body.sun-path-active #sun-path-panel .sandbox-title {
+    margin-bottom: 3px;
+}
+
+.sun-path-cell {
+    position: relative;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-height: 0;
+}
+
+.sun-path-cell canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.sun-path-cell > svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* Free-look controls and the orbit inset, both floating over the Earth-in-space canvas. */
+.sp-view-reset {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 3;
+    padding: 2px 8px;
+    font-size: 0.68rem;
+    font-family: inherit;
+    color: var(--text);
+    background: rgba(20, 26, 38, 0.55);
+    border: 1px solid rgba(200, 214, 232, 0.35);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.sp-view-reset:hover {
+    background: rgba(20, 26, 38, 0.8);
+}
+
+/* Must out-specify `.sun-path-cell > svg { width:100%; height:100% }`, which otherwise blows the
+   inset up to fill the whole pane. */
+.sun-path-cell > svg.sp-orbit-inset {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    width: 104px;
+    height: 104px;
+    z-index: 2;
+    pointer-events: none;
+}
+
+/* Whichever turning point is showing, and whichever clock is running. */
+#sun-path-panel .btn.active {
+    background: var(--accent, #d08a2c);
+    border-color: var(--accent, #d08a2c);
+    color: #1b1408;
+    font-weight: 700;
+}
+
+/* The six parallels on the sunrise-line map, split into their lit and dark spans. */
+.sp-par-bar { stroke-width: 2.2; stroke-linecap: butt; }
+.sp-par-bar.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
+.sp-par-bar.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
+.sp-par-cap { stroke-width: 1.4; }
+.sp-par-cap.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
+.sp-par-cap.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
+.sp-par-hrs { font-size: 7.5px; font-weight: 700; paint-order: stroke;
+              stroke: rgba(10, 14, 22, 0.75); stroke-width: 2.4px; }
+.sp-par-hrs.lit { fill: #ffe9bd; }
+.sp-par-hrs.dark { fill: #b9c8e2; }
+.sp-par-name { font-size: 6.5px; fill: rgba(232, 240, 250, 0.85); paint-order: stroke;
+               stroke: rgba(10, 14, 22, 0.7); stroke-width: 2px; }
+.sp-par-you .sp-par-bar { stroke-width: 3.2; }
+.sp-par-you .sp-par-name { fill: #ffc9c0; font-weight: 700; }
+
+.sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.55); stroke-width: 3; stroke-linecap: round; }
+.sp-map-me-body { stroke: #d0392b; stroke-width: 1.5; stroke-linecap: round; }
+
+.sp-orb-path { fill: none; stroke: rgba(214, 227, 244, 0.7); stroke-width: 1.1; stroke-dasharray: 3 3; }
+.sp-orb-sun { fill: #ffcf5c; }
+.sp-orb-stop { fill: rgba(214, 227, 244, 0.95); }
+.sp-orb-earth { fill: #7cc0f0; stroke: #f2f8fd; stroke-width: 1.2; }
+.sp-orb-axis { stroke: #ffd28a; stroke-width: 1.4; }
+.sp-orb-lab { font-size: 8px; font-weight: 700; fill: rgba(224, 234, 247, 0.95); }
+
+/* The orbit view replaces the ground SVG in the same cell, so it fills it the same way. */
+.sp-orbit-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #05070d;
+}
+
+/* Checkbox row in the sandbox panels (Sun Path's "From orbit" switch). */
+.sandbox-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+    cursor: pointer;
+}
+
+.sandbox-check input {
+    margin: 0;
+    cursor: pointer;
+}
+
+.sun-path-cap {
+    position: absolute;
+    top: 5px;
+    left: 6px;
+    max-width: calc(100% - 84px);   /* leaves room for the Reset-view button */
+    width: fit-content;
+    z-index: 2;
+    font-size: 0.76rem;
+    font-weight: 700;
+    /* A light chip on a translucent dark pill. These captions sit over a pale dome, a bright
+       sky, a lit globe and a dark ground by turns; text alone could not survive all four. */
+    color: #f2f5fa;
+    background: rgba(12, 17, 26, 0.46);
+    padding: 1px 7px;
+    border-radius: 4px;
+    /* A dark halo rather than a surface-coloured one: these captions sit over a bright sky,
+       a lit globe and a dark ground by turns, and only a dark outline survives all three. */
+    text-shadow: 0 1px 3px rgba(8, 12, 20, 0.85), 0 0 6px rgba(8, 12, 20, 0.7);
+    pointer-events: none;
+}
+
+.sun-path-cap span {
+    font-weight: 400;
+    color: rgba(226, 234, 245, 0.82);
+}
+
+/* The horizon POV strip. */
+.sp-sky { fill: #b9d2e6; }
+.sp-ground { fill: #8d8468; }
+.sp-horizon { stroke: #3c4453; stroke-width: 1.4; }
+
+.sp-track {
+    fill: none;
+    stroke: #e08b1a;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+}
+
+.sp-angle { stroke: #b23b2c; stroke-width: 1.6; stroke-dasharray: 4 3; }
+.sp-arc { fill: none; stroke: #b23b2c; stroke-width: 1.4; }
+
+.sp-anglelabel {
+    font-size: 13px;
+    font-weight: 700;
+    fill: #b23b2c;
+    paint-order: stroke;
+    stroke: #b9d2e6;
+    stroke-width: 3px;
+}
+
+.sp-compass {
+    font-size: 12px;
+    font-weight: 700;
+    fill: #f2efe6;
+}
+
+.sp-polar {
+    font-size: 15px;
+    font-weight: 700;
+    fill: #21405c;
+}
+
+@media (max-width: 1024px) {
+    .sun-path-stage {
+        grid-template-columns: 1fr;
+        grid-template-rows: repeat(4, minmax(160px, 1fr));
+    }
+}
+
+/* ==================== SANDBOX QUIZZES ====================
+   Overlay marks for the pinpoint rounds (guess pin, true point, the line between) and the
+   parallel drawn by Cross the Line. All non-scaling so they stay a constant on-screen size
+   however the globe is zoomed, the same trick the spaceship inset pins use. */
+.sb-guess {
+    fill: var(--accent, #d08a2c);
+    stroke: #fff;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+.sb-answer {
+    fill: var(--correct, #3d8f5f);
+    stroke: #fff;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+.sb-line {
+    stroke: var(--text-muted, #7d7566);
+    stroke-width: 1.6;
+    stroke-dasharray: 4 4;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+/* Candidate flight routes, the flown one, and a highlighted lake.
+   The four route colours are custom properties, not literals, because the A-D option BUTTONS
+   have to be tinted to match their own line — the colour coding is the whole legend. */
+:root {
+    --sb-route-0: #e0653f;
+    --sb-route-1: #3f8fd0;
+    --sb-route-2: #59a869;
+    --sb-route-3: #b06fc4;
+}
+.sb-route { fill: none; stroke-width: 2.4; stroke-linecap: round; vector-effect: non-scaling-stroke;
+            pointer-events: none; stroke-dasharray: none; }
+.sb-route.r0 { stroke: var(--sb-route-0); }
+.sb-route.r1 { stroke: var(--sb-route-1); }
+.sb-route.r2 { stroke: var(--sb-route-2); }
+.sb-route.r3 { stroke: var(--sb-route-3); }
+.sb-route.solo { stroke: var(--sb-route-0); stroke-dasharray: 6 4; }
+/* The on-map end label takes its route's colour too, with a dark halo so it survives being
+   drawn over land, ocean or another route. */
+.sb-route-lab { font-size: 14px; font-weight: 800; paint-order: stroke;
+                stroke: rgba(10, 14, 22, 0.9); stroke-width: 3.5px; pointer-events: none; fill: #fff; }
+.sb-route-lab.r0 { fill: var(--sb-route-0); }
+.sb-route-lab.r1 { fill: var(--sb-route-1); }
+.sb-route-lab.r2 { fill: var(--sb-route-2); }
+.sb-route-lab.r3 { fill: var(--sb-route-3); }
+.sb-lake-hit { fill: #3f8fd0; fill-opacity: 0.75; stroke: #eaf3fb; stroke-width: 1.5;
+               vector-effect: non-scaling-stroke; pointer-events: none; }
+
+/* Mercator Lies' reveal: the two countries carried down to the equator at their honest size. */
+.sb-equator-layer { pointer-events: none; }
+.sb-equator-shape { fill: var(--accent, #d08a2c); fill-opacity: 0.9; stroke: var(--text);
+                    stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.sb-equator-label { fill: var(--text); font-weight: 700; paint-order: stroke;
+                    stroke: var(--surface); stroke-width: 3px; }
+
+/* Route-lettered answer buttons: a fat colour swatch plus the letter in the same colour, so the
+   button and its line on the map read as one object. */
+.sb-route-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.option-btn.sb-routebtn { display: flex; align-items: center; justify-content: center; gap: 10px;
+    min-height: 52px; font-weight: 800; font-size: 1.15rem; }
+.option-btn.sb-routebtn .sb-swatch { width: 26px; height: 5px; border-radius: 3px; flex: 0 0 auto; }
+.option-btn.sb-routebtn.r0 { color: var(--sb-route-0); }
+.option-btn.sb-routebtn.r1 { color: var(--sb-route-1); }
+.option-btn.sb-routebtn.r2 { color: var(--sb-route-2); }
+.option-btn.sb-routebtn.r3 { color: var(--sb-route-3); }
+.option-btn.sb-routebtn.r0 .sb-swatch { background: var(--sb-route-0); }
+.option-btn.sb-routebtn.r1 .sb-swatch { background: var(--sb-route-1); }
+.option-btn.sb-routebtn.r2 .sb-swatch { background: var(--sb-route-2); }
+.option-btn.sb-routebtn.r3 .sb-swatch { background: var(--sb-route-3); }
+
+/* A single shape alone on the board (Every Neighbour, Pin the Capital, Name the Lake). */
+.country.sb-solo-shape { fill: var(--land); stroke: var(--land-stroke); stroke-width: 1;
+    vector-effect: non-scaling-stroke; cursor: default; }
+.sb-lake-body { fill: #2f7fc4; fill-opacity: 0.42; stroke: none; }
+/* The inward haze. Clipped to the lake, so it fades from the shore into the water and never
+   leaks outward into land that isn't drawn. */
+.sb-lake-fade { fill: none; stroke: #1d5f9c; stroke-width: 22; stroke-opacity: 0.85; }
+.sb-lake-edge { fill: none; stroke: #cfe4f7; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+
+/* Flag / silhouette answer tiles, and the filterable country picker. */
+.sb-img-grid, .sb-shape-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.option-btn.sb-img, .option-btn.sb-shape { display: flex; flex-direction: column; align-items: center;
+    gap: 4px; padding: 8px; min-height: 0; }
+.option-btn.sb-img img { width: 100%; max-width: 150px; aspect-ratio: 3/2; object-fit: contain;
+    border: 1px solid var(--border); background: #fff; }
+.option-btn.sb-shape svg { width: 100%; max-width: 150px; }
+.sb-shape-path { fill: var(--text); fill-opacity: 0.82; stroke: none; }
+/* A decided card paints its own background green or red, and a silhouette in the same green
+   disappears into it — which is why the correct answer read as a blank green card. White with
+   a dark edge reads on either background, and on the neutral one too. */
+.option-btn.sb-shape.correct .sb-shape-path,
+.option-btn.sb-shape.incorrect .sb-shape-path,
+.option-btn.sb-shape.sb-shape-righted .sb-shape-path {
+    fill: #fff; fill-opacity: 0.96; stroke: rgba(0, 0, 0, 0.5); stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+}
+/* Named, not lettered — so the caption is a country and needs room to wrap. */
+.option-btn.sb-shape span { font-size: 0.82rem; line-height: 1.2; text-wrap: balance; }
+.option-btn.sb-img span, .option-btn.sb-shape span { font-weight: 700; }
+
+/* Tile-only rounds (Upside Down, Spot the Fake Flag) hide the map and skip the 300px side
+   panel, so the four tiles ARE the screen — sized to fill it rather than to fit a column.
+   Height is CAPPED rather than left to the content: the app is `height: 100vh; overflow:
+   hidden`, so a 2x2 grid tall enough to overflow silently loses its bottom row instead of
+   scrolling. The rows share whatever is left after the header and prompt. */
+.container:not(.globe-side-layout) .options-grid.sb-shape-grid,
+.container:not(.globe-side-layout) .options-grid.sb-img-grid {
+    max-width: 900px;
+    gap: 14px;
+    max-height: calc(100vh - 250px);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+.container:not(.globe-side-layout) .option-btn.sb-shape,
+.container:not(.globe-side-layout) .option-btn.sb-img {
+    padding: 10px;
+    min-height: 0;
+    overflow: hidden;
+}
+.container:not(.globe-side-layout) .option-btn.sb-shape svg,
+.container:not(.globe-side-layout) .option-btn.sb-img img {
+    max-width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    height: 100%;
+    object-fit: contain;
+}
+.container:not(.globe-side-layout) .option-btn.sb-shape span,
+.container:not(.globe-side-layout) .option-btn.sb-img span {
+    font-size: 1.15rem;
+    flex: 0 0 auto;
+}
+
+.options-grid.sb-picker { display: block; padding: 4px; }
+#sb-filter { width: 100%; padding: 8px 10px; font: inherit; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.sb-picker-list { display: flex; flex-wrap: wrap; gap: 4px; max-height: 190px; overflow-y: auto;
+    margin-top: 6px; padding: 2px; }
+.sb-pick-btn { padding: 4px 9px; font: inherit; font-size: 0.82rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); color: var(--text); }
+.sb-pick-btn:hover { border-color: var(--accent, #d08a2c); }
+.sb-pick-btn.picked { background: var(--accent, #d08a2c); border-color: var(--accent, #d08a2c); color: #1b1408; font-weight: 700; }
+.sb-picker-chosen { margin-top: 6px; font-size: 0.85rem; color: var(--text-muted); text-align: center; }
+
+/* Pick-one: the same chips, but they carry `option-btn` so the shared wrong-answer reveal can
+   find the right one by text. That class brings full-size button styling with it, so the chip
+   rules have to be restated at a specificity that beats it rather than merely following it. */
+.sb-picker-list .option-btn.sb-pick-btn {
+    padding: 4px 9px; margin: 0; font-size: 0.82rem; font-weight: 400; text-align: center;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface-2); color: var(--text); box-shadow: none; min-height: 0; width: auto;
+}
+.sb-picker-list .option-btn.sb-pick-btn.correct {
+    background: var(--correct, #3d8f5f); border-color: var(--correct, #3d8f5f); color: #fff; font-weight: 700;
+}
+.sb-picker-list .option-btn.sb-pick-btn.incorrect {
+    background: var(--incorrect, #c0503f); border-color: var(--incorrect, #c0503f); color: #fff; font-weight: 700;
+}
+.options-grid.sb-pick-one .sb-picker-list { max-height: 300px; }
+
+/* Multi-select and estimate answer widgets. */
+.sb-multi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; }
+.option-btn.sb-multi.picked { background: var(--accent, #d08a2c); border-color: var(--accent, #d08a2c); color: #1b1408; }
+.option-btn.sb-multi.correct { outline: 2px solid var(--correct, #3d8f5f); }
+.option-btn.sb-multi.incorrect { outline: 2px solid var(--incorrect, #c0503f); }
+/* Long multi-select lists reuse the picker's chips: twenty full-size buttons would not fit. */
+.options-grid.sb-multi-chips { display: block; padding: 4px; }
+.options-grid.sb-multi-chips .sb-picker-list { max-height: 260px; }
+.sb-pick-btn.sb-multi.correct { outline: 2px solid var(--correct, #3d8f5f); }
+.sb-pick-btn.sb-multi.incorrect { outline: 2px solid var(--incorrect, #c0503f); }
+
+/* Flyover's reveal: the countries the route actually crossed, filled and named on a board that
+   was drawn with no borders at all. Endpoints get their own colour — they were excluded from
+   the question, so painting them like the answers would read as "you missed these two". */
+/* Three states, three readings: named it (solid), missed it (green hatch), named one the
+   flight never crossed (red hatch). The hatch fills are set inline from a <pattern>, so these
+   rules deliberately leave `fill` alone for the hatched pair. */
+.sb-fly-fill { stroke-width: 1.2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.sb-fly-fill.hit { fill: var(--correct, #3d8f5f); fill-opacity: 0.45; stroke: var(--correct, #3d8f5f); }
+.sb-fly-fill.missed { stroke: var(--correct, #3d8f5f); stroke-dasharray: 5 3; }
+.sb-fly-fill.wrong { stroke: var(--incorrect, #c0503f); stroke-dasharray: 5 3; }
+.sb-fly-lab text, .sb-marklab text, .sb-dist-lab text {
+    font-size: 11px; font-weight: 700; fill: #fff;
+    paint-order: stroke; stroke: rgba(0, 0, 0, 0.78); stroke-width: 3px; stroke-linejoin: round; }
+.sb-fly-lab, .sb-marklab, .sb-dist-lab { pointer-events: none; }
+.sb-fly-lab.wrong text, .sb-marklab.wrong text { fill: #ffc9c0; }
+.sb-fly-lab.missed text, .sb-marklab.missed text { fill: #bff0d2; }
+
+/* Board marks: reveals that hand the map back to the ordinary drawing path and just pick out
+   the countries that mattered. */
+.country.sb-mark-target { fill: var(--accent, #d08a2c); fill-opacity: 0.85; }
+.country.sb-mark-right { fill: var(--correct, #3d8f5f); fill-opacity: 0.75; }
+/* Same three-state reading as Flyover, so the two reveals mean the same thing: named it =
+   solid, missed it = green hatch, named one that isn't = red hatch. The hatch fill is set
+   inline from a <pattern>, so these rules leave `fill` alone for the hatched pair. */
+.country.sb-mark-missed { stroke: var(--correct, #3d8f5f); stroke-dasharray: 5 3; }
+.country.sb-mark-wrong { stroke: var(--incorrect, #c0503f); stroke-dasharray: 5 3; }
+
+/* Near to Far: one spoke per country, labelled with the distance it was ranked by. */
+.sb-dist-line { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 2;
+    stroke-opacity: 0.85; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+/* Flyover: a coastline-only world, with the route and its two airports over it. */
+.sb-coast-only { fill: none; stroke: var(--land-stroke, #7d8a99); stroke-width: 1;
+    vector-effect: non-scaling-stroke; pointer-events: none; }
+/* Lakes on a coastline-only board are OUTLINES, not water — same stroke as the coast, no
+   fill. Mid-continent they are often the only landmark for a thousand kilometres. */
+.sb-coast-only.sb-coast-lake { fill: none; }
+.sb-airport { pointer-events: none; }
+.sb-airport-dot { fill: var(--accent, #d08a2c); stroke: var(--surface); stroke-width: 1.5; }
+.sb-airport-glyph { fill: var(--surface); }
+.sb-airport-code { font-size: 13px; font-weight: 800; fill: var(--text); paint-order: stroke;
+    stroke: var(--surface); stroke-width: 3.5px; letter-spacing: 0.5px; }
+.options-grid.sb-estimate { display: block; padding: 6px 4px; }
+.options-grid.sb-estimate input[type=range] { width: 100%; }
+.sb-est-val { text-align: center; font-weight: 700; font-size: 1.1rem; margin-top: 6px; color: var(--text); }
+
+/* Read the Daylight: a meridian seen edge-on, so latitude reads as an angle rather than as a
+   slot on a bar. The range input underneath is the actual control (keyboard and touch both
+   work on it for free); the arc is the readout. */
+.options-grid.sb-lat { display: block; padding: 6px 4px; }
+.sb-lat-arc { position: relative; display: flex; justify-content: center; }
+/* Sized by HEIGHT, not width. The arc is taller than it is wide (220x260 viewBox), so a
+   width cap lets it grow past the viewport once the reveal globe is also on screen — and the
+   app is `height: 100vh; overflow: hidden`, so anything past the fold is simply lost. */
+.sb-lat-arc svg { height: min(30vh, 230px); width: auto; max-width: 100%; display: block; }
+.sb-lat-meridian { fill: none; stroke: var(--text); stroke-opacity: 0.35; stroke-width: 2.5; }
+.sb-lat-ticks line { stroke: var(--text); stroke-opacity: 0.4; stroke-width: 1.5; }
+.sb-lat-ticks text { fill: var(--text-muted); font-size: 11px; font-weight: 600; }
+.sb-lat-knob { fill: var(--accent, #d08a2c); stroke: var(--surface); stroke-width: 2.5; }
+.sb-lat-truth { fill: var(--correct, #3d8f5f); stroke: var(--surface); stroke-width: 2.5; }
+.sb-lat-read { position: absolute; left: 50%; top: 46%; transform: translate(-30%, -50%);
+    font-weight: 800; font-size: 1.25rem; color: var(--text); pointer-events: none; }
+.options-grid.sb-lat input[type=range] { width: 100%; margin-top: 6px; }
+
+/* Its reveal: a second Earth-in-space pane, borrowed from Sun Path. Square and centred — the
+   map box is far wider than it is tall here, and stretching the canvas across it would leave
+   the globe a small dot in a wide letterbox. */
+.sb-lat-globe { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; }
+.sb-lat-globe canvas { display: block; height: 100%; aspect-ratio: 1 / 1; max-width: 100%; }
+
+/* The estimate reveal: every country as one bar on a log axis, with the guess and the truth
+   ruled across it. */
+.sb-scale { margin-top: 10px; }
+/* The chart is up from the first frame and moves with the slider, so it gets the panel's
+   height rather than whatever is left under a result box. */
+.options-grid.sb-estimate { display: block; }
+.options-grid.sb-estimate .sb-scale svg { max-height: 46vh; }
+.sb-scale svg { width: 100%; height: auto; display: block; }
+.sb-scale-bars rect { fill: var(--text); fill-opacity: 0.28; }
+/* The country actually being asked about — "a factor of three out" says nothing about where in
+   the world's spread that sits, so on the reveal its bar is picked out and flagged. */
+.sb-scale-bars rect.sb-scale-hit { fill: var(--accent, #d08a2c); fill-opacity: 1; }
+.sb-scale-rule { stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.sb-scale-rule.truth { stroke: var(--correct, #3d8f5f); }
+.sb-scale-rule.guess { stroke: var(--accent, #d08a2c); stroke-dasharray: 5 3; }
+.sb-scale-tag { font-size: 9px; font-weight: 700; }
+.sb-scale-tag.truth { fill: var(--correct, #3d8f5f); }
+.sb-scale-tag.guess { fill: var(--accent, #d08a2c); }
+.sb-scale-ends { display: flex; justify-content: space-between; font-size: 0.72rem;
+    color: var(--text-muted); margin-top: -2px; padding: 0 2px; }
+
+.sb-parallel {
+    fill: none;
+    stroke: #d05c4a;
+    stroke-width: 2;
+    stroke-dasharray: 7 5;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+/* The moon's own rise/set line — dotted, so it never reads as the sunrise line. */
+.sun-moon-moonline {
+    fill: none;
+    stroke: #cdd6e6;
+    stroke-width: 1.1;
+    stroke-opacity: 0.75;
+    stroke-dasharray: 2 5;
+    stroke-linecap: round;
+    pointer-events: none;
+}
+
+/* Which way is the sea: a blurred band along the shore, brown inland and blue seaward.
+   The same stroke twice, clipped to land and to not-land. */
+.coast-shade-land {
+    fill: none;
+    stroke: #8a6a3f;
+    stroke-width: 9;
+    stroke-opacity: 0.5;
+    pointer-events: none;
+}
+
+.coast-shade-sea {
+    fill: none;
+    stroke: #3d7ea6;
+    stroke-width: 9;
+    stroke-opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Ground view: ticks, the sun, and the below-horizon continuation. */
+.sp-track.below {
+    stroke-dasharray: 3 5;
+    stroke-opacity: 0.55;
+    stroke-width: 2;
+}
+
+.sp-tick { stroke: rgba(30, 40, 55, 0.45); stroke-width: 1; }
+
+.sp-ticklabel {
+    font-size: 9px;
+    fill: rgba(20, 30, 45, 0.7);
+}
+
+.sp-sun {
+    fill: #ffcf5c;
+    stroke: #b8791a;
+    stroke-width: 1.2;
+}
+
+.sp-sun.below {
+    fill: none;
+    stroke: #b8791a;
+    stroke-dasharray: 3 3;
+}
+
+.sp-altlabel {
+    font-size: 11px;
+    font-weight: 700;
+    fill: #6b4b12;
+    paint-order: stroke;
+    stroke: rgba(255, 255, 255, 0.75);
+    stroke-width: 3px;
+}
+
+/* The sunrise-line pane. */
+.sp-map-ocean { fill: #9fb8cc; }
+.sp-map-land { fill: #cbc3a4; stroke: #a79c78; stroke-width: 0.3; }
+.sp-map-night { fill: #0a1020; pointer-events: none; }
+.sp-map-night.n0 { fill-opacity: 0.16; }
+.sp-map-night.n1 { fill-opacity: 0.16; }
+.sp-map-night.n2 { fill-opacity: 0.22; }
+
+.sp-map-term {
+    fill: none;
+    stroke: #ffd28a;
+    stroke-width: 1.2;
+    pointer-events: none;
+}
+
+.sp-map-sun { fill: #ffcf5c; stroke: #fff; stroke-width: 1; pointer-events: none; }
+.sp-map-me { fill: #d05c4a; stroke: #fff; stroke-width: 1.2; pointer-events: none; }
+.sp-map-me-ring { fill: none; stroke: #d05c4a; stroke-width: 1.1; stroke-opacity: 0.7; pointer-events: none; }
+
+#sun-path-map { cursor: crosshair; }
+
+/* The mode selector always wins over anything a mode left in the map area. */
+#mode-selector { position: relative; z-index: 30; }
+
+/* (Who's Missing no longer needs a hide rule: the eaten country is removed from the feature
+   list outright, so nothing ever draws it. The old `.sb-gone { display: none !important }`
+   existed to out-rank the inline `display` updateIslandMarkers writes for small countries.) */

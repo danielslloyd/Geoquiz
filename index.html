@@ -83,13 +83,14 @@
                 </div>
                 <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
                 <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-symbols-outlined">bar_chart</span></button>
-                <button class="mode-icon-btn" data-mode="mystery-flag" title="Mystery Flag"><span class="material-symbols-outlined">flag</span></button>
-                <button class="mode-icon-btn" data-mode="capitals-race" title="Capitals Race"><span class="material-symbols-outlined">museum</span></button>
+                <button class="mode-icon-btn" data-mode="flags" title="Flags"><span class="material-symbols-outlined">flag</span></button>
+                <button class="mode-icon-btn" data-mode="capitals" title="Capitals"><span class="material-symbols-outlined">star</span></button>
                 <button class="mode-icon-btn" data-mode="free-explore" title="Free Explore"><span class="material-symbols-outlined">explore</span></button>
-                <button class="mode-icon-btn" data-mode="places" title="Places I've Been"><span class="material-symbols-outlined">travel_explore</span></button>
-                <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">extension</span></button>
-                <button class="mode-icon-btn" data-mode="find-capital" title="Find the Capital"><span class="material-symbols-outlined">location_city</span></button>
+                <button class="mode-icon-btn" data-mode="places" title="Places I've Been"><span class="material-symbols-outlined">push_pin</span></button>
+                <button class="mode-icon-btn" data-mode="state-puzzle" title="Puzzle"><span class="material-symbols-outlined">extension</span></button>
+                <button class="mode-icon-btn" data-mode="country-shape-id" title="Country Shape ID"><span class="material-symbols-outlined">pentagon</span></button>
                 <button class="mode-icon-btn" data-mode="spaceship" title="Where Is My Spaceship?"><span class="material-symbols-outlined">rocket_launch</span></button>
+                <button class="mode-icon-btn" data-mode="sandbox" title="Sandbox"><span class="material-symbols-outlined">science</span></button>
                 <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
                      see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
                 <!-- <button class="mode-icon-btn" data-mode="skyline-id" title="Skyline ID"><span class="material-symbols-outlined">apartment</span></button> -->
@@ -124,15 +125,15 @@
                     <span class="mode-name">Order by Population</span>
                     <span class="mode-desc">Drag countries to order them by population</span>
                 </button>
-                <button class="mode-btn" data-mode="mystery-flag">
+                <button class="mode-btn" data-mode="flags">
                     <span class="mode-icon material-symbols-outlined">flag</span>
-                    <span class="mode-name">Mystery Flag</span>
-                    <span class="mode-desc">See the flag, find the country on the globe</span>
+                    <span class="mode-name">Flags</span>
+                    <span class="mode-desc">Find the country from its flag, or match every flag at once</span>
                 </button>
-                <button class="mode-btn" data-mode="capitals-race">
-                    <span class="mode-icon material-symbols-outlined">museum</span>
-                    <span class="mode-name">Capitals Race</span>
-                    <span class="mode-desc">Type the capital of each highlighted country</span>
+                <button class="mode-btn" data-mode="capitals">
+                    <span class="mode-icon material-symbols-outlined">star</span>
+                    <span class="mode-name">Capitals</span>
+                    <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
                 </button>
                 <button class="mode-btn" data-mode="free-explore">
                     <span class="mode-icon material-symbols-outlined">explore</span>
@@ -140,34 +141,29 @@
                     <span class="mode-desc">Explore the globe and click to learn about countries</span>
                 </button>
                 <button class="mode-btn" data-mode="places">
-                    <span class="mode-icon material-symbols-outlined">travel_explore</span>
+                    <span class="mode-icon material-symbols-outlined">push_pin</span>
                     <span class="mode-name">Places I've Been</span>
                     <span class="mode-desc">Fill in the map with your travels and share it</span>
                 </button>
-                <button class="mode-btn" data-mode="place-quiz">
-                    <span class="mode-icon material-symbols-outlined">map</span>
-                    <span class="mode-name">Place the Countries</span>
-                    <span class="mode-desc">Click a blank map to place each country</span>
+                <button class="mode-btn" data-mode="state-puzzle">
+                    <span class="mode-icon material-symbols-outlined">extension</span>
+                    <span class="mode-name">US States Puzzle</span>
+                    <span class="mode-desc">Drag every state into place — pieces snap when close</span>
                 </button>
                 <button class="mode-btn" data-mode="country-shape-id">
-                    <span class="mode-icon material-symbols-outlined">extension</span>
+                    <span class="mode-icon material-symbols-outlined">pentagon</span>
                     <span class="mode-name">Country Shape ID</span>
                     <span class="mode-desc">Identify countries by their shape</span>
-                </button>
-                <button class="mode-btn" data-mode="flag-id">
-                    <span class="mode-icon material-symbols-outlined">flag</span>
-                    <span class="mode-name">US Flag ID</span>
-                    <span class="mode-desc">Name the US state from its flag</span>
-                </button>
-                <button class="mode-btn" data-mode="find-capital">
-                    <span class="mode-icon material-symbols-outlined">location_city</span>
-                    <span class="mode-name">Find the Capital</span>
-                    <span class="mode-desc">Pin a capital's location on the map by distance</span>
                 </button>
                 <button class="mode-btn" data-mode="spaceship">
                     <span class="mode-icon material-symbols-outlined">rocket_launch</span>
                     <span class="mode-name">Where Is My Spaceship?</span>
                     <span class="mode-desc">Guess your orbital location from the view below</span>
+                </button>
+                <button class="mode-btn" data-mode="sandbox">
+                    <span class="mode-icon material-symbols-outlined">science</span>
+                    <span class="mode-name">Sandbox</span>
+                    <span class="mode-desc">Sun &amp; moon, sun path, odd one out, draw the border</span>
                 </button>
                 <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
                      see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
@@ -381,8 +377,22 @@
                         <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
                             <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
                         </label>
-                        <label class="tuning-item" title="Place the Countries (Medium): show only 1/N of each shoreline">
-                            <span class="tuning-label">Shoreline 1/N</span> <input type="range" id="tune-place-frag" min="2" max="12" step="1" value="4"><span id="tune-place-frag-val">4</span>
+                        <label class="tuning-item" title="US States Puzzle: base distance a dropped piece may miss its true position by and still snap home. Difficulty scales this — Easy uses it as-is, Medium halves it, Hard uses a fifth. Measured on the map's fixed 800x600 coordinate grid, so it doesn't drift with the window size.">
+                            <span class="tuning-label">Puzzle snap</span> <input type="range" id="tune-puzzle-snap" min="8" max="60" step="1" value="24"><span id="tune-puzzle-snap-val">24</span>
+                        </label>
+                        <label class="tuning-item" title="Play a soft click each time a puzzle piece snaps into place.">
+                            <span class="tuning-label">Puzzle click</span> <input type="checkbox" id="tune-puzzle-sound" checked>
+                        </label>
+                        <!-- Hard (blind) puzzle scoring: each state is worth 10 points, split
+                             between how close the drop was and how quickly it was made. -->
+                        <label class="tuning-item" title="US States Puzzle (Hard): how each state's 10 points are split between accuracy and speed. 100% is pure accuracy, 0% is pure speed.">
+                            <span class="tuning-label">Blind accuracy/speed</span> <input type="range" id="tune-puzzle-balance" min="0" max="100" step="5" value="70"><span id="tune-puzzle-balance-val">70% / 30%</span>
+                        </label>
+                        <label class="tuning-item" title="US States Puzzle (Hard): the placement error at which the accuracy half of the score falls to about 37%.">
+                            <span class="tuning-label">Blind dist scale</span> <input type="range" id="tune-puzzle-dist" min="50" max="1500" step="50" value="300"><span id="tune-puzzle-dist-val">300 km</span>
+                        </label>
+                        <label class="tuning-item" title="US States Puzzle (Hard): the time per state at which the speed half of the score falls to about 37%.">
+                            <span class="tuning-label">Blind time scale</span> <input type="range" id="tune-puzzle-time" min="2" max="60" step="1" value="10"><span id="tune-puzzle-time-val">10 s</span>
                         </label>
                     </div>
                 </div>
