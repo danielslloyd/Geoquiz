@@ -100,16 +100,23 @@ function worldFeaturesFromTopology(data) {
 // on THIS topology, not the raw one: the medium threshold is a quantile over every arc weight
 // in the world, so editing one arc first would shift that threshold and silently re-simplify
 // every other country on the map.
+// Memoised against the source topology: a presimplify plus a quantile over every arc weight in
+// the world is ~100 ms, and Who's Missing calls this once per country it tests — thirty seconds
+// of it to colour in the sandbox, for a result that cannot change between calls.
+let worldSimplifyCache = { src: null, out: null };
 function worldTopoForDetail(data) {
     const mc = QUIZ_MODES[gameState.mode];
     const forced = !!(mc && (mc.spaceshipMode || mc.sandboxMode || mc.countryShapeIdMode ||
                              mc.drawBorderMode || mc.sbHiRes));
     if (forced || mapDetail !== 'medium' || !topojson.presimplify || !topojson.quantile) return data;
+    if (worldSimplifyCache.src === data) return worldSimplifyCache.out;
     // presimplify/simplify RETURN new topologies (they don't mutate the input),
     // so we must use the returned values — otherwise nothing is simplified.
     const pre = topojson.presimplify(data);
     const minWeight = topojson.quantile(pre, MEDIUM_SIMPLIFY_RETAIN);
-    return topojson.simplify(pre, minWeight);
+    const out = topojson.simplify(pre, minWeight);
+    worldSimplifyCache = { src: data, out };
+    return out;
 }
 
 // True only when the current mode is a globe mode AND the globe (orthographic) view is active.
@@ -708,7 +715,8 @@ const QUIZ_MODES = {
         itemLabel: 'country',
         itemLabelPlural: 'countries',
         autoRotate: false,
-        framingSandboxMode: true   // switch a country's polygon parts in and out of its frame
+        framingSandboxMode: true,  // draw the box a country's silhouette is framed to
+        sbHiRes: true              // judged on the outline, so the outline is the real one
     },
     'missing-sandbox': {
         name: "Who's Missing Sandbox",
@@ -6431,7 +6439,21 @@ function drawOrderArrows(container, correctIndexOf) {
 
 // Centroid [lon, lat] for a quiz item: the polygon centroid when it exists,
 // otherwise the island marker's capital coordinates (capitalCoords is [lat, lon]).
+// Memoised against the feature list itself, so anything that replaces that list (a detail
+// change, Who's Missing's surgery) invalidates it for free. At 10m a centroid is a walk over
+// tens of thousands of vertices, and the sandbox draw loops ask for hundreds of them per round.
+let sbCentroidCache = { src: null, map: new Map() };
 function getCountryCentroid(countryName) {
+    if (sbCentroidCache.src !== gameState.countries) {
+        sbCentroidCache = { src: gameState.countries, map: new Map() };
+    }
+    if (sbCentroidCache.map.has(countryName)) return sbCentroidCache.map.get(countryName);
+    const out = computeCountryCentroid(countryName);
+    sbCentroidCache.map.set(countryName, out);
+    return out;
+}
+
+function computeCountryCentroid(countryName) {
     const country = gameState.countries && gameState.countries.find(c => c.properties.name === countryName);
     if (country) return d3.geoCentroid(country);
     const data = (gameState.currentDataObj || {})[countryName];
@@ -12871,11 +12893,19 @@ function sbFeature(name) {
     return (gameState.countries || []).find(f => namesMatch(f.properties.name, name)) || null;
 }
 
+// Memoised against the feature list itself, so Who's Missing's surgery (which replaces that
+// list wholesale) invalidates it for free. d3.geoArea on a 10m country is not cheap and the
+// draw loops ask for the same handful of countries hundreds of times.
+let sbAreaCache = { src: null, map: new Map() };
 function sbAreaKm2(name) {
+    const src = gameState.countries;
+    if (sbAreaCache.src !== src) sbAreaCache = { src, map: new Map() };
+    if (sbAreaCache.map.has(name)) return sbAreaCache.map.get(name);
     const f = sbFeature(name);
-    if (!f) return null;
-    const a = d3.geoArea(f);                       // steradians
-    return isFinite(a) && a > 0 ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : null;
+    const a = f ? d3.geoArea(f) : 0;               // steradians
+    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : null;
+    sbAreaCache.map.set(name, km2);
+    return km2;
 }
 
 function sbPop(name) {
@@ -12917,8 +12947,13 @@ function sbCountryPoints(name) {
     const f = sbFeature(name);
     let pts = null;
     if (f) {
+        // The FRAMING CORE, not the whole feature. "How far is France from Peru" has an answer
+        // nobody means when French Guiana is allowed to count, and the same goes for the
+        // Galápagos, Bouvet Island and Bonaire. The core is the app's existing answer to which
+        // bits of a country are the country, so the ranking and the reveal's spokes both use it.
+        const core = shapeFramingCore(f);
         const all = [];
-        featureParts(f).forEach(poly => poly.forEach(ring => ring.forEach(pt => all.push(pt))));
+        featureParts(core).forEach(poly => poly.forEach(ring => ring.forEach(pt => all.push(pt))));
         if (all.length) {
             const stride = Math.max(1, Math.ceil(all.length / SB_NEAR_SAMPLES));
             pts = all.filter((_, i) => i % stride === 0);
@@ -13135,10 +13170,36 @@ function sbBorderHops(a, b) {
 // That is 700 point-in-polygon tests against every country, so the candidates are pre-filtered
 // by bounding box first: `geoContains` walks a whole ring, `geoBounds` is measured once per
 // feature per round and rejects almost everything in four comparisons.
+// The countries as the BOARD draws them. Flyover meshes its coastline straight off
+// `gameState.mapTopology`, which is the raw fetched source, while `gameState.countries` has been
+// through the medium-detail simplification pass — so the shore on screen was sharper than the
+// polygons the answer key was tested against, and a country clipped by a few kilometres of
+// headland could be on the map and not in the key. Same geometry both sides now.
+let sbBoardFeatCache = null;
+function sbBoardFeatures() {
+    const topo = gameState.mapTopology;
+    if (!topo || !topo.objects || !topo.objects.countries) return gameState.countries || [];
+    if (sbBoardFeatCache && sbBoardFeatCache.topo === topo) return sbBoardFeatCache.feats;
+    let feats;
+    try { feats = topojson.feature(topo, topo.objects.countries).features; }
+    catch (_) { return gameState.countries || []; }
+    feats.forEach(f => { f.properties = f.properties || {}; f.properties.name = getCountryName(f.id); });
+    splitDisputedGlacier(feats);
+    tagTerritories(feats);
+    fixCountryWinding(feats);
+    sbBoardFeatCache = { topo, feats };
+    return feats;
+}
+
+function sbBoardFeature(name) {
+    return sbBoardFeatures().find(f => namesMatch(f.properties.name, name)) ||
+           (gameState.countries || []).find(f => namesMatch(f.properties.name, name)) || null;
+}
+
 function sbCountriesAlong(a, b, skip) {
     const pts = sbArc(a, b, 700);
     const seen = [], skipSet = new Set((skip || []).map(normalizeName));
-    const cands = (gameState.countries || []).map(ft => {
+    const cands = sbBoardFeatures().map(ft => {
         let bb = ft.__bb;
         if (!bb) { bb = d3.geoBounds(ft); ft.__bb = bb; }
         return { ft, bb };
@@ -13877,6 +13938,10 @@ function setMapColour(on) {
 //   { maxKm: n }            keep parts within n km of the main landmass
 //   { drop: [[lon,lat],…] } exclude these parts by centroid, within CORE_OVERRIDE_TOL degrees
 //
+// A part is inside a `box` only if it is WHOLLY inside — bounds, not centroid. Half a country
+// hanging out of the frame is exactly the thing the frame is being drawn to prevent, and a
+// centroid test lets a long island through on the strength of its middle.
+//
 // A box and a distance are both resolution-proof, which a centroid list is not: Svalbard is one
 // polygon in nobody's atlas — six at 50m, dozens at 10m — so an enumeration has to be rewritten
 // every time the source changes, while "north of 74°" and "further than 700 km" are the same
@@ -13919,20 +13984,26 @@ function coreOverrideFor(name) {
     return key ? SHAPE_CORE_OVERRIDES[key] : null;
 }
 
+// Does this box wholly contain that part's bounding box? Longitude is compared in three frames
+// (as-is and ±360°) so an antimeridian straddle on either side reads correctly.
+function boxHoldsBounds(box, b) {
+    const [w, s2, e, n2] = box;
+    if (!b || !isFinite(b[0][0])) return false;
+    if (b[0][1] < s2 || b[1][1] > n2) return false;
+    let W = w, E = e; if (E < W) E += 360;
+    let bw = b[0][0], be = b[1][0]; if (be < bw) be += 360;
+    return [0, 360, -360].some(k => bw + k >= W && be + k <= E);
+}
+
 // Is this part kept, under this rule? One predicate, so the sandbox's preview and the real
 // framing can never disagree about what an override means.
-function corePartKept(rule, centroid, kmFromMain) {
+function corePartKept(rule, part) {
     if (!rule) return true;
-    if (rule.box) {
-        const [w, s2, e, n2] = rule.box;
-        if (centroid[1] < s2 || centroid[1] > n2) return false;
-        return w <= e ? (centroid[0] >= w && centroid[0] <= e)
-                      : (centroid[0] >= w || centroid[0] <= e);
-    }
-    if (rule.maxKm > 0) return kmFromMain <= rule.maxKm;
+    if (rule.box) return boxHoldsBounds(rule.box, part.bounds);
+    if (rule.maxKm > 0) return part.km <= rule.maxKm;
     if (rule.drop) {
-        return !rule.drop.some(d => Math.abs(d[0] - centroid[0]) < CORE_OVERRIDE_TOL &&
-                                    Math.abs(d[1] - centroid[1]) < CORE_OVERRIDE_TOL);
+        return !rule.drop.some(d => Math.abs(d[0] - part.centroid[0]) < CORE_OVERRIDE_TOL &&
+                                    Math.abs(d[1] - part.centroid[1]) < CORE_OVERRIDE_TOL);
     }
     return true;
 }
@@ -13947,27 +14018,32 @@ function applyCoreOverride(feature) {
     if (parts.length < 2) return feature;
     const items = parts.map(c => {
         const poly = { type: 'Polygon', coordinates: c };
-        return { c, a: d3.geoArea(poly), centroid: d3.geoCentroid(poly) };
+        return { c, a: d3.geoArea(poly), centroid: d3.geoCentroid(poly), bounds: d3.geoBounds(poly) };
     });
     items.sort((x, y) => y.a - x.a);
     const home = items[0].centroid;
-    const kept = items
-        .filter(it => corePartKept(rule, it.centroid, d3.geoDistance(home, it.centroid) * 6371))
-        .map(it => it.c);
+    items.forEach(it => { it.km = d3.geoDistance(home, it.centroid) * 6371; });
+    const kept = items.filter(it => corePartKept(rule, it)).map(it => it.c);
     if (!kept.length || kept.length === parts.length) return feature;
     return { type: 'Feature', properties: feature.properties,
              geometry: { type: 'MultiPolygon', coordinates: kept } };
 }
 
 // ==================== SHAPE FRAMING SANDBOX ====================
-// Pick a country, see every polygon it is made of, and switch parts in and out of the framing
-// core three ways — click one on the map, click one in the list, or drag a box round the ones to
-// keep. The frame refits live and its bounding box is drawn, because the box is the thing being
-// judged: a silhouette is readable in proportion to how much of its own box it fills.
+// One control: the box. Drag its corners, and any polygon not WHOLLY inside it is cut out of the
+// framing core. That is the whole tool, and the reason it is the whole tool is that the box is
+// the only thing an override actually produces — every mode that frames a country frames it to
+// this rectangle, so editing anything else was editing a proxy for it. The earlier version had
+// three ways to switch individual parts on and off and then had to work backwards from the
+// selection to a rule that reproduced it; here the rule is what you are drawing.
 //
-// That number is also the way to FIND the bad cases rather than stumbling on them, so the panel
-// ranks every country by it. Norway before its override fills 12% of its box; a country that
-// fills 60% has nothing wrong with it.
+// Cutting on the part's BOUNDS rather than its centroid is the other half of that. Half a
+// country hanging out of the frame is exactly what the frame exists to prevent, and a centroid
+// test lets a long island through on the strength of its middle.
+//
+// The map is fitted to the WHOLE country and left alone while you drag — a frame that refits
+// under the hand cannot be aimed. How much of the box the country fills is the number that says
+// whether a framing is sane, so the panel also ranks every country by it, worst first.
 
 let framingState = null;
 
@@ -14007,8 +14083,8 @@ function renderFramingSandbox() {
     const restart = document.getElementById('restart-btn');
     if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
     document.getElementById('question-text').innerHTML =
-        `<strong>Shape framing.</strong> Click a shape to toggle it, or drag a box to keep only what is inside.`;
-    framingState = { name: null, parts: [], off: new Set(), ranking: null };
+        `<strong>Shape framing.</strong> Drag the box by its corners. Anything not wholly inside it is cut.`;
+    framingState = { name: null, parts: [], box: null, ranking: null };
     buildFramingPanel();
     framingBindMap();
     const start = (gameState.currentQuizList || []).find(n => namesMatch(n, 'Norway'));
@@ -14106,125 +14182,120 @@ function framingPick(name) {
     if (!f) return;
     const parts = featureParts(f).map((c, i) => {
         const poly = { type: 'Polygon', coordinates: c };
-        return { i, c, km2: d3.geoArea(poly) * FRAMING_R2, centroid: d3.geoCentroid(poly) };
+        return { i, c, km2: d3.geoArea(poly) * FRAMING_R2,
+                 centroid: d3.geoCentroid(poly), bounds: d3.geoBounds(poly) };
     }).sort((a, b) => b.km2 - a.km2);
     const main = parts[0];
     parts.forEach(pt => { pt.km = main ? sbKmBetween(main.centroid, pt.centroid) : 0; });
-    // Open on what the rule (plus any existing override) currently decides, so the toggles are
-    // edits to the live behaviour rather than a blank slate.
-    const ruled = shapeFramingCore(f);
-    const inCore = new Set();
-    featureParts(ruled).forEach(c => {
-        const cen = d3.geoCentroid({ type: 'Polygon', coordinates: c });
-        const hit = parts.find(pt => Math.abs(pt.centroid[0] - cen[0]) < 0.01 &&
-                                     Math.abs(pt.centroid[1] - cen[1]) < 0.01);
-        if (hit) inCore.add(hit.i);
-    });
+    // Open on the box the country is framed to RIGHT NOW — override, rule and all — so the
+    // handles start where the live behaviour is rather than on a blank slate.
+    let box = null;
+    try {
+        const b = d3.geoBounds(shapeFramingCore(f));
+        if (isFinite(b[0][0])) box = [b[0][0], b[0][1], b[1][0], b[1][1]];
+    } catch (_) { /* fall through to the whole feature */ }
+    if (!box) {
+        const b = d3.geoBounds(f);
+        box = [b[0][0], b[0][1], b[1][0], b[1][1]];
+    }
     if (!namesMatch(framingState.name, name)) framingState.message = '';
     framingState.name = name;
     framingState.feature = f;
     framingState.parts = parts;
-    framingState.off = new Set(parts.filter(pt => !inCore.has(pt.i)).map(pt => pt.i));
+    framingState.box = box;
+    framingState.needFit = true;
     if (framingState.repaintList) framingState.repaintList(document.getElementById('fr-filter').value);
     framingPaintRank();
     framingDraw();
 }
 
+// Which parts survive the box as it stands.
+function framingKept() {
+    return framingState.parts.filter(pt => boxHoldsBounds(framingState.box, pt.bounds));
+}
+
 function framingCoreNow() {
-    const kept = framingState.parts.filter(pt => !framingState.off.has(pt.i)).map(pt => pt.c);
+    const kept = framingKept().map(pt => pt.c);
     if (!kept.length) return framingState.feature;
     return { type: 'MultiPolygon', coordinates: kept };
 }
 
 function framingDraw() {
     if (!framingState || !framingState.feature || !countriesGroup) return;
-    const core = framingCoreNow();
-    const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.12;
-    try {
-        const c = d3.geoCentroid(core);
-        if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
-        projection.fitExtent([[pad, pad], [w - pad, h - pad]], core);
-    } catch (_) { /* leave the framing alone */ }
+    // Fitted to the WHOLE country, and only when the country changes: the box is what is being
+    // aimed, and a view that refits under every drag cannot be aimed at anything.
+    if (framingState.needFit) {
+        framingState.needFit = false;
+        const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.1;
+        try {
+            const c = d3.geoCentroid(framingState.feature);
+            if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
+            projection.fitExtent([[pad, pad], [w - pad, h - pad]], framingState.feature);
+        } catch (_) { /* leave the framing alone */ }
+    }
 
     countriesGroup.selectAll('*').remove();
     if (typeof g !== 'undefined' && g) g.selectAll('circle.island-marker').remove();
     if (lakesGroup) { lakesGroup.remove(); lakesGroup = null; }
 
-    // The live bounding box, drawn first so the shapes sit on top of it. This is what the
-    // override is really editing — every mode that frames a country frames it to this rectangle.
-    try {
-        const b = d3.geoBounds(core);
-        if (isFinite(b[0][0])) {
-            const p1 = projection([b[0][0], b[1][1]]), p2 = projection([b[1][0], b[0][1]]);
-            if (p1 && p2 && isFinite(p1[0]) && isFinite(p2[0])) {
-                countriesGroup.append('rect').attr('class', 'fr-box')
-                    .attr('x', Math.min(p1[0], p2[0])).attr('y', Math.min(p1[1], p2[1]))
-                    .attr('width', Math.abs(p2[0] - p1[0])).attr('height', Math.abs(p2[1] - p1[1]));
-            }
-        }
-    } catch (_) { /* no box to draw */ }
-
-    // Excluded parts stay DRAWN, faintly: a part that has been switched off and also vanished
-    // tells you nothing about whether switching it off was right.
+    // Cut parts stay DRAWN, faintly: a part that has been cut and also vanished tells you
+    // nothing about whether cutting it was right.
+    const keep = new Set(framingKept().map(pt => pt.i));
     framingState.parts.forEach(pt => {
         const d = path({ type: 'Polygon', coordinates: pt.c });
         if (!d) return;
         countriesGroup.append('path')
-            .datum(pt)
-            .attr('class', 'country fr-part' + (framingState.off.has(pt.i) ? ' off' : ''))
-            .attr('d', d)
-            .on('click', (event, p) => {
-                event.stopPropagation();
-                framingToggle(p.i);
-            });
+            .attr('class', 'country fr-part' + (keep.has(pt.i) ? '' : ' off'))
+            .attr('d', d);
     });
+
+    framingDrawBox();
     framingDetail();
 }
 
-function framingToggle(i) {
-    if (!framingState) return;
-    if (framingState.off.has(i)) framingState.off.delete(i); else framingState.off.add(i);
-    framingDraw();
+const FR_HANDLES = [['nw', 0, 3], ['ne', 2, 3], ['se', 2, 1], ['sw', 0, 1]];
+
+function framingDrawBox() {
+    const [w, s, e, n] = framingState.box;
+    const p1 = projection([w, n]), p2 = projection([e, s]);
+    if (!p1 || !p2 || !isFinite(p1[0]) || !isFinite(p2[0])) return;
+    const x = Math.min(p1[0], p2[0]), y = Math.min(p1[1], p2[1]);
+    const bw = Math.abs(p2[0] - p1[0]), bh = Math.abs(p2[1] - p1[1]);
+    countriesGroup.append('rect').attr('class', 'fr-box')
+        .attr('x', x).attr('y', y).attr('width', bw).attr('height', bh);
+    FR_HANDLES.forEach(([id, ix, iy]) => {
+        const q = projection([framingState.box[ix], framingState.box[iy]]);
+        if (!q || !isFinite(q[0])) return;
+        countriesGroup.append('rect').attr('class', 'fr-handle')
+            .attr('x', q[0] - 7).attr('y', q[1] - 7).attr('width', 14).attr('height', 14)
+            .attr('data-corner', id)
+            .on('pointerdown', event => {
+                event.stopPropagation();
+                event.preventDefault();
+                framingState.drag = id;
+            });
+    });
 }
 
-// Drag a box on the map: everything whose centroid lands inside is kept, everything else is
-// dropped. It is the fastest way to say the thing these overrides almost always mean — "this
-// cluster, not that far-off one" — and it is also, not by coincidence, exactly the `box` form
-// the override is stored in.
+// Dragging a corner writes straight into the box, so what the handles say and what the override
+// will contain are the same numbers.
 function framingBindMap() {
     if (!svg) return;
-    let start = null, rect = null;
-    svg.on('pointerdown.framing', function (event) {
-        if (!framingState || !framingState.feature) return;
-        start = d3.pointer(event, svg.node());
-        rect = svg.append('rect').attr('class', 'fr-drag')
-            .attr('x', start[0]).attr('y', start[1]).attr('width', 0).attr('height', 0);
-    });
-    svg.on('pointermove.framing', function (event) {
-        if (!start || !rect) return;
+    const move = event => {
+        if (!framingState || !framingState.drag) return;
         const p = d3.pointer(event, svg.node());
-        rect.attr('x', Math.min(start[0], p[0])).attr('y', Math.min(start[1], p[1]))
-            .attr('width', Math.abs(p[0] - start[0])).attr('height', Math.abs(p[1] - start[1]));
-    });
-    svg.on('pointerup.framing', function (event) {
-        if (!start || !rect) return;
-        const p = d3.pointer(event, svg.node());
-        const dx = Math.abs(p[0] - start[0]), dy = Math.abs(p[1] - start[1]);
-        rect.remove(); rect = null;
-        const from = start; start = null;
-        // A click, not a drag — the part's own handler has already dealt with it.
-        if (dx < 6 || dy < 6) return;
-        const a = projection.invert([Math.min(from[0], p[0]), Math.min(from[1], p[1])]);
-        const b = projection.invert([Math.max(from[0], p[0]), Math.max(from[1], p[1])]);
-        if (!a || !b || !isFinite(a[0]) || !isFinite(b[0])) return;
-        const boxLL = [Math.min(a[0], b[0]), Math.min(a[1], b[1]),
-                       Math.max(a[0], b[0]), Math.max(a[1], b[1])];
-        framingState.off = new Set(framingState.parts
-            .filter(pt => !corePartKept({ box: boxLL }, pt.centroid, pt.km))
-            .map(pt => pt.i));
-        framingState.lastBox = boxLL;
+        const ll = projection.invert(p);
+        if (!ll || !isFinite(ll[0])) return;
+        const b = framingState.box.slice();
+        if (framingState.drag[1] === 'w') b[0] = ll[0]; else b[2] = ll[0];
+        if (framingState.drag[0] === 'n') b[3] = ll[1]; else b[1] = ll[1];
+        framingState.box = [Math.min(b[0], b[2]), Math.min(b[1], b[3]),
+                            Math.max(b[0], b[2]), Math.max(b[1], b[3])];
         framingDraw();
-    });
+    };
+    svg.on('pointermove.framing', move);
+    svg.on('pointerup.framing', () => { if (framingState) framingState.drag = null; });
+    svg.on('pointerleave.framing', () => { if (framingState) framingState.drag = null; });
 }
 
 function framingDetail() {
@@ -14236,16 +14307,15 @@ function framingDetail() {
     let lonSpan = b[1][0] - b[0][0];
     if (lonSpan < 0) lonSpan += 360;
     const fill = (d3.geoArea(core) * FRAMING_R2) / framingBoxKm2(b) * 100;
-    const rows = framingState.parts.slice(0, 40).map(pt => {
-        const off = framingState.off.has(pt.i);
-        return `<button class="fr-part-btn${off ? ' off' : ''}" data-part="${pt.i}">` +
-               `<span class="fr-part-area">${Math.round(pt.km2).toLocaleString()} km²</span>` +
-               `<span class="fr-part-km">${pt.km < 1 ? 'main' : sbFormatKm(pt.km)}</span></button>`;
-    }).join('');
+    const keep = new Set(framingKept().map(pt => pt.i));
+    const rows = framingState.parts.slice(0, 40).map(pt =>
+        `<span class="fr-part-btn${keep.has(pt.i) ? '' : ' off'}">` +
+        `<span class="fr-part-area">${Math.round(pt.km2).toLocaleString()} km²</span>` +
+        `<span class="fr-part-km">${pt.km < 1 ? 'main' : sbFormatKm(pt.km)}</span></span>`).join('');
     const saved = coreOverrideFor(framingState.name);
     el.innerHTML =
         `<div class="fr-head"><strong>${displayLabelForName(framingState.name)}</strong> — ` +
-        `${framingState.parts.length} part${framingState.parts.length === 1 ? '' : 's'}` +
+        `${keep.size}/${framingState.parts.length} part${framingState.parts.length === 1 ? '' : 's'} kept` +
         (saved ? ` <span class="fr-saved">override saved</span>` : '') + `</div>` +
         `<div class="fr-span">Box fills <strong>${fill.toFixed(0)}%</strong> — ` +
         `<strong>${latSpan.toFixed(1)}°</strong> lat × <strong>${lonSpan.toFixed(1)}°</strong> lon</div>` +
@@ -14253,13 +14323,16 @@ function framingDetail() {
         `<div class="fr-actions">` +
         `<button class="control-btn" id="fr-save">Save override</button>` +
         `<button class="control-btn" id="fr-clear">Clear</button>` +
+        `<button class="control-btn" id="fr-all">Whole country</button>` +
         `<button class="control-btn" id="fr-export">Download all</button></div>` +
         `<div class="fr-json" id="fr-json">${framingState.message || ''}</div>`;
-    el.querySelectorAll('[data-part]').forEach(b2 =>
-        b2.addEventListener('click', () => framingToggle(+b2.dataset.part)));
     document.getElementById('fr-save').addEventListener('click', framingSave);
+    document.getElementById('fr-all').addEventListener('click', () => {
+        const bb = d3.geoBounds(framingState.feature);
+        framingState.box = [bb[0][0], bb[0][1], bb[1][0], bb[1][1]];
+        framingDraw();
+    });
     document.getElementById('fr-clear').addEventListener('click', () => {
-        delete SHAPE_CORE_OVERRIDES[framingState.name];
         Object.keys(SHAPE_CORE_OVERRIDES).forEach(k => {
             if (namesMatch(k, framingState.name)) delete SHAPE_CORE_OVERRIDES[k];
         });
@@ -14271,56 +14344,27 @@ function framingDetail() {
     document.getElementById('fr-export').addEventListener('click', framingExport);
 }
 
-// The simplest rule that reproduces the current selection EXACTLY. A box and a distance both
-// survive a change of atlas; the centroid list does not, so it is the last resort rather than
-// the default.
-function framingDeriveRule() {
-    const parts = framingState.parts;
-    const wanted = new Set(parts.filter(pt => !framingState.off.has(pt.i)).map(pt => pt.i));
-    const matches = rule => parts.every(pt =>
-        corePartKept(rule, pt.centroid, pt.km) === wanted.has(pt.i));
-
-    // A box round the kept parts' centroids, padded a little so a vertex that shifts between
-    // resolutions does not fall out of it.
-    const keep = parts.filter(pt => wanted.has(pt.i));
-    if (keep.length) {
-        const pad = 0.75;
-        const box = [Math.min(...keep.map(p => p.centroid[0])) - pad,
-                     Math.min(...keep.map(p => p.centroid[1])) - pad,
-                     Math.max(...keep.map(p => p.centroid[0])) + pad,
-                     Math.max(...keep.map(p => p.centroid[1])) + pad];
-        const rule = { box: box.map(v => +v.toFixed(2)) };
-        if (matches(rule)) return rule;
-    }
-    // A distance, if the selection happens to be ordered by it.
-    const far = Math.max(0, ...keep.map(p => p.km));
-    const near = Math.min(Infinity, ...parts.filter(p => !wanted.has(p.i)).map(p => p.km));
-    if (isFinite(near) && near > far) {
-        const rule = { maxKm: Math.round((far + near) / 2 / 10) * 10 };
-        if (matches(rule)) return rule;
-    }
-    // Otherwise, name the exclusions.
-    const drop = parts.filter(p => !wanted.has(p.i))
-        .map(p => [+p.centroid[0].toFixed(1), +p.centroid[1].toFixed(1)]);
-    return drop.length ? { drop } : null;
-}
-
 function framingSave() {
-    const rule = framingDeriveRule();
-    if (!rule) {
-        delete SHAPE_CORE_OVERRIDES[framingState.name];
-        framingState.message = 'Nothing excluded — override removed.';
+    const box = framingState.box.map(v => +v.toFixed(2));
+    // A box that holds every part is not an override, it is the default — saving it would put a
+    // resolution-specific rectangle in the table for a country that never needed one.
+    const cuts = framingState.parts.some(pt => !boxHoldsBounds(box, pt.bounds));
+    if (!cuts) {
+        Object.keys(SHAPE_CORE_OVERRIDES).forEach(k => {
+            if (namesMatch(k, framingState.name)) delete SHAPE_CORE_OVERRIDES[k];
+        });
+        framingState.message = 'Nothing cut — override removed.';
     } else {
-        SHAPE_CORE_OVERRIDES[framingState.name] = rule;
-        framingState.message = `"${framingState.name}": ${JSON.stringify(rule)}`;
+        SHAPE_CORE_OVERRIDES[framingState.name] = { box };
+        framingState.message = `"${framingState.name}": ${JSON.stringify({ box })}`;
     }
     if (!saveCoreOverridesLocally()) framingState.message += '  (local storage refused it)';
     // The descriptor cache is keyed by country and derived from the framing core, so it has to
     // go or Shape ID keeps comparing silhouettes against the old box. It is null-when-invalid,
     // not empty-object: an empty object is truthy and would be used as a finished cache.
     shapeDescriptorCache = null;
-    // Re-picking rebuilds the panel from the LIVE result, so what you see afterwards is what
-    // the override plus the rule actually produce — which can be fewer parts than you selected,
+    // Re-picking rebuilds the panel from the LIVE result, so what you see afterwards is what the
+    // override plus the rule actually produce — which can be fewer parts than the box holds,
     // since the override only restricts what the rule is then allowed to consider.
     const msg = framingState.message;
     framingPick(framingState.name);
@@ -14353,6 +14397,7 @@ function removeFramingSandbox() {
         svg.on('pointerdown.framing', null);
         svg.on('pointermove.framing', null);
         svg.on('pointerup.framing', null);
+        svg.on('pointerleave.framing', null);
         svg.selectAll('rect.fr-drag').remove();
     }
     framingState = null;
@@ -14841,7 +14886,27 @@ const SB_QUIZZES = {
             // moves whenever either rule is touched — measured at 27% honest with a 0.45 coin,
             // 62% with 0.68 and 36% with 0.60, all of them noisy. Searching for both and
             // choosing at the end is 50/50 by construction.
-            const pool = sbPool().filter(n => sbAreaKm2(n) && getCountryCentroid(n));
+            // Only countries whose FRAMING CORE is the whole country. The reveal carries both
+            // shapes to the equator and lays them side by side, and it draws the core — a
+            // country that keeps a rock 4,000 km from home (Norway's Bouvet Island, France's
+            // Guiana, Ecuador's Galápagos) would either be framed across an empty ocean or be
+            // drawn smaller than the area it is being compared on. Both are the same problem:
+            // for those countries "the area" is a question about which bits count, and this
+            // round is not the place to argue it.
+            // Memoised: shapeFramingCore over the whole pool is 600 ms, and build() runs it on
+            // every draw and retry.
+            const whole = n => {
+                if (sbWholeCache.has(n)) return sbWholeCache.get(n);
+                const f = sbFeature(n);
+                let ok = false;
+                if (f) {
+                    const core = d3.geoArea(shapeFramingCore(f)), all = d3.geoArea(f);
+                    ok = all > 0 && core / all > 0.92;
+                }
+                sbWholeCache.set(n, ok);
+                return ok;
+            };
+            const pool = sbPool().filter(n => sbAreaKm2(n) && getCountryCentroid(n) && whole(n));
             const found = { lie: null, honest: null };
             for (let t = 0; t < 400; t++) {
                 const a = sbRandom(pool), b = sbRandom(pool);
@@ -15544,6 +15609,7 @@ function renderSandboxQuizQuestion() {
     }
     gameState.sbQuestion = q;
     gameState.sbAnswered = false;
+    gameState.sbPicked = null;
     // Stamped when the round is PRESENTED, so any speed-scored mode measures thinking time
     // rather than including whatever the previous round's reveal pause cost.
     gameState.sbAskedAt = Date.now();
@@ -15767,7 +15833,9 @@ function sbRevealRouteCountries(q, picked) {
     const green = sbThemeColour('--correct', '#3d8f5f');
     const red = sbThemeColour('--incorrect', '#c0503f');
     const show = (name, kind) => {
-        const f = sbFeature(name);
+        // The board's own geometry, not the simplified quiz features: these fills sit directly
+        // against the drawn coastline and a simplified outline shows daylight along it.
+        const f = sbBoardFeature(name);
         if (!f) return;
         const d = path(f);
         if (!d) return;
@@ -15831,7 +15899,17 @@ function sbApplyBoardMarks() {
             .attr('class', 'sb-anchored sb-marklab ' + bm.marks[name]);
         if (!pt || !isFinite(pt[0])) grp.attr('display', 'none');
         else grp.attr('transform', `translate(${pt[0]}, ${pt[1]})`);
-        grp.append('text').attr('text-anchor', 'middle').text(displayLabelForName(name));
+        const url = bm.flags ? getFlagUrl(effectiveDataName(name)) : null;
+        if (url) {
+            const w = 30, h = 20;
+            grp.append('image').attr('class', 'sb-mark-flag')
+               .attr('href', url).attr('x', -w / 2).attr('y', -h / 2)
+               .attr('width', w).attr('height', h).attr('preserveAspectRatio', 'xMidYMid slice');
+            grp.append('rect').attr('class', 'sb-mark-flag-edge')
+               .attr('x', -w / 2).attr('y', -h / 2).attr('width', w).attr('height', h);
+        } else {
+            grp.append('text').attr('text-anchor', 'middle').text(displayLabelForName(name));
+        }
     });
 }
 
@@ -15883,7 +15961,9 @@ function sbRevealDistanceMap(q) {
     const names = [q.anchor, ...q.correct];
     const marks = { [q.anchor]: 'target' };
     q.correct.forEach(n => { marks[n] = 'right'; });
-    q.boardMarks = { marks };
+    // Flags rather than names: five country names written across a zoomed map is more type
+    // than map, and a flag says which country in a quarter of the width.
+    q.boardMarks = { marks, flags: true };
     if (!sbFitToFeatures(names, 0.09)) return;
     drawCountries();
 
@@ -15898,14 +15978,9 @@ function sbRevealDistanceMap(q) {
         // great-circle one, and on a Mercator those are not the same line.
         const arc = sbArc(c0, c, 48);
         const d = sbLine(arc);
+        // No distance written on the line. The order is the answer and it is already in the
+        // list beside the map; a number at every midpoint only competed with the shapes.
         if (d) layer.append('path').datum(arc).attr('class', 'sb-dist-line').attr('d', d);
-        const mid = arc[Math.floor(arc.length / 2)];
-        const pt = projection(mid);
-        const grp = layer.append('g').datum({ at: mid, dy: 0 }).attr('class', 'sb-anchored sb-dist-lab');
-        if (!pt || !isFinite(pt[0])) grp.attr('display', 'none');
-        else grp.attr('transform', `translate(${pt[0]}, ${pt[1]})`);
-        grp.append('text').attr('text-anchor', 'middle')
-            .text(`${i + 1}. ${sbFormatKm(sbKmBetween(c0, c))}`);
     });
     layer.selectAll('g.sb-marklab').raise();
 }
@@ -16479,6 +16554,8 @@ function recordSandboxAnswer(picked, correct) {
     const q = gameState.sbQuestion;
     if (!q || gameState.sbAnswered) return;
     gameState.sbAnswered = true;
+    // Kept for the reveals that show the mistake as well as the answer.
+    gameState.sbPicked = picked;
     sbStopClock();
     const feedback = document.getElementById('feedback');
     let extra = '';
@@ -16887,21 +16964,50 @@ function sbDrawSoloLake(feature) {
     g2.append('path').attr('class', 'sb-lake-edge').attr('d', d);
 }
 
-// The Mercator Lies payoff: both countries slide to the equator and shrink to their honest
-// relative size, with everything else taken off the map.
+// The Mercator Lies payoff: the map is taken away, leaving only the two countries at full
+// resolution where the map had them, and they are then CARRIED to the equator — re-projected
+// every frame, so each one visibly un-stretches on the way down. That is the lie coming off.
 //
-// The shrink is NOT a re-projection. Mercator's scale factor is 1/cos(latitude) in both axes,
-// so the same shape carried from latitude a to the equator is that shape at cos(a) times the
-// size — a single uniform scale in projected space, exactly the correction the world puzzle
-// board applies to a dragged piece (see puzzleLatRatio). That means the path string never
-// changes: verticals stay vertical, the aspect ratio is preserved exactly, and nothing can
-// wrap across the antimeridian mid-animation.
+// Carried, not scaled. A uniform scale by cos(latitude) is the right answer for a shape small
+// enough to have one latitude, and this mode deals in Greenlands. Rotating the globe so the
+// country's own centroid lands on the equator and re-running the Mercator is the honest version
+// of the same move, and it is the one that shows the shape changing rather than only the size.
+//
 // Slide first, then zoom. Split so each motion can be read on its own.
-const SB_EQ_MOVE_MS = 1500;
+// Whether a country's framing core IS the country, memoised across build() calls.
+const sbWholeCache = new Map();
+
+// A cheap stand-in for the animation. Re-projecting 10m geometry every frame costs 63 ms for
+// Canada, which is a slideshow rather than a motion; every nth vertex is 2 ms and, while the
+// shape is travelling, indistinguishable. The full-resolution outline goes back on the moment
+// the carry finishes and the shape is holding still to be looked at.
+const SB_EQ_ANIM_PTS = 2500;
+function sbDecimate(g, budget) {
+    // shapeFramingCore returns a bare geometry normally but hands back the whole FEATURE when
+    // the country is a genuine scatter and the core is abandoned, so both shapes arrive here.
+    const geom = (g && g.geometry) || g;
+    if (!geom || !geom.coordinates) return geom;
+    const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+    let total = 0;
+    polys.forEach(poly => poly.forEach(r => { total += r.length; }));
+    if (total <= budget) return geom;
+    const step = Math.ceil(total / budget);
+    const out = polys.map(poly => poly.map(ring => {
+        if (ring.length <= 8) return ring;
+        const keep = [];
+        for (let i = 0; i < ring.length - 1; i += step) keep.push(ring[i]);
+        while (keep.length < 4) keep.push(ring[Math.min(ring.length - 2, keep.length)]);
+        keep.push(keep[0]);
+        return keep;
+    }));
+    return { type: 'MultiPolygon', coordinates: out };
+}
+
+const SB_EQ_MOVE_MS = 1900;
 const SB_EQ_ZOOM_MS = 1300;
 const SB_EQ_REVEAL_MS = SB_EQ_MOVE_MS + SB_EQ_ZOOM_MS;
 function sbRevealEquator(pair) {
-    if (!svg || !projection || !path) return;
+    if (!svg || !projection || !path || typeof projection.rotate !== 'function') return;
     const feats = pair.map(sbFeature).filter(Boolean);
     if (feats.length !== 2) return;
 
@@ -16909,103 +17015,136 @@ function sbRevealEquator(pair) {
     const W = (svgEl && svgEl.viewBox && svgEl.viewBox.baseVal && svgEl.viewBox.baseVal.width) || 800;
     const H = (svgEl && svgEl.viewBox && svgEl.viewBox.baseVal && svgEl.viewBox.baseVal.height) || 600;
 
-    // Measure each country where it currently sits, then work out how big it really is.
-    const items = feats.map(f => {
-        const b = path.bounds(f);
-        const d = path(f);
-        if (!d || !isFinite(b[0][0]) || !isFinite(b[1][1])) return null;
-        const lat = d3.geoCentroid(f)[1];
-        // Clamped for the same reason the puzzle clamps: cos runs to 0 at the poles and the
-        // ratio would collapse the shape to nothing.
-        const k = Math.cos(Math.min(80, Math.abs(lat)) * DEG);
+    // A private projection per country, matching the live map at u = 0 so each shape starts
+    // exactly where the map had it, and carrying its own centroid onto the equator at u = 1.
+    //
+    // The carry has to rotate the country onto the PRIME MERIDIAN first — a rotation by −φ about
+    // the y axis only lands a point on the equator if it is already at longitude 0, so rotating
+    // by latitude alone left Finland 220 px short of the line it was supposed to be arriving at.
+    // Mercator's x is linear in longitude, so undoing that sideways rotation is one constant
+    // added to the translate: the shape keeps its own longitude, and at u = 0 the projection is
+    // identical to the live map's for every point on earth.
+    const r0 = projection.rotate(), sc = projection.scale(), tr = projection.translate();
+    const mkPath = (lon0, lat0, u) => d3.geoPath(
+        d3.geoMercator()
+          .scale(sc)
+          .translate([tr[0] + sc * (lon0 + r0[0]) * Math.PI / 180, tr[1]])
+          .rotate([-lon0, -lat0 * u, 0]));
+
+    const q = gameState.sbQuestion || {};
+    const picked = gameState.sbPicked;
+    const wrongPick = picked && q.correct && normalizeName(picked) !== normalizeName(q.correct);
+
+    const items = feats.map(f0 => {
+        // The framing core, not the raw feature. Two reasons, and they point the same way:
+        // Norway's full geometry runs from Svalbard to Bouvet Island, so a pair fitted to it is
+        // two specks either side of 135° of empty latitude; and re-projecting 10m geometry every
+        // frame costs 21 ms a country against 2 ms for the core, which is the difference between
+        // an animation and a slideshow. The build only offers countries whose core IS the
+        // country — within 8% by area — so nothing visible is being left out of the comparison.
+        const raw = shapeFramingCore(f0);
+        const geom = (raw && raw.geometry) || raw;
+        const f = { type: 'Feature', properties: f0.properties, geometry: geom };
+        const lite = { type: 'Feature', properties: f0.properties,
+                       geometry: sbDecimate(geom, SB_EQ_ANIM_PTS) };
+        const c = d3.geoCentroid(f);
+        if (!c || !isFinite(c[0])) return null;
+        const b1 = mkPath(c[0], c[1], 1).bounds(f);
+        if (!isFinite(b1[0][0]) || !isFinite(b1[1][1])) return null;
+        const label = displayLabelForName(f.properties.name);
         return {
-            d, k, lon: d3.geoCentroid(f)[0],
-            cx: (b[0][0] + b[1][0]) / 2, cy: (b[0][1] + b[1][1]) / 2,
-            w: (b[1][0] - b[0][0]) * k, h: (b[1][1] - b[0][1]) * k,
-            name: f.properties.name
+            f, lite, lat: c[1], lon: c[0], label,
+            cx: (b1[0][0] + b1[1][0]) / 2, cy: (b1[0][1] + b1[1][1]) / 2,
+            w: b1[1][0] - b1[0][0], h: b1[1][1] - b1[0][1],
+            right: q.correct && normalizeName(label) === normalizeName(q.correct),
+            mine: picked && normalizeName(label) === normalizeName(picked)
         };
     }).filter(Boolean);
     if (items.length !== 2) return;
 
     // Side by side, west on the left so the pair still reads like the map it came from, with a
-    // gap wide enough that the two silhouettes can never touch.
-    items.sort((p, q2) => p.lon - q2.lon);
+    // gap wide enough that the two silhouettes can never touch. Everything is measured at the
+    // equator, which is where they will be by the time any of it is used.
+    items.sort((p, o) => p.lon - o.lon);
     const gap = Math.max(items[0].w, items[1].w) * 0.18;
     const total = items[0].w + items[1].w + gap;
     const maxH = Math.max(items[0].h, items[1].h);
-    items[0].X = -total / 2 + items[0].w / 2;
+    const anchorX = (items[0].cx + items[1].cx) / 2, anchorY = (items[0].cy + items[1].cy) / 2;
+    items[0].X = anchorX - total / 2 + items[0].w / 2;
     items[1].X = items[0].X + items[0].w / 2 + gap + items[1].w / 2;
+    const S = Math.min(W * 0.82 / total, H * 0.66 / maxH);
 
-    const S = Math.min(W * 0.82 / total, H * 0.72 / maxH);
+    const green = sbThemeColour('--correct', '#3d8f5f');
+    const red = sbThemeColour('--incorrect', '#c0503f');
 
     // Copies live in the overlay group, so the round's own teardown removes them.
-    const g = sbOverlay();
-    const layer = g.append('g').attr('class', 'sb-equator-layer').attr('transform', 'translate(0,0) scale(1)');
+    const layer = sbOverlay().append('g').attr('class', 'sb-equator-layer')
+        .attr('transform', 'translate(0,0) scale(1)');
     const shapes = items.map(it => {
-        const wrap = layer.append('g').attr('transform', 'translate(0,0) scale(1)');
-        wrap.append('path').attr('class', 'sb-equator-shape').attr('d', it.d);
-        const lab = wrap.append('text').attr('class', 'sb-equator-label')
-            .attr('text-anchor', 'middle').text(displayLabelForName(it.name));
-        return { it, wrap, lab };
+        const wrap = layer.append('g').attr('transform', 'translate(0,0)');
+        const p = wrap.append('path').attr('class', 'sb-equator-shape')
+            .attr('d', mkPath(it.lon, it.lat, 0)(it.f));
+        // The answer, painted on the shape itself: the bigger country fills green, and a wrong
+        // pick is hatched red so both the right answer and the mistake are on screen at once.
+        if (it.right) p.attr('fill', green).attr('fill-opacity', 0.55);
+        else if (it.mine && wrongPick) p.attr('fill', sbHatchPattern('sb-hatch-red', red));
+        return { it, wrap, p };
     });
+    // Labels are children of the LAYER, not of their shape, so they can share one baseline —
+    // hung off each shape they sat at different heights and read as two separate captions.
+    const labels = items.map(it => layer.append('text').attr('class', 'sb-equator-label')
+        .attr('text-anchor', 'middle').attr('opacity', 0).text(it.label));
 
-    // Everything else off the map — the comparison is the only thing left to look at.
-    // The rest of the world clears early, so the pair is already alone by the time it moves.
-    const fade = SB_EQ_MOVE_MS * 0.45;
-    if (countriesGroup) countriesGroup.transition().duration(fade).style('opacity', 0.06);
-    if (typeof lakesGroup !== 'undefined' && lakesGroup) lakesGroup.transition().duration(fade).style('opacity', 0);
-    if (typeof g !== 'undefined') svg.selectAll('circle.island-marker').transition().duration(fade).style('opacity', 0);
-
-    const layerEnd = `translate(${W / 2}, ${H / 2}) scale(${S})`;
+    // The map goes away entirely rather than dimming: what is left is the whole point, and a
+    // ghost of the world behind it is only something else to look at.
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    // TWO phases, not one. Moving and zooming together meant the shapes were still travelling
-    // while the frame was closing in on them, so nothing held still long enough to read — the
-    // two motions fought each other. Now they slide to the equator at the map's own scale
-    // first, and only once they have settled does the camera come in.
-    //
-    // The move eases OUT (fast off the mark, gliding into place) and the zoom eases IN-OUT, so
-    // the join between them reads as one continuous gesture rather than two animations.
     const moveMs = reduce ? 0 : SB_EQ_MOVE_MS;
     const zoomMs = reduce ? 0 : SB_EQ_ZOOM_MS;
+    const fade = Math.max(1, moveMs * 0.35);
+    if (countriesGroup) countriesGroup.transition().duration(fade).style('opacity', 0);
+    if (typeof lakesGroup !== 'undefined' && lakesGroup) lakesGroup.transition().duration(fade).style('opacity', 0);
+    svg.selectAll('circle.island-marker').transition().duration(fade).style('opacity', 0);
 
-    // Phase one is a pure NORTH–SOUTH move: each country drops (or climbs) to the equator and
-    // re-scales as it goes, staying over its own longitude. That is the lie being undone, and
-    // undoing it on its own axis is what makes it legible — sliding sideways at the same time
+    // Phase one is a pure NORTH–SOUTH carry: each country descends (or climbs) to the equator
+    // over its own longitude, re-projected every frame. Sliding sideways at the same time
     // buries the one motion that matters inside a general rearrangement.
-    const yEq = ((typeof projection === 'function' && projection([0, 0])) || [0, H / 2])[1];
-    shapes.forEach(({ it, wrap, lab }) => {
-        it.mid = `translate(${it.cx - it.k * it.cx}, ${yEq - it.k * it.cy}) scale(${it.k})`;
-        it.end = `translate(${it.X - it.k * it.cx}, ${-it.k * it.cy}) scale(${it.k})`;
-        wrap.transition().duration(moveMs).ease(d3.easeCubicOut).attr('transform', it.mid)
-            .transition().duration(zoomMs).ease(d3.easeCubicInOut).attr('transform', it.end);
-        // The label rides inside the scaled group, so its own size is divided back out to keep
-        // it legible whatever the pair's fit scale turned out to be. It fades in with the zoom,
-        // once the shapes have stopped moving and there is something stable to label.
-        lab.attr('x', it.cx).attr('y', it.cy)
-            .attr('font-size', (15 / (it.k * S)) + 'px')
-            .attr('dy', ((it.h / it.k) / 2 + 34 / (it.k * S)) + 'px')
-            .attr('opacity', 0)
-            .transition().delay(moveMs).duration(zoomMs).attr('opacity', 1);
+    shapes.forEach(({ it, p }) => {
+        if (!moveMs) { p.attr('d', mkPath(it.lon, it.lat, 1)(it.f)); return; }
+        p.transition().duration(moveMs).ease(d3.easeCubicInOut)
+            .attrTween('d', () => u => mkPath(it.lon, it.lat, u)(it.lite))
+            // Full resolution goes back on the instant the carry stops, which is also the
+            // instant the shape is worth looking at closely.
+            .on('end', function () { d3.select(this).attr('d', mkPath(it.lon, it.lat, 1)(it.f)); });
     });
-    // Phase two: the pair closes up side by side AND the camera comes in, together — one
-    // gesture, because they are the same gesture. (Phase one deliberately is not part of it.)
+
+    // Phase two closes the pair up side by side AND brings the camera in, together, because
+    // they are the same gesture.
     //
-    // The camera has to zoom ABOUT THE PAIR. Interpolating the layer's transform string
-    // straight from `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom
-    // centred on the SVG's top-left corner followed by a pan to catch up — which is exactly
-    // what it looked like: a lunge at a random spot and then a scramble across to the
-    // countries. Written as `translate(p) scale(k) translate(-q)` with p and q interpolated
-    // separately, u = 0 is the identity (the pair does not move at all as the zoom begins) and
-    // u = 1 is the same final framing, with everything in between anchored on the shapes.
-    const mid = [(items[0].cx + items[1].cx) / 2, yEq];
+    // The camera has to zoom ABOUT THE PAIR. Interpolating the layer's transform straight from
+    // `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom centred on the SVG's
+    // top-left corner followed by a pan to catch up — which is exactly what it looked like: a
+    // lunge at a random spot and then a scramble across to the countries. Written as
+    // `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
+    // u = 1 is the same final framing, with everything between anchored on the shapes.
+    const layerEnd = `translate(${W / 2},${H / 2}) scale(${S}) translate(${-anchorX},${-anchorY})`;
     const zoomTween = () => u => {
-        const k = Math.exp(Math.log(1) * (1 - u) + Math.log(S) * u);   // geometric, so it reads as even
-        const qx = mid[0] * (1 - u), qy = mid[1] * (1 - u);
-        const px = mid[0] + (W / 2 - mid[0]) * u, py = mid[1] + (H / 2 - mid[1]) * u;
-        return `translate(${px},${py}) scale(${k}) translate(${-qx},${-qy})`;
+        const k = Math.exp(Math.log(S) * u);                       // geometric, so it reads as even
+        const px = anchorX + (W / 2 - anchorX) * u, py = anchorY + (H / 2 - anchorY) * u;
+        return `translate(${px},${py}) scale(${k}) translate(${-anchorX},${-anchorY})`;
     };
     layer.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attrTween('transform', zoomTween);
+    shapes.forEach(({ it, wrap }) => {
+        it.end = `translate(${it.X - it.cx},${anchorY - it.cy})`;
+        wrap.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attr('transform', it.end);
+    });
+
+    // One baseline for both, under the taller of the two, with the font size divided back out
+    // of the zoom so it lands legible whatever the fit scale turned out to be.
+    const labY = anchorY + maxH / 2 + 30 / S;
+    labels.forEach((lab, i) => {
+        lab.attr('x', items[i].X).attr('y', labY).attr('font-size', (16 / S) + 'px')
+           .transition().delay(moveMs).duration(zoomMs).attr('opacity', 1);
+    });
 
     // d3 transitions run on requestAnimationFrame, which a backgrounded (or non-compositing)
     // tab does not fire — the same trap the puzzle's piece `settle` documents. setTimeout still
@@ -17014,9 +17153,13 @@ function sbRevealEquator(pair) {
         if (!layer.node() || !layer.node().isConnected) return;
         layer.interrupt();
         layer.attr('transform', layerEnd);
-        shapes.forEach(({ it, wrap, lab }) => { wrap.attr('transform', it.end); lab.attr('opacity', 1); });
-        if (countriesGroup) countriesGroup.style('opacity', 0.06);
-    }, moveMs + zoomMs);
+        shapes.forEach(({ it, wrap, p }) => {
+            p.interrupt().attr('d', mkPath(it.lon, it.lat, 1)(it.f));
+            wrap.interrupt().attr('transform', it.end);
+        });
+        labels.forEach(l => l.interrupt().attr('opacity', 1));
+        if (countriesGroup) countriesGroup.style('opacity', 0);
+    }, moveMs + zoomMs + 60);
 }
 
 // Redrawn on every re-path so every overlay element follows drag, wheel and pinch — the

@@ -3707,9 +3707,17 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .country.sb-mark-missed { stroke: var(--correct, #3d8f5f); stroke-dasharray: 5 3; }
 .country.sb-mark-wrong { stroke: var(--incorrect, #c0503f); stroke-dasharray: 5 3; }
 
-/* Near to Far: one spoke per country, labelled with the distance it was ranked by. */
-.sb-dist-line { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 2;
-    stroke-opacity: 0.85; vector-effect: non-scaling-stroke; pointer-events: none; }
+/* Near to Far: one spoke per country. Hairline — the spokes are there to say WHICH pair of
+   points each distance was measured between, and at 2px five of them converging on the anchor
+   read as a solid wedge over the countries they are pointing at. */
+.sb-dist-line { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 0.9;
+    stroke-opacity: 0.9; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+/* Board marks can be flagged instead of named: five country names across a zoomed map is more
+   type than map. The edge is a separate rect because an <image> takes no stroke. */
+.sb-mark-flag { pointer-events: none; }
+.sb-mark-flag-edge { fill: none; stroke: rgba(0, 0, 0, 0.65); stroke-width: 1.5;
+    vector-effect: non-scaling-stroke; pointer-events: none; }
 
 /* Flyover: a coastline-only world, with the route and its two airports over it. */
 .sb-coast-only { fill: none; stroke: var(--land-stroke, #7d8a99); stroke-width: 1;
@@ -3985,7 +3993,7 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .fr-parts { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto;
     margin-bottom: 8px; }
 .fr-part-btn { display: flex; justify-content: space-between; gap: 8px; width: 100%;
-    padding: 4px 8px; font: inherit; font-size: 0.78rem; cursor: pointer;
+    padding: 4px 8px; font: inherit; font-size: 0.78rem;
     border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface-2); color: var(--text); }
 .fr-part-btn.off { opacity: 0.5; border-style: dashed; border-color: var(--incorrect, #c0503f); }
@@ -4004,12 +4012,14 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .country.fr-part { stroke: var(--land-stroke, #7d8a99); stroke-width: 1.2;
     vector-effect: non-scaling-stroke; }
 
-/* Shape framing: the live bounding box, and the rubber band that edits it. */
+/* Shape framing: the box, and the corner handles that are the only way to edit it. The handles
+   are the one thing on this map that takes a pointer — the shapes below are read-only. */
 .fr-box { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 1.5; stroke-dasharray: 6 4;
     vector-effect: non-scaling-stroke; pointer-events: none; }
-.fr-drag { fill: var(--accent, #d08a2c); fill-opacity: 0.12; stroke: var(--accent, #d08a2c);
-    stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
-.country.fr-part { cursor: pointer; }
+.fr-handle { fill: var(--accent, #d08a2c); stroke: var(--surface, #fff); stroke-width: 2;
+    vector-effect: non-scaling-stroke; cursor: grab; touch-action: none; }
+.fr-handle:active { cursor: grabbing; }
+.country.fr-part { pointer-events: none; }
 
 .fr-saved { font-size: 0.72rem; padding: 1px 6px; border-radius: 999px;
     background: var(--correct, #3d8f5f); color: #fff; font-weight: 700; }

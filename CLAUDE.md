@@ -38,40 +38,48 @@ The rule grows outward from the largest landmass, biggest part first: a part joi
 threshold fixes them. Norway is the clearest: Svalbard is a real, large, permanently-populated
 part of Norway 1,650 km north of the mainland, so it clears every test the rule has — and
 including it stretches the frame across **22.5° of latitude**, which on a Mercator leaves the
-mainland a ribbon at the bottom. Indonesia reaching Papua island by island is geometrically the
-same situation; the two differ only in what a person expects to see. So there is a table of
-exceptions, `SHAPE_CORE_OVERRIDES`, consulted at the top of `shapeFramingCore` so every caller
-(the fit, the shape descriptor, the flag pattern) agrees.
+mainland a ribbon at the bottom. (At 10m it is worse still: Norway also owns Bouvet Island in the
+Southern Ocean, and the raw feature spans **135°**.) Indonesia reaching Papua island by island is
+geometrically the same situation; the two differ only in what a person expects to see. So there
+is a table of exceptions, `SHAPE_CORE_OVERRIDES`, consulted at the top of `shapeFramingCore` so
+every caller (the fit, the shape descriptor, the flag pattern) agrees.
 
-**An override has three forms**, and the export picks whichever reproduces a selection exactly,
-simplest first:
+**An override has three forms**, and `corePartKept` is the single predicate all three go through,
+so the sandbox's preview and the real framing cannot disagree about what one means:
 
-    { box: [w, s, e, n] }    keep parts whose centroid falls in this lon/lat box
+    { box: [w, s, e, n] }    keep parts that lie WHOLLY inside this lon/lat box
     { maxKm: n }             keep parts within n km of the main landmass
     { drop: [[lon,lat], …] } exclude these by centroid, within CORE_OVERRIDE_TOL degrees
 
 A box and a distance are both resolution-proof, which a centroid list is not: Svalbard is one
 polygon in nobody's atlas — six at 50m, dozens at 10m — so an enumeration has to be rewritten
-whenever the source changes, while "north of 74°" and "further than 700 km" are the same fact at
-every resolution. The list is the escape hatch for a selection neither of the others can express.
-`corePartKept` is the single predicate all three go through, so the sandbox's preview and the
-real framing cannot disagree about what an override means. `'Norway': { maxKm: 700 }` takes the
-frame from 22.5° of latitude to **13.1°**, and 32 parts to 3.
+whenever the source changes, while "inside this rectangle" and "further than 700 km" are the same
+fact at every resolution. `'Norway': { maxKm: 700 }` takes the frame from 135° of latitude to
+**13.1°**, and 120 parts to 2.
 
-**Sandbox ▸ Shape Framing** is how those get made. A country's parts can be switched three ways —
-click one on the map, click one in the list, or **drag a box** round the ones to keep, which is
-the fastest way to say the thing these overrides almost always mean ("this cluster, not that
-far-off one") and is not by coincidence the same shape as the `box` form they are stored in. The
-**live bounding box is drawn** as you go, because the box is the thing being judged. Excluded
-parts stay drawn, faintly — a part that has been switched off *and* vanished tells you nothing
-about whether switching it off was right.
+The box tests the part's **bounds, not its centroid**. Half a country hanging out of the frame is
+exactly what the frame exists to prevent, and a centroid test lets a long island through on the
+strength of its middle.
 
-**Overrides are saved**, to `localStorage` immediately (so a change is in force on the next
+**Sandbox ▸ Shape Framing** is one control: the box. Drag its corners; anything not wholly inside
+is cut, and cut parts stay drawn faintly, because a part that has been cut *and* has vanished
+tells you nothing about whether cutting it was right. The map is fitted to the **whole country**
+and left alone while you drag — a frame that refits under the hand cannot be aimed — and the
+sandbox runs at **10m** (`sbHiRes`), since the outline is the thing being judged.
+
+That is deliberately less than it used to do. There were three ways to switch individual parts in
+and out, and then a `framingDeriveRule` that worked backwards from the selection to whichever
+rule reproduced it. But the box is the only thing an override actually produces, so everything
+else was editing a proxy for it: now the rule *is* what you are drawing, and *Save override*
+writes the rectangle verbatim.
+
+**Overrides are saved** to `localStorage` immediately (so a change is in force on the next
 reload) and to `data/shape-core-overrides.json` via *Download all*, which is the only sense in
 which anything is permanent. `loadCoreOverrides` reads the file as the baseline and lays local
 edits on top, so a country you have overridden yourself is not quietly reverted by a fresh
-checkout. Saving also clears `shapeDescriptorCache` — which is **null**-when-invalid, not
-empty-object, since an empty object is truthy and would be used as a finished cache.
+checkout. A box that cuts nothing is not saved at all — that is the default, not an override.
+Saving also clears `shapeDescriptorCache` — which is **null**-when-invalid, not empty-object,
+since an empty object is truthy and would be used as a finished cache.
 
 **The panel ranks every country by how much of its own bounding box it fills**, worst first,
 which is how you find a bad framing instead of stumbling on one. Below 5,000 km² the number stops
@@ -82,14 +90,15 @@ Above the floor it reads: Bahamas 2.2%, Solomon Islands 3.3%, Vanuatu 4.3%, Japa
 part, so it is a diagonal country rather than a fixable one, which the parts count says at a
 glance.
 
-Note the override only *restricts* what the rule may consider; the rule still runs on top. Select
+Note the override only *restricts* what the rule may consider; the rule still runs on top. Box
 four parts of Japan and the frame may keep one, and the panel re-opens on that live result rather
-than on what was selected.
+than on what the box held.
 
 Fixed at source on the way: **`featureParts` now accepts a bare geometry as well as a Feature.**
-`shapeFramingCore` *returns* a bare MultiPolygon, so anything asking for the parts of a core it
-had just computed was silently getting an empty list — which reads as "this country has no
-parts at all".
+`shapeFramingCore` *returns* a bare MultiPolygon — except when it abandons the core for a genuine
+scatter, when it returns the whole **Feature** — so anything asking for the parts of a core it
+had just computed was silently getting an empty list, which reads as "this country has no parts
+at all".
 
 ## US States Puzzle
 
@@ -417,7 +426,52 @@ Notes worth keeping:
   lopsided mix that moves whenever either rule is touched (measured at 27% near-ties with a 0.45
   coin, 62% at 0.68, 36% at 0.60, all of them noisy). Searching for both is 50/50 by
   construction — verified at **48% near-ties with the equator shortcut winning 52%**, and **zero
-  failed draws** in 50. On the reversing draws it still rejects pairs the map gets right: Apparent Mercator size goes as `area/cos²(latitude)`, so the build only keeps pairs where the bigger-looking country is the smaller one — the projection is the adversary, not the distractor list. Its reveal (`sbRevealEquator`) then carries both countries down to the equator at their honest size: Mercator's scale factor is `1/cos(latitude)` in both axes, so this is **one uniform scale in projected space** — the same correction the world puzzle applies to a dragged piece (`puzzleLatRatio`), not a re-projection. The path string never changes, so verticals stay vertical and nothing can wrap across the antimeridian mid-animation. Verified: both shapes render at an identical 0.3245 px per km. The reveal runs in **two phases**, split along the axis that carries the meaning. Phase one is a pure **north–south** move: each country drops (or climbs) to the equator and re-scales as it goes, staying over its own longitude, while the rest of the world fades out. That is the lie being undone, and undoing it on its own axis is what makes it legible — sliding sideways at the same time buries the one motion that matters inside a general rearrangement. Phase two closes the pair up side by side **and** brings the camera in, together, because those are the same gesture. The camera has to zoom **about the pair**: interpolating the layer's transform string straight from `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom centred on the SVG's top-left corner followed by a pan to catch up, which is exactly what it looked like — a lunge at a random spot and then a scramble across to the countries. Written as `translate(p) scale(k) translate(-q)` with p and q interpolated separately, u=0 is the identity and u=1 is the same final framing, with everything between anchored on the shapes. The explanation is bare numbers now: the animation carries both countries to the equator at their honest sizes, which makes the point far better than a sentence about 1/cos²(latitude), and next to it the sentence read as an apology for the picture. Labels are serif, unbold and unhaloed, set further below the shapes — the pair is alone on a cleared map by then, so there is nothing for a stroked label to survive against and the outline only made it shout. (Doing all of it at once meant the shapes were still travelling while the frame closed in on them, so nothing could be read.) Verified on a Germany/Cameroon draw: at the end of phase one both centres sit exactly on the equator's screen y, neither has moved horizontally, and the scales are 0.629 and 0.995 — Germany shrinking to a third of its apparent area while Cameroon barely moves, which is the whole point.
+  failed draws** in 50. Apparent Mercator size goes as `area/cos²(latitude)`, so the reversing
+  draws only keep pairs where the bigger-looking country is the smaller one — the projection is
+  the adversary, not the distractor list.
+
+  **Its reveal (`sbRevealEquator`) takes the map away and CARRIES both countries to the
+  equator, re-projecting every frame**, so each one visibly un-stretches on the way down. Carried,
+  not scaled: a uniform scale by cos(latitude) is the right answer for a shape small enough to
+  have one latitude, and this mode deals in Greenlands. Rotating the globe so a country's own
+  centroid lands on the equator and re-running the Mercator is the honest version of the same
+  move, and it is the one that shows the shape changing rather than only the size. Verified: the
+  drawn area ratio at the end matches the true area ratio to within 3%, against a map ratio that
+  had one of them looking nearly twice the other.
+
+  Four things that construction has to get right:
+  * **Rotate onto the prime meridian first.** A rotation by −φ about the y axis only lands a
+    point on the equator if it is already at longitude 0, so rotating by latitude alone left
+    Finland 220 px short of the line it was arriving at. Mercator's x is linear in longitude, so
+    undoing that sideways rotation is one constant added to the translate — the shape keeps its
+    own longitude, and at u = 0 the projection is pixel-identical to the live map's.
+  * **Animate a decimated copy.** Re-projecting 10m geometry every frame is 63 ms for Canada,
+    which is a slideshow rather than a motion; every nth vertex is 1.2 ms and, while the shape is
+    travelling, indistinguishable. Full resolution goes back on the instant the carry stops,
+    which is also the instant the shape is worth looking at closely.
+  * **Draw the framing core, and only offer countries whose core IS the country** (within 8% by
+    area). Norway's full geometry runs from Svalbard to Bouvet Island, so a pair fitted to it is
+    two specks either side of 135° of empty latitude — and drawing the core instead would mean
+    comparing a country against an area figure that includes land not on screen. For France,
+    Norway and Vanuatu "the area" is a question about which bits count, and this round is not the
+    place to argue it; they are dropped.
+  * **The camera zooms ABOUT THE PAIR.** Interpolating the layer's transform straight from
+    `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom centred on the SVG's
+    top-left corner followed by a pan to catch up, which is exactly what it looked like — a lunge
+    at a random spot and then a scramble across to the countries. Written as
+    `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
+    u = 1 is the same final framing, with everything between anchored on the shapes.
+
+  The **answer is painted on the shapes**: the bigger country fills green and a wrong pick is
+  hatched red, so the right answer and the mistake are on screen together. Labels are children of
+  the layer rather than of their shape, so they **share one baseline** — hung off each shape they
+  sat at different heights and read as two separate captions. They are serif, unbold and
+  unhaloed: the pair is alone on a cleared map by then, so there is nothing for a stroked label
+  to survive against and the outline only made it shout. The two phases are split along the axis
+  that carries the meaning — phase one is a pure **north–south** carry over each country's own
+  longitude, phase two closes the pair up **and** brings the camera in, because those are the same
+  gesture. Doing all of it at once meant the shapes were still travelling while the frame closed
+  in on them, so nothing could be read.
 * **`sb-upside-down` uses the transform that changes the silhouette LEAST.** Five are on
   offer — both quarter-turns, the half-turn, and both mirrors — and the one chosen is whichever
   scores highest against the country's own true outline, because that is the one that cannot be
@@ -568,8 +622,16 @@ re-applied at the end of every `drawCountries`, which is the one place every red
   actually measured between (`sbNearestPair`), or it would draw one distance and label it with
   another.
 
+  The spokes are **hairline** and carry no distance label: the order is the answer and it is
+  already in the list beside the map, so a number at every midpoint only competed with the
+  shapes, and at 2px five spokes converging on the anchor read as a solid wedge over the very
+  countries they point at. Countries are marked with a **small flag** rather than their name —
+  five country names written across a zoomed map is more type than map (`boardMarks.flags`).
+
   The distance itself is **nearest point to nearest point** (`sbKmApart`), not centroid to
-  centroid. Centroids answer a different question and get it visibly wrong on anything long or
+  centroid, and it is measured over the **framing core** rather than the whole feature: "how far
+  is France from Brazil" has an answer nobody means when French Guiana is allowed to count — it
+  was 0 km, and is now 6,377. The Galápagos and Bouvet Island are the same case. Centroids answer a different question and get it visibly wrong on anything long or
   scattered: Chile's centroid is 2,000 km from its own northern border, so Peru read as further
   from Chile than countries Chile does not touch, and any country with an ocean territory has
   its centroid out at sea. Two touching countries are **0 km** apart, which is the only answer
@@ -588,6 +650,14 @@ re-applied at the end of every `drawCountries`, which is the one place every red
   not being allowed to say Turkey made naming the airport stand in for naming the country.
 
 Two more things Flyover's board needs, both of them about the route being read against nothing:
+* **The answer key runs on the geometry the BOARD draws.** Flyover meshes its coastline straight
+  off `gameState.mapTopology`, which is the raw fetched source, while `gameState.countries` has
+  been through the medium-detail simplification pass — so the shore on screen was sharper than
+  the polygons the key was tested against, and a country clipped by a few kilometres of headland
+  could be on the map and not in the answer. `sbBoardFeatures()` builds the countries from the
+  same topology the coastline comes from (the Netherlands: 261 vertices against 72), and the
+  reveal's fills use it too, or a simplified outline shows daylight along the coast it is
+  supposed to be filling.
 * **`sbCountriesAlong` samples for the NARROWEST country on the route, not a typical one.** At
   140 samples an 8,000 km flight steps 57 km at a time, and the Netherlands is ~150 km across
   where a Munich–Seattle track clips it — so it was missed about half the time, which makes the
@@ -625,6 +695,16 @@ these rounds since they were written:
 `body.sb-tall-active` scopes an exception to the app-wide `body { height: 100vh; overflow: hidden }`
 under 1024px, exactly as `state-puzzle-active` does: on a phone these rounds are taller than the
 viewport, and without it the controls bar is cut off and there is no way to submit.
+
+**Four memos carry the sandbox's cost.** `worldTopoForDetail` is a presimplify plus a quantile
+over every arc weight in the world (~100 ms) and Who's Missing calls it once per country it
+tests — thirty seconds of frozen page to colour the sandbox in, for a result that cannot change
+between calls; cached against the source topology it is 2.1 s for all 191. `sbAreaKm2` and
+`getCountryCentroid` are memoised against `gameState.countries` itself, so anything that replaces
+that list (a detail change, Who's Missing's surgery) invalidates them for free — at 10m a
+centroid is a walk over tens of thousands of vertices and Mercator Lies' draw loop asks for
+hundreds per round, which took `build()` from **606 ms to 0.3 ms**. `sbWholeCache` does the same
+for "is this country's framing core the whole country".
 
 Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
 
