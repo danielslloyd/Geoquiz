@@ -167,8 +167,8 @@ const quizCountries = [
     'Thailand', 'Vietnam', 'Indonesia', 'Philippines', 'New Zealand',
     'Chile', 'Peru', 'Colombia', 'Venezuela', 'Portugal',
     'Netherlands', 'Belgium', 'Switzerland', 'Austria', 'Denmark',
-    'Finland', 'Ireland', 'Iceland', 'Morocco', 'Algeria',
-    'Kenya', 'Ethiopia', 'Iran', 'Iraq', 'Pakistan',
+    'Finland', 'Ireland', 'Iceland', 'Morocco', 'Algeria', 'Andorra',
+    'Kenya', 'Ethiopia', 'Iran', 'Iraq', 'Pakistan', 'Palau',
     'Bangladesh', 'Myanmar', 'Malaysia', 'Singapore', 'Cuba',
     'Jamaica', 'Panama', 'Costa Rica', 'Dominican Republic', 'Guatemala',
     // Additional countries
@@ -185,7 +185,7 @@ const quizCountries = [
     'Hungary', 'Jordan', 'Kazakhstan', 'Kiribati', 'Kuwait',
     'Kyrgyzstan', 'Laos', 'Latvia', 'Lebanon', 'Lesotho',
     'Liberia', 'Libya', 'Liechtenstein', 'Lithuania', 'Luxembourg',
-    'Madagascar', 'Malawi', 'Maldives', 'Mali', 'Malta',
+    'Madagascar', 'Malawi', 'Maldives', 'Mali', 'Malta', 'Marshall Islands',
     'Mauritania', 'Mauritius', 'Micronesia', 'Moldova', 'Monaco',
     'Mongolia', 'Montenegro', 'Mozambique', 'Namibia', 'Nauru',
     'Nepal', 'Nicaragua', 'Niger', 'North Korea', 'North Macedonia',
@@ -2185,6 +2185,7 @@ function loadMapData() {
                 });
                 // Tag overseas territories with their sovereign parent so they fill
                 // with (and count as) the parent, while staying separate features.
+                splitDisputedGlacier(gameState.countries);
                 tagTerritories(gameState.countries);
                 fixCountryWinding(gameState.countries);
 
@@ -2296,6 +2297,7 @@ function reloadWorldDetail() {
             const m = getCountryName(c.id);
             if (!/^Country /.test(m)) c.properties.name = m;
         });
+        splitDisputedGlacier(gameState.countries);
         fixCountryWinding(gameState.countries);
         projection.rotate(rot).scale(sc).translate(tr);
         countriesGroup.selectAll('*').remove();
@@ -2402,6 +2404,76 @@ function displayLabelForName(name) {
 }
 
 // Attach territory metadata (parent, isTerritory, displayName) to world features.
+// ==================== THE DISPUTED GLACIER ====================
+// Natural Earth ships the Siachen Glacier as its own admin-0 unit — it is claimed by both India
+// and Pakistan and administered by neither exclusively, so the atlas declines to award it. That
+// is the honest cartographic choice and the wrong one for this app: it leaves a 2,200 km² hole
+// in the map belonging to no country in the quiz list, which shows up as an unclickable blank in
+// every Find round, an unnamed shape in Name All, and a stray neighbour in the border graph.
+//
+// It is split down the middle and given to both. West to Pakistan, east to India, which is the
+// side each actually holds — the Actual Ground Position Line runs roughly north–south along the
+// Saltoro Ridge with Indian positions to its east. A meridian through the glacier's own centroid
+// is a rough stand-in for that ridge, and rough is the right precision here: the point is that
+// the map has no holes in it, not that a quiz adjudicates a border dispute.
+const GLACIER_NAME = 'Siachen Glacier';
+const GLACIER_WEST = 'Pakistan';
+const GLACIER_EAST = 'India';
+
+// Sutherland–Hodgman against a meridian. Clipping a ring against a half-plane is the whole of
+// it: walk the edges, keep the vertices on the wanted side, and emit the crossing point
+// wherever an edge changes side.
+function clipRingByMeridian(ring, lon, keepWest) {
+    const inside = pt => (keepWest ? pt[0] <= lon : pt[0] >= lon);
+    const out = [];
+    for (let i = 0; i < ring.length - 1; i++) {
+        const a = ring[i], b = ring[i + 1];
+        const ai = inside(a), bi = inside(b);
+        if (ai) out.push(a);
+        if (ai !== bi) {
+            const t = (lon - a[0]) / (b[0] - a[0]);
+            out.push([lon, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    if (out.length < 3) return null;
+    if (out[0][0] !== out[out.length - 1][0] || out[0][1] !== out[out.length - 1][1]) out.push(out[0]);
+    return out;
+}
+
+function splitDisputedGlacier(features) {
+    if (!features) return features;
+    const gi = features.findIndex(f => f && f.properties && namesMatch(f.properties.name || '', GLACIER_NAME));
+    if (gi < 0) return features;
+    const glacier = features[gi];
+    const west = features.find(f => f && f.properties && namesMatch(f.properties.name || '', GLACIER_WEST));
+    const east = features.find(f => f && f.properties && namesMatch(f.properties.name || '', GLACIER_EAST));
+    // If either neighbour is missing (a resolution that ships one and not the other), leave the
+    // glacier alone rather than deleting land from the map.
+    if (!west || !east) return features;
+
+    const cut = d3.geoCentroid(glacier)[0];
+    const halves = { west: [], east: [] };
+    featureParts(glacier).forEach(poly => {
+        // Outer ring only. The glacier has no holes, and a hole clipped independently of its
+        // shell is a shape with no defined inside.
+        const w = clipRingByMeridian(poly[0], cut, true);
+        const e = clipRingByMeridian(poly[0], cut, false);
+        if (w) halves.west.push([w]);
+        if (e) halves.east.push([e]);
+    });
+    if (!halves.west.length || !halves.east.length) return features;
+
+    const give = (target, polys) => {
+        const geom = target.geometry;
+        const own = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+        target.geometry = { type: 'MultiPolygon', coordinates: own.concat(polys) };
+    };
+    give(west, halves.west);
+    give(east, halves.east);
+    features.splice(gi, 1);
+    return features;
+}
+
 function tagTerritories(features) {
     features.forEach(f => {
         const terr = TERRITORY_BY_ID[parseInt(f.id, 10)];
@@ -13385,6 +13457,7 @@ function sbEatCountry(rawTopo, goneName) {
     // The same post-load treatment loadMapData gives the real features. Winding matters most:
     // a spherical polygon wound the wrong way makes d3.geoPath fill the whole rest of the world
     // instead of the country, so skipping it here would blank the map on certain draws.
+    splitDisputedGlacier(features);
     tagTerritories(features);
     fixCountryWinding(features);
     return { features, absorbers: [...absorbers] };

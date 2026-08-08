@@ -955,6 +955,28 @@ Plain query params — no hash, no compression. `syncModeUrl(mode)` writes `?mod
 
 `renderOrderingResult` then draws a two-column guess→correct grid with an absolutely positioned `<svg class="order-arrows">` of cubic Béziers linking each guess to its true rank (green arrowhead when the guess was already right, muted when it moved). Arrows are drawn **synchronously** rather than in a `requestAnimationFrame` — row heights are fixed in CSS so measurement is valid before the flag images load, and rAF is throttled in a hidden tab — with one follow-up rAF to absorb late layout shift (font swap). The `window resize` handler is parked on `gameState._orderArrowResize` and cleared by the next `renderOrderingMode`.
 
+## The disputed glacier
+
+Natural Earth ships the **Siachen Glacier** as its own admin-0 unit — claimed by both India and
+Pakistan and administered exclusively by neither, so the atlas declines to award it. That is the
+honest cartographic choice and the wrong one here: it leaves a 2,232 km² hole belonging to no
+country in the quiz list, which reads as an unclickable blank in every Find round, an unnamed
+shape in Name All, and a stray neighbour in the border graph.
+
+`splitDisputedGlacier` cuts it down the middle and gives it to both — west to Pakistan, east to
+India, which is the side each actually holds (the Actual Ground Position Line runs roughly
+north–south along the Saltoro Ridge with Indian positions east of it). The cut is a meridian
+through the glacier's own centroid, clipped with Sutherland–Hodgman, which is a rough stand-in
+for that ridge — and rough is the right precision: the point is that the map has no holes in it,
+not that a quiz adjudicates a border dispute. Outer rings only, since a hole clipped
+independently of its shell is a shape with no defined inside.
+
+Called from all three places features are built (both load paths and `sbEatCountry`), so the
+split survives a detail change and Who's Missing's surgery. Measured at 50m: India +997 km²,
+Pakistan +1,236 km², total 2,232 — **area conserved to 100.0%** — and a point test at either end
+of the glacier now returns Pakistan in the west and India in the east. At 110m Natural Earth
+carries no such unit and there is nothing to do.
+
 ## Overseas territories
 
 Dependencies that appear as their OWN world-atlas feature but belong to a sovereign parent (Puerto Rico→USA, Greenland→Denmark, New Caledonia→France, …) are tagged in `tagTerritories()` (keyed by ISO numeric id in `TERRITORY_BY_ID`, run from `loadMapData`). Each gets `properties.parent`, `properties.isTerritory`, and a `displayName` like "Puerto Rico (USA)". Effects: `highlightCountryOnGlobe`/`highlightFoundCountry` fill the parent **and** its territories (`featureBelongsTo`); a click on a territory counts as finding the parent (`handleCountryClick` uses `d.properties.parent || name`); free-explore/flag lookups resolve through the parent (`effectiveDataName`, parent flag). Because territories stay SEPARATE features with their own names, the parent's shape/centroid/bounding box (zoom, Shape-ID) naturally excludes them (with the Debug overlay on, clicking a country draws both pixel boxes — orange own-feature vs cyan with-territories — via `drawDebugBoundingBoxes`). Highlighted paths are `.raise()`d (`raiseHighlight`) so their outline paints on top of neighbours instead of being clipped.
