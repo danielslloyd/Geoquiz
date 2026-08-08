@@ -32,6 +32,43 @@ A country's bounding box is only as tight as its most remote scrap of land, and 
 The rule grows outward from the largest landmass, biggest part first: a part joins the core if it rivals the main mass (`CORE_BIG_PART_FRAC` 25% of it) **or** is at least `CORE_MIN_AREA_FRAC` (0.5%) of the country's area *and* within `max(CORE_MIN_GAP_KM 200, extent-of-core-so-far)` of what's accumulated. Testing against the **growing** box rather than just the main part is what keeps genuinely strung-out countries whole (Indonesia reaches Papua island by island, Malaysia keeps both halves, the USA keeps Alaska). Bounds are measured relative to the main part's centroid longitude (`partRelBounds`) so an antimeridian straddle reads as one continuous span. A final guard: if the core holds under `CORE_MIN_KEPT_FRAC` (60%) of the area, the country genuinely *is* a scatter (Kiribati) and the whole feature is used unchanged. Measured over the 10m atlas this reframes 28 quiz countries — Mauritius ×18, Netherlands ×12, France ×5.8, South Africa ×2.1, Ecuador ×1.8, Japan ×1.4 — and Kiribati is the only fallback.
 
 
+## Framing overrides, and the sandbox that makes them
+
+`shapeFramingCore`'s rule is right most of the time and hopeless in a handful of cases, and no
+threshold fixes them. Norway is the clearest: Svalbard is a real, large, permanently-populated
+part of Norway 1,650 km north of the mainland, so it clears every test the rule has — and
+including it stretches the frame across **22.5° of latitude**, which on a Mercator leaves the
+mainland a ribbon at the bottom. Indonesia reaching Papua island by island is geometrically the
+same situation; the two differ only in what a person expects to see. So there is a table of
+exceptions, `SHAPE_CORE_OVERRIDES`, consulted at the top of `shapeFramingCore` so every caller
+(the fit, the shape descriptor, the flag pattern) agrees.
+
+**An override is one number: how far from the main landmass a part may sit and still count.**
+The first attempt listed the centroids of the parts to drop and it does not survive contact with
+an atlas — Svalbard is not a polygon, it is six at 50m and dozens at 10m, so a centroid list has
+to enumerate islands and the list differs at every resolution while Shape ID runs at 10m and
+everything else at 110m or 50m. A distance says the thing actually meant, and is the same fact
+at every resolution. `'Norway': { maxKm: 700 }` takes the frame from 22.5° of latitude to
+**13.1°**, and 32 parts to 3.
+
+**Sandbox ▸ Shape Framing** (`framing-sandbox`) is how those numbers get made. Pick a country;
+every polygon is listed with its area and its distance from the main mass, and clicking one
+switches it in or out while the frame refits. Excluded parts stay **drawn, faintly** — a part
+that has been switched off *and* vanished tells you nothing about whether switching it off was
+right. The readout is the latitude and longitude span of the resulting frame, which is the
+number that actually decides whether a silhouette is readable. "Copy override" derives the
+distance from where you drew the line: the midpoint of the gap between the furthest part kept
+and the nearest dropped (a midpoint because a centroid shifts a little between resolutions and a
+threshold hard against one of them would flip), counting only parts over `CORE_MIN_AREA_FRAC` of
+the country — the specks are dropped on area wherever they sit, and letting one set the near edge
+of the gap makes almost every selection look inexpressible. If the selection genuinely is not
+distance-ordered it says so rather than emitting a number that would quietly mean something else.
+
+Fixed at source on the way: **`featureParts` now accepts a bare geometry as well as a Feature.**
+`shapeFramingCore` *returns* a bare MultiPolygon, so anything asking for the parts of a core it
+had just computed was silently getting an empty list — which reads as "this country has no
+parts at all".
+
 ## US States Puzzle
 
 The whole interaction rests on **one coordinate trick**. Each tray piece is its own `<svg>` whose `viewBox` *is* that feature's projected bounding box, expressed in board user units — so `d3.pointer(event, pieceSvg)` returns the grab point already in **board** coordinates. The misplacement of a drop is then just `cursor-in-board-coords − grab-point`: no CTM arithmetic, no bbox bookkeeping, and it stays correct however the tray happens to be scaled by CSS. `puzzleDropOffset` is that one subtraction, and it's the whole snap test. `boardScreenFrame()` (origin + px-per-unit, read live off the viewBox and client rect) is the only bridge back to screen space, and only the ghost's placement uses it.
@@ -124,7 +161,13 @@ be answered any other way than by picturing the map:
   against an expected 4.34×. Candidates are within 3× of each other **pairwise** (filtering
   against the seed alone lets the extremes sit 9× apart, and then the odd one out is simply the
   biggest picture) and no more elongated than 2.6:1 — the question is about area, and Chile at a
-  shared scale is a hair nobody can weigh against a blob.
+  shared scale is a hair nobody can weigh against a blob. **On the reveal all four are brought
+  onto one scale**, normalised UPWARD: the shared scale is the largest any tile is currently
+  drawn at, so the under-scaled ones grow into place and nothing that was already correct
+  shrinks. Shrinking to the honest scale is the same arithmetic and the wrong reading — three
+  countries visibly getting smaller as the answer arrives looks like a correction to *them*.
+  The tiles stop clipping and lose their frames for it, since a shape that grows past its box
+  is exactly what "drawn too big" means. Verified: 0.544/1.142/0.544/0.544 → all four at 1.142.
 * **Fewest Borders** — the shortest path between two countries, counted in crossings. Its
   adjacency is **not** `playableNeighbours`: that one is honestly topological and says France
   borders Brazil and Suriname, which is true via French Guiana and useless for a question about
@@ -627,8 +670,26 @@ Three things it has to get right:
   (w|cos a| + h|sin a|) by (w|sin a| + h|cos a|); solving that gives the factor. Measured over
   30 rounds of the two turned tiers: **zero overflow of the framing core**, fit factors 0.60 to
   1.00.
-**Coming Into Focus** draws the country at almost no resolution — a few corners — and puts the
-detail back a little at a time until it is the real coastline. You answer whenever you are sure,
+**Coming Into Focus** draws the country at **three points** and puts the detail back until it is
+the real coastline.
+
+Three POINTS, not three percent. A percentage makes the budget hostage to a country's islands:
+South Korea is 53 polygons of which 51 are islets, so one percent of its vertices was already an
+unmistakable outline of the mainland. Two things fix it — an absolute count, and a **1,000 km²
+floor on the parts** (South Korea: 53 → 2, the mainland and Jeju). The budget is one pool shared
+across every kept ring rather than a fraction applied to each, so an island appears only once
+its own corners have out-competed the mainland's, which is the order someone sketching would
+reach them in — and a ring is not drawn at all until it has earned three, which is what makes
+the islands arrive one at a time instead of together as slivers. The count rises geometrically
+(3 to 6 changes the shape completely; 3,000 to 3,003 changes nothing), eased to linger at the
+low end. Measured on South Korea: 3, 3, 4, 5, 7, 9, 13.
+
+One thing that had to be handled: `vwWeights` returns **Infinity** for a ring's two endpoints,
+because for an open polyline the ends can never be dropped. A ring has no ends — the "endpoints"
+are wherever the atlas happened to start the arc — so left as Infinity they each claim a slot
+before the budget buys a single real corner, and twenty islands would spend forty points saying
+nothing. They are demoted to their own ring's heaviest finite weight: important within the ring,
+ordinary globally. You answer whenever you are sure,
 from **the whole country list** rather than four options (four options and a growing outline are
 the same question asked twice: you would wait for the detail that separates those four and
 answer then, which is not the game), and the score line reports how little of it you needed.

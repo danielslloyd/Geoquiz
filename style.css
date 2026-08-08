@@ -3957,3 +3957,37 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .sb-clock { display: inline-block; margin-left: 8px; font-variant-numeric: tabular-nums;
     font-size: 0.85em; opacity: 0.9; }
 .sb-clock-worth { opacity: 0.7; }
+
+/* Out of Scale, after the answer: all four on one scale. The tiles stop clipping and lose their
+   frames, because a shape that grows past its box is exactly what "drawn too big" looks like. */
+.options-grid.sb-scale-revealed .option-btn.sb-shape {
+    background: transparent; border-color: transparent; box-shadow: none; overflow: visible;
+}
+.options-grid.sb-scale-revealed .option-btn.sb-shape svg { overflow: visible; }
+
+/* ---- Shape framing sandbox ------------------------------------------------------------- */
+/* Excluded parts stay drawn, faintly: a part that has been switched off AND vanished tells you
+   nothing about whether switching it off was right. */
+.country.fr-part { fill: var(--text); fill-opacity: 0.75; stroke: none; }
+.country.fr-part.off { fill-opacity: 0.14; stroke: var(--incorrect, #c0503f);
+    stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+
+.fr-panel { margin-top: 8px; text-align: left; }
+#fr-filter { width: 100%; padding: 7px 9px; font: inherit; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.fr-list { display: flex; flex-wrap: wrap; gap: 4px; max-height: 120px; overflow-y: auto;
+    margin: 6px 0; padding: 2px; }
+.fr-detail { border-top: 1px solid var(--border); padding-top: 8px; font-size: 0.82rem; }
+.fr-head { margin-bottom: 4px; }
+.fr-span { margin-bottom: 8px; line-height: 1.5; }
+.fr-was { opacity: 0.7; }
+.fr-parts { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto;
+    margin-bottom: 8px; }
+.fr-part-btn { display: flex; justify-content: space-between; gap: 8px; width: 100%;
+    padding: 4px 8px; font: inherit; font-size: 0.78rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface-2); color: var(--text); }
+.fr-part-btn.off { opacity: 0.5; border-style: dashed; border-color: var(--incorrect, #c0503f); }
+.fr-part-km { opacity: 0.7; font-variant-numeric: tabular-nums; }
+.fr-json { margin-top: 6px; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.72rem; word-break: break-all; opacity: 0.85; }

@@ -696,6 +696,20 @@ const QUIZ_MODES = {
         autoRotate: false,
         flagPlaceMode: true
     },
+    'framing-sandbox': {
+        name: 'Shape Framing',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        framingSandboxMode: true   // switch a country's polygon parts in and out of its frame
+    },
     'missing-sandbox': {
         name: "Who's Missing Sandbox",
         quizList: quizCountries,
@@ -1317,6 +1331,7 @@ function startGameWithMode(mode) {
     removeFlagTray();
     removeSandboxPanel();
     removeMissingSandbox();
+    removeFramingSandbox();
     removeSunMoonPanel();
     removeSunPathMode();
     drawBorderState = null;
@@ -1484,6 +1499,9 @@ function startGameWithMode(mode) {
         // The surgery is a world-scale thing to look at, and an orthographic globe can only
         // ever show half of it.
         if (modeConfig.missingSandboxMode) flatGlobeView = true;
+        // A framing question is a Mercator question — that is the projection every mode that
+        // uses shapeFramingCore fits into.
+        if (modeConfig.framingSandboxMode) flatGlobeView = true;
         setupGlobe();
         loadMapData();
     }
@@ -1712,6 +1730,7 @@ function isStaticMapMode(mc) {
     // the country disappear. It unlocks the moment the reveal hands the board back (which
     // clears `solo`), because zooming into the answer is the whole point of that map.
     if (mc && mc.sbQuizMode && gameState.sbQuestion && gameState.sbQuestion.solo) return true;
+    if (mc && mc.framingSandboxMode) return true;
     return !!(mc && (mc.findCapitalMode || mc.statePuzzleMode || mc.countryShapeIdMode ||
                      mc.sandboxMode || mc.drawBorderMode));
 }
@@ -2694,8 +2713,11 @@ function drawLakes() {
 // spanning the whole spread — measuring THAT (rather than each part on its own) is what let
 // a 10-island nation register as "big" even when no single island is more than a pixel.
 function featureParts(feature) {
-    const geom = feature && feature.geometry;
-    if (!geom) return [];
+    // Accepts a Feature or a bare geometry. shapeFramingCore RETURNS a bare MultiPolygon, so
+    // anything that wants to look at the parts of a core it just computed was silently getting
+    // an empty list — which read as "this country has no parts at all".
+    const geom = (feature && feature.geometry) || feature;
+    if (!geom || !geom.type) return [];
     if (geom.type === 'Polygon') return [geom.coordinates];
     if (geom.type === 'MultiPolygon') return geom.coordinates;
     return [];
@@ -3738,6 +3760,11 @@ function startNewQuestion() {
     // No target and no scoring — the whole map IS the question.
     if (modeConfig.missingSandboxMode) {
         renderMissingSandbox();
+        return;
+    }
+
+    if (modeConfig.framingSandboxMode) {
+        renderFramingSandbox();
         return;
     }
 
@@ -5352,6 +5379,9 @@ function boxGapKm(a, b) {
 }
 
 function shapeFramingCore(feature) {
+    // Hand-listed exceptions first — parts that clear every threshold the rule has and still
+    // wreck the frame (Svalbard for Norway). See SHAPE_CORE_OVERRIDES.
+    feature = applyCoreOverride(feature);
     const parts = featureParts(feature);
     if (parts.length < 2) return feature;
 
@@ -5580,7 +5610,7 @@ function renderCountryShapeIdQuestion() {
         sbRenderPickOne({ options: gameState.currentQuizList.map(displayLabelForName),
                           correct: displayLabelForName(gameState.targetCountry) });
         document.getElementById('question-text').innerHTML +=
-            ` <span style="opacity:.75;font-size:.85em">Detail: <span id="shape-detail-read">1%</span></span>`;
+            ` <span style="opacity:.75;font-size:.85em">Points: <span id="shape-detail-read">3</span></span>`;
         return;
     }
     const options = generateShapeIdOptions(gameState.targetCountry);
@@ -5605,71 +5635,116 @@ function renderCountryShapeIdQuestion() {
 //     ever disappears again, which is what stops the shape flickering as it grows.
 //   * a removal that would make the ring cross itself is refused outright, so even at three
 //     percent detail the silhouette is a simple polygon rather than a knot.
-const SHAPE_UNFOLD_MS = 26000;    // low detail to full, if you never answer
-const SHAPE_UNFOLD_MIN = 0.012;   // where it starts: a few corners
+const SHAPE_UNFOLD_MS = 26000;    // three points to the whole coastline, if you never answer
+const SHAPE_UNFOLD_START = 3;     // where it starts: a triangle
+// Parts under this are left out entirely. It is not a rendering nicety: counting detail as a
+// PERCENTAGE of a country's points made the budget hostage to its islands — South Korea's
+// islets are most of its vertex count, so one percent of them was already an unmistakable
+// outline of the mainland. An absolute budget fixes the arithmetic; this fixes what is counted.
+const SHAPE_UNFOLD_MIN_PART_KM2 = 1000;
 let shapeUnfold = null;
 
 function startShapeUnfold(target) {
     stopShapeUnfold();
     gameState.shapeIdTarget = target;
-    // Rings, each with its own VW weights. Every part is kept: dropping the small ones would
-    // silently answer "which country has islands".
-    const rings = featureParts(target).map(poly => poly[0]).filter(r => r && r.length > 4);
+    const R2 = 6371 * 6371;
+    let rings = featureParts(target)
+        .map(poly => poly[0])
+        .filter(r => r && r.length > 4)
+        .map(r => ({ ring: r, km2: d3.geoArea({ type: 'Polygon', coordinates: [r] }) * R2 }))
+        .filter(r => r.km2 >= SHAPE_UNFOLD_MIN_PART_KM2);
+    // Never end up with nothing: a country made entirely of small islands still has to be
+    // drawable, so it falls back to its largest part whatever that part's size.
     if (!rings.length) {
-        countriesGroup.append('path').datum(target).attr('class', 'country shape-target').attr('d', path(target));
-        return;
+        const all = featureParts(target).map(poly => poly[0]).filter(r => r && r.length > 4);
+        if (!all.length) {
+            countriesGroup.append('path').datum(target).attr('class', 'country shape-target').attr('d', path(target));
+            return;
+        }
+        all.sort((x, y) => y.length - x.length);
+        rings = [{ ring: all[0], km2: 0 }];
     }
-    const prepared = rings.map(ring => {
+
+    // One global ordering of every point in every kept ring, by VW weight.
+    //
+    // The endpoints of each ring come back from vwWeights as Infinity, because for an open
+    // polyline the ends can never be dropped — but a ring's "ends" are just wherever the atlas
+    // happened to start the arc, which is not a geographic fact about anything. Left as
+    // Infinity they would each claim a slot before the budget bought a single real corner, so
+    // twenty islands would spend forty points saying nothing. They are demoted to the ring's
+    // own heaviest finite weight instead: important within their ring, ordinary globally.
+    const prepared = rings.map(({ ring }) => {
         const w = vwWeights(ring);
-        const finite = Array.from(w).filter(v => isFinite(v)).sort((a, b) => a - b);
-        return { ring, w, finite };
+        let maxFinite = 0;
+        for (let i = 0; i < w.length; i++) if (isFinite(w[i]) && w[i] > maxFinite) maxFinite = w[i];
+        const fixed = Array.from(w, v => (isFinite(v) ? v : (maxFinite || 1)));
+        return { ring, w: fixed };
     });
+    const order = [];
+    prepared.forEach((pr, ri) => {
+        for (let i = 0; i < pr.ring.length - 1; i++) order.push({ ri, i, w: pr.w[i] });
+    });
+    order.sort((x, y) => y.w - x.w);
+
     const layer = countriesGroup.append('path').attr('class', 'country shape-target');
-    shapeUnfold = { target, prepared, layer, t0: Date.now(), detail: SHAPE_UNFOLD_MIN, timer: null };
-    drawShapeUnfold(SHAPE_UNFOLD_MIN);
+    shapeUnfold = { target, prepared, order, total: order.length, layer,
+                    t0: Date.now(), points: SHAPE_UNFOLD_START, timer: null };
+    drawShapeUnfold(SHAPE_UNFOLD_START);
     const tick = () => {
         if (!shapeUnfold || gameState.questionType !== 'country-shape-id') { stopShapeUnfold(); return; }
         if (gameState.answeredCorrectly) return;
         const t = Math.min(1, (Date.now() - shapeUnfold.t0) / SHAPE_UNFOLD_MS);
-        // Eased so the early, informative jumps are slow and the last few thousand vertices —
-        // which change nothing anyone can see — go by quickly.
-        const detail = SHAPE_UNFOLD_MIN + (1 - SHAPE_UNFOLD_MIN) * (t * t);
-        shapeUnfold.detail = detail;
-        drawShapeUnfold(detail);
+        // Geometric, so the count rises by a constant FRACTION rather than a constant number:
+        // 3 points to 6 changes the shape completely and 3,000 to 3,003 changes nothing, so
+        // equal absolute steps would spend almost the whole animation showing the same finished
+        // outline. Eased on top of that (t^1.4) to linger at the low end, which is the only
+        // part anyone is reading.
+        const span = Math.max(1, shapeUnfold.total / SHAPE_UNFOLD_START);
+        const n = Math.round(SHAPE_UNFOLD_START * Math.pow(span, Math.pow(t, 1.4)));
+        shapeUnfold.points = Math.min(shapeUnfold.total, n);
+        drawShapeUnfold(shapeUnfold.points);
         const el = document.getElementById('shape-detail-read');
-        if (el) el.textContent = (detail * 100).toFixed(detail < 0.1 ? 1 : 0) + '%';
+        if (el) el.textContent = shapeUnfold.points.toLocaleString();
         if (t >= 1) stopShapeUnfold();
     };
     // setInterval, not requestAnimationFrame. rAF does not fire in a backgrounded tab, which
-    // would freeze the outline at three percent and leave the round unanswerable until the
+    // would freeze the outline at three points and leave the round unanswerable until the
     // player came back — and this is a 26-second animation, exactly the length someone is most
     // likely to tab away from. 60 ms is smooth enough for a shape that changes this slowly.
     shapeUnfold.timer = setInterval(tick, 60);
 }
 
-// Keep the `frac` heaviest points of each ring. The weight ordering is what VW computed, so
-// this is a threshold rather than a resampling: the points that survive are the ones the
-// algorithm says carry the shape.
-function drawShapeUnfold(frac) {
+// The `n` heaviest points in the country, wherever they fall. ONE budget shared across all the
+// rings rather than a fraction applied to each: an island only appears once its own corners
+// have out-competed the mainland's, which is the order someone sketching would reach them in.
+function drawShapeUnfold(n) {
     if (!shapeUnfold) return;
+    const keep = shapeUnfold.prepared.map(() => []);
+    const take = Math.max(3, Math.min(shapeUnfold.total, n));
+    for (let k = 0; k < take; k++) {
+        const e = shapeUnfold.order[k];
+        keep[e.ri].push(e.i);
+    }
     const polys = [];
-    shapeUnfold.prepared.forEach(({ ring, w, finite }) => {
-        if (!finite.length) { polys.push([ring]); return; }
-        const idx = Math.min(finite.length - 1,
-            Math.max(0, Math.floor((1 - frac) * finite.length)));
-        const cut = finite[idx];
-        const kept = [];
-        for (let i = 0; i < ring.length; i++) if (w[i] >= cut) kept.push(ring[i]);
-        // A ring needs four points to be a ring at all; below that it is a line and geoPath
-        // fills nothing.
-        if (kept.length < 4) {
-            const step = Math.max(1, Math.floor(ring.length / 6));
-            kept.length = 0;
-            for (let i = 0; i < ring.length; i += step) kept.push(ring[i]);
-        }
-        if (kept[0] !== kept[kept.length - 1]) kept.push(kept[0]);
-        polys.push([kept]);
+    keep.forEach((idxs, ri) => {
+        // A ring needs three distinct points to enclose anything. Below that it has not earned
+        // its place and simply is not drawn — which is what makes the islands arrive one at a
+        // time rather than all at once as slivers.
+        if (idxs.length < 3) return;
+        idxs.sort((x, y) => x - y);
+        const ring = shapeUnfold.prepared[ri].ring;
+        const pts = idxs.map(i => ring[i]);
+        pts.push(pts[0]);
+        polys.push([pts]);
     });
+    if (!polys.length) {
+        const ring = shapeUnfold.prepared[0].ring;
+        const step = Math.max(1, Math.floor(ring.length / 4));
+        const pts = [];
+        for (let i = 0; i < ring.length && pts.length < 3; i += step) pts.push(ring[i]);
+        pts.push(pts[0]);
+        polys.push([pts]);
+    }
     shapeUnfold.layer.attr('d', path({ type: 'MultiPolygon', coordinates: polys }) || '');
 }
 
@@ -5686,14 +5761,16 @@ function revealShapeIdTruth() {
     if (tier && tier.unfold) {
         // Freeze the detail the answer was given at, note it, then snap to the real coastline.
         if (shapeUnfold) {
-            const used = shapeUnfold.detail;
+            const used = shapeUnfold.points;
+            const tot = shapeUnfold.total;
             gameState.shapeDetails = (gameState.shapeDetails || []).concat(used);
             const layer = shapeUnfold.layer, target = shapeUnfold.target;
             stopShapeUnfold();
             layer.datum(target).attr('d', path(target));
             const fb = document.getElementById('feedback');
             if (fb) fb.innerHTML = `<strong>${displayLabelForName(gameState.targetCountry)}</strong>` +
-                ` — named at <strong>${(used * 100).toFixed(used < 0.1 ? 1 : 0)}%</strong> of its detail.`;
+                ` — named at <strong>${used.toLocaleString()}</strong> point${used === 1 ? '' : 's'}` +
+                ` out of ${tot.toLocaleString()}.`;
         }
         return;
     }
@@ -12588,6 +12665,8 @@ const SANDBOX_SUBMODES = [
       desc: 'Trace a missing outline; scored by how close you get' },
     { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",
       desc: 'Dissolve any country into its neighbours; see which ones can go' },
+    { key: 'framing-sandbox', icon: 'crop_free', label: 'Shape Framing',
+      desc: 'Which polygons a country is framed by — switch its outliers in and out' },
     { key: 'spaceship-sandbox', icon: 'tune', label: 'Spaceship Sandbox',
       desc: 'Every spot the orbital quiz can pick; build and share a seed' }
 ];
@@ -13390,6 +13469,264 @@ function setMapColour(on) {
     applyMapColouring();
     const btn = document.getElementById('map-colour-toggle');
     if (btn) btn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
+}
+
+// ==================== FRAMING-CORE OVERRIDES ====================
+// `shapeFramingCore` works out which polygon parts are worth framing by a rule, and the rule is
+// right most of the time and hopeless in a handful of well-known cases. Norway is the clearest:
+// Svalbard is a real, large, permanently-populated part of Norway 800 km north of the mainland,
+// so it clears every threshold the rule has — and including it stretches the country across
+// about thirty degrees of latitude, which on a Mercator makes the mainland a thin ribbon at the
+// bottom of the frame. No threshold fixes that without breaking Indonesia, because the two
+// situations are geometrically identical and differ only in what a person expects to see.
+//
+// So: a table of exceptions, keyed by country, listing the CENTROIDS of the parts to leave out.
+// Centroids rather than array indices because the index of a part depends on the atlas
+// resolution and Shape ID runs at 10m while everything else runs at 110m or 50m; a centroid is
+// the same place in all three. Matched within CORE_OVERRIDE_TOL degrees.
+//
+// Built with the Framing sandbox (Sandbox ▸ Shape Framing), which is the only sane way to
+// produce these numbers — it lists every part with its area and its distance from the main
+// mass, and shows what the frame does as you switch them off.
+// An override is ONE NUMBER: how far from the main landmass a part may sit and still count.
+//
+// The first attempt listed the centroids of the parts to drop, and it does not survive contact
+// with an atlas. Svalbard is not a polygon — at 50m it is six, at 10m it is dozens — so a
+// centroid list has to enumerate islands, and the list is different at every resolution while
+// Shape ID runs at 10m and everything else at 110m or 50m. A distance says the thing actually
+// meant ("Svalbard is too far away to frame with the mainland") in a way that is the same fact
+// at every resolution and needs no maintenance when the atlas changes.
+//
+// Produced by the Shape Framing sandbox (Sandbox ▸ Shape Framing), which shows every part with
+// its distance from the main mass and derives the number from where you draw the line.
+const SHAPE_CORE_OVERRIDES = {
+    // Svalbard (1,649 km) and Jan Mayen (1,000 km) out; the Lofotens and the rest of the
+    // coastal islands, all within 600 km, stay. Cuts the frame from 22.5° of latitude to 13.1°.
+    'Norway': { maxKm: 700 }
+};
+
+function coreOverrideFor(name) {
+    if (!name) return null;
+    const key = Object.keys(SHAPE_CORE_OVERRIDES).find(k => namesMatch(k, name));
+    return key ? SHAPE_CORE_OVERRIDES[key] : null;
+}
+
+// Drop the parts an override excludes, before the rule ever sees them. Applied at the top of
+// shapeFramingCore so every caller — the fit, the shape descriptor, the flag pattern — agrees.
+function applyCoreOverride(feature) {
+    const name = feature && feature.properties && feature.properties.name;
+    const rule = coreOverrideFor(name);
+    if (!rule || !(rule.maxKm > 0)) return feature;
+    const parts = featureParts(feature);
+    if (parts.length < 2) return feature;
+    const items = parts.map(c => {
+        const poly = { type: 'Polygon', coordinates: c };
+        return { c, a: d3.geoArea(poly), centroid: d3.geoCentroid(poly) };
+    });
+    items.sort((x, y) => y.a - x.a);
+    const home = items[0].centroid;
+    const kept = items.filter(it => d3.geoDistance(home, it.centroid) * 6371 <= rule.maxKm)
+                      .map(it => it.c);
+    if (!kept.length || kept.length === parts.length) return feature;
+    return { type: 'Feature', properties: feature.properties,
+             geometry: { type: 'MultiPolygon', coordinates: kept } };
+}
+
+// ==================== SHAPE FRAMING SANDBOX ====================
+// Pick a country, see every polygon it is made of, and switch parts in and out of the framing
+// core while the frame redraws. The numbers that matter are all on screen: each part's area,
+// how far it sits from the main mass, and — the one that actually decides whether a silhouette
+// is readable — the latitude span the frame ends up covering.
+
+let framingState = null;
+
+function renderFramingSandbox() {
+    gameState.questionType = 'framing-sandbox';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+    const restart = document.getElementById('restart-btn');
+    if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
+    document.getElementById('question-text').innerHTML =
+        `<strong>Shape framing.</strong> Pick a country; switch its parts in and out of the frame.`;
+    framingState = { name: null, parts: [], off: new Set() };
+    buildFramingPanel();
+    // Start on the case that motivated the whole thing.
+    const start = (gameState.currentQuizList || []).find(n => namesMatch(n, 'Norway'));
+    if (start) framingPick(start);
+}
+
+function buildFramingPanel() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    let box = document.getElementById('fr-panel');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'fr-panel';
+    box.className = 'fr-panel';
+    box.innerHTML =
+        `<input type="text" id="fr-filter" placeholder="Country…" autocomplete="off">
+         <div class="fr-list" id="fr-list"></div>
+         <div class="fr-detail" id="fr-detail"></div>`;
+    host.appendChild(box);
+    const list = document.getElementById('fr-list');
+    const paint = filter => {
+        const f = normalizeName(filter || '');
+        list.innerHTML = '';
+        (gameState.currentQuizList || [])
+            .filter(n => !f || normalizeName(n).includes(f))
+            .slice(0, 200)
+            .forEach(n => {
+                const b = document.createElement('button');
+                b.className = 'sb-pick-btn';
+                b.textContent = displayLabelForName(n);
+                if (framingState && namesMatch(framingState.name, n)) b.classList.add('picked');
+                b.addEventListener('click', () => framingPick(n));
+                list.appendChild(b);
+            });
+    };
+    paint('');
+    document.getElementById('fr-filter').addEventListener('input', function () { paint(this.value); });
+    framingState.repaintList = paint;
+}
+
+function framingPick(name) {
+    const f = sbFeature(name);
+    if (!f) return;
+    const R2 = 6371 * 6371;
+    const parts = featureParts(f).map((c, i) => {
+        const poly = { type: 'Polygon', coordinates: c };
+        return { i, c, km2: d3.geoArea(poly) * R2, centroid: d3.geoCentroid(poly) };
+    }).sort((a, b) => b.km2 - a.km2);
+    const main = parts[0];
+    parts.forEach(pt => { pt.km = main ? sbKmBetween(main.centroid, pt.centroid) : 0; });
+    // Start from what the RULE decides, so the panel opens showing the current behaviour and
+    // the toggles are edits to it rather than a blank slate.
+    const ruled = shapeFramingCore(f);
+    const inCore = new Set();
+    featureParts(ruled).forEach(c => {
+        const cen = d3.geoCentroid({ type: 'Polygon', coordinates: c });
+        const hit = parts.find(pt => Math.abs(pt.centroid[0] - cen[0]) < 0.01 &&
+                                     Math.abs(pt.centroid[1] - cen[1]) < 0.01);
+        if (hit) inCore.add(hit.i);
+    });
+    framingState.name = name;
+    framingState.feature = f;
+    framingState.parts = parts;
+    framingState.off = new Set(parts.filter(pt => !inCore.has(pt.i)).map(pt => pt.i));
+    if (framingState.repaintList) framingState.repaintList(document.getElementById('fr-filter').value);
+    framingDraw();
+}
+
+function framingCoreNow() {
+    const kept = framingState.parts.filter(pt => !framingState.off.has(pt.i)).map(pt => pt.c);
+    if (!kept.length) return framingState.feature;
+    return { type: 'MultiPolygon', coordinates: kept };
+}
+
+function framingDraw() {
+    if (!framingState || !framingState.feature || !countriesGroup) return;
+    const core = framingCoreNow();
+    const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.1;
+    try {
+        const c = d3.geoCentroid(core);
+        if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
+        projection.fitExtent([[pad, pad], [w - pad, h - pad]], core);
+    } catch (_) { /* leave the framing alone */ }
+
+    countriesGroup.selectAll('*').remove();
+    if (typeof g !== 'undefined' && g) g.selectAll('circle.island-marker').remove();
+    if (lakesGroup) { lakesGroup.remove(); lakesGroup = null; }
+    // Excluded parts are still DRAWN, just faintly: the point of the tool is to see what falls
+    // outside the frame, and a part that has been switched off and also vanished tells you
+    // nothing about whether switching it off was right.
+    framingState.parts.forEach(pt => {
+        const d = path({ type: 'Polygon', coordinates: pt.c });
+        if (!d) return;
+        countriesGroup.append('path')
+            .attr('class', 'country fr-part' + (framingState.off.has(pt.i) ? ' off' : ''))
+            .attr('d', d);
+    });
+    framingDetail();
+}
+
+function framingDetail() {
+    const el = document.getElementById('fr-detail');
+    if (!el || !framingState.name) return;
+    const core = framingCoreNow();
+    const b = d3.geoBounds(core);
+    const latSpan = b[1][1] - b[0][1];
+    let lonSpan = b[1][0] - b[0][0];
+    if (lonSpan < 0) lonSpan += 360;
+    const full = d3.geoBounds(framingState.feature);
+    let fullLon = full[1][0] - full[0][0];
+    if (fullLon < 0) fullLon += 360;
+    const rows = framingState.parts.slice(0, 24).map(pt => {
+        const off = framingState.off.has(pt.i);
+        return `<button class="fr-part-btn${off ? ' off' : ''}" data-part="${pt.i}">` +
+               `<span class="fr-part-area">${Math.round(pt.km2).toLocaleString()} km²</span>` +
+               `<span class="fr-part-km">${pt.km < 1 ? 'main' : sbFormatKm(pt.km)}</span></button>`;
+    }).join('');
+    el.innerHTML =
+        `<div class="fr-head"><strong>${displayLabelForName(framingState.name)}</strong> — ` +
+        `${framingState.parts.length} part${framingState.parts.length === 1 ? '' : 's'}</div>` +
+        `<div class="fr-span">Frame spans <strong>${latSpan.toFixed(1)}°</strong> of latitude, ` +
+        `<strong>${lonSpan.toFixed(1)}°</strong> of longitude` +
+        (framingState.off.size ? ` <span class="fr-was">(whole country: ` +
+            `${(full[1][1] - full[0][1]).toFixed(1)}° × ${fullLon.toFixed(1)}°)</span>` : '') +
+        `</div><div class="fr-parts">${rows}</div>` +
+        `<button class="control-btn" id="fr-copy">Copy override</button>` +
+        `<div class="fr-json" id="fr-json"></div>`;
+    el.querySelectorAll('[data-part]').forEach(b2 => b2.addEventListener('click', () => {
+        const i = +b2.dataset.part;
+        if (framingState.off.has(i)) framingState.off.delete(i); else framingState.off.add(i);
+        framingDraw();
+    }));
+    const copy = document.getElementById('fr-copy');
+    if (copy) copy.addEventListener('click', () => {
+        const out = document.getElementById('fr-json');
+        const line = framingOverrideLine();
+        if (out) out.textContent = line;
+        if (navigator.clipboard) navigator.clipboard.writeText(line).catch(() => {});
+    });
+}
+
+// The line to paste into SHAPE_CORE_OVERRIDES, derived from where the player drew the line:
+// the midpoint of the gap between the furthest part they KEPT and the nearest they dropped.
+// A midpoint rather than either edge because the atlas moves — a part's centroid shifts a
+// little between resolutions, and a threshold sitting hard against one of them would flip.
+//
+// If the selection is not distance-ordered (someone dropped a near part and kept a far one)
+// there is no single distance that expresses it, and it says so rather than emitting a number
+// that would quietly do something else.
+function framingOverrideLine() {
+    if (!framingState || !framingState.name) return '';
+    // Only parts big enough to matter. A country has dozens of specks that the rule drops on
+    // AREA grounds wherever they sit, and letting one of those set the near edge of the gap
+    // makes almost every selection look distance-inexpressible when the real choice — which
+    // of the SUBSTANTIAL outliers to keep — is a clean cut.
+    const total = framingState.parts.reduce((sum, pt) => sum + pt.km2, 0);
+    const big = framingState.parts.filter(pt => pt.km2 >= total * CORE_MIN_AREA_FRAC);
+    const kept = big.filter(pt => !framingState.off.has(pt.i));
+    const drop = big.filter(pt => framingState.off.has(pt.i));
+    if (!drop.length) return `    // '${framingState.name}': nothing substantial excluded — no override needed`;
+    if (!kept.length) return `    // '${framingState.name}': everything excluded — no override possible`;
+    const farKept = Math.max(...kept.map(pt => pt.km));
+    const nearDrop = Math.min(...drop.map(pt => pt.km));
+    if (nearDrop <= farKept) {
+        return `    // '${framingState.name}': not expressible as a distance — a part at ` +
+               `${Math.round(nearDrop)} km is excluded while one at ${Math.round(farKept)} km is kept`;
+    }
+    const cut = Math.round((farKept + nearDrop) / 2 / 10) * 10;
+    return `    '${framingState.name}': { maxKm: ${cut} },   // keeps ` +
+           `${Math.round(farKept).toLocaleString()} km, drops ${Math.round(nearDrop).toLocaleString()} km`;
+}
+
+function removeFramingSandbox() {
+    const box = document.getElementById('fr-panel');
+    if (box) box.remove();
+    framingState = null;
 }
 
 // ==================== WHO'S MISSING SANDBOX ====================
@@ -15417,6 +15754,38 @@ function sbRenderScaleOptions(opts, correct) {
         b.onclick = () => handleMultipleChoiceAnswer(m.o.label, correct, b);
         grid.appendChild(b);
     });
+    // Kept for the reveal, which has to put all four onto one scale.
+    gameState.sbScaleTiles = { measured, S, W, H };
+}
+
+// On the reveal, bring every tile onto ONE scale, so the four sit together at their true
+// relative sizes and the round ends on the comparison it was really about.
+//
+// Normalised UPWARD: the shared scale is the largest any tile is currently drawn at, so the
+// under-scaled ones grow into place and nothing that was already correct shrinks. Shrinking to
+// the honest scale would be the same arithmetic and the wrong reading — three countries would
+// visibly get smaller as the answer came in, which looks like a correction to them rather than
+// to the one that was wrong. The tiles are unclipped and their frames dropped for this, since
+// a tile that grows past its box is exactly what "too big" means.
+function sbNormaliseScaleTiles() {
+    const st = gameState.sbScaleTiles;
+    if (!st) return;
+    const grid = document.getElementById('options-grid');
+    if (grid) grid.classList.add('sb-scale-revealed');
+    const target = Math.max(...st.measured.map(m => st.S * m.o.factor));
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const dur = reduce ? 0 : 900;
+    const tiles = document.querySelectorAll('#options-grid .sb-shape');
+    st.measured.forEach((m, i) => {
+        const gEl = tiles[i] && tiles[i].querySelector('g');
+        if (!gEl) return;
+        const end = `translate(${st.W / 2},${st.H / 2}) scale(${target}) translate(${-m.cx},${-m.cy})`;
+        const sel = d3.select(gEl);
+        if (dur) sel.transition().duration(dur).ease(d3.easeCubicInOut).attr('transform', end);
+        // rAF is not guaranteed here (a backgrounded tab never fires it), so the finished
+        // state is set unconditionally — the same backstop the puzzle's piece `settle` uses.
+        setTimeout(() => { sel.interrupt(); gEl.setAttribute('transform', end); }, dur + 60);
+    });
 }
 
 // On the reveal, turn the odd tile back the right way round — saying "mirrored top-to-bottom"
@@ -15497,6 +15866,7 @@ function sbPlayRevealAnimation() {
     let hold = 0;
     if (q.equatorPair) { sbRevealEquator(q.equatorPair); hold = SB_EQ_REVEAL_MS + 1800; }
     if (q.shapeOptions) { sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
+    if (q.scaleOptions) { sbNormaliseScaleTiles(); hold = Math.max(hold, 1900); }
     // Who's Missing: close in on the neighbourhood and outline the hole. During the round the
     // map is deliberately NOT framed — framing it would name the answer — so the zoom is the
     // first thing the reveal can afford to do. The red outline is the only way to see what the
