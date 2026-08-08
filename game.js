@@ -5622,16 +5622,54 @@ const SHAPE_ID_TIERS = {
 };
 let shapeIdTier = 'outline';
 
+// Which geography the silhouettes are cut from. Every tier works over either — a state is as
+// hard to name from its outline as a country is, and rather harder for the rectangular ones.
+const SHAPE_ID_REGIONS = [
+    { key: 'countries', label: 'World',     icon: 'public',  desc: 'Every country' },
+    { key: 'us-states', label: 'US States', icon: 'flag',    desc: 'All fifty' }
+];
+let shapeIdRegion = 'countries';
+
+// Reconfigure in place from another mode's entry — the same pattern startIdentifyMode and
+// startDrawBorderMode use. Two things are forced rather than copied: AlbersUSA is dropped,
+// because a composite projection cannot sensibly fit itself to one state (Alaska and Hawaii
+// live in insets at their own scales), and Shape ID wants a plain Mercator fitted to whatever
+// it is showing; and the round count is capped at the list length, since the fifty states are
+// not the two hundred countries.
+function startShapeIdMode(region, tier) {
+    const m = QUIZ_MODES['country-shape-id'];
+    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
+    shapeIdTier = tier || shapeIdTier;
+    m.shapeIdRegion = shapeIdRegion;
+    m.quizList = base.quizList;
+    m.dataObjKey = base.dataObjKey;
+    m.mapObject = base.mapObject;
+    m.itemLabel = base.itemLabel;
+    m.itemLabelPlural = base.itemLabelPlural;
+    m.useGlobe = false;
+    m.useAlbersUsa = false;
+    // The world silhouettes are judged on the outline, so they force 10m through
+    // worldCountriesUrl(); every other region ships one resolution and uses its own URL.
+    m.mapUrl = base.mapObject === 'countries'
+        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json'
+        : base.mapUrl;
+    m.totalQuestions = Math.min(10, base.quizList.length);
+    shapeDescriptorCache = null;   // descriptors are keyed by name, and the pool just changed
+    startGameWithMode('country-shape-id');
+}
+
 function renderCountryShapeIdQuestion() {
     gameState.questionType = 'country-shape-id';
     const tier = SHAPE_ID_TIERS[shapeIdTier] || SHAPE_ID_TIERS.outline;
     stopShapeUnfold();
 
+    const what = (QUIZ_MODES['country-shape-id'] || {}).itemLabel || 'country';
     document.getElementById('question-text').innerHTML = tier.unfold
         ? `Name it as soon as you can.`
         : tier.rotate
-        ? `Which country is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
-        : `Which country is highlighted?`;
+        ? `Which ${what} is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
+        : `Which ${what} is highlighted?`;
     const flagDisplay = document.getElementById('flag-display');
     if (flagDisplay) flagDisplay.style.display = 'none';
 
@@ -5707,8 +5745,14 @@ function renderCountryShapeIdQuestion() {
         // you are sure is the moment you actually recognised it.
         sbRenderPickOne({ options: gameState.currentQuizList.map(displayLabelForName),
                           correct: displayLabelForName(gameState.targetCountry) });
+        // The detail control sits with the question, not in the controls bar: it is part of
+        // asking, and every press is a point off the score.
         document.getElementById('question-text').innerHTML +=
-            ` <span style="opacity:.75;font-size:.85em">Points: <span id="shape-detail-read">3</span></span>`;
+            ` <span class="shape-step-wrap"><button class="control-btn" id="shape-step-btn">More detail</button>` +
+            `<span class="shape-step-read">Points: <span id="shape-detail-read">3</span></span></span>`;
+        const step = document.getElementById('shape-step-btn');
+        if (step) step.addEventListener('click', stepShapeUnfold);
+        syncShapeUnfoldReadout();
         return;
     }
     const options = generateShapeIdOptions(gameState.targetCountry);
@@ -5733,7 +5777,16 @@ function renderCountryShapeIdQuestion() {
 //     ever disappears again, which is what stops the shape flickering as it grows.
 //   * a removal that would make the ring cross itself is refused outright, so even at three
 //     percent detail the silhouette is a simple polygon rather than a knot.
-const SHAPE_UNFOLD_MS = 26000;    // three points to the whole coastline, if you never answer
+// The detail is stepped BY HAND, not on a clock. On a timer the round was a race against an
+// animation — you were not deciding how much of the country you needed, you were waiting for it
+// — and the score line ("you needed 47 points") was reporting the stopwatch rather than the
+// player. With a button, spending detail is a choice and the number means what it says.
+//
+// Each press multiplies the budget rather than adding to it: 3 points to 6 changes the shape
+// completely and 3,000 to 3,003 changes nothing, so equal absolute steps would spend most of the
+// round showing the same finished outline. The ratio is set so a country reaches full resolution
+// in about SHAPE_UNFOLD_STEPS presses whatever its vertex count.
+const SHAPE_UNFOLD_STEPS = 24;
 const SHAPE_UNFOLD_START = 3;     // where it starts: a triangle
 // Parts under this are left out entirely. It is not a rendering nicety: counting detail as a
 // PERCENTAGE of a country's points made the budget hostage to its islands — South Korea's
@@ -5785,31 +5838,33 @@ function startShapeUnfold(target) {
     order.sort((x, y) => y.w - x.w);
 
     const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
-    shapeUnfold = { target, prepared, order, total: order.length, layer,
-                    t0: Date.now(), points: SHAPE_UNFOLD_START, timer: null };
+    const total = order.length;
+    const ratio = Math.max(1.08, Math.pow(Math.max(2, total / SHAPE_UNFOLD_START), 1 / SHAPE_UNFOLD_STEPS));
+    shapeUnfold = { target, prepared, order, total, layer, ratio, points: SHAPE_UNFOLD_START };
     drawShapeUnfold(SHAPE_UNFOLD_START);
-    const tick = () => {
-        if (!shapeUnfold || gameState.questionType !== 'country-shape-id') { stopShapeUnfold(); return; }
-        if (gameState.answeredCorrectly) return;
-        const t = Math.min(1, (Date.now() - shapeUnfold.t0) / SHAPE_UNFOLD_MS);
-        // Geometric, so the count rises by a constant FRACTION rather than a constant number:
-        // 3 points to 6 changes the shape completely and 3,000 to 3,003 changes nothing, so
-        // equal absolute steps would spend almost the whole animation showing the same finished
-        // outline. Eased on top of that (t^1.4) to linger at the low end, which is the only
-        // part anyone is reading.
-        const span = Math.max(1, shapeUnfold.total / SHAPE_UNFOLD_START);
-        const n = Math.round(SHAPE_UNFOLD_START * Math.pow(span, Math.pow(t, 1.4)));
-        shapeUnfold.points = Math.min(shapeUnfold.total, n);
-        drawShapeUnfold(shapeUnfold.points);
-        const el = document.getElementById('shape-detail-read');
-        if (el) el.textContent = shapeUnfold.points.toLocaleString();
-        if (t >= 1) stopShapeUnfold();
-    };
-    // setInterval, not requestAnimationFrame. rAF does not fire in a backgrounded tab, which
-    // would freeze the outline at three points and leave the round unanswerable until the
-    // player came back — and this is a 26-second animation, exactly the length someone is most
-    // likely to tab away from. 60 ms is smooth enough for a shape that changes this slowly.
-    shapeUnfold.timer = setInterval(tick, 60);
+}
+
+// One press: the next visible amount of country. Always at least one more point, so a small
+// country with few vertices still advances rather than rounding back onto itself.
+function stepShapeUnfold() {
+    if (!shapeUnfold || gameState.questionType !== 'country-shape-id') return;
+    if (gameState.answeredCorrectly) return;
+    const next = Math.max(shapeUnfold.points + 1, Math.round(shapeUnfold.points * shapeUnfold.ratio));
+    shapeUnfold.points = Math.min(shapeUnfold.total, next);
+    drawShapeUnfold(shapeUnfold.points);
+    syncShapeUnfoldReadout();
+}
+
+function syncShapeUnfoldReadout() {
+    if (!shapeUnfold) return;
+    const el = document.getElementById('shape-detail-read');
+    if (el) el.textContent = shapeUnfold.points.toLocaleString();
+    const btn = document.getElementById('shape-step-btn');
+    if (btn) {
+        const done = shapeUnfold.points >= shapeUnfold.total;
+        btn.disabled = done;
+        btn.textContent = done ? 'Full detail' : 'More detail';
+    }
 }
 
 // The `n` heaviest points in the country, wherever they fall. ONE budget shared across all the
@@ -5847,7 +5902,6 @@ function drawShapeUnfold(n) {
 }
 
 function stopShapeUnfold() {
-    if (shapeUnfold && shapeUnfold.timer) clearInterval(shapeUnfold.timer);
     shapeUnfold = null;
 }
 
@@ -5886,7 +5940,9 @@ function revealShapeIdTruth() {
     setTimeout(() => { if (layer.node() && layer.node().isConnected) { layer.interrupt(); layer.attr('transform', end); } }, dur + 60);
 }
 
-// One tile per tier, in the same shape as the puzzle's difficulty picker.
+// One tile per tier, in the same shape as the puzzle's difficulty picker, with the geography
+// chosen on the same screen rather than behind an extra click — it is one of two answers, and
+// a whole page to give it would be a page for a toggle.
 function showShapeIdSelector() {
     teardownActiveGame();
     document.getElementById('top-bar').style.display = 'none';
@@ -5896,6 +5952,11 @@ function showShapeIdSelector() {
     sel.innerHTML = `
         <h2>Name the Shape</h2>
         <p class="selector-sub">One silhouette, no map around it — how much of it do you want?</p>
+        <div class="scope-toggle" role="group" aria-label="Geography">
+            <span class="scope-toggle-label">From:</span>
+            ${SHAPE_ID_REGIONS.map(r => `<button type="button" class="scope-btn` +
+                `${r.key === shapeIdRegion ? ' active' : ''}" data-shaperegion="${r.key}">${r.label}</button>`).join('')}
+        </div>
         <div class="mode-buttons">
             ${Object.keys(SHAPE_ID_TIERS).map(k => `
             <button class="mode-btn" data-shapetier="${k}">
@@ -5904,11 +5965,15 @@ function showShapeIdSelector() {
                 <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
             </button>`).join('')}
         </div>`;
-    sel.querySelectorAll('[data-shapetier]').forEach(btn => {
+    sel.querySelectorAll('[data-shaperegion]').forEach(btn => {
         btn.addEventListener('click', () => {
-            shapeIdTier = btn.dataset.shapetier;
-            startGameWithMode('country-shape-id');
+            shapeIdRegion = btn.dataset.shaperegion;
+            sel.querySelectorAll('[data-shaperegion]').forEach(b =>
+                b.classList.toggle('active', b === btn));
         });
+    });
+    sel.querySelectorAll('[data-shapetier]').forEach(btn => {
+        btn.addEventListener('click', () => startShapeIdMode(shapeIdRegion, btn.dataset.shapetier));
     });
 }
 
@@ -8617,16 +8682,20 @@ function drawBorderBoard() {
     }
 }
 
-// Which way is the sea? A blurred band along the shore, brown inland and blue seaward, so a
-// bare line map still says which side you are on. Both bands are the SAME wide blurred stroke
-// drawn twice and clipped: once to the land polygons, once to everything else. Clipping is
-// what makes it two-sided — a stroke alone has no idea which of its flanks is water.
+// Which way is the sea? A hard black coastline with a blurred blue band fading away from it on
+// the water side only. The band is the same wide stroke as the line, masked to everything that
+// is NOT land — masking is what makes it one-sided, since a stroke has no idea which of its
+// flanks is water.
+//
+// There used to be a brown band on the inland flank as well. It said nothing the line had not
+// already said (there is a coast here), and it put a smudge over the ground the player has to
+// trace their border across.
 function shadeCoastline(mesh, obj, isTarget) {
     const d = path(mesh);
     if (!d) return;
     let defs = svg.select('defs');
     if (defs.empty()) defs = svg.append('defs');
-    defs.selectAll('#coast-blur, #coast-land-clip, #coast-sea-mask').remove();
+    defs.selectAll('#coast-blur, #coast-sea-mask').remove();
 
     const blur = defs.append('filter').attr('id', 'coast-blur')
         .attr('x', '-30%').attr('y', '-30%').attr('width', '160%').attr('height', '160%');
@@ -8638,8 +8707,6 @@ function shadeCoastline(mesh, obj, isTarget) {
     const landPath = path(land);
     if (!landPath) return;
 
-    defs.append('clipPath').attr('id', 'coast-land-clip')
-        .append('path').attr('d', landPath);
     // Sea = the whole board with the land punched out.
     const mask = defs.append('mask').attr('id', 'coast-sea-mask');
     mask.append('rect').attr('x', -width).attr('y', -height)
@@ -8647,10 +8714,11 @@ function shadeCoastline(mesh, obj, isTarget) {
     mask.append('path').attr('d', landPath).attr('fill', '#000');
 
     const shade = countriesGroup.append('g').attr('class', 'coast-shade');
-    shade.append('path').attr('class', 'coast-shade-land').attr('d', d)
-        .attr('clip-path', 'url(#coast-land-clip)').attr('filter', 'url(#coast-blur)');
     shade.append('path').attr('class', 'coast-shade-sea').attr('d', d)
         .attr('mask', 'url(#coast-sea-mask)').attr('filter', 'url(#coast-blur)');
+    // The shore itself, hard and black on top of the fade. The board is otherwise all thin grey
+    // context lines, so this is what says "this edge is real, the rest is background".
+    shade.append('path').attr('class', 'coast-line').attr('d', d);
 }
 
 function pickDrawBorderTarget() {
@@ -14124,7 +14192,9 @@ function buildFramingPanel() {
             });
     };
     paint('');
-    document.getElementById('fr-filter').addEventListener('input', function () { paint(this.value); });
+    const filter = document.getElementById('fr-filter');
+    filter.addEventListener('input', function () { paint(this.value); });
+    attachPickerKeys(filter, list);
     framingState.repaintList = paint;
 }
 
@@ -15679,7 +15749,9 @@ function sbRenderPicker(q, head) {
         });
     };
     paint('');
-    document.getElementById('sb-filter').addEventListener('input', function () { paint(this.value); });
+    const filter = document.getElementById('sb-filter');
+    filter.addEventListener('input', function () { paint(this.value); });
+    attachPickerKeys(filter, list);
 
     const next = document.getElementById('next-btn');
     next.textContent = 'Submit'; next.disabled = true; next.style.display = 'inline-block';
@@ -16212,6 +16284,53 @@ function sbRenderPickOne(q) {
     };
     paint('');
     input.addEventListener('input', function () { paint(this.value); });
+    attachPickerKeys(input, list);
+}
+
+// ---- type-to-filter lists, driven from the keyboard ---------------------------------------
+// Every "type a country" list in the app is a text box over a column of buttons, and until now
+// the text box only filtered: you typed three letters and then had to leave the keyboard, find
+// the row and click it. This makes them behave the way a combo box is expected to — type a
+// partial name, arrow up and down the matches, Enter to commit — which for the common case
+// (type enough to be unambiguous, press Enter) is one gesture instead of three.
+//
+// The highlight lives in the DOM as a class rather than in an index variable, because these
+// lists are rebuilt wholesale on every keystroke by their owner's repaint. Nothing to keep in
+// step, and nothing to go stale. Attach AFTER the owner's own 'input' handler so the repaint
+// has already happened by the time the first row is marked.
+function attachPickerKeys(input, list) {
+    if (!input || !list) return;
+    const rows = () => [...list.children].filter(el => el.tagName === 'BUTTON' && !el.disabled);
+    const active = () => list.querySelector('.kb-active');
+    const mark = el => {
+        rows().forEach(r => r.classList.remove('kb-active'));
+        if (!el) return;
+        el.classList.add('kb-active');
+        // `nearest` rather than `center`: centring scrolls the list on every keystroke even
+        // when the row is already comfortably in view.
+        if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+    };
+    const step = dir => {
+        const all = rows();
+        if (!all.length) return;
+        const i = all.indexOf(active());
+        mark(all[i < 0 ? (dir > 0 ? 0 : all.length - 1) : Math.max(0, Math.min(all.length - 1, i + dir))]);
+    };
+    input.addEventListener('input', () => mark(rows()[0]));
+    input.addEventListener('keydown', e => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); step(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); step(-1); }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            const el = active() || rows()[0];
+            if (el) el.click();
+        } else if (e.key === 'Escape' && input.value) {
+            e.preventDefault();
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+    mark(rows()[0]);
 }
 
 function sbOptionGrid(cls) {
@@ -17503,16 +17622,24 @@ function ensureSpaceshipInset() {
         .attr('viewBox', `0 0 ${W} ${H}`)
         .attr('width', W).attr('height', H);
 
-    const yMid = (mercatorY(FLAT_WORLD_NORTH) + mercatorY(FLAT_WORLD_SOUTH)) / 2;
-    const scale = W / (2 * Math.PI);
-    const iproj = d3.geoMercator().center([0, 0]).rotate([0, 0, 0]).scale(scale)
-        .translate([W / 2, H / 2 + scale * yMid]);
+    // EQUIRECTANGULAR, not Mercator. The sub-point can be anywhere on earth including the
+    // Antarctic coast, and a Mercator that reaches -78° is 1.3:1 — it will not go in a 300×165
+    // box without either losing the pole or losing most of the width. Plate carrée is exactly
+    // 2:1 pole to pole, close enough to this box to fit whole, and its degrees per pixel are
+    // constant, which is the right property for a map whose only job is "point at a latitude
+    // and longitude".
+    const iproj = d3.geoEquirectangular();
+    iproj.fitExtent([[0, 0], [W, H]], { type: 'Sphere' });
     const ipath = d3.geoPath().projection(iproj);
 
     // Fixed ocean background; land + markers live in a zoomable/pannable group so the
     // player can scroll-zoom in for a more precise guess.
     isvg.append('rect').attr('width', W).attr('height', H).attr('class', 'inset-ocean');
     const zoomG = isvg.append('g').attr('class', 'inset-zoom');
+    // The sea, as the projection actually draws it, over the flat backing rect: fitting a 2:1
+    // sphere into a 1.82:1 box letterboxes it, and without this the bands top and bottom are
+    // ocean-coloured nothing rather than visibly off the edge of the world.
+    zoomG.append('path').attr('class', 'inset-sphere').attr('d', ipath({ type: 'Sphere' }));
     zoomG.append('g').selectAll('path').data(gameState.countries).enter()
         .append('path').attr('class', 'inset-land').attr('d', ipath);
     const markers = zoomG.append('g').attr('class', 'inset-markers');
@@ -17536,7 +17663,7 @@ function ensureSpaceshipInset() {
         });
     isvg.call(zoom).on('dblclick.zoom', null);
 
-    spaceshipInset = { svg: isvg, projection: iproj, markers, zoom };
+    spaceshipInset = { svg: isvg, projection: iproj, markers, zoom, W, H };
 }
 
 function clearSpaceshipPins() {
@@ -18485,6 +18612,10 @@ function revealSpaceshipAnswer() {
     }
     spaceshipInset.markers.append('circle').attr('class', 'answer-marker').attr('r', 5 / k)
         .attr('cx', ap[0]).attr('cy', ap[1]);
+    // Close in on the pair. A world map with two dots 200 km apart on it says nothing about
+    // how close the guess was — the whole result of the round is the gap between them, and at
+    // world zoom the gap is a couple of pixels.
+    frameSpaceshipResult(ap, gameState.currentGuess ? spaceshipInset.projection(gameState.currentGuess) : null);
     const nextBtn = document.getElementById('next-btn');
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     nextBtn.disabled = false;
@@ -18494,6 +18625,35 @@ function revealSpaceshipAnswer() {
     // result is shown (matching a correct-answer's pacing) before auto-advancing. The
     // relabelled Next/See Results button above still works as a manual skip.
     scheduleAutoAdvance();
+}
+
+// Zoom the inset so the answer and the guess are both comfortably inside it. The margin is a
+// SHARE of the gap rather than a fixed number of pixels, so a near-miss and a wild one are
+// framed the same way — and it is floored, or two points a kilometre apart would ask for a zoom
+// of several thousand and land somewhere in the middle of the Atlantic through rounding.
+function frameSpaceshipResult(answer, guess) {
+    const st = spaceshipInset;
+    if (!st || !answer || !isFinite(answer[0])) return;
+    const pts = guess && isFinite(guess[0]) ? [answer, guess] : [answer];
+    const x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0]));
+    const y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+    const pad = Math.max(12, Math.hypot(x1 - x0, y1 - y0) * 0.6);
+    const w = (x1 - x0) + pad * 2, h = (y1 - y0) + pad * 2;
+    const ext = st.zoom.scaleExtent();
+    const k = Math.max(ext[0], Math.min(ext[1], Math.min(st.W / w, st.H / h)));
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const t = d3.zoomIdentity.translate(st.W / 2 - k * cx, st.H / 2 - k * cy).scale(k);
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) { st.svg.call(st.zoom.transform, t); return; }
+    st.svg.transition().duration(650).ease(d3.easeCubicInOut).call(st.zoom.transform, t);
+    // d3 transitions are rAF-driven and a backgrounded (or non-compositing) tab never fires it,
+    // which would leave the result framed on the whole world — the same backstop the puzzle's
+    // piece `settle` documents. setTimeout still runs there.
+    setTimeout(() => {
+        if (!spaceshipInset || spaceshipInset !== st) return;
+        if (Math.abs(d3.zoomTransform(st.svg.node()).k - k) < 0.01) return;
+        st.svg.interrupt().call(st.zoom.transform, t);
+    }, 720);
 }
 
 function submitSpaceshipGuess() {

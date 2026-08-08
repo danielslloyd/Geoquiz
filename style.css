@@ -904,11 +904,20 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     cursor: crosshair;
 }
 
-.inset-ocean { fill: var(--ocean-1); }
+/* Off the edge of the world: the 2:1 sphere letterboxes inside a 1.82:1 box, and the bands top
+   and bottom should read as nothing rather than as more ocean. */
+.inset-ocean { fill: var(--surface-2, #1a1e24); }
+
+/* A muted blue sea and a muted green land. The inset is read at a glance next to a photographic
+   globe, and the grey-on-grey it used to be gave the eye nothing to catch: which way up the
+   world is, and which patch of it you are looking at, both come from the colour before they
+   come from the outlines. Muted rather than saturated because two bright pins have to stay the
+   brightest things on it. */
+.inset-sphere { fill: #24485e; }
 
 .inset-land {
-    fill: var(--land);
-    stroke: var(--land-stroke);
+    fill: #46614a;
+    stroke: #7f9b83;
     stroke-width: 0.3;
     vector-effect: non-scaling-stroke; /* crisp coastlines at any inset zoom */
 }
@@ -3653,6 +3662,12 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .sb-pick-btn.picked { background: var(--accent, #d08a2c); border-color: var(--accent, #d08a2c); color: #1b1408; font-weight: 700; }
 .sb-picker-chosen { margin-top: 6px; font-size: 0.85rem; color: var(--text-muted); text-align: center; }
 
+/* The keyboard highlight in a type-to-filter list: what Enter would commit. An outline rather
+   than a fill, so it reads as "where you are" and never competes with `.picked`, which means
+   "what you chose". */
+.kb-active { outline: 2px solid var(--accent, #d08a2c); outline-offset: 1px; }
+.sb-picker-list .option-btn.kb-active, .fr-list .kb-active { outline: 2px solid var(--accent, #d08a2c); }
+
 /* Pick-one: the same chips, but they carry `option-btn` so the shared wrong-answer reveal can
    find the right one by text. That class brings full-size button styling with it, so the chip
    rules have to be restated at a specificity that beats it rather than merely following it. */
@@ -3786,16 +3801,10 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     pointer-events: none;
 }
 
-/* Which way is the sea: a blurred band along the shore, brown inland and blue seaward.
-   The same stroke twice, clipped to land and to not-land. */
-.coast-shade-land {
-    fill: none;
-    stroke: #8a6a3f;
-    stroke-width: 9;
-    stroke-opacity: 0.5;
-    pointer-events: none;
-}
-
+/* Which way is the sea: a hard black coastline with the water fading away from it. Only the
+   SEAWARD flank is shaded — a band on both sides says "there is a coast here", which the line
+   already said, and the inland brown read as a smudge the drawn border had to be traced
+   through. Blue on one side and nothing on the other is the same information, on a clean board. */
 .coast-shade-sea {
     fill: none;
     stroke: #3d7ea6;
@@ -3803,6 +3812,19 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     stroke-opacity: 0.5;
     pointer-events: none;
 }
+
+/* The coastline itself: bold and black, so the shore reads as the hard edge it is against a
+   board that is otherwise all thin grey context lines. */
+.coast-line {
+    fill: none;
+    stroke: #14181d;
+    stroke-width: 2.2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+:root[data-theme="dark"] .coast-line, html.dark .coast-line { stroke: #05070a; }
 
 /* Ground view: ticks, the sun, and the below-horizon continuation. */
 .sp-track.below {
@@ -4041,3 +4063,10 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .fr-rank-btn.picked { border-color: var(--accent, #d08a2c); font-weight: 700; }
 .fr-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fr-rank-pct, .fr-rank-parts { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
+
+/* Coming Into Focus: the detail control lives with the question, because pressing it is part of
+   asking and every press costs score. */
+.shape-step-wrap { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px;
+    vertical-align: middle; }
+.shape-step-wrap .control-btn { font-size: 0.78rem; padding: 4px 12px; }
+.shape-step-read { opacity: 0.75; font-size: 0.85em; font-variant-numeric: tabular-nums; }

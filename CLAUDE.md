@@ -708,6 +708,22 @@ for "is this country's framing core the whole country".
 
 Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
 
+## Type-to-filter lists are keyboard-driven
+
+Every "type a country" list in the app — Who's Missing, Coming Into Focus, the two Price-is-Right
+rounds, the framing sandbox — is a text box over a column of buttons, and the text box used only
+to *filter*: you typed three letters and then had to leave the keyboard, find the row and click
+it. `attachPickerKeys(input, list)` makes them behave the way a combo box is expected to — type
+a partial name, arrow up and down the matches, **Enter** to commit, Escape to clear — so the
+common case (type enough to be unambiguous, press Enter) is one gesture instead of three.
+
+The highlight lives in the DOM as a class (`.kb-active`) rather than in an index variable,
+because these lists are rebuilt wholesale on every keystroke by their owner's repaint: nothing
+to keep in step, and nothing to go stale. It has to be attached **after** the owner's own
+`input` handler, so the repaint has already happened by the time the first row is marked. Styled
+as an outline rather than a fill, so it reads as "where you are" and never competes with
+`.picked`, which means "what you chose".
+
 ## Find the Capital: the game on one map
 
 Ten rounds are scored as a running total and each round's markers are wiped before the next,
@@ -756,6 +772,20 @@ you are given. Reached through `showShapeIdSelector()`, which makes `country-sha
 seventh selector trigger that is also a real mode key and so must be intercepted in all three
 dispatch points.
 
+**Every tier runs over the world or over the fifty US states** (`SHAPE_ID_REGIONS`,
+`startShapeIdMode(region, tier)` — the same reconfigure-in-place pattern as `startIdentifyMode`
+and `startDrawBorderMode`). A state is as hard to name from its outline as a country, and rather
+harder for the rectangular ones; the shape-similarity descriptor needs no changes to find them
+(Kentucky draws Oklahoma and North Carolina, which are the other wide horizontal ones). The
+region is picked on the same screen as the tier rather than behind another click — it is one of
+two answers, and a whole page for it would be a page for a toggle.
+
+Two things are **forced rather than copied** from the region's own entry. `useAlbersUsa` is
+dropped: a composite projection cannot sensibly fit itself to one state, since Alaska and Hawaii
+live in insets at their own scales, and Shape ID wants a plain Mercator fitted to whatever it is
+showing. And `shapeDescriptorCache` is cleared on the switch, because it is keyed by name and
+the pool has just changed.
+
 Three things it has to get right:
 * **Rotate in SCREEN space, not by re-projecting.** Re-projecting would refit the country to its
   new bounding box, so how much of the viewport it fills would itself become a clue.
@@ -765,8 +795,17 @@ Three things it has to get right:
   (w|cos a| + h|sin a|) by (w|sin a| + h|cos a|); solving that gives the factor. Measured over
   30 rounds of the two turned tiers: **zero overflow of the framing core**, fit factors 0.60 to
   1.00.
-**Coming Into Focus** draws the country at **three points** and puts the detail back until it is
-the real coastline.
+**Coming Into Focus** draws the country at **three points** and you add detail **by hand**, a
+press at a time, until you are ready to name it.
+
+By hand, not on a clock. On a 26-second timer the round was a race against an animation — you
+were not deciding how much of the country you needed, you were waiting for it — and the score
+line ("named at 47 points") was reporting the stopwatch rather than the player. With a button,
+spending detail is a choice and the number means what it says. Each press **multiplies** the
+budget rather than adding to it, with the ratio set so any country reaches full resolution in
+about `SHAPE_UNFOLD_STEPS` (24) presses whatever its vertex count: measured on Papua New Guinea,
+3 → 4, 5, 7, 9, 12, 16, 21, 28, 38, 51 out of 3,366. The `setInterval` this replaced is gone,
+and with it the reason it had to be `setInterval` rather than `requestAnimationFrame`.
 
 Three POINTS, not three percent. A percentage makes the budget hostage to a country's islands:
 South Korea is 53 polygons of which 51 are islets, so one percent of its vertices was already an
@@ -807,11 +846,6 @@ count never decreased across a full run, Malaysia 92 → 450 → 2,525); and a r
 make the ring cross itself is **refused outright**, so even at one percent the silhouette is a
 simple polygon rather than a knot.
 
-Driven by `setInterval`, not `requestAnimationFrame`: rAF does not fire in a backgrounded tab,
-which would freeze the outline at one percent and leave the round unanswerable until the player
-came back — and this is a 26-second animation, exactly the length someone is most likely to tab
-away from.
-
 `revealShapeIdTruth` turns it back upright and fills the fragment in once the round is decided,
 with the usual `setTimeout` backstop, since withholding through the answer would only make the
 answer unverifiable.
@@ -827,7 +861,9 @@ Drawing per-feature cannot express this: a neighbour's outline still traces the 
 
 **Both cases use the same rule** — `(a, b) => a === b && !isTarget(a)`, exterior arcs only. On a state map that means the coast plus the international border of the whole union and *no state lines at all*: a state is as hard to place among its neighbours as a country is, which is the point. A landlocked target therefore leaves no trace on either board (West Virginia removes nothing, because it owns no exterior arc).
 
-**Which way is the sea** is answered by `shadeCoastline`: the same wide blurred stroke drawn twice, once clipped to the land polygons (brown, fading inland) and once through a mask of everything-but-land (blue, fading seaward). Clipping is what makes it two-sided — a stroke alone has no idea which of its flanks is water.
+**Which way is the sea** is answered by `shadeCoastline`: a **hard black coastline** (`.coast-line`) with a wide blurred blue stroke fading away from it, masked to everything-but-land. Masking is what makes it one-sided — a stroke has no idea which of its flanks is water.
+
+There used to be a brown band on the inland flank as well, clipped to the land polygons. It said nothing the line had not already said (*there is a coast here*) and it put a smudge over the very ground the player has to trace their border across. Blue on one side and nothing on the other is the same information on a clean board — and with the inland half gone, the shore needs to be a real line rather than the seam between two fades, which is what the black stroke is for: everything else on that board is thin grey context.
 
 **Scored as position and shape, separately.** The same error splits two ways and people fail
 in one or the other rather than both: the right shape in the wrong place, or the right place
@@ -1110,7 +1146,28 @@ Exactly one view rotates its Mercator projection as you interact with it: **`isF
 | `sun-moon` | View-only: where the sun and moon are directly overhead, the sunrise line, and the night side shaded, at any date and time (`sunMoonMode`). Optional nautical time-zone overlay and satellite imagery. See Sun & Moon below |
 | `sun-path` | **3D**: why sunrise and sunset move through the year, shown three ways at once for one latitude and date — a horizon POV, the tilted earth in space, and the celestial dome (`sunPathMode`). No map. See Sun Path below |
 | `spaceship-sandbox` | A flat world plotting every sub-point the orbital view could pick (400 live samples of `pickCoastalTarget`) with each chosen spot's heading spoke, plus a seed editor that freezes 10 spots into a shareable hash (`sandboxMode`). See Spaceship sandbox below |
-| `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
+| `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`, 1–60×), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed.
+
+**The inset is equirectangular, not Mercator, and shows the whole earth including Antarctica.**
+The sub-point can be anywhere — the coastline model runs to −84.3° — and a Mercator reaching
+−78° is 1.3:1, which will not go in a 300×165 box without losing either the pole or most of the
+width. Plate carrée is exactly 2:1 pole to pole, close enough to that box to fit whole, and its
+degrees-per-pixel are constant, which is the right property for a map whose only job is "point
+at a latitude and longitude". The 2:1 sphere letterboxes inside the 1.82:1 box, so the sphere is
+**drawn as a path** over the backing rect: the bands top and bottom then read as off the edge of
+the world rather than as more ocean. The sea is a muted blue and the land a muted green — the
+inset is read at a glance beside a photographic globe, and the grey-on-grey it used to be gave
+the eye nothing to catch; muted rather than saturated because the two pins have to stay the
+brightest things on it.
+
+**On the answer the inset closes in on the pair** (`frameSpaceshipResult`). A world map with two
+dots 200 km apart says nothing about how close the guess was — the entire result of the round is
+the gap between them, and at world zoom that gap is two pixels. The margin is a **share of the
+gap** rather than a fixed number of pixels, so a near-miss and a wild one are framed the same
+way, floored so that two points a kilometre apart do not ask for a zoom of several thousand.
+Measured: a 300 km miss goes from a 2 px gap at k = 1 to a 15 px gap at k = 6.6, both pins
+inside the box. The transition carries the usual **`setTimeout` backstop** — d3 transitions are
+rAF-driven, and without it a backgrounded tab leaves the result framed on the whole world. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
 | `skyline-id` | **Hidden from the menu** (photo pool not yet vetted) — the mode, data, and CSS are all intact; only its 3 entry points (top-bar icon in `index.html`, landing card in `index.html` **and** in `resetModeSelector()`'s template in `game.js`) are HTML-commented out. Reachable directly via `startGameWithMode('skyline-id')`. Uncomment those 3 blocks to bring it back. A real photograph of a large city's skyline — name the city from 4 choices (`skylineIdMode`). **No map at all.** Photos are fetched live from **Wikimedia Commons** (`commonsSearch`; CORS-open via `origin=*`, and every file carries machine-readable licensing). `skylineLicenceOk` keeps only PD/CC0/CC-BY/CC-BY-SA — NonCommercial, NoDerivatives and unrecognised licences are dropped — and the photographer + licence + Commons link are shown **only after the round is decided** (`revealSkylineCredit`, called from `handleCorrectAnswer` and `giveUp`), because the file title almost always names the city. `skylineQuery` appends the state/country from the entry's `label`: without it `"Toledo" skyline` returns Toledo **Spain** above Toledo Ohio, and `"St. Petersburg"` lands in Russia; the term costs ~5% of hits and fixes the wrong-city answers. `skylineCandidates` drops non-photos (SVG/portrait/maps/logos) and *ranks* rather than rejects on whether the title names the city. Whether a city has a usable photo is only knowable after searching, so `resolveSkylineTarget` retries with another city on a miss and remembers barren ones in `skylineNoPhoto`; it reserves its pick in `usedCountries` **before** the search returns so `prefetchNextSkyline` (which resolves the next round in the background — a search takes 0.5–6 s) can't collide with a live pick. Distractors are ranked by `skylineDistractorScore`: same country dominates, then same region, then closeness in **log** population — so Abidjan draws Addis Ababa/Casablanca/Alexandria, never a suburb. Options are display `label`s, not keys |
 | `sb-*` (24 keys) | The **Quick Quizzes** under Sandbox — `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-daylight-lat`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-missing`, `sb-fake-flag`, `sb-upside-down`, plus the second wave: `sb-antipode`, `sb-straight-on`, `sb-how-far`, `sb-out-of-scale`, `sb-subsolar`, `sb-blind-drop`, `sb-border-hops`, `sb-bridge`, `sb-further-north`, `sb-read-band`. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
 
