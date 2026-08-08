@@ -3960,9 +3960,10 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 
 /* Out of Scale, after the answer: all four on one scale. The tiles stop clipping and lose their
    frames, because a shape that grows past its box is exactly what "drawn too big" looks like. */
-.options-grid.sb-scale-revealed .option-btn.sb-shape {
-    background: transparent; border-color: transparent; box-shadow: none; overflow: visible;
-}
+/* The frames stay: with the cap taken from what is actually drawn, nothing needs to escape
+   its card any more. `overflow: visible` is kept only as a safety net for a stroke or a
+   half-pixel, not as the mechanism. */
+.options-grid.sb-scale-revealed .option-btn.sb-shape { overflow: visible; }
 .options-grid.sb-scale-revealed .option-btn.sb-shape svg { overflow: visible; }
 
 /* ---- Shape framing sandbox ------------------------------------------------------------- */
@@ -3991,3 +3992,14 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .fr-part-km { opacity: 0.7; font-variant-numeric: tabular-nums; }
 .fr-json { margin-top: 6px; font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 0.72rem; word-break: break-all; opacity: 0.85; }
+
+/* Coming Into Focus: an outline as well as a fill. At three points the shape is a triangle and
+   a bare fill says almost nothing about where its corners are; the stroke is what makes each
+   new point visibly arrive. */
+.country.shape-unfold { stroke: var(--land-stroke, #7d8a99); stroke-width: 2;
+    stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+
+/* Shape framing: every part outlined, so parts that touch or overlap on screen still read as
+   separate polygons — which is the entire question the sandbox is asking. */
+.country.fr-part { stroke: var(--land-stroke, #7d8a99); stroke-width: 1.2;
+    vector-effect: non-scaling-stroke; }

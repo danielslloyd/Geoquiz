@@ -2543,6 +2543,23 @@ function drawCountries() {
     // reading as broken because the country sat in a world it did not need).
     if (mc && mc.sbQuizMode && sbCustomBoard()) return;
 
+    // The framing sandbox owns its board too, and it has to be redrawn from state rather than
+    // merely drawn once: a resize, a projection change or any other caller reaching
+    // drawCountries would otherwise replace the parts with the ordinary world map and the
+    // country would simply vanish.
+    if (mc && mc.framingSandboxMode) { if (framingState && framingState.feature) framingDraw(); return; }
+
+    // Coming Into Focus draws one growing outline into countriesGroup and nothing else. The
+    // shape-id branch below skips the join, so the path survives — but only if it is still
+    // attached; if something emptied the group, put it back at the detail it had reached.
+    if (mc && mc.countryShapeIdMode && shapeUnfold) {
+        const node = shapeUnfold.layer.node();
+        if (!node || !node.isConnected) {
+            shapeUnfold.layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
+            drawShapeUnfold(shapeUnfold.points);
+        }
+    }
+
     if (!(mc && mc.countryShapeIdMode)) {
         // A FULL join — enter, update and exit. It used to be enter-only, which is invisible
         // while the group starts empty (the normal case) and silently wrong the moment
@@ -5686,7 +5703,7 @@ function startShapeUnfold(target) {
     });
     order.sort((x, y) => y.w - x.w);
 
-    const layer = countriesGroup.append('path').attr('class', 'country shape-target');
+    const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
     shapeUnfold = { target, prepared, order, total: order.length, layer,
                     t0: Date.now(), points: SHAPE_UNFOLD_START, timer: null };
     drawShapeUnfold(SHAPE_UNFOLD_START);
@@ -15736,7 +15753,14 @@ function sbRenderScaleOptions(opts, correct) {
         const pth = d3.geoPath(proj);
         const b = pth.bounds(core);
         if (!isFinite(b[0][0]) || !isFinite(b[1][1])) return null;
+        // The core's box is what the tiles are laid out from; the FULL feature's box is what
+        // actually gets drawn, and the two differ wherever a country owns a remote islet. The
+        // reveal needs the second, or the country with an outlier spills into its neighbours
+        // when everything is brought onto one scale.
+        const fb = pth.bounds(f);
         return { o, f, pth, w: b[1][0] - b[0][0], h: b[1][1] - b[0][1],
+                 fw: (isFinite(fb[0][0]) ? fb[1][0] - fb[0][0] : b[1][0] - b[0][0]),
+                 fh: (isFinite(fb[0][1]) ? fb[1][1] - fb[0][1] : b[1][1] - b[0][1]),
                  cx: (b[0][0] + b[1][0]) / 2, cy: (b[0][1] + b[1][1]) / 2 };
     });
     if (measured.some(m => !m)) { sbRenderShapeOptions(opts, correct); return; }
@@ -15761,18 +15785,24 @@ function sbRenderScaleOptions(opts, correct) {
 // On the reveal, bring every tile onto ONE scale, so the four sit together at their true
 // relative sizes and the round ends on the comparison it was really about.
 //
-// Normalised UPWARD: the shared scale is the largest any tile is currently drawn at, so the
-// under-scaled ones grow into place and nothing that was already correct shrinks. Shrinking to
-// the honest scale would be the same arithmetic and the wrong reading — three countries would
-// visibly get smaller as the answer came in, which looks like a correction to them rather than
-// to the one that was wrong. The tiles are unclipped and their frames dropped for this, since
-// a tile that grows past its box is exactly what "too big" means.
+// The shared scale is the one that makes the BIGGEST country exactly fill its tile; everything
+// else then sits at its honest fraction of that. It is the largest scale at which all four
+// still fit, so the comparison uses every pixel available and nothing runs off its card.
+//
+// An earlier version normalised to whatever the largest DRAWN tile happened to be, which is not
+// the same thing: when the lie was an over-scaled country, that made every honest one grow past
+// its box to match a size that was wrong in the first place.
 function sbNormaliseScaleTiles() {
     const st = gameState.sbScaleTiles;
     if (!st) return;
     const grid = document.getElementById('options-grid');
     if (grid) grid.classList.add('sb-scale-revealed');
-    const target = Math.max(...st.measured.map(m => st.S * m.o.factor));
+    const pad = 10;
+    // Measured on what is DRAWN, not on the framing core: a country whose full geometry runs
+    // past its core (a remote islet) overflowed its card by up to 35% when the core set the
+    // cap, and with every tile on one scale that spills into the tile next to it.
+    const target = Math.min(...st.measured.map(m =>
+        Math.min((st.W - 2 * pad) / (m.fw || m.w), (st.H - 2 * pad) / (m.fh || m.h))));
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const dur = reduce ? 0 : 900;
     const tiles = document.querySelectorAll('#options-grid .sb-shape');
