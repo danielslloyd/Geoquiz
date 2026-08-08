@@ -1267,6 +1267,7 @@ function clearMultipleChoice() {
 
 // Initialize the game
 async function initGame() {
+    loadCoreOverrides();
     // Load and validate all game data first
     const dataLoaded = await initializeGameData();
     if (!dataLoaded) return;
@@ -13562,38 +13563,55 @@ function setMapColour(on) {
 }
 
 // ==================== FRAMING-CORE OVERRIDES ====================
-// `shapeFramingCore` works out which polygon parts are worth framing by a rule, and the rule is
-// right most of the time and hopeless in a handful of well-known cases. Norway is the clearest:
-// Svalbard is a real, large, permanently-populated part of Norway 800 km north of the mainland,
-// so it clears every threshold the rule has — and including it stretches the country across
-// about thirty degrees of latitude, which on a Mercator makes the mainland a thin ribbon at the
-// bottom of the frame. No threshold fixes that without breaking Indonesia, because the two
-// situations are geometrically identical and differ only in what a person expects to see.
+// `shapeFramingCore` decides which polygon parts are worth framing by a rule, and the rule is
+// right most of the time and hopeless in a handful of cases. Norway is the clearest: Svalbard
+// is a real, large, permanently-populated part of Norway 1,650 km north of the mainland, so it
+// clears every threshold the rule has — and including it stretches the frame across 22.5° of
+// latitude, which on a Mercator leaves the mainland a ribbon at the bottom. Indonesia reaching
+// Papua island by island is geometrically the same situation and differs only in what a person
+// expects to see, so no threshold separates them. Hence a table of exceptions.
 //
-// So: a table of exceptions, keyed by country, listing the CENTROIDS of the parts to leave out.
-// Centroids rather than array indices because the index of a part depends on the atlas
-// resolution and Shape ID runs at 10m while everything else runs at 110m or 50m; a centroid is
-// the same place in all three. Matched within CORE_OVERRIDE_TOL degrees.
+// Three forms, and the export picks whichever reproduces a selection exactly, simplest first:
 //
-// Built with the Framing sandbox (Sandbox ▸ Shape Framing), which is the only sane way to
-// produce these numbers — it lists every part with its area and its distance from the main
-// mass, and shows what the frame does as you switch them off.
-// An override is ONE NUMBER: how far from the main landmass a part may sit and still count.
+//   { box: [w, s, e, n] }   keep parts whose centroid falls in this lon/lat box
+//   { maxKm: n }            keep parts within n km of the main landmass
+//   { drop: [[lon,lat],…] } exclude these parts by centroid, within CORE_OVERRIDE_TOL degrees
 //
-// The first attempt listed the centroids of the parts to drop, and it does not survive contact
-// with an atlas. Svalbard is not a polygon — at 50m it is six, at 10m it is dozens — so a
-// centroid list has to enumerate islands, and the list is different at every resolution while
-// Shape ID runs at 10m and everything else at 110m or 50m. A distance says the thing actually
-// meant ("Svalbard is too far away to frame with the mainland") in a way that is the same fact
-// at every resolution and needs no maintenance when the atlas changes.
-//
-// Produced by the Shape Framing sandbox (Sandbox ▸ Shape Framing), which shows every part with
-// its distance from the main mass and derives the number from where you draw the line.
-const SHAPE_CORE_OVERRIDES = {
-    // Svalbard (1,649 km) and Jan Mayen (1,000 km) out; the Lofotens and the rest of the
-    // coastal islands, all within 600 km, stay. Cuts the frame from 22.5° of latitude to 13.1°.
-    'Norway': { maxKm: 700 }
-};
+// A box and a distance are both resolution-proof, which a centroid list is not: Svalbard is one
+// polygon in nobody's atlas — six at 50m, dozens at 10m — so an enumeration has to be rewritten
+// every time the source changes, while "north of 74°" and "further than 700 km" are the same
+// fact at every resolution. The centroid list is kept only as the escape hatch for a selection
+// neither of the other two can express.
+const CORE_OVERRIDE_TOL = 2.5;
+const CORE_OVERRIDES_URL = 'data/shape-core-overrides.json';
+const CORE_OVERRIDES_LS = 'geoquiz.coreOverrides';
+
+// Populated from the shipped file, then from anything saved locally. Local wins: the sandbox
+// writes there, so a change you make is in force on the next reload without a rebuild.
+let SHAPE_CORE_OVERRIDES = {};
+
+function loadCoreOverrides() {
+    const local = (() => {
+        try { return JSON.parse(localStorage.getItem(CORE_OVERRIDES_LS) || 'null') || {}; }
+        catch (_) { return {}; }
+    })();
+    Object.assign(SHAPE_CORE_OVERRIDES, local);
+    d3.json(CORE_OVERRIDES_URL)
+        .then(file => {
+            // The file is the baseline and local edits sit on top, so a country you have
+            // overridden yourself is not quietly reverted by a fresh checkout.
+            Object.keys(file || {}).forEach(k => {
+                if (!(k in local)) SHAPE_CORE_OVERRIDES[k] = file[k];
+            });
+            shapeDescriptorCache = null;
+        })
+        .catch(() => { /* no file shipped yet — local edits are the whole table */ });
+}
+
+function saveCoreOverridesLocally() {
+    try { localStorage.setItem(CORE_OVERRIDES_LS, JSON.stringify(SHAPE_CORE_OVERRIDES)); return true; }
+    catch (_) { return false; }
+}
 
 function coreOverrideFor(name) {
     if (!name) return null;
@@ -13601,12 +13619,30 @@ function coreOverrideFor(name) {
     return key ? SHAPE_CORE_OVERRIDES[key] : null;
 }
 
+// Is this part kept, under this rule? One predicate, so the sandbox's preview and the real
+// framing can never disagree about what an override means.
+function corePartKept(rule, centroid, kmFromMain) {
+    if (!rule) return true;
+    if (rule.box) {
+        const [w, s2, e, n2] = rule.box;
+        if (centroid[1] < s2 || centroid[1] > n2) return false;
+        return w <= e ? (centroid[0] >= w && centroid[0] <= e)
+                      : (centroid[0] >= w || centroid[0] <= e);
+    }
+    if (rule.maxKm > 0) return kmFromMain <= rule.maxKm;
+    if (rule.drop) {
+        return !rule.drop.some(d => Math.abs(d[0] - centroid[0]) < CORE_OVERRIDE_TOL &&
+                                    Math.abs(d[1] - centroid[1]) < CORE_OVERRIDE_TOL);
+    }
+    return true;
+}
+
 // Drop the parts an override excludes, before the rule ever sees them. Applied at the top of
 // shapeFramingCore so every caller — the fit, the shape descriptor, the flag pattern — agrees.
 function applyCoreOverride(feature) {
     const name = feature && feature.properties && feature.properties.name;
     const rule = coreOverrideFor(name);
-    if (!rule || !(rule.maxKm > 0)) return feature;
+    if (!rule) return feature;
     const parts = featureParts(feature);
     if (parts.length < 2) return feature;
     const items = parts.map(c => {
@@ -13615,8 +13651,9 @@ function applyCoreOverride(feature) {
     });
     items.sort((x, y) => y.a - x.a);
     const home = items[0].centroid;
-    const kept = items.filter(it => d3.geoDistance(home, it.centroid) * 6371 <= rule.maxKm)
-                      .map(it => it.c);
+    const kept = items
+        .filter(it => corePartKept(rule, it.centroid, d3.geoDistance(home, it.centroid) * 6371))
+        .map(it => it.c);
     if (!kept.length || kept.length === parts.length) return feature;
     return { type: 'Feature', properties: feature.properties,
              geometry: { type: 'MultiPolygon', coordinates: kept } };
@@ -13624,11 +13661,42 @@ function applyCoreOverride(feature) {
 
 // ==================== SHAPE FRAMING SANDBOX ====================
 // Pick a country, see every polygon it is made of, and switch parts in and out of the framing
-// core while the frame redraws. The numbers that matter are all on screen: each part's area,
-// how far it sits from the main mass, and — the one that actually decides whether a silhouette
-// is readable — the latitude span the frame ends up covering.
+// core three ways — click one on the map, click one in the list, or drag a box round the ones to
+// keep. The frame refits live and its bounding box is drawn, because the box is the thing being
+// judged: a silhouette is readable in proportion to how much of its own box it fills.
+//
+// That number is also the way to FIND the bad cases rather than stumbling on them, so the panel
+// ranks every country by it. Norway before its override fills 12% of its box; a country that
+// fills 60% has nothing wrong with it.
 
 let framingState = null;
+
+const FRAMING_R2 = 6371 * 6371;
+
+// Area of a lon/lat box on the sphere, in km². Antimeridian-safe, and guarded against a ring
+// wound the wrong way — d3.geoArea would then report the whole sphere minus the box.
+function framingBoxKm2(b) {
+    let w = b[0][0], s = b[0][1], e = b[1][0], n = b[1][1];
+    if (w > e) e += 360;
+    const ring = [[w, s], [e, s], [e, n], [w, n], [w, s]];
+    const a = d3.geoArea({ type: 'Polygon', coordinates: [ring] }) * FRAMING_R2;
+    const sphere = 4 * Math.PI * FRAMING_R2;
+    return Math.min(a, sphere - a);
+}
+
+// How much of its own bounding box a country actually fills. The one number that says whether a
+// framing is sane: it falls when a country owns something far away, which is exactly the case
+// the override table exists for.
+function framingFillPct(feature) {
+    const core = shapeFramingCore(feature);
+    const area = d3.geoArea(core) * FRAMING_R2;
+    let b;
+    try { b = d3.geoBounds(core); } catch (_) { return null; }
+    if (!isFinite(b[0][0])) return null;
+    const box = framingBoxKm2(b);
+    if (!(box > 0)) return null;
+    return { pct: area / box * 100, area, box, bounds: b };
+}
 
 function renderFramingSandbox() {
     gameState.questionType = 'framing-sandbox';
@@ -13639,12 +13707,13 @@ function renderFramingSandbox() {
     const restart = document.getElementById('restart-btn');
     if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
     document.getElementById('question-text').innerHTML =
-        `<strong>Shape framing.</strong> Pick a country; switch its parts in and out of the frame.`;
-    framingState = { name: null, parts: [], off: new Set() };
+        `<strong>Shape framing.</strong> Click a shape to toggle it, or drag a box to keep only what is inside.`;
+    framingState = { name: null, parts: [], off: new Set(), ranking: null };
     buildFramingPanel();
-    // Start on the case that motivated the whole thing.
+    framingBindMap();
     const start = (gameState.currentQuizList || []).find(n => namesMatch(n, 'Norway'));
     if (start) framingPick(start);
+    framingRank();
 }
 
 function buildFramingPanel() {
@@ -13658,7 +13727,9 @@ function buildFramingPanel() {
     box.innerHTML =
         `<input type="text" id="fr-filter" placeholder="Country…" autocomplete="off">
          <div class="fr-list" id="fr-list"></div>
-         <div class="fr-detail" id="fr-detail"></div>`;
+         <div class="fr-detail" id="fr-detail"></div>
+         <div class="fr-rank-head">Worst-filled boxes <span id="fr-rank-note">measuring…</span></div>
+         <div class="fr-rank" id="fr-rank"></div>`;
     host.appendChild(box);
     const list = document.getElementById('fr-list');
     const paint = filter => {
@@ -13681,18 +13752,66 @@ function buildFramingPanel() {
     framingState.repaintList = paint;
 }
 
+// Every country by how much of its box it fills, worst first.
+//
+// Below FRAMING_RANK_MIN_KM2 the number stops meaning anything: at 50m the atlas rounds Andorra
+// and Monaco to an area of nothing, so they and every other microstate reported 0% and filled
+// the whole list with countries that have no framing problem to find. The floor is not about
+// importance — it is about the ratio having a numerator.
+//
+// Chunked, because a couple of hundred framing computations in one pass is a visible stall and
+// the list is useful the moment the first few land.
+const FRAMING_RANK_MIN_KM2 = 5000;
+function framingRank() {
+    const names = (gameState.currentQuizList || []).slice();
+    const out = [];
+    let i = 0;
+    const step = () => {
+        if (!framingState || gameState.questionType !== 'framing-sandbox') return;
+        const t0 = Date.now();
+        while (i < names.length && Date.now() - t0 < 40) {
+            const n = names[i++];
+            const f = sbFeature(n);
+            if (!f) continue;
+            const r = framingFillPct(f);
+            if (r && isFinite(r.pct) && r.area >= FRAMING_RANK_MIN_KM2) {
+                out.push({ n, pct: r.pct, parts: featureParts(f).length });
+            }
+        }
+        out.sort((a, b) => a.pct - b.pct);
+        framingState.ranking = out;
+        framingPaintRank(i >= names.length ? null : `${i}/${names.length}`);
+        if (i < names.length) setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
+}
+
+function framingPaintRank(progress) {
+    const host = document.getElementById('fr-rank');
+    const note = document.getElementById('fr-rank-note');
+    if (!host || !framingState || !framingState.ranking) return;
+    if (note) note.textContent = progress ? progress : `${framingState.ranking.length} countries`;
+    host.innerHTML = framingState.ranking.slice(0, 40).map(r =>
+        `<button class="fr-rank-btn${framingState.name && namesMatch(framingState.name, r.n) ? ' picked' : ''}" ` +
+        `data-rank="${r.n.replace(/"/g, '&quot;')}">` +
+        `<span class="fr-rank-name">${displayLabelForName(r.n)}</span>` +
+        `<span class="fr-rank-pct">${r.pct < 10 ? r.pct.toFixed(1) : r.pct.toFixed(0)}%</span>` +
+        `<span class="fr-rank-parts">${r.parts}p</span></button>`).join('');
+    host.querySelectorAll('[data-rank]').forEach(b =>
+        b.addEventListener('click', () => framingPick(b.dataset.rank)));
+}
+
 function framingPick(name) {
     const f = sbFeature(name);
     if (!f) return;
-    const R2 = 6371 * 6371;
     const parts = featureParts(f).map((c, i) => {
         const poly = { type: 'Polygon', coordinates: c };
-        return { i, c, km2: d3.geoArea(poly) * R2, centroid: d3.geoCentroid(poly) };
+        return { i, c, km2: d3.geoArea(poly) * FRAMING_R2, centroid: d3.geoCentroid(poly) };
     }).sort((a, b) => b.km2 - a.km2);
     const main = parts[0];
     parts.forEach(pt => { pt.km = main ? sbKmBetween(main.centroid, pt.centroid) : 0; });
-    // Start from what the RULE decides, so the panel opens showing the current behaviour and
-    // the toggles are edits to it rather than a blank slate.
+    // Open on what the rule (plus any existing override) currently decides, so the toggles are
+    // edits to the live behaviour rather than a blank slate.
     const ruled = shapeFramingCore(f);
     const inCore = new Set();
     featureParts(ruled).forEach(c => {
@@ -13701,11 +13820,13 @@ function framingPick(name) {
                                      Math.abs(pt.centroid[1] - cen[1]) < 0.01);
         if (hit) inCore.add(hit.i);
     });
+    if (!namesMatch(framingState.name, name)) framingState.message = '';
     framingState.name = name;
     framingState.feature = f;
     framingState.parts = parts;
     framingState.off = new Set(parts.filter(pt => !inCore.has(pt.i)).map(pt => pt.i));
     if (framingState.repaintList) framingState.repaintList(document.getElementById('fr-filter').value);
+    framingPaintRank();
     framingDraw();
 }
 
@@ -13718,7 +13839,7 @@ function framingCoreNow() {
 function framingDraw() {
     if (!framingState || !framingState.feature || !countriesGroup) return;
     const core = framingCoreNow();
-    const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.1;
+    const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.12;
     try {
         const c = d3.geoCentroid(core);
         if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
@@ -13728,17 +13849,82 @@ function framingDraw() {
     countriesGroup.selectAll('*').remove();
     if (typeof g !== 'undefined' && g) g.selectAll('circle.island-marker').remove();
     if (lakesGroup) { lakesGroup.remove(); lakesGroup = null; }
-    // Excluded parts are still DRAWN, just faintly: the point of the tool is to see what falls
-    // outside the frame, and a part that has been switched off and also vanished tells you
-    // nothing about whether switching it off was right.
+
+    // The live bounding box, drawn first so the shapes sit on top of it. This is what the
+    // override is really editing — every mode that frames a country frames it to this rectangle.
+    try {
+        const b = d3.geoBounds(core);
+        if (isFinite(b[0][0])) {
+            const p1 = projection([b[0][0], b[1][1]]), p2 = projection([b[1][0], b[0][1]]);
+            if (p1 && p2 && isFinite(p1[0]) && isFinite(p2[0])) {
+                countriesGroup.append('rect').attr('class', 'fr-box')
+                    .attr('x', Math.min(p1[0], p2[0])).attr('y', Math.min(p1[1], p2[1]))
+                    .attr('width', Math.abs(p2[0] - p1[0])).attr('height', Math.abs(p2[1] - p1[1]));
+            }
+        }
+    } catch (_) { /* no box to draw */ }
+
+    // Excluded parts stay DRAWN, faintly: a part that has been switched off and also vanished
+    // tells you nothing about whether switching it off was right.
     framingState.parts.forEach(pt => {
         const d = path({ type: 'Polygon', coordinates: pt.c });
         if (!d) return;
         countriesGroup.append('path')
+            .datum(pt)
             .attr('class', 'country fr-part' + (framingState.off.has(pt.i) ? ' off' : ''))
-            .attr('d', d);
+            .attr('d', d)
+            .on('click', (event, p) => {
+                event.stopPropagation();
+                framingToggle(p.i);
+            });
     });
     framingDetail();
+}
+
+function framingToggle(i) {
+    if (!framingState) return;
+    if (framingState.off.has(i)) framingState.off.delete(i); else framingState.off.add(i);
+    framingDraw();
+}
+
+// Drag a box on the map: everything whose centroid lands inside is kept, everything else is
+// dropped. It is the fastest way to say the thing these overrides almost always mean — "this
+// cluster, not that far-off one" — and it is also, not by coincidence, exactly the `box` form
+// the override is stored in.
+function framingBindMap() {
+    if (!svg) return;
+    let start = null, rect = null;
+    svg.on('pointerdown.framing', function (event) {
+        if (!framingState || !framingState.feature) return;
+        start = d3.pointer(event, svg.node());
+        rect = svg.append('rect').attr('class', 'fr-drag')
+            .attr('x', start[0]).attr('y', start[1]).attr('width', 0).attr('height', 0);
+    });
+    svg.on('pointermove.framing', function (event) {
+        if (!start || !rect) return;
+        const p = d3.pointer(event, svg.node());
+        rect.attr('x', Math.min(start[0], p[0])).attr('y', Math.min(start[1], p[1]))
+            .attr('width', Math.abs(p[0] - start[0])).attr('height', Math.abs(p[1] - start[1]));
+    });
+    svg.on('pointerup.framing', function (event) {
+        if (!start || !rect) return;
+        const p = d3.pointer(event, svg.node());
+        const dx = Math.abs(p[0] - start[0]), dy = Math.abs(p[1] - start[1]);
+        rect.remove(); rect = null;
+        const from = start; start = null;
+        // A click, not a drag — the part's own handler has already dealt with it.
+        if (dx < 6 || dy < 6) return;
+        const a = projection.invert([Math.min(from[0], p[0]), Math.min(from[1], p[1])]);
+        const b = projection.invert([Math.max(from[0], p[0]), Math.max(from[1], p[1])]);
+        if (!a || !b || !isFinite(a[0]) || !isFinite(b[0])) return;
+        const boxLL = [Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+                       Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+        framingState.off = new Set(framingState.parts
+            .filter(pt => !corePartKept({ box: boxLL }, pt.centroid, pt.km))
+            .map(pt => pt.i));
+        framingState.lastBox = boxLL;
+        framingDraw();
+    });
 }
 
 function framingDetail() {
@@ -13749,73 +13935,126 @@ function framingDetail() {
     const latSpan = b[1][1] - b[0][1];
     let lonSpan = b[1][0] - b[0][0];
     if (lonSpan < 0) lonSpan += 360;
-    const full = d3.geoBounds(framingState.feature);
-    let fullLon = full[1][0] - full[0][0];
-    if (fullLon < 0) fullLon += 360;
-    const rows = framingState.parts.slice(0, 24).map(pt => {
+    const fill = (d3.geoArea(core) * FRAMING_R2) / framingBoxKm2(b) * 100;
+    const rows = framingState.parts.slice(0, 40).map(pt => {
         const off = framingState.off.has(pt.i);
         return `<button class="fr-part-btn${off ? ' off' : ''}" data-part="${pt.i}">` +
                `<span class="fr-part-area">${Math.round(pt.km2).toLocaleString()} km²</span>` +
                `<span class="fr-part-km">${pt.km < 1 ? 'main' : sbFormatKm(pt.km)}</span></button>`;
     }).join('');
+    const saved = coreOverrideFor(framingState.name);
     el.innerHTML =
         `<div class="fr-head"><strong>${displayLabelForName(framingState.name)}</strong> — ` +
-        `${framingState.parts.length} part${framingState.parts.length === 1 ? '' : 's'}</div>` +
-        `<div class="fr-span">Frame spans <strong>${latSpan.toFixed(1)}°</strong> of latitude, ` +
-        `<strong>${lonSpan.toFixed(1)}°</strong> of longitude` +
-        (framingState.off.size ? ` <span class="fr-was">(whole country: ` +
-            `${(full[1][1] - full[0][1]).toFixed(1)}° × ${fullLon.toFixed(1)}°)</span>` : '') +
-        `</div><div class="fr-parts">${rows}</div>` +
-        `<button class="control-btn" id="fr-copy">Copy override</button>` +
-        `<div class="fr-json" id="fr-json"></div>`;
-    el.querySelectorAll('[data-part]').forEach(b2 => b2.addEventListener('click', () => {
-        const i = +b2.dataset.part;
-        if (framingState.off.has(i)) framingState.off.delete(i); else framingState.off.add(i);
-        framingDraw();
-    }));
-    const copy = document.getElementById('fr-copy');
-    if (copy) copy.addEventListener('click', () => {
-        const out = document.getElementById('fr-json');
-        const line = framingOverrideLine();
-        if (out) out.textContent = line;
-        if (navigator.clipboard) navigator.clipboard.writeText(line).catch(() => {});
+        `${framingState.parts.length} part${framingState.parts.length === 1 ? '' : 's'}` +
+        (saved ? ` <span class="fr-saved">override saved</span>` : '') + `</div>` +
+        `<div class="fr-span">Box fills <strong>${fill.toFixed(0)}%</strong> — ` +
+        `<strong>${latSpan.toFixed(1)}°</strong> lat × <strong>${lonSpan.toFixed(1)}°</strong> lon</div>` +
+        `<div class="fr-parts">${rows}</div>` +
+        `<div class="fr-actions">` +
+        `<button class="control-btn" id="fr-save">Save override</button>` +
+        `<button class="control-btn" id="fr-clear">Clear</button>` +
+        `<button class="control-btn" id="fr-export">Download all</button></div>` +
+        `<div class="fr-json" id="fr-json">${framingState.message || ''}</div>`;
+    el.querySelectorAll('[data-part]').forEach(b2 =>
+        b2.addEventListener('click', () => framingToggle(+b2.dataset.part)));
+    document.getElementById('fr-save').addEventListener('click', framingSave);
+    document.getElementById('fr-clear').addEventListener('click', () => {
+        delete SHAPE_CORE_OVERRIDES[framingState.name];
+        Object.keys(SHAPE_CORE_OVERRIDES).forEach(k => {
+            if (namesMatch(k, framingState.name)) delete SHAPE_CORE_OVERRIDES[k];
+        });
+        saveCoreOverridesLocally();
+        shapeDescriptorCache = null;
+        framingPick(framingState.name);
+        framingRank();
     });
+    document.getElementById('fr-export').addEventListener('click', framingExport);
 }
 
-// The line to paste into SHAPE_CORE_OVERRIDES, derived from where the player drew the line:
-// the midpoint of the gap between the furthest part they KEPT and the nearest they dropped.
-// A midpoint rather than either edge because the atlas moves — a part's centroid shifts a
-// little between resolutions, and a threshold sitting hard against one of them would flip.
-//
-// If the selection is not distance-ordered (someone dropped a near part and kept a far one)
-// there is no single distance that expresses it, and it says so rather than emitting a number
-// that would quietly do something else.
-function framingOverrideLine() {
-    if (!framingState || !framingState.name) return '';
-    // Only parts big enough to matter. A country has dozens of specks that the rule drops on
-    // AREA grounds wherever they sit, and letting one of those set the near edge of the gap
-    // makes almost every selection look distance-inexpressible when the real choice — which
-    // of the SUBSTANTIAL outliers to keep — is a clean cut.
-    const total = framingState.parts.reduce((sum, pt) => sum + pt.km2, 0);
-    const big = framingState.parts.filter(pt => pt.km2 >= total * CORE_MIN_AREA_FRAC);
-    const kept = big.filter(pt => !framingState.off.has(pt.i));
-    const drop = big.filter(pt => framingState.off.has(pt.i));
-    if (!drop.length) return `    // '${framingState.name}': nothing substantial excluded — no override needed`;
-    if (!kept.length) return `    // '${framingState.name}': everything excluded — no override possible`;
-    const farKept = Math.max(...kept.map(pt => pt.km));
-    const nearDrop = Math.min(...drop.map(pt => pt.km));
-    if (nearDrop <= farKept) {
-        return `    // '${framingState.name}': not expressible as a distance — a part at ` +
-               `${Math.round(nearDrop)} km is excluded while one at ${Math.round(farKept)} km is kept`;
+// The simplest rule that reproduces the current selection EXACTLY. A box and a distance both
+// survive a change of atlas; the centroid list does not, so it is the last resort rather than
+// the default.
+function framingDeriveRule() {
+    const parts = framingState.parts;
+    const wanted = new Set(parts.filter(pt => !framingState.off.has(pt.i)).map(pt => pt.i));
+    const matches = rule => parts.every(pt =>
+        corePartKept(rule, pt.centroid, pt.km) === wanted.has(pt.i));
+
+    // A box round the kept parts' centroids, padded a little so a vertex that shifts between
+    // resolutions does not fall out of it.
+    const keep = parts.filter(pt => wanted.has(pt.i));
+    if (keep.length) {
+        const pad = 0.75;
+        const box = [Math.min(...keep.map(p => p.centroid[0])) - pad,
+                     Math.min(...keep.map(p => p.centroid[1])) - pad,
+                     Math.max(...keep.map(p => p.centroid[0])) + pad,
+                     Math.max(...keep.map(p => p.centroid[1])) + pad];
+        const rule = { box: box.map(v => +v.toFixed(2)) };
+        if (matches(rule)) return rule;
     }
-    const cut = Math.round((farKept + nearDrop) / 2 / 10) * 10;
-    return `    '${framingState.name}': { maxKm: ${cut} },   // keeps ` +
-           `${Math.round(farKept).toLocaleString()} km, drops ${Math.round(nearDrop).toLocaleString()} km`;
+    // A distance, if the selection happens to be ordered by it.
+    const far = Math.max(0, ...keep.map(p => p.km));
+    const near = Math.min(Infinity, ...parts.filter(p => !wanted.has(p.i)).map(p => p.km));
+    if (isFinite(near) && near > far) {
+        const rule = { maxKm: Math.round((far + near) / 2 / 10) * 10 };
+        if (matches(rule)) return rule;
+    }
+    // Otherwise, name the exclusions.
+    const drop = parts.filter(p => !wanted.has(p.i))
+        .map(p => [+p.centroid[0].toFixed(1), +p.centroid[1].toFixed(1)]);
+    return drop.length ? { drop } : null;
+}
+
+function framingSave() {
+    const rule = framingDeriveRule();
+    if (!rule) {
+        delete SHAPE_CORE_OVERRIDES[framingState.name];
+        framingState.message = 'Nothing excluded — override removed.';
+    } else {
+        SHAPE_CORE_OVERRIDES[framingState.name] = rule;
+        framingState.message = `"${framingState.name}": ${JSON.stringify(rule)}`;
+    }
+    if (!saveCoreOverridesLocally()) framingState.message += '  (local storage refused it)';
+    // The descriptor cache is keyed by country and derived from the framing core, so it has to
+    // go or Shape ID keeps comparing silhouettes against the old box. It is null-when-invalid,
+    // not empty-object: an empty object is truthy and would be used as a finished cache.
+    shapeDescriptorCache = null;
+    // Re-picking rebuilds the panel from the LIVE result, so what you see afterwards is what
+    // the override plus the rule actually produce — which can be fewer parts than you selected,
+    // since the override only restricts what the rule is then allowed to consider.
+    const msg = framingState.message;
+    framingPick(framingState.name);
+    framingState.message = msg;
+    const out = document.getElementById('fr-json');
+    if (out) out.textContent = msg;
+    framingRank();
+}
+
+// The whole table as the file the app loads. Saving keeps it working here; downloading is how
+// it gets into the repo, which is the only sense in which anything is permanent.
+function framingExport() {
+    const json = JSON.stringify(SHAPE_CORE_OVERRIDES, null, 4) + '\n';
+    const out = document.getElementById('fr-json');
+    if (out) out.textContent = json;
+    try {
+        const blob = new Blob([json], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'shape-core-overrides.json';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (_) { /* the text is on screen either way */ }
 }
 
 function removeFramingSandbox() {
     const box = document.getElementById('fr-panel');
     if (box) box.remove();
+    if (svg) {
+        svg.on('pointerdown.framing', null);
+        svg.on('pointermove.framing', null);
+        svg.on('pointerup.framing', null);
+        svg.selectAll('rect.fr-drag').remove();
+    }
     framingState = null;
 }
 

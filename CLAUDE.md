@@ -43,26 +43,48 @@ same situation; the two differ only in what a person expects to see. So there is
 exceptions, `SHAPE_CORE_OVERRIDES`, consulted at the top of `shapeFramingCore` so every caller
 (the fit, the shape descriptor, the flag pattern) agrees.
 
-**An override is one number: how far from the main landmass a part may sit and still count.**
-The first attempt listed the centroids of the parts to drop and it does not survive contact with
-an atlas — Svalbard is not a polygon, it is six at 50m and dozens at 10m, so a centroid list has
-to enumerate islands and the list differs at every resolution while Shape ID runs at 10m and
-everything else at 110m or 50m. A distance says the thing actually meant, and is the same fact
-at every resolution. `'Norway': { maxKm: 700 }` takes the frame from 22.5° of latitude to
-**13.1°**, and 32 parts to 3.
+**An override has three forms**, and the export picks whichever reproduces a selection exactly,
+simplest first:
 
-**Sandbox ▸ Shape Framing** (`framing-sandbox`) is how those numbers get made. Pick a country;
-every polygon is listed with its area and its distance from the main mass, and clicking one
-switches it in or out while the frame refits. Excluded parts stay **drawn, faintly** — a part
-that has been switched off *and* vanished tells you nothing about whether switching it off was
-right. The readout is the latitude and longitude span of the resulting frame, which is the
-number that actually decides whether a silhouette is readable. "Copy override" derives the
-distance from where you drew the line: the midpoint of the gap between the furthest part kept
-and the nearest dropped (a midpoint because a centroid shifts a little between resolutions and a
-threshold hard against one of them would flip), counting only parts over `CORE_MIN_AREA_FRAC` of
-the country — the specks are dropped on area wherever they sit, and letting one set the near edge
-of the gap makes almost every selection look inexpressible. If the selection genuinely is not
-distance-ordered it says so rather than emitting a number that would quietly mean something else.
+    { box: [w, s, e, n] }    keep parts whose centroid falls in this lon/lat box
+    { maxKm: n }             keep parts within n km of the main landmass
+    { drop: [[lon,lat], …] } exclude these by centroid, within CORE_OVERRIDE_TOL degrees
+
+A box and a distance are both resolution-proof, which a centroid list is not: Svalbard is one
+polygon in nobody's atlas — six at 50m, dozens at 10m — so an enumeration has to be rewritten
+whenever the source changes, while "north of 74°" and "further than 700 km" are the same fact at
+every resolution. The list is the escape hatch for a selection neither of the others can express.
+`corePartKept` is the single predicate all three go through, so the sandbox's preview and the
+real framing cannot disagree about what an override means. `'Norway': { maxKm: 700 }` takes the
+frame from 22.5° of latitude to **13.1°**, and 32 parts to 3.
+
+**Sandbox ▸ Shape Framing** is how those get made. A country's parts can be switched three ways —
+click one on the map, click one in the list, or **drag a box** round the ones to keep, which is
+the fastest way to say the thing these overrides almost always mean ("this cluster, not that
+far-off one") and is not by coincidence the same shape as the `box` form they are stored in. The
+**live bounding box is drawn** as you go, because the box is the thing being judged. Excluded
+parts stay drawn, faintly — a part that has been switched off *and* vanished tells you nothing
+about whether switching it off was right.
+
+**Overrides are saved**, to `localStorage` immediately (so a change is in force on the next
+reload) and to `data/shape-core-overrides.json` via *Download all*, which is the only sense in
+which anything is permanent. `loadCoreOverrides` reads the file as the baseline and lays local
+edits on top, so a country you have overridden yourself is not quietly reverted by a fresh
+checkout. Saving also clears `shapeDescriptorCache` — which is **null**-when-invalid, not
+empty-object, since an empty object is truthy and would be used as a finished cache.
+
+**The panel ranks every country by how much of its own bounding box it fills**, worst first,
+which is how you find a bad framing instead of stumbling on one. Below 5,000 km² the number stops
+having a numerator — at 50m the atlas rounds Andorra and Monaco to an area of nothing, so every
+microstate reported 0% and filled the list with countries that have no framing problem at all.
+Above the floor it reads: Bahamas 2.2%, Solomon Islands 3.3%, Vanuatu 4.3%, Japan 16%, Norway 18%
+(already improved by its override), Indonesia 18%, Chile 22%, Morocco 23% — and Morocco has one
+part, so it is a diagonal country rather than a fixable one, which the parts count says at a
+glance.
+
+Note the override only *restricts* what the rule may consider; the rule still runs on top. Select
+four parts of Japan and the frame may keep one, and the panel re-opens on that live result rather
+than on what was selected.
 
 Fixed at source on the way: **`featureParts` now accepts a bare geometry as well as a Feature.**
 `shapeFramingCore` *returns* a bare MultiPolygon, so anything asking for the parts of a core it

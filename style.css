@@ -4003,3 +4003,31 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
    separate polygons — which is the entire question the sandbox is asking. */
 .country.fr-part { stroke: var(--land-stroke, #7d8a99); stroke-width: 1.2;
     vector-effect: non-scaling-stroke; }
+
+/* Shape framing: the live bounding box, and the rubber band that edits it. */
+.fr-box { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 1.5; stroke-dasharray: 6 4;
+    vector-effect: non-scaling-stroke; pointer-events: none; }
+.fr-drag { fill: var(--accent, #d08a2c); fill-opacity: 0.12; stroke: var(--accent, #d08a2c);
+    stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.country.fr-part { cursor: pointer; }
+
+.fr-saved { font-size: 0.72rem; padding: 1px 6px; border-radius: 999px;
+    background: var(--correct, #3d8f5f); color: #fff; font-weight: 700; }
+.fr-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
+.fr-actions .control-btn { flex: 1; min-width: 88px; font-size: 0.76rem; padding: 5px 6px; }
+
+/* The ranking: every country by how much of its own bounding box it fills, worst first — the
+   way to find a bad framing rather than stumble on one. */
+.fr-rank-head { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+    font-size: 0.8rem; font-weight: 700; display: flex; justify-content: space-between; }
+#fr-rank-note { font-weight: 400; opacity: 0.7; }
+.fr-rank { display: flex; flex-direction: column; gap: 2px; max-height: 230px; overflow-y: auto;
+    margin-top: 5px; }
+.fr-rank-btn { display: grid; grid-template-columns: 1fr 44px 34px; gap: 6px; width: 100%;
+    padding: 3px 8px; font: inherit; font-size: 0.76rem; cursor: pointer; text-align: left;
+    border: 1px solid transparent; border-radius: var(--radius);
+    background: var(--surface-2); color: var(--text); }
+.fr-rank-btn:hover { border-color: var(--accent, #d08a2c); }
+.fr-rank-btn.picked { border-color: var(--accent, #d08a2c); font-weight: 700; }
+.fr-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fr-rank-pct, .fr-rank-parts { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
