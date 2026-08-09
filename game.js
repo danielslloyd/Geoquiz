@@ -13414,35 +13414,14 @@ const SB_BITE_MIN_SHARE = 0.05;
 // Stop biting once this little of the country is left and give the rest away whole. Chasing the
 // last few per cent produces slivers, and a sliver is the one thing that looks edited.
 const SB_BITE_STOP_FRAC = 0.05;
-// How many borrowed border shapes each bite tries before taking the best.
+// How many borrowed border shapes a bite tries for its end-continuations before taking the best.
 const SB_BITE_CURVES = 5;
-// Points along a bite. Enough for a borrowed border to keep its character, few enough that
-// checking it against the whole region is cheap.
+// Points sampled off each borrowed border's trace.
 const SB_BITE_SAMPLES = 49;
-// How much of the borrowed border's wander survives being pushed deep into a country.
-//
-// This is the number that decides whether a bite looks like a border or like a parabola, and it
-// used to be missing entirely. The wiggle was applied at the SOURCE border's own amplitude —
-// at most 0.28 of the chord — while the depth needed to reach a big neighbour's share grew to
-// several times the chord. At that point the wander is a tenth of the shape and what is left is
-// the smooth arch underneath it: a parabola with a slight fuzz on top, which is exactly what a
-// hand-drawn cut looks like and exactly what borrowing a real border was meant to avoid.
-//
-// Scaling the wander WITH the depth keeps the two in proportion, so a bite is as wiggly relative
-// to its own size at 800 km deep as at 80. At 1.0 the ratio is held exactly.
-const SB_BITE_WIGGLE_GAIN = 1.0;
-// The bite's envelope ramps in over this much of its length and out over that much again, each
-// drawn from [MIN, MIN+VAR] per candidate so no two bites turn at the same place and none is
-// symmetric about its middle. Shorter ramps mean a longer flat run, and measured over all 212
-// bites the world produces, shortening them from 0.16-0.42 to 0.14-0.36 took the departure from
-// a pure sine arch from 0.150 to 0.178 (a real land border, resampled the same way, is 0.268).
-// How deep a bite has to be, in units of the chord between its tripoints, before it stops
-// following the old frontier's shape and starts running straight. A new border is straighter
-// than the one it replaces, but only once it is deep enough to have left it.
-// Measured over the whole world: 0.25 gives 266 bites against 253 at 1.0 and 263 at 0.5.
-const SB_BITE_STRAIGHTEN = 0.25;
-const SB_BITE_RAMP_MIN = 0.14;
-const SB_BITE_RAMP_VAR = 0.22;
+// Points the stencil (the frontier's slid copy) is resampled to, and points per continuation.
+// Resampling is for cost, not shape — at these densities a 110m frontier keeps every corner.
+const SB_BITE_STENCIL = 64;
+const SB_BITE_EXT = 16;
 
 // Real land borders from elsewhere in the world, normalised to a unit span, used as the SHAPE
 // of every bite. A new border invented from a smooth curve looks invented: real ones wander,
@@ -13496,17 +13475,27 @@ function sbBorderShapes(topo, owners, arcs) {
 // left at the end keeps what has not been eaten, so nothing has to be reconciled afterwards and
 // there is never a leftover stranded in the middle.
 //
-// The SHAPE of each bite is lifted from a real land border somewhere else in the world
-// (`sbBorderShapes`), stretched across the chord between the two tripoints at the ends of the
-// biter's frontier. A bite has to be a curve of some kind, and every curve anyone would invent
-// looks invented; a border that already exists looks like a border because it is one. On top of
-// the borrowed wiggle sits a single smooth bulge whose depth is solved by bisection until the
-// piece has exactly the area that neighbour is owed — so the shape comes from geography and only
-// the size is arithmetic.
+// The SHAPE of each bite is a STENCIL, and the stencil is the frontier itself: the biter's own
+// stretch of the old boundary, translated rigidly along its inward normal until the land behind
+// it is the share that neighbour is owed. Nothing is pinned and nothing is stretched — the two
+// tripoints do not anchor the cut, and the new border lands wherever the slid copy happens to
+// meet the old boundary. What that buys is exactness of character: the new border IS a real
+// border, the one that was already there, at full amplitude whatever the depth. Pinning the
+// ends and stretching a borrowed curve between them was tried twice and both times the
+// arithmetic (the arch, the envelope) showed through the geography.
 //
-// Each bite tries several borrowed borders, in both directions, and keeps the one that leaves
-// the most COMPACT remainder. That is what stops the region degenerating into a ribbon after
-// two or three bites, with nowhere sensible for the fourth to go.
+// The slid copy's ends are inside the country by construction — they started on its edge and
+// moved inward — so each end is CONTINUED until it finds the old boundary again: along its own
+// end tangent, wandering to the trace of a real border sampled from elsewhere in the topology
+// (`sbBorderShapes`). The borrowed part is only the continuation; on most bites it is a small
+// fraction of the cut. Several traces are tried, in both mirrorings, and the bite keeps the one
+// that leaves the most COMPACT remainder.
+//
+// A deep slide can sweep clean past a small neighbour's stretch of boundary and swallow it.
+// That neighbour is crowded out, and so be it — the alternative was bending the cut around it,
+// which is exactly the drawn-not-grown look this construction exists to avoid. The one country
+// a bite may never swallow is the LEFTOVER (checked in `attempt`), because the rewrite needs
+// its frontier to survive to the end.
 //
 // The surgery is still at the ARC level, which is what makes it invisible. TopoJSON stores each
 // shared border once and both countries point at it, so rewriting one arc moves exactly one
@@ -13664,111 +13653,75 @@ function sbEatCountry(rawTopo, goneName) {
         return per > 0 ? 4 * Math.PI * Math.abs(areaOf(pts)) / (per * per) : 0;
     };
 
-    // One bite: cut the region between the tripoints at either end of a frontier running from
-    // vertex i0 to vertex i1, taking `want` km² behind it. Returns {piece, rest} or null.
-    const bite = (r, i0, i1, want, seed) => {
+    // One bite: slide the frontier that runs from ring vertex i0 to i1 into the country until
+    // `want` km² sits behind it, and cut there. Returns {piece, rest, cut, ...} or null.
+    const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs) => {
         const n = r.length;
-        const P = r[i0].p, Q = r[i1].p;
-        const dx = Q[0] - P[0], dy = Q[1] - P[1];
-        const span = Math.hypot(dx, dy);
-        if (!(span > 0)) return null;
-        const runV = [], restV = [];
-        for (let k = i0; ; k = (k + 1) % n) { runV.push(r[k]); if (k === i1) break; }
-        for (let k = i1; ; k = (k + 1) % n) { restV.push(r[k]); if (k === i0) break; }
-        const run = runV.map(v => v.p);
-        // Inward normal: from the chord's midpoint towards the middle of what is left.
-        const mid = [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2];
-        let cx = 0, cy = 0;
-        restV.forEach(v => { cx += v.p[0] / restV.length; cy += v.p[1] / restV.length; });
-        let nx = -dy / span, ny = dx / span;
-        if (nx * (cx - mid[0]) + ny * (cy - mid[1]) < 0) { nx = -nx; ny = -ny; }
-
-        // The frontier itself, resampled by arc length. This is where every bite STARTS.
-        //
-        // Basing the cut on the straight chord between the two tripoints does not work, and the
-        // reason is ordinary geography: a concave frontier has its own chord lying outside the
-        // country. Germany's Czech border is bowed, so the chord ran through Czechia, every
-        // candidate cut failed containment, and Germany ended up divided between two of its nine
-        // neighbours. Starting from the frontier and morphing outward means the shallowest bite
-        // is a copy of a real border and is inside by construction.
+        const runIdx = [];
+        for (let k = i0; ; k = (k + 1) % n) { runIdx.push(k); if (k === i1) break; }
+        if (runIdx.length < 2 || runIdx.length >= n - 2) return null;
+        const runSet = new Set(runIdx);
+        const run = runIdx.map(k => r[k].p);
+        const P = run[0], Q = run[run.length - 1];
+        const chX = Q[0] - P[0], chY = Q[1] - P[1];
+        const span = Math.hypot(chX, chY);
         const total = lenOf(run);
-        const fr = [];
+        if (!(total > 0)) return null;
+
+        // Inward: perpendicular to the chord, toward the centroid of everything that is not the
+        // frontier. When the frontier nearly closes on itself the chord says nothing, and the
+        // centroid-to-centroid direction stands in.
+        let cx = 0, cy = 0, cn2 = 0;
+        for (let k = 0; k < n; k++) if (!runSet.has(k)) { cx += r[k].p[0]; cy += r[k].p[1]; cn2++; }
+        if (!cn2) return null;
+        cx /= cn2; cy /= cn2;
+        let nx, ny;
+        if (span > total * 0.05) {
+            nx = -chY / span; ny = chX / span;
+            const mid = [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2];
+            if (nx * (cx - mid[0]) + ny * (cy - mid[1]) < 0) { nx = -nx; ny = -ny; }
+        } else {
+            let fx = 0, fy = 0;
+            run.forEach(pt => { fx += pt[0] / run.length; fy += pt[1] / run.length; });
+            const dl = Math.hypot(cx - fx, cy - fy) || 1;
+            nx = (cx - fx) / dl; ny = (cy - fy) / dl;
+        }
+
+        // The stencil at rest: the frontier resampled by arc length.
+        const M = SB_BITE_STENCIL;
+        const st0 = [];
         {
             let seg = 1, acc = 0;
-            for (let i = 0; i < SB_BITE_SAMPLES; i++) {
-                const want2 = total * i / (SB_BITE_SAMPLES - 1);
-                while (seg < run.length - 1 && acc + Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) < want2) {
+            for (let i = 0; i < M; i++) {
+                const w2 = total * i / (M - 1);
+                while (seg < run.length - 1 && acc + Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) < w2) {
                     acc += Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]);
                     seg++;
                 }
-                const segLen = Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) || 1;
-                const u = Math.max(0, Math.min(1, (want2 - acc) / segLen));
-                fr.push([run[seg - 1][0] + (run[seg][0] - run[seg - 1][0]) * u,
-                         run[seg - 1][1] + (run[seg][1] - run[seg - 1][1]) * u]);
+                const sl = Math.hypot(run[seg][0] - run[seg - 1][0], run[seg][1] - run[seg - 1][1]) || 1;
+                const u = Math.max(0, Math.min(1, (w2 - acc) / sl));
+                st0.push([run[seg - 1][0] + (run[seg][0] - run[seg - 1][0]) * u,
+                          run[seg - 1][1] + (run[seg][1] - run[seg - 1][1]) * u]);
             }
-            fr[0] = P; fr[SB_BITE_SAMPLES - 1] = Q;
         }
-        const smooth = u => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
-        // The frontier's own inward normal at each sample, which is what a shallow bite is pushed
-        // along. Oriented against the global inward normal so a wiggly frontier cannot flip one
-        // of them around and fold the cut back through itself.
-        const fn = fr.map((_, i) => {
-            const a = fr[Math.max(0, i - 1)], b = fr[Math.min(SB_BITE_SAMPLES - 1, i + 1)];
-            const tx = b[0] - a[0], ty = b[1] - a[1], L2 = Math.hypot(tx, ty);
-            if (!(L2 > 0)) return [nx, ny];
-            let mx = -ty / L2, my = tx / L2;
-            if (mx * nx + my * ny < 0) { mx = -mx; my = -my; }
-            return [mx, my];
-        });
+        // End tangents, each pointing outward past its own end.
+        const tanOut = (a, b) => { const d2 = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1; return [(a[0] - b[0]) / d2, (a[1] - b[1]) / d2]; };
+        const tP = tanOut(st0[0], st0[2]);
+        const tQ = tanOut(st0[M - 1], st0[M - 3]);
 
-        // lam IS the depth, in units of the chord: 0 leaves the frontier exactly where it is and
-        // takes nothing, and the area behind the cut grows with it throughout, which is what makes
-        // one bisection enough.
-        //
-        // Three things about how the cut is pushed, and each of them is a difference between a
-        // bite that reads as a border and one that reads as a drawing.
-        //
-        // A SHALLOW bite is the frontier offset along ITS OWN normal, not a blend toward the
-        // chord between the tripoints. The blend was the older construction and it has a hole in
-        // it exactly where it is least affordable: a concave frontier has its own chord lying
-        // outside the country, so the very shallowest cut was already out of bounds and the
-        // backoff — which only ever gets shallower — could not rescue it. That is not a rare
-        // shape. Angola holds 21% of Zambia's frontier and was refused on the FIRST bite of an
-        // untouched country, and Zambia then went 80% to one neighbour. Offsetting instead means
-        // the shallowest cut is a copy of a real border a hair inside the country, inside by
-        // construction rather than by luck, and the straightening only comes in as the bite gets
-        // deep enough to need it (`w`, over SB_BITE_STRAIGHTEN of the chord).
-        //
-        // The push has a FLAT TOP, not a sine arch. `sin(πt)` is a single smooth hump with one
-        // maximum in the middle, which is a parabola to the eye however much wander is laid over
-        // it — and the deeper the bite the more the hump dominates. A ramp-hold-ramp envelope
-        // instead runs the cut PARALLEL to the frontier across most of its length, which is what
-        // a border between two countries actually does: it makes its turn near each end and then
-        // holds a course. The two ramps are different lengths, seeded per candidate, so the shape
-        // is never symmetric about its middle — symmetry is the other half of what made the old
-        // cut look constructed.
-        //
-        // And the borrowed wander is scaled BY THE DEPTH (`gain`), so it stays the same fraction
-        // of the shape at any size. See SB_BITE_WIGGLE_GAIN.
-        const build = (ys, lam, a0, a1) => {
-            const w = smooth(lam / SB_BITE_STRAIGHTEN);
-            const gain = 1 + lam * SB_BITE_WIGGLE_GAIN;
-            const out = [];
-            for (let i = 0; i < SB_BITE_SAMPLES; i++) {
-                const t = i / (SB_BITE_SAMPLES - 1);
-                const bx = fr[i][0] + (P[0] + dx * t - fr[i][0]) * w;
-                const by = fr[i][1] + (P[1] + dy * t - fr[i][1]) * w;
-                // Straighten the direction of the push alongside the baseline it rides on.
-                let ux2 = fn[i][0] * (1 - w) + nx * w, uy2 = fn[i][1] * (1 - w) + ny * w;
-                const uL = Math.hypot(ux2, uy2) || 1; ux2 /= uL; uy2 /= uL;
-                const env = Math.min(smooth(t / a0), smooth((1 - t) / a1));
-                const off = span * (ys[i] * w * gain + lam * env);
-                out.push([bx + ux2 * off, by + uy2 * off]);
-            }
-            out[0] = P; out[SB_BITE_SAMPLES - 1] = Q;
-            return out;
-        };
-        const pieceRing = cut => run.concat(cut.slice(1, -1).reverse()).concat([P]);
+        // Ring edge boxes once, for the crossing sweep; the region's own diagonal bounds the
+        // slide and the continuations.
+        let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+        const eb = new Array(n);
+        for (let k = 0; k < n; k++) {
+            const a = r[k].p, b = r[(k + 1) % n].p;
+            eb[k] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+            bx0 = Math.min(bx0, a[0]); by0 = Math.min(by0, a[1]);
+            bx1 = Math.max(bx1, a[0]); by1 = Math.max(by1, a[1]);
+        }
+        const diam = Math.hypot(bx1 - bx0, by1 - by0);
+        if (!(diam > 0)) return null;
+
         // Is this point on the region's own land? Plain ray casting over the ring.
         const within = q => {
             let hit = false;
@@ -13779,94 +13732,150 @@ function sbEatCountry(rawTopo, goneName) {
             }
             return hit;
         };
-        // Two tests, and the containment one is the important half. A cut's ends sit ON the ring,
-        // so the ring edges meeting them have to be exempt from the crossing test — and that
-        // exemption is a hole you can drive a country through: a cut that dived straight out of
-        // the region at one tripoint and came back in at the other crossed only the exempt edges
-        // and was waved past. It then enclosed the OUTSIDE, so the bisection happily "found" the
-        // right area on a lobe of somebody else's land and the remainder grew instead of
-        // shrinking (France took 70,270 km² of a 31,208 km² Belgium). Requiring every interior
-        // vertex to be inside the region says the thing the crossing test was only implying.
-        const fits = cut => {
-            // The two vertices either side of each tripoint are exempt: the cut meets the ring
-            // exactly there, so whether a point a few hundred metres away counts as inside is a
-            // question about rounding rather than about geography, and the crossing test below
-            // still covers them. Every other vertex must be on home soil.
-            for (let c = 3; c < cut.length - 3; c++) if (!within(cut[c])) return false;
-            const skip = new Set([(i0 - 1 + n) % n, i0, (i1 - 1 + n) % n, i1]);
-            for (let c = 0; c + 1 < cut.length; c++) {
-                const endish = (c === 0 || c === cut.length - 2);
+        const yAt = (ys, a) => {
+            const x = a * (ys.length - 1), k = Math.min(ys.length - 2, Math.floor(x));
+            return ys[k] + (ys[k + 1] - ys[k]) * (x - k);
+        };
+        // One end-continuation: march along the tangent, wandering to the borrowed trace, and
+        // lengthen until the far end is off the country. The wander is the trace's own offsets
+        // at the continuation's own length, so it is a real border at true amplitude, not a
+        // scaled impression of one.
+        const continueOut = (e, t, ys, flip) => {
+            const px2 = -t[1], py2 = t[0];
+            let L = Math.max(span * 0.5, 40);
+            for (let tries = 0; tries < 10; tries++, L *= 1.7) {
+                const out = [];
+                for (let j = 1; j <= SB_BITE_EXT; j++) {
+                    const a = j / SB_BITE_EXT, off = yAt(ys, a) * flip * L;
+                    out.push([e[0] + t[0] * L * a + px2 * off, e[1] + t[1] * L * a + py2 * off]);
+                }
+                if (!within(out[SB_BITE_EXT - 1])) return out;
+                if (L > diam * 4) break;
+            }
+            return null;
+        };
+        const segX = (a, b, c, d2) => {
+            const rX = b[0] - a[0], rY = b[1] - a[1], sX = d2[0] - c[0], sY = d2[1] - c[1];
+            const den = rX * sY - rY * sX;
+            if (!den) return null;
+            const t = ((c[0] - a[0]) * sY - (c[1] - a[1]) * sX) / den;
+            const u = ((c[0] - a[0]) * rY - (c[1] - a[1]) * rX) / den;
+            if (t <= 0 || t >= 1 || u <= 0 || u >= 1) return null;
+            return t;
+        };
+
+        // Assemble the slid stencil with its continuations and cut it against the ring.
+        //
+        // The clean configuration is EXACTLY two crossings: the whole cut runs outside-in-outside
+        // and touches the old boundary only where it lands. That one count carries most of the
+        // old validity machinery for free — a cut that pokes out of the region mid-way, or dives
+        // out at one end and back in at the other (the France-taking-Belgium bug of the previous
+        // construction), has more than two crossings and is simply not accepted. Anything else
+        // (a swallowed leftover, a self-crossing continuation) is checked here too, so the depth
+        // bisection can treat every invalid configuration as "too deep" and slide back.
+        const attempt = d => {
+            const st = st0.map(pt => [pt[0] + nx * d, pt[1] + ny * d]);
+            const head = continueOut(st[0], tP, extYs, extFlip);
+            const tail = continueOut(st[M - 1], tQ, extYs, -extFlip);
+            if (!head || !tail) return null;
+            const S = head.slice().reverse().concat(st, tail);
+            const xs = [];
+            for (let c = 0; c + 1 < S.length; c++) {
+                const a = S[c], b = S[c + 1];
+                const sx0 = Math.min(a[0], b[0]), sy0 = Math.min(a[1], b[1]),
+                      sx1 = Math.max(a[0], b[0]), sy1 = Math.max(a[1], b[1]);
                 for (let k = 0; k < n; k++) {
-                    if (endish && skip.has(k)) continue;
-                    if (cross(cut[c], cut[c + 1], r[k].p, r[(k + 1) % n].p)) return false;
+                    const bb = eb[k];
+                    if (bb[0] > sx1 || bb[2] < sx0 || bb[1] > sy1 || bb[3] < sy0) continue;
+                    const t = segX(a, b, r[k].p, r[(k + 1) % n].p);
+                    if (t !== null) {
+                        xs.push({ c, t, k, p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] });
+                        if (xs.length > 2) return null;
+                    }
                 }
             }
-            for (let a = 0; a + 1 < cut.length; a++)
-                for (let b = a + 2; b + 1 < cut.length; b++)
-                    if (cross(cut[a], cut[a + 1], cut[b], cut[b + 1])) return false;
-            return true;
+            if (xs.length !== 2) return null;
+            xs.sort((a2, b2) => (a2.c + a2.t) - (b2.c + b2.t));
+            const A = xs[0], B = xs[1];
+            if (A.k === B.k && Math.abs(A.c + A.t - (B.c + B.t)) < 1e-9) return null;
+            const cut = [A.p];
+            for (let c = A.c + 1; c <= B.c; c++) cut.push(S[c]);
+            cut.push(B.p);
+            if (cut.length < 3) return null;
+            // No fold in the cut itself. Non-adjacent segment pairs only — neighbours share a
+            // vertex and always "touch".
+            for (let a2 = 0; a2 + 1 < cut.length; a2++)
+                for (let b2 = a2 + 2; b2 + 1 < cut.length; b2++)
+                    if (cross(cut[a2], cut[a2 + 1], cut[b2], cut[b2 + 1])) return null;
+            // Which way round the ring is the piece? The walk that passes the frontier.
+            const walk = (fromE, toE) => {
+                const out = [];
+                for (let k = (fromE + 1) % n; ; k = (k + 1) % n) {
+                    out.push(k);
+                    if (k === toE) break;
+                    if (out.length > n) return null;
+                }
+                return out;
+            };
+            const wAB = walk(A.k, B.k), wBA = walk(B.k, A.k);
+            if (!wAB || !wBA) return null;
+            const fwd = wAB.some(k => runSet.has(k));
+            const inner = cut.slice(1, -1);
+            // Entry vertices own the ring edge they sit on; the vertex turning onto the cut owns
+            // a cut edge, so its leg is -1, exactly as before.
+            const mk = (c1, w1, c2, innerPts) =>
+                [{ p: c1.p, leg: r[c1.k].leg }]
+                    .concat(w1.map(k => ({ p: r[k].p, leg: r[k].leg })))
+                    .concat([{ p: c2.p, leg: -1 }])
+                    .concat(innerPts.map(pt => ({ p: pt, leg: -1 })));
+            const piece = fwd ? mk(A, wAB, B, inner.slice().reverse())
+                              : mk(B, wBA, A, inner);
+            const rest = fwd ? mk(B, wBA, A, inner)
+                             : mk(A, wAB, B, inner.slice().reverse());
+            if (piece.length < 3 || rest.length < 3) return null;
+            // The rewrite needs the leftover's frontier to survive to the end.
+            if (keepLegs && keepLegs.size && !rest.some(v => keepLegs.has(v.leg))) return null;
+            // ...and the piece may not reach the biter's OWN secondary frontier (a two-lobe
+            // country like Brunei): that arc stays referenced by the biter's ring, so a copy of
+            // it inside the outline traverses the same border twice in the same direction and
+            // turns the ring inside out. Brunei "gained" 510 million km² this way.
+            if (avoidLegs && avoidLegs.size && piece.some(v => avoidLegs.has(v.leg))) return null;
+            return { piece, rest, cut, area: Math.abs(areaOf(closed(piece))) };
+        };
+
+        // The slide, solved by bisection: every invalid configuration counts as too deep, so lo
+        // is always a depth that worked and the loop converges either on the owed area or on the
+        // deepest cut the region will take — whichever is shallower.
+        let extYs = null, extFlip = 1;
+        const solve = () => {
+            let lo = 0, hi = diam, final = null;
+            for (let it = 0; it < 18; it++) {
+                const mid = (lo + hi) / 2;
+                const at = attempt(mid);
+                if (!at) { hi = mid; continue; }
+                final = { at, d: mid };
+                if (at.area < want) lo = mid; else hi = mid;
+            }
+            return final;
         };
 
         let best = null;
-        // Two passes. The first offers the flat-topped envelopes, which is the shape wanted; the
-        // second, run only if not one of them would fit, falls back to a single round hump —
-        // wider in the middle and therefore able to squeeze its depth through a region a flat run
-        // cannot cross. It recovers the twelve bites in the world that the flat top costs
-        // (212 against 224) without rounding off any bite that did not need it.
-        for (let pass = 0; pass < 2 && !best; pass++)
-        for (let s = 0; s < SB_BITE_CURVES; s++) {
-            const src = shapes[(seed + s * 37) % shapes.length];
-            // Ramp lengths for this candidate's envelope, from the same seed the border was
-            // picked with — so the asymmetry is as deterministic as everything else here.
-            const h = ((seed + s * 2654435761) >>> 0);
-            const a0 = pass ? 0.5 : SB_BITE_RAMP_MIN + ((h >>> 4) & 255) / 255 * SB_BITE_RAMP_VAR;
-            const a1 = pass ? 0.5 : SB_BITE_RAMP_MIN + ((h >>> 13) & 255) / 255 * SB_BITE_RAMP_VAR;
+        for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
+            const src = shapes[(seed + s2 * 37) % shapes.length];
             for (const flip of [1, -1]) {
-                const ys = src.ys.map(v => v * flip);
-                // How deep to go for the share this neighbour is owed. The area behind the cut
-                // grows with lam throughout, so one bisection finds it.
-                let lo = 0, hi = 8.0;
-                for (let it = 0; it < 22; it++) {
-                    const mid2 = (lo + hi) / 2;
-                    if (Math.abs(areaOf(pieceRing(build(ys, mid2, a0, a1)))) < want) lo = mid2; else hi = mid2;
-                }
-                const lam = (lo + hi) / 2;
-                // ...and then as much of that as will actually fit. A share of the ORIGINAL
-                // country is a large share of what is LEFT by the third or fourth bite, so the
-                // depth it asks for often sweeps clean across the remainder and out the far
-                // side. Refusing there is what left Germany divided between two of its nine
-                // neighbours: a bite that cannot have everything it is owed should take what it
-                // can reach, not nothing. Feasibility falls off with depth — near lam 0 the cut
-                // is a copy of the real frontier and is inside by construction — so backing off
-                // is another bisection, on whether it fits rather than on how big it is.
-                let cut = build(ys, lam, a0, a1);
-                let got = lam, backed = false;
-                if (!fits(cut)) {
-                    let bad = lam, good = 0, found = null;
-                    for (let it = 0; it < 8; it++) {
-                        const mid2 = (good + bad) / 2;
-                        const c2 = build(ys, mid2, a0, a1);
-                        if (fits(c2)) { good = mid2; found = c2; } else bad = mid2;
-                    }
-                    if (!found || good < lam * 0.12) continue;   // barely a scratch: crowded out
-                    cut = found; got = good; backed = true;
-                }
-                const leftRing = restV.map(v => v.p).concat(cut.slice(1, -1)).concat([restV[0].p]);
-                const score = compactness(leftRing);
-                if (!best || score > best.score) best = { score, cut, src, flip, lam, got, backed };
+                extYs = src.ys; extFlip = flip;
+                const got = solve();
+                if (!got || got.at.area < want * 0.05) continue;   // barely a scratch: crowded out
+                const score = compactness(closed(got.at.rest));
+                if (!best || score > best.score) best = { score, got, src, flip };
             }
         }
         if (!best) return null;
-        const cut = best.cut;
-        // Both halves as vertex lists. The vertex where each half turns onto the cut owns a cut
-        // edge, so its leg becomes -1; every other vertex keeps the leg it came in with.
-        const piece = runV.map((v, i) => ({ p: v.p, leg: i === runV.length - 1 ? -1 : v.leg }));
-        for (let i = cut.length - 2; i >= 1; i--) piece.push({ p: cut[i], leg: -1 });
-        const rest = restV.map((v, i) => ({ p: v.p, leg: i === restV.length - 1 ? -1 : v.leg }));
-        for (let i = 1; i < cut.length - 1; i++) rest.push({ p: cut[i], leg: -1 });
+        const at = best.got.at;
         return {
-            piece, rest, cut,
-            src: best.src, flip: best.flip, backed: best.backed, depthKm: best.got * span
+            piece: at.piece, rest: at.rest, cut: at.cut,
+            src: best.src, flip: best.flip,
+            backed: at.area < want * 0.97, depthKm: best.got.d
         };
     };
 
@@ -13877,6 +13886,8 @@ function sbEatCountry(rawTopo, goneName) {
     // border the bitemark was traced from, what the neighbour was owed against what it could
     // reach, what the region looked like before the cut — exists only inside this loop.
     const story = [];
+    // The one frontier a bite may never swallow: the leftover's, since the rewrite needs it.
+    const keepLegs = new Set(mainGroup.get(queue[queue.length - 1]));
     let liveRing = ring;
     const seedOf = nm => { let h = 0; for (let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0; return h; };
     for (let qi = 0; qi < queue.length - 1; qi++) {
@@ -13902,7 +13913,10 @@ function sbEatCountry(rawTopo, goneName) {
         // holding the stretch of border it was crowded out of.
         const fpts = [];
         for (let k = start; ; k = (k + 1) % L) { fpts.push(toDeg(liveRing[k].p)); if (k === end) break; }
-        const got = bite(liveRing, start, end, want, seedOf(nm));
+        // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
+        const avoidLegs = new Set();
+        legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !own.has(li)) avoidLegs.add(li); });
+        const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs);
         const base = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want, frontier: fpts };
         if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
         pieces.set(nm, got.piece);
@@ -13952,7 +13966,8 @@ function sbEatCountry(rawTopo, goneName) {
     // old boundary was walked.
     const writeArc = (leg, pts) => { arcs[leg.id] = (leg.ref < 0 ? pts : pts.slice().reverse()).map(toDeg); };
     for (const [nm, pv] of pieces) {
-        const own = new Set(mainGroup.get(nm));
+        const mg = mainGroup.get(nm);
+        const own = new Set(mg);
         const L = pv.length;
         let a = -1;
         for (let i = 0; i < L; i++) {
@@ -13961,20 +13976,46 @@ function sbEatCountry(rawTopo, goneName) {
         if (a < 0) return sbNo('divides');
         let b = a;
         while (own.has(pv[(b + 1) % L].leg)) b = (b + 1) % L;
-        // The frontier's legs, in the order they are walked.
-        const order = [];
-        for (let k = a; ; k = (k + 1) % L) {
-            const li = pv[k].leg;
-            if (!order.length || order[order.length - 1] !== li) order.push(li);
-            if (k === b) break;
-        }
         // Everything else, from the far end of the frontier round to its near end.
         const path = [];
         for (let k = (b + 1) % L; ; k = (k + 1) % L) { path.push(pv[k].p); if (k === a) break; }
         if (path.length < 2) return sbNo('divides');
-        const anchor = pv[a].p;
-        for (let k = 0; k < order.length - 1; k++) writeArc(legs[order[k]], [anchor, anchor]);
-        writeArc(legs[order[order.length - 1]], path);
+        // The absorber's full ORIGINAL frontier, in ring direction, with its two true endpoints.
+        // The rewritten arc must span exactly those endpoints or the absorber's ring falls open
+        // — its other arcs meet it there, at shared topology nodes.
+        const runPts = joinPts(mg.map(li => legs[li].pts));
+        const T1 = runPts[0], T2 = runPts[runPts.length - 1];
+        const near2 = (p2, q2) => { const ddx = p2[0] - q2[0], ddy = p2[1] - q2[1]; return ddx * ddx + ddy * ddy < 1e-8; };
+        const onRun = pt => {
+            for (let i2 = 0; i2 + 1 < runPts.length; i2++) {
+                const a2 = runPts[i2], b2 = runPts[i2 + 1];
+                const vx = b2[0] - a2[0], vy = b2[1] - a2[1];
+                const L2 = vx * vx + vy * vy;
+                if (!L2) continue;
+                const t = ((pt[0] - a2[0]) * vx + (pt[1] - a2[1]) * vy) / L2;
+                if (t < -1e-9 || t > 1 + 1e-9) continue;
+                const px2 = a2[0] + vx * t - pt[0], py2 = a2[1] + vy * t - pt[1];
+                if (px2 * px2 + py2 * py2 < 1e-8) return i2;
+            }
+            return -1;
+        };
+        // A TRUNCATED frontier: a slide that landed on this absorber's own boundary, or an
+        // earlier bite that ate the frontier past this point, leaves the path stopping mid-arc.
+        // Re-trace the original border from there out to the arc's true endpoint — the land on
+        // the far side of the retraced stretch is another piece carrying the same points
+        // verbatim, so the retrace is seam-free by the same argument as every copied border.
+        if (!near2(path[0], T2)) {
+            const i2 = onRun(path[0]);
+            if (i2 >= 0) { const pre = []; for (let j2 = runPts.length - 1; j2 > i2; j2--) pre.push(runPts[j2]); path.unshift(...pre); }
+        }
+        if (!near2(path[path.length - 1], T1)) {
+            const i2 = onRun(path[path.length - 1]);
+            if (i2 >= 0) for (let j2 = i2; j2 >= 0; j2--) path.push(runPts[j2]);
+        }
+        // Every one of the absorber's frontier legs is spoken for — the ones not carrying the
+        // path collapse to the near endpoint, including any an earlier bite consumed whole.
+        for (let k = 0; k < mg.length - 1; k++) writeArc(legs[mg[k]], [T1, T1]);
+        writeArc(legs[mg[mg.length - 1]], path);
     }
 
     // Islands of the vanished country go whole to the nearest absorber — there is nothing to
@@ -14884,8 +14925,8 @@ function msRenderStory() {
             const first = st.i === 1;
             body = `<p>${who} is owed <strong>${km(s.want)}</strong>, and cannot have it. ` +
                    (first
-                     ? `No cut across ${who}'s stretch of border stays inside ${gone} at any depth — that stretch is shaped so that anything drawn between its two ends leaves the country.`
-                     : `The region has been bitten into by now, and no cut from ${who}'s stretch of border stays inside what is left.`) +
+                     ? `No slide of ${who}'s frontier lands cleanly at any depth — the shape of that stretch is such that its slid copy cannot cut the country in two.`
+                     : `The region has been bitten into by now, and no slide of ${who}'s frontier lands cleanly in what is left.`) +
                    ` Its share falls to the others.</p>`;
         } else if (s.kind === 'leftover') {
             body = `<p>${who} never bites. Whatever is still standing when everyone else has finished is its — ` +
@@ -14899,11 +14940,12 @@ function msRenderStory() {
             const reach = s.took / s.want;
             body = `<p>Owed ${pct(s.share * 100)} of the country — <strong>${km(s.want)}</strong> — out of the ${km(s.leftBefore)} still standing. ` +
                    (reach < 0.97
-                     ? `The full depth swept clean across the remainder and out the far side, so it takes what it can reach instead: <strong>${km(s.took)}</strong>.`
+                     ? `Sliding any deeper stopped landing cleanly, so it takes what the slide can reach: <strong>${km(s.took)}</strong>.`
                      : `It takes <strong>${km(s.took)}</strong>.`) + `</p>` +
-                   `<p>The bitemark is traced from the real <strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
-                   `${s.source.flip < 0 ? ', mirrored' : ''}, stretched between the two tripoints at the ends of that frontier. ` +
-                   `Only the depth is arithmetic — bisected until the piece is the right size.</p>` +
+                   `<p>The bitemark is this frontier itself, slid <strong>${Math.round(s.depthKm)} km</strong> into the country — ` +
+                   `a real border at true amplitude, because it is the one that was already there. Where the slid copy ran out, ` +
+                   `its ends were continued along a tracing of the real <strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+                   `${s.source.flip < 0 ? ', mirrored' : ''}:</p>` +
                    msSourceSvg(s.source);
         }
     }

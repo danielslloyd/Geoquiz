@@ -267,72 +267,60 @@ frontier ends up with most of the land, which is the rule a person would guess. 
 biggest share first; whoever is left at the end keeps what has not been eaten, so nothing has to
 be reconciled afterwards and there is never a leftover stranded in the middle.
 
-**The shape of each bite is lifted from a real land border somewhere else in the world**
-(`sbBorderShapes`, one pass over every arc that two countries share), stretched across the two
-tripoints at the ends of the biter's frontier. A bite has to be a curve of some kind, and every
-curve anyone would invent looks invented; a border that already exists looks like a border
-because it is one. Only the depth is arithmetic, bisected until the piece has the area that
-neighbour is owed. Each bite tries several borrowed borders in both directions and keeps the one
-leaving the most **compact** remainder, which is what stops the region degenerating into a ribbon
-by the third bite.
+**The shape of each bite is a STENCIL, and the stencil is the frontier itself**: the biter's own
+stretch of the old boundary, translated **rigidly** along its inward normal until the land behind
+it is the share that neighbour is owed. Nothing is pinned and nothing is stretched — the
+tripoints do not anchor the cut, and the new border lands wherever the slid copy happens to meet
+the old boundary. Two earlier constructions pinned the cut's ends at the tripoints and stretched
+a borrowed curve between them, and both times the arithmetic showed through the geography (first
+a sine arch — a parabola with fuzz on top — then a flat-topped envelope that still read as
+built). Sliding an existing border keeps a real border's character at **full amplitude whatever
+the depth**, because it is the border that was already there. Measured over all 286 bites the
+world produces, departure from a best-fit sine arch is **0.276 against 0.268 for real land
+borders** — statistically indistinguishable, against 0.075 and 0.177 for the two pinned
+constructions.
 
-**Three things decide whether a bite reads as a border or as a drawing**, and the first two were
-wrong for as long as this existed — the borrowed border was in there, and you could not see it.
+The slid copy's ends are inside the country by construction — they started on its edge and moved
+inward — so each end is **continued until it finds the old boundary again**: along its own end
+tangent, wandering to the trace of a real border sampled from elsewhere in the topology
+(`sbBorderShapes`). The borrowed part is only the continuation; on most bites it is a small
+fraction of the cut. Several traces are tried in both mirrorings and the bite keeps the one
+leaving the most **compact** remainder. Depth is one bisection (`solve`), and the validity story
+collapsed into a single count: the clean configuration is **exactly two crossings** between the
+whole assembled cut and the ring — a cut that pokes out mid-way, or dives out at one end and
+back in at the other (the France-taking-Belgium bug of the first construction), has more than
+two and is simply not accepted, so every invalid configuration reads as "too deep" and the slide
+backs off.
 
-* **The wander is scaled by the DEPTH** (`SB_BITE_WIGGLE_GAIN`). It used to be applied at the
-  source border's own amplitude, at most 0.28 of the chord, while the depth needed to reach a big
-  neighbour's share grew to several times the chord. At that point the wander is a tenth of the
-  shape and what is left is the smooth arch underneath it — a parabola with a fuzz on top, which
-  is exactly what a hand-drawn cut looks like and exactly what borrowing a real border was meant
-  to avoid.
-* **The push has a FLAT TOP, not a sine arch.** `sin(πt)` has one maximum in the middle and reads
-  as a parabola however much wander is laid over it. A ramp-hold-ramp envelope runs the cut
-  *parallel* to the frontier across most of its length, which is what a border between two
-  countries actually does: it turns near each end and then holds a course. The two ramps are
-  different lengths, seeded per candidate (`SB_BITE_RAMP_MIN`/`_VAR`), so no bite is symmetric
-  about its middle — symmetry was the other half of what made the old cut look constructed.
-* **A SHALLOW bite is the frontier offset along its own normal**, straightening toward the chord
-  only as it gets deep (`SB_BITE_STRAIGHTEN`). The old construction blended frontier→chord first
-  and bulged afterwards, which has a hole in it exactly where it is least affordable: **a concave
-  frontier has its own chord lying outside the country**, so the shallowest cut was already out
-  of bounds and the backoff — which only ever gets shallower — could not rescue it. Not a rare
-  shape: Angola holds 21% of Zambia's frontier and was refused on the **first** bite of an
-  untouched country, and Zambia then went 80% to a single neighbour. Offsetting makes the
-  shallowest cut a copy of a real border a hair inside the country, inside by construction rather
-  than by luck. Measured over the world: **266 bites against 219, and 106 neighbours crowded out
-  against 153** — 2.83 absorbers per country, up from 2.51.
+**A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
+neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
+construction exists to avoid. Two frontiers are protected because the arc rewrite needs them:
+the **leftover's** (checked via `keepLegs`) and the **biter's own secondary frontier**
+(`avoidLegs` — a two-lobe country like Brunei still references that arc from its own ring, so a
+copy of it inside the outline traverses the same border twice and turns the ring inside out;
+Brunei "gained" 510 million km² this way).
 
-Measured over the bites the world produces, departure from a best-fit sine arch went from
-**0.075 to 0.177**; a real land border resampled the same way is 0.268. Two passes are tried —
-the flat-topped envelopes first, and a single round hump only if not one of them fits, since a
-round hump can squeeze its depth through a region a flat run cannot cross.
+**Mid-arc landings are what the rewrite has to survive.** With no pins, a cut lands partway
+along somebody's arc, and any absorber whose frontier was truncated that way — by its own
+landing or by an earlier bite — would write an outline that stops mid-arc and falls open (its
+other arcs meet it at the true endpoints, which are shared topology nodes). The rewrite
+therefore **re-traces the original border** from the truncation point out to the arc's true
+endpoint (`onRun`/`runPts`): the land beyond the truncation is another piece carrying the same
+points verbatim, so the retrace is seam-free by the same copied-verbatim argument as every other
+border in the surgery. Every mainGroup leg is spoken for — the ones not carrying the outline
+collapse to the near endpoint, including any an earlier bite consumed whole.
 
-Three things the construction has to get right, each of which was wrong first and each caught by
-an audit rather than by looking:
-
-* **The cut starts from the FRONTIER, not from the chord between the tripoints.** A concave
-  frontier has its own chord lying outside the country: Germany's Czech border is bowed, so the
-  chord ran through Czechia, every candidate cut failed containment, and Germany came out divided
-  between two of its nine neighbours. `lam` 0 is a copy of the real frontier (inside by
-  construction, zero area), 1 is the straight chord with the borrowed wiggle fully faded in, and
-  beyond that a bulge pushes on into the country. Area grows with `lam` throughout, which is what
-  makes one bisection enough.
-* **Every interior vertex of a cut has to be tested for CONTAINMENT, not just for crossing.** A
-  cut's two ends sit *on* the ring, so the ring edges meeting them have to be exempt from the
-  crossing test — and that exemption is a hole you can drive a country through. A cut that dived
-  straight out of the region at one tripoint and came back in at the other crossed only the exempt
-  edges and was waved past; it then enclosed the OUTSIDE, so the bisection cheerfully found "the
-  right area" on a lobe of somebody else's land and the remainder *grew*. France took 70,270 km²
-  of a 31,208 km² Belgium. Requiring the vertices to be on home soil says what the crossing test
-  was only implying.
-* **A bite that cannot have everything it is owed takes what it can reach, not nothing.** A share
-  of the *original* country is a large share of what is *left* by the third or fourth bite, so the
-  depth it asks for often sweeps clean across the remainder and out the far side. Feasibility
-  falls off with depth, so backing off is a second bisection — on whether the cut fits rather than
-  on how big it is. Average absorbers per country went from 2.07 to 2.64.
+One rule carried over from the earlier constructions, still doing its work: **a bite that cannot
+have everything it is owed takes what it can reach, not nothing.** A share of the *original*
+country is a large share of what is *left* by the third or fourth bite, so the depth it asks for
+often sweeps clean across the remainder — the bisection then converges on the deepest slide the
+region will take instead. With the stencil this is rare: bites reach on average **78% of what
+they are owed**, against 55% for the pinned construction, and only 21 neighbours in the world are
+crowded out entirely, against 153.
 
 **A neighbour touching this one in two separate places bites from its longest frontier** and its
-other arcs stay where they are, becoming its border with whoever ends up behind them. At 110m an
+other arcs stay where they are, becoming its border with whoever ends up behind them (a bite may
+not *swallow* them — that is `avoidLegs`, above). At 110m an
 alternating run of arcs is common, and disqualifying a neighbour for it cost Poland both Germany
 and Slovakia. The one country that cannot be split like that is the **leftover** — it never bites,
 so its piece is whatever remains, and that region can contain its own second frontier, whose arc
@@ -363,22 +351,22 @@ it. The only structural requirement left is one land neighbour.
 
 Everything is **deterministic**: the same country always divides the same way.
 
-Measured over the 191-country pool at 110m: **144 divide cleanly** in 0.9 s for the lot, 18 are
+Measured over the 191-country pool at 110m: **144 divide cleanly** in ~5 s for the lot, 18 are
 islands with no land neighbour, 22 are too small to have a boundary worth cutting, 4 contain an
-enclave, 1 has no neighbour touching it in a single place, and 2 will not tile. Audited on ten
-countries at ~760 interior sample points each — **7,619 points, every one of them in exactly one
-absorber: zero gaps, zero overlaps** — with area conserved to 100.0%, identical output on repeat
-runs, and every untouched country bit-identical (the one exception per round is Australia, whose
-antimeridian ring re-decodes differently because the rebuilt topology carries absolute
-coordinates rather than a quantization transform).
+enclave, 1 has no neighbour touching it in a single place, and 2 will not tile (Malaysia —
+Brunei's two lobes — and Lesotho, whose whole ring is one neighbour; both failed under every
+construction). Audited on ten countries — **8,496 interior sample points, every one of them in
+exactly one absorber: zero gaps, zero overlaps** — with area conserved to 100.0%, identical
+output on repeat runs, and every untouched country bit-identical (the one exception per round is
+Australia, whose antimeridian ring re-decodes differently because the rebuilt topology carries
+absolute coordinates rather than a quantization transform).
 
-**Known limit: the shares are approximate.** A bite reaches on average 55% of what it is owed,
-and every shortfall falls to the leftover, so the country holding the longest single-place
-frontier finishes with rather more than its share (Germany → Austria 67%, Netherlands 18%,
-France 13%, Poland 2%). The ordering is right and every neighbour that can bite does; closing the
-gap needs the bites to **iterate** rather than take one pass, which in turn needs each cut edge to
-remember which neighbour made it, so a second bite can be taken from a frontier that is itself a
-previous bite.
+**Known limit: the shares are approximate**, though far less than they were. A bite reaches on
+average 78% of what it is owed (55% under the pinned construction) and every shortfall falls to
+the leftover — Germany now comes out Austria 42%, Czechia 22%, Poland 17%, Netherlands 9%,
+France 5%, Switzerland 5%, with every neighbour biting, against Austria 67% before. Closing the
+rest needs the bites to **iterate**, which needs each cut edge to remember which neighbour made
+it, so a second bite can be taken from a frontier that is itself a previous bite.
 
 ## Who's Missing: the step-by-step story
 
@@ -398,9 +386,10 @@ the cut) exists nowhere else. The map holds the country still and draws what eac
 every other overlay — and only the **last** step replaces the world, putting it back on the way
 out of that step.
 
-Each bite step also draws the borrowed border **on its own** (`msSourceSvg`). Claiming a shape came
-from the Mongolia–China border is only worth saying if you can see that it did, and the offsets
-drawn there are the same ones the cut on the map was built from.
+Each bite step also draws the borrowed border **on its own** (`msSourceSvg`). Under the stencil
+construction the borrowed trace is only the cut's **end-continuations** — the bitemark proper is
+the frontier itself, slid inland, and the step says how far — but claiming the continuation came
+from the Mongolia–China border is still only worth saying if you can see that it did.
 
 Two things the copy has to get right, both of which were wrong first and both of which had the
 story telling a lie about machinery that was working correctly:
