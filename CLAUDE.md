@@ -268,8 +268,9 @@ biggest share first; whoever is left at the end keeps what has not been eaten, s
 be reconciled afterwards and there is never a leftover stranded in the middle.
 
 **The shape of each bite is a STENCIL, and the stencil is the frontier itself**: the biter's own
-stretch of the old boundary, translated **rigidly** along its inward normal until the land behind
-it is the share that neighbour is owed. Nothing is pinned and nothing is stretched — the
+stretch of the old boundary, moved inward until the land behind it is the share that neighbour is
+owed — by **front propagation**, in small steps, with a cap on how much longer the border may get
+(see below). Nothing is pinned and nothing is stretched — the
 tripoints do not anchor the cut, and the new border lands wherever the slid copy happens to meet
 the old boundary. Two earlier constructions pinned the cut's ends at the tripoints and stretched
 a borrowed curve between them, and both times the arithmetic showed through the geography (first
@@ -338,6 +339,62 @@ Two things that test has to get right, both of which had it silently passing eve
   the vertex a distant pinch partner was going to match against. Nineteen stray lobes survived
   that way, unchanged through two tolerance rewrites, which is what made it look like a
   tolerance problem and not a bookkeeping one.
+
+## Who's Missing: the front, and the growth budget
+
+A rigid slide could not tell the difference between the ground it should cross and the ground it
+should stop at, so it wrapped around things and the new borders came out far too convex. The
+frontier is now moved inward **a step at a time**, each step taken from the border the last one
+left (`advance`/`propagate`, steps of a twenty-fourth of the country), and it keeps going until it
+has its share or until the border it is leaving behind has grown past its budget.
+
+**The budget is the whole idea, and it works because of what offsetting a curve does.** Move a
+frontier that bulges away from the country inward and it gets SHORTER; move one that bows into
+the country inward and it gets LONGER, fast, wrapping around whatever made it concave. Capping
+the growth therefore lets the front run freely across the easy ground and stops it exactly where
+it would begin to wrap. `sbBiteGrowth` is that cap as a percentage, **default 10**, and it is
+editable in the sandbox panel. Measured over twenty countries that divide:
+
+| Growth per turn | Border ends | Share error | Leftover holds | Turns used |
+|---|---|---|---|---|
+| 5% | 16% longer | 0.465 | 56.9% | 4.6 |
+| **10%** | **30% longer** | **0.344** | **51.4%** | **4.1** |
+| 25% | 47% longer | 0.291 | 48.9% | 3.0 |
+| 60% | 77% longer | 0.254 | 48.1% | 2.7 |
+
+Tighter is smoother and less accurate, and the trade is monotone — which is what a knob should
+look like. The old unbounded construction sits off the bottom of that table.
+
+Three things the front has to get right, and each of them broke it completely when wrong:
+
+* **Smooth after every step.** Offsetting a curve inward is only defined until the offset exceeds
+  the radius of a concave notch; past that the front crosses itself and ties a loop, and a loop is
+  arbitrarily long. Untrimmed, the first step of every bite in the world blew a 10% budget
+  immediately and **not one country could be divided at all**. Two Laplacian passes pull the loops
+  out — which is also exactly the right thing to do to a border, being the same "add no detail
+  that was not there" the cap is asking for.
+* **Measure the budget on the CUT, not the stencil.** The stencil is only the middle of the new
+  border; the ends are continuations run out to wherever they land. Measured on the stencil, the
+  reported growth was 83%, 145%, 241% against a cap of 10.
+* **The ends lag behind the middle** (`SB_BITE_END_DRAG`). They are not pinned — pinning them at
+  the tripoints is the construction this replaced — but they cannot wander inland either, because
+  the cut's ends must be continued out to the boundary to close the bite and a continuation
+  starting deep inside cannot find its way back. Without the lag France lost every neighbour but
+  one at **any** budget: Spain and Switzerland could not land a cut at all.
+
+**The turns iterate.** One turn of 10% cannot reach a share, so a border that came up short is
+given another turn — another 10% on top of what it has already spent — while one that got what it
+was owed is left where it stopped. Bites use 4.1 turns on average and no more than six. The turns
+are re-run from scratch rather than continued from the last cut, for the reason a second bite has
+always been avoided here: it would have to be merged with the first, and two rings sharing a
+boundary need a polygon union, whose failures are exactly the invisible-seam kind this surgery
+exists to prevent. Recomputing is the same code with the same guarantees, and a front allowed 20%
+in one go lands where two 10% turns would.
+
+The cost is honest and worth stating: **109 neighbours across the world are now crowded out**
+where 14 were before, because a bounded front often cannot reach any land at all. What it buys is
+that almost nothing is **swallowed** any more — 5, against 81 — since a bounded front does not
+sweep across a small neighbour's whole frontier on its way past.
 
 **A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
 neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
@@ -503,12 +560,11 @@ bit-identical (the one exception per round is Australia, whose antimeridian ring
 differently because the rebuilt topology carries absolute coordinates rather than a quantization
 transform).
 
-**Known limit: the deepest bites can swallow a later biter whole.** Germany comes out Czechia
-24%, Netherlands 21%, Poland 20%, Switzerland 6%, Austria 30% — and France 0%, because Czechia's
-slide takes the whole left bank of the Rhine before France's turn comes. That is the
-construction working as asked (“if a bite cuts off another neighbour, so be it”); the passes
-then share France's 15% among the neighbours that remain, and the story names it as a step of
-its own rather than leaving a neighbour silently absent.
+**Known limit: a bounded front often cannot reach any land at all.** Germany comes out Austria
+50%, Poland 19%, Netherlands 14%, France 9%, Czechia 6%, Switzerland 2% — every neighbour taking
+part, but the leftover holding half, because nobody's border could be moved far without bending
+it. Loosening `sbBiteGrowth` trades that back the other way along the table above, which is what
+the knob is for.
 
 ## Who's Missing: the step-by-step story
 

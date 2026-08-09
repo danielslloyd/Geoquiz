@@ -3970,6 +3970,10 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
     color: var(--text); background: var(--surface-2); border: 1px solid var(--border);
     border-radius: 5px; }
 .ms-order-hint { font-size: 0.72rem; opacity: 0.65; line-height: 1.35; margin-bottom: 10px; }
+.ms-order input[type="number"] { width: 68px; flex: none; padding: 3px 6px; font: inherit;
+    font-size: 0.78rem; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 5px; }
+.ms-unit { flex: none; opacity: 0.6; font-size: 0.75rem; }
 
 .ms-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
     margin-right: 6px; vertical-align: baseline; }
