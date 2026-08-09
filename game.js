@@ -13567,6 +13567,20 @@ function sbEatCountry(rawTopo, goneName) {
     const m = legs.length;
     if (!m) return sbNo('topology');
 
+    // Normalised to counter-clockwise BEFORE anything indexes the legs — the flip reverses the
+    // legs array, so every leg index taken after it stays consistent.
+    let flipped = false;
+    {
+        const probe = [];
+        legs.forEach(l => { for (let i = 0; i < l.pts.length - 1; i++) probe.push(l.pts[i]); });
+        probe.push(probe[0]);
+        if (areaOf(probe) < 0) {
+            flipped = true;
+            legs.reverse();
+            legs.forEach(l => { l.pts = l.pts.slice().reverse(); });
+        }
+    }
+
     // Contiguous runs of legs owned by the same country, cyclically.
     const groupsOf = name => {
         const idx = [];
@@ -13599,8 +13613,39 @@ function sbEatCountry(rawTopo, goneName) {
     // — whose arc would then be both referenced by its own ring and copied into the outline, and
     // counted twice. So the leftover is chosen up front, as the smallest neighbour that touches
     // this one in exactly one place.
+    // Two arcs consecutive on THIS ring are not necessarily consecutive on the neighbour's own
+    // ring: Belgium's two Netherlands arcs chain directly here, while on the Netherlands' ring
+    // the Scheldt estuary's coast sits between them. The rewrite collapses every frontier arc
+    // but one and writes the whole outline into the survivor — which tears the absorber's ring
+    // open at any intermediate node its own ring routes elsewhere. So a frontier run may only
+    // span arcs the absorber's own ring ALSO chains directly, and is split where it does not.
+    const ownerGeom = new Map();
+    const arcsChainInOwner = (nm2, ida, idb) => {
+        let gm = ownerGeom.get(nm2);
+        if (gm === undefined) { gm = geoms.find(g2 => namesMatch(sbGeomName(g2), nm2)) || null; ownerGeom.set(nm2, gm); }
+        if (!gm) return false;
+        const ringsRefs = gm.type === 'Polygon' ? gm.arcs : gm.arcs.flatMap(pp => pp);
+        for (const rr of ringsRefs) {
+            const ids = rr.map(ref2 => ref2 < 0 ? ~ref2 : ref2);
+            const ia = ids.indexOf(ida);
+            if (ia < 0) continue;
+            const ib = ids.indexOf(idb);
+            if (ib < 0) continue;
+            const L2 = ids.length;
+            if ((ia + 1) % L2 === ib || (ib + 1) % L2 === ia) return true;
+        }
+        return false;
+    };
     const mainGroup = new Map([...borderKm.keys()].map(n => {
-        const gs = groupsOf(n);
+        const gs = [];
+        groupsOf(n).forEach(g => {
+            let cur = [g[0]];
+            for (let k = 1; k < g.length; k++) {
+                if (legs[g[k - 1]].id === legs[g[k]].id || arcsChainInOwner(n, legs[g[k - 1]].id, legs[g[k]].id)) cur.push(g[k]);
+                else { gs.push(cur); cur = [g[k]]; }
+            }
+            gs.push(cur);
+        });
         gs.sort((x, y) => y.reduce((t, i) => t + legs[i].len, 0) - x.reduce((t, i) => t + legs[i].len, 0));
         return [n, gs[0] || []];
     }));
@@ -13628,10 +13673,14 @@ function sbEatCountry(rawTopo, goneName) {
     // edge a bite created). Carrying the leg through the cutting is what lets the arc rewrite
     // find each absorber's own frontier afterwards without having to match coordinates.
     //
-    // The ring is left in the vanished country's OWN direction, whichever way that winds. The
-    // arc rewrite depends on it, and nothing else does: the inward normal of a bite is found
-    // from the remainder's centroid rather than from the winding, and every area is taken
-    // absolute.
+    // The ring is NORMALISED to counter-clockwise (positive signed area in the local metric),
+    // whatever way the country wound it. The keyhole splices in a bitten ring depend on it: a
+    // spliced boundary stretch and its copy inside the cut run anti-parallel under CCW and the
+    // zero-width corridor between them cancels to nothing, while under the other winding the two
+    // copies run parallel and the shoelace counts the pockets with mixed signs — Brazil, Saudi
+    // Arabia, Thailand, Morocco and Mozambique were exactly the countries wound the other way.
+    // `writeArc` un-flips on the way out, and nothing between depends on the direction: normals
+    // come from the remainder's centroid and every area is taken absolute.
     const ring = [];
     legs.forEach((l, li) => {
         for (let i = 0; i < l.pts.length - 1; i++) ring.push({ p: l.pts[i], leg: li });
@@ -13657,6 +13706,8 @@ function sbEatCountry(rawTopo, goneName) {
     // `want` km² sits behind it, and cut there. Returns {piece, rest, cut, ...} or null.
     const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs) => {
         const n = r.length;
+        const areaHere = Math.abs(areaOf(closed(r)));
+        if (!(areaHere > 0)) return null;
         const runIdx = [];
         for (let k = i0; ; k = (k + 1) % n) { runIdx.push(k); if (k === i1) break; }
         if (runIdx.length < 2 || runIdx.length >= n - 2) return null;
@@ -13739,18 +13790,23 @@ function sbEatCountry(rawTopo, goneName) {
         // One end-continuation: march along the tangent, wandering to the borrowed trace, and
         // lengthen until the far end is off the country. The wander is the trace's own offsets
         // at the continuation's own length, so it is a real border at true amplitude, not a
-        // scaled impression of one.
+        // scaled impression of one. If the straight tangent never finds the boundary (a deep
+        // pocket), try it swung 26° to either side before giving up.
         const continueOut = (e, t, ys, flip) => {
-            const px2 = -t[1], py2 = t[0];
-            let L = Math.max(span * 0.5, 40);
-            for (let tries = 0; tries < 10; tries++, L *= 1.7) {
-                const out = [];
-                for (let j = 1; j <= SB_BITE_EXT; j++) {
-                    const a = j / SB_BITE_EXT, off = yAt(ys, a) * flip * L;
-                    out.push([e[0] + t[0] * L * a + px2 * off, e[1] + t[1] * L * a + py2 * off]);
+            for (const ang of [0, 0.45, -0.45]) {
+                const ca = Math.cos(ang), sa = Math.sin(ang);
+                const tx = t[0] * ca - t[1] * sa, ty = t[0] * sa + t[1] * ca;
+                const px2 = -ty, py2 = tx;
+                let L = Math.max(span * 0.5, 40);
+                for (let tries = 0; tries < 10; tries++, L *= 1.7) {
+                    const out = [];
+                    for (let j = 1; j <= SB_BITE_EXT; j++) {
+                        const a = j / SB_BITE_EXT, off = yAt(ys, a) * flip * L;
+                        out.push([e[0] + tx * L * a + px2 * off, e[1] + ty * L * a + py2 * off]);
+                    }
+                    if (!within(out[SB_BITE_EXT - 1])) return out;
+                    if (L > diam * 4) break;
                 }
-                if (!within(out[SB_BITE_EXT - 1])) return out;
-                if (L > diam * 4) break;
             }
             return null;
         };
@@ -13766,15 +13822,16 @@ function sbEatCountry(rawTopo, goneName) {
 
         // Assemble the slid stencil with its continuations and cut it against the ring.
         //
-        // The clean configuration is EXACTLY two crossings: the whole cut runs outside-in-outside
-        // and touches the old boundary only where it lands. That one count carries most of the
-        // old validity machinery for free — a cut that pokes out of the region mid-way, or dives
-        // out at one end and back in at the other (the France-taking-Belgium bug of the previous
-        // construction), has more than two crossings and is simply not accepted. Anything else
-        // (a swallowed leftover, a self-crossing continuation) is checked here too, so the depth
-        // bisection can treat every invalid configuration as "too deep" and slide back.
+        // The clean configuration is two crossings — outside-in-outside, touching the old
+        // boundary only where it lands. But a deep slide through a narrowing country EXITS
+        // mid-way and comes back, and refusing that outright is what made bites timid: the
+        // moment the far coast came near, the slide backed off to a nibble. So excursions are
+        // SPLICED instead of rejected — where the slid copy leaves the country, the cut follows
+        // the OLD BOUNDARY between the exit and the re-entry, which is what a maximal bite does:
+        // it goes right up to the far side and takes everything short of it. The spliced stretch
+        // is the old border verbatim, so it looks like what it is.
         const attempt = d => {
-            const st = st0.map(pt => [pt[0] + nx * d, pt[1] + ny * d]);
+            const st = stCur.map(pt => [pt[0] + nx * d, pt[1] + ny * d]);
             const head = continueOut(st[0], tP, extYs, extFlip);
             const tail = continueOut(st[M - 1], tQ, extYs, -extFlip);
             if (!head || !tail) return null;
@@ -13790,17 +13847,48 @@ function sbEatCountry(rawTopo, goneName) {
                     const t = segX(a, b, r[k].p, r[(k + 1) % n].p);
                     if (t !== null) {
                         xs.push({ c, t, k, p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] });
-                        if (xs.length > 2) return null;
+                        if (xs.length > 12) return null;
                     }
                 }
             }
-            if (xs.length !== 2) return null;
+            // S starts and ends outside, so crossings alternate in-out and the count is even.
+            if (xs.length < 2 || xs.length % 2) return null;
             xs.sort((a2, b2) => (a2.c + a2.t) - (b2.c + b2.t));
-            const A = xs[0], B = xs[1];
-            if (A.k === B.k && Math.abs(A.c + A.t - (B.c + B.t)) < 1e-9) return null;
+            const A = xs[0], B = xs[xs.length - 1];
+            const hostEdges = new Set(xs.map(x => x.k));
+            // The old boundary between an exit and the following re-entry. Both directions are
+            // tried; a walk is disqualified if it passes the frontier, the biter's own secondary
+            // legs, or another crossing — those mean the excursion is not the simple kind.
+            const splice = (xo, xi) => {
+                if (xo.k === xi.k) return [];
+                const lim = Math.max(8, n >> 2);
+                const fwd = [];
+                for (let k = (xo.k + 1) % n; ; k = (k + 1) % n) { fwd.push(k); if (k === xi.k) break; if (fwd.length > n) { fwd.length = 0; break; } }
+                const bwd = [];
+                for (let k = xo.k; ; k = (k - 1 + n) % n) { bwd.push(k); if (k === (xi.k + 1) % n) break; if (bwd.length > n) { bwd.length = 0; break; } }
+                const okW = w => w.length > 0 && w.length <= lim &&
+                    !w.some(k => runSet.has(k) || (avoidLegs && avoidLegs.size && avoidLegs.has(r[k].leg)) ||
+                                 (hostEdges.has(k) && k !== xo.k && k !== xi.k));
+                const cf = okW(fwd), cb = okW(bwd);
+                if (cf && cb) return fwd.length <= bwd.length ? fwd : bwd;
+                if (cf) return fwd;
+                if (cb) return bwd;
+                return null;
+            };
+            // The trimmed cut: S while it is inside, the old boundary where it is not.
             const cut = [A.p];
-            for (let c = A.c + 1; c <= B.c; c++) cut.push(S[c]);
-            cut.push(B.p);
+            let spliced = false;
+            for (let i = 0; i + 1 < xs.length; i += 2) {
+                if (i) {
+                    const w = splice(xs[i - 1], xs[i]);
+                    if (!w) return null;
+                    for (const k of w) cut.push(r[k].p);
+                    cut.push(xs[i].p);
+                    spliced = true;
+                }
+                for (let c = xs[i].c + 1; c <= xs[i + 1].c; c++) cut.push(S[c]);
+                cut.push(xs[i + 1].p);
+            }
             if (cut.length < 3) return null;
             // No fold in the cut itself. Non-adjacent segment pairs only — neighbours share a
             // vertex and always "touch".
@@ -13840,13 +13928,19 @@ function sbEatCountry(rawTopo, goneName) {
             // it inside the outline traverses the same border twice in the same direction and
             // turns the ring inside out. Brunei "gained" 510 million km² this way.
             if (avoidLegs && avoidLegs.size && piece.some(v => avoidLegs.has(v.leg))) return null;
-            return { piece, rest, cut, area: Math.abs(areaOf(closed(piece))) };
+            // The one invariant every configuration must keep: the two halves are the region.
+            // A keyhole that fails to cancel, a splice that enclosed the wrong side — whatever
+            // the mechanism, it shows up here as leaked area, and the candidate reads as too
+            // deep rather than corrupting the country.
+            const aP = Math.abs(areaOf(closed(piece))), aR = Math.abs(areaOf(closed(rest)));
+            if (Math.abs((aP + aR) / areaHere - 1) > 0.005) return null;
+            return { piece, rest, cut, spliced, area: aP };
         };
 
         // The slide, solved by bisection: every invalid configuration counts as too deep, so lo
         // is always a depth that worked and the loop converges either on the owed area or on the
         // deepest cut the region will take — whichever is shallower.
-        let extYs = null, extFlip = 1;
+        let stCur = st0, extYs = null, extFlip = 1;
         const solve = () => {
             let lo = 0, hi = diam, final = null;
             for (let it = 0; it < 18; it++) {
@@ -13859,22 +13953,36 @@ function sbEatCountry(rawTopo, goneName) {
             return final;
         };
 
+        // Candidates: continuation traces in both mirrorings, and — if the honest stencil cannot
+        // reach the owed share — the stencil STRETCHED or SHRUNK, least distortion first. A
+        // border scaled by a tenth is still that border to the eye, and a fifth of the country
+        // going to the wrong neighbour is far more visible than a fifth of linear stretch.
+        // Candidates are ranked by how much of the owed area they reach, compactness of the
+        // remainder as the tie-break; the scale loop stops as soon as one gets close (95%).
+        let scx = 0, scy = 0;
+        st0.forEach(pt => { scx += pt[0] / M; scy += pt[1] / M; });
+        const SCALES = [1, 1.12, 0.9, 1.22, 0.82];
         let best = null;
-        for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
-            const src = shapes[(seed + s2 * 37) % shapes.length];
-            for (const flip of [1, -1]) {
-                extYs = src.ys; extFlip = flip;
-                const got = solve();
-                if (!got || got.at.area < want * 0.05) continue;   // barely a scratch: crowded out
-                const score = compactness(closed(got.at.rest));
-                if (!best || score > best.score) best = { score, got, src, flip };
+        for (const sc of SCALES) {
+            stCur = sc === 1 ? st0 : st0.map(pt => [scx + (pt[0] - scx) * sc, scy + (pt[1] - scy) * sc]);
+            for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
+                const src = shapes[(seed + s2 * 37) % shapes.length];
+                for (const flip of [1, -1]) {
+                    extYs = src.ys; extFlip = flip;
+                    const got = solve();
+                    if (!got || got.at.area < want * 0.05) continue;   // barely a scratch
+                    const reach = Math.min(1, got.at.area / want);
+                    const score = reach * 3 + compactness(closed(got.at.rest));
+                    if (!best || score > best.score) best = { score, reach, got, src, flip, sc };
+                }
             }
+            if (best && best.reach >= 0.95) break;
         }
         if (!best) return null;
         const at = best.got.at;
         return {
             piece: at.piece, rest: at.rest, cut: at.cut,
-            src: best.src, flip: best.flip,
+            src: best.src, flip: best.flip, stretch: best.sc, spliced: at.spliced,
             backed: at.area < want * 0.97, depthKm: best.got.d
         };
     };
@@ -13895,14 +14003,20 @@ function sbEatCountry(rawTopo, goneName) {
         if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
         const own = new Set(mainGroup.get(nm));
         const L = liveRing.length;
-        let start = -1;
+        // The LONGEST contiguous run of this neighbour's legs, not the first: a spliced bite
+        // leaves verbatim copies of boundary stretches in the ring, and a scan that stops at
+        // the first fragment would bite from a corridor instead of the real frontier.
+        let start = -1, end = -1, bestLen = 0;
         for (let i = 0; i < L; i++) {
             const prev = liveRing[(i - 1 + L) % L];
-            if (own.has(liveRing[i].leg) && !own.has(prev.leg)) { start = i; break; }
+            if (!own.has(liveRing[i].leg) || own.has(prev.leg)) continue;
+            let j = i, len = 0;
+            while (own.has(liveRing[j].leg) && len <= L) { j = (j + 1) % L; len++; }
+            if (len > bestLen) { bestLen = len; start = i; end = j; }
         }
-        if (start < 0) continue;
-        let end = start;
-        while (own.has(liveRing[end].leg)) end = (end + 1) % L;
+        // Nothing left to bite from: an earlier, deeper bite slid clean past this neighbour's
+        // stretch of the boundary and took it. Recorded, so the story can say so.
+        if (start < 0) { story.push({ kind: 'swallowed', name: nm, share: shareOf(nm), borderKm: borderKm.get(nm) }); continue; }
         // Owed a share of the whole country, but never more than most of what is still there:
         // a bite that swallows the entire remainder leaves the next neighbour nothing to bite
         // into and the one after that nothing at all.
@@ -13924,7 +14038,7 @@ function sbEatCountry(rawTopo, goneName) {
         story.push({
             kind: 'bite', ...base,
             took: Math.abs(areaOf(closed(got.piece))), leftBefore: left,
-            backed: got.backed, depthKm: got.depthKm,
+            backed: got.backed, depthKm: got.depthKm, stretch: got.stretch, spliced: got.spliced,
             regionBefore: closed(before).map(toDeg),
             cut: got.cut.map(toDeg),
             piece: closed(got.piece).map(toDeg),
@@ -13964,18 +14078,23 @@ function sbEatCountry(rawTopo, goneName) {
     // The absorber reads that arc in the OPPOSITE direction to the country that just vanished —
     // they were on either side of it — so the outline goes in back to front relative to how the
     // old boundary was walked.
-    const writeArc = (leg, pts) => { arcs[leg.id] = (leg.ref < 0 ? pts : pts.slice().reverse()).map(toDeg); };
+    const writeArc = (leg, pts) => {
+        const fw = flipped ? pts.slice().reverse() : pts;   // back into the country's own direction
+        arcs[leg.id] = (leg.ref < 0 ? fw : fw.slice().reverse()).map(toDeg);
+    };
     for (const [nm, pv] of pieces) {
         const mg = mainGroup.get(nm);
         const own = new Set(mg);
         const L = pv.length;
-        let a = -1;
+        // Longest own-run, for the same corridor reason as the bite loop above.
+        let a = -1, b = -1, bestLen = 0;
         for (let i = 0; i < L; i++) {
-            if (own.has(pv[i].leg) && !own.has(pv[(i - 1 + L) % L].leg)) { a = i; break; }
+            if (!own.has(pv[i].leg) || own.has(pv[(i - 1 + L) % L].leg)) continue;
+            let j = i, len = 1;
+            while (own.has(pv[(j + 1) % L].leg) && len <= L) { j = (j + 1) % L; len++; }
+            if (len > bestLen) { bestLen = len; a = i; b = j; }
         }
         if (a < 0) return sbNo('divides');
-        let b = a;
-        while (own.has(pv[(b + 1) % L].leg)) b = (b + 1) % L;
         // Everything else, from the far end of the frontier round to its near end.
         const path = [];
         for (let k = (b + 1) % L; ; k = (k + 1) % L) { path.push(pv[k].p); if (k === a) break; }
@@ -14919,7 +15038,11 @@ function msRenderStory() {
         const c = st.colours.get(s.name);
         const who = displayLabelForName(s.name);
         head = `<i class="ms-dot" style="background:${c}"></i>${who} — ${pct(s.share * 100)} of the frontier`;
-        if (s.kind === 'crowded') {
+        if (s.kind === 'swallowed') {
+            body = `<p>${who} was owed <strong>${km(s.want || s.share * st.eaten.goneArea)}</strong> — and by the time its turn came, ` +
+                   `an earlier, deeper bite had slid clean past its stretch of the boundary and taken it. ` +
+                   `There is nothing left for ${who} to bite from, so its share falls to the others.</p>`;
+        } else if (s.kind === 'crowded') {
             // "Crowded out" is only true once something has been taken. On the very first step
             // nothing has, and the honest reason is the geometry of this country's own frontier.
             const first = st.i === 1;

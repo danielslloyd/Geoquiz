@@ -276,21 +276,38 @@ a borrowed curve between them, and both times the arithmetic showed through the 
 a sine arch — a parabola with fuzz on top — then a flat-topped envelope that still read as
 built). Sliding an existing border keeps a real border's character at **full amplitude whatever
 the depth**, because it is the border that was already there. Measured over all 286 bites the
-world produces, departure from a best-fit sine arch is **0.276 against 0.268 for real land
+world produces, departure from a best-fit sine arch is **0.262 against 0.268 for real land
 borders** — statistically indistinguishable, against 0.075 and 0.177 for the two pinned
 constructions.
 
 The slid copy's ends are inside the country by construction — they started on its edge and moved
 inward — so each end is **continued until it finds the old boundary again**: along its own end
-tangent, wandering to the trace of a real border sampled from elsewhere in the topology
-(`sbBorderShapes`). The borrowed part is only the continuation; on most bites it is a small
-fraction of the cut. Several traces are tried in both mirrorings and the bite keeps the one
-leaving the most **compact** remainder. Depth is one bisection (`solve`), and the validity story
-collapsed into a single count: the clean configuration is **exactly two crossings** between the
-whole assembled cut and the ring — a cut that pokes out mid-way, or dives out at one end and
-back in at the other (the France-taking-Belgium bug of the first construction), has more than
-two and is simply not accepted, so every invalid configuration reads as "too deep" and the slide
-backs off.
+tangent (swung 26° either way if the straight line finds no exit), wandering to the trace of a
+real border sampled from elsewhere in the topology (`sbBorderShapes`). The borrowed part is only
+the continuation; on most bites it is a small fraction of the cut. Several traces are tried in
+both mirrorings; candidates are ranked by **how much of the owed area they reach**, compactness
+of the remainder as the tie-break. Depth is one bisection (`solve`) and every invalid
+configuration reads as "too deep", so the slide backs off exactly as far as it must.
+
+**Three escalations keep the bites aggressive**, because the first cut of this construction was
+honest but timid — the moment the far coast came near, it backed off to a nibble:
+
+* **Excursions are SPLICED, not rejected.** A deep slide through a narrowing country exits
+  mid-way and comes back; where the slid copy leaves the country, the cut follows the OLD
+  boundary between the exit and the re-entry — which is what a maximal bite does: it goes right
+  up to the far side and takes everything short of it. The spliced stretch is the old border
+  verbatim. In the remainder ring this leaves a zero-width keyhole corridor, which only cancels
+  when the ring is wound consistently — so the ring is **normalised to CCW** up front (Brazil,
+  Saudi Arabia, Thailand, Morocco and Mozambique were exactly the countries wound the other way)
+  and `writeArc` un-flips on the way out. Sixty of the world's bites splice.
+* **The stencil may be STRETCHED or SHRUNK** (±12–22%, uniform, least distortion first, only
+  when the honest stencil cannot reach 95% of the owed share). A border scaled by a tenth is
+  still that border to the eye, and a fifth of the country going to the wrong neighbour is far
+  more visible than a fifth of linear stretch. Eighteen bites use it.
+* **One invariant guards it all, per candidate**: piece plus remainder must equal the region to
+  0.5%. Whatever goes wrong — a keyhole that fails to cancel, a splice that enclosed the wrong
+  side — it shows up as leaked area, and that candidate reads as too deep rather than
+  corrupting the country.
 
 **A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
 neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
@@ -310,13 +327,20 @@ points verbatim, so the retrace is seam-free by the same copied-verbatim argumen
 border in the surgery. Every mainGroup leg is spoken for — the ones not carrying the outline
 collapse to the near endpoint, including any an earlier bite consumed whole.
 
+And one more thing the rewrite cannot assume: **two arcs consecutive on this ring need not be
+consecutive on the neighbour's own ring**. Belgium's two Netherlands arcs chain directly on
+Belgium's ring, while on the Netherlands' ring the Scheldt estuary's coast sits between them —
+so collapsing one arc and writing the whole outline into the other tore the Netherlands' ring
+open at the estuary node. A frontier run may only span arcs the absorber's own ring ALSO chains
+directly (`arcsChainInOwner`), and is split where it does not, the longest sub-run biting and
+the rest joining `avoidLegs`.
+
 One rule carried over from the earlier constructions, still doing its work: **a bite that cannot
-have everything it is owed takes what it can reach, not nothing.** A share of the *original*
-country is a large share of what is *left* by the third or fourth bite, so the depth it asks for
-often sweeps clean across the remainder — the bisection then converges on the deepest slide the
-region will take instead. With the stencil this is rare: bites reach on average **78% of what
-they are owed**, against 55% for the pinned construction, and only 21 neighbours in the world are
-crowded out entirely, against 153.
+have everything it is owed takes what it can reach, not nothing.** With the splices and the
+stretch this is now rare — bites reach on average **95% of what they are owed** (55% under the
+pinned construction, 78% before the escalations), only 5 neighbours in the world are crowded out
+entirely (was 153), and a neighbour whose whole stretch of boundary an earlier, deeper bite slid
+past is recorded as `swallowed` so the story can say what happened to it.
 
 **A neighbour touching this one in two separate places bites from its longest frontier** and its
 other arcs stay where they are, becoming its border with whoever ends up behind them (a bite may
@@ -351,22 +375,24 @@ it. The only structural requirement left is one land neighbour.
 
 Everything is **deterministic**: the same country always divides the same way.
 
-Measured over the 191-country pool at 110m: **144 divide cleanly** in ~5 s for the lot, 18 are
+Measured over the 191-country pool at 110m: **145 divide cleanly** in ~2.7 s for the lot, 18 are
 islands with no land neighbour, 22 are too small to have a boundary worth cutting, 4 contain an
-enclave, 1 has no neighbour touching it in a single place, and 2 will not tile (Malaysia —
-Brunei's two lobes — and Lesotho, whose whole ring is one neighbour; both failed under every
-construction). Audited on ten countries — **8,496 interior sample points, every one of them in
-exactly one absorber: zero gaps, zero overlaps** — with area conserved to 100.0%, identical
-output on repeat runs, and every untouched country bit-identical (the one exception per round is
-Australia, whose antimeridian ring re-decodes differently because the rebuilt topology carries
-absolute coordinates rather than a quantization transform).
+enclave, 1 has no neighbour touching it in a single place, and 1 will not tile (Lesotho, whose
+whole ring is one neighbour — it failed under every construction; Malaysia and Belgium, the
+other historic failures, both divide now). Audited on twelve countries — **9,681 interior
+sample points, every one of them in exactly one absorber: zero gaps, zero overlaps** — with
+area conserved to 100.0%, identical output on repeat runs, and every untouched country
+bit-identical (the one exception per round is Australia, whose antimeridian ring re-decodes
+differently because the rebuilt topology carries absolute coordinates rather than a quantization
+transform).
 
-**Known limit: the shares are approximate**, though far less than they were. A bite reaches on
-average 78% of what it is owed (55% under the pinned construction) and every shortfall falls to
-the leftover — Germany now comes out Austria 42%, Czechia 22%, Poland 17%, Netherlands 9%,
-France 5%, Switzerland 5%, with every neighbour biting, against Austria 67% before. Closing the
-rest needs the bites to **iterate**, which needs each cut edge to remember which neighbour made
-it, so a second bite can be taken from a frontier that is itself a previous bite.
+**Known limit: the deepest bites can swallow a later biter whole.** Germany now comes out
+Czechia 21% (its full share), Netherlands 18% (full), Poland 17% (full), Switzerland 7% (full),
+Austria 37% — and France 0%, because Czechia's slide took the whole left bank of the Rhine
+before France's turn came. That is the construction working as designed (“if a bite cuts off
+another neighbour, so be it”), and the story says so; sharing the loss around instead would
+need the bites to **iterate**, so a second bite can be taken from a frontier that is itself a
+previous bite.
 
 ## Who's Missing: the step-by-step story
 
