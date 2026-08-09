@@ -13425,6 +13425,9 @@ const SB_BITE_EXT = 16;
 // A bite may not take more than this of what is still standing, however much it is owed — the
 // neighbours after it need something to bite into.
 const SB_BITE_MAX_FRAC = 0.8;
+// ...nor more than this multiple of what it was asked for. The ask is itself approximate and
+// the passes scale it, so there is slack; eight times is not slack.
+const SB_BITE_OVERSHOOT = 2.5;
 // How many times the whole division is re-run with corrected targets, and how hard each pass
 // pulls toward them. Measured over twenty countries that divide: one pass leaves a share error
 // of 0.415 and the leftover holding 44.6% of the country; six passes take that to 0.309 and
@@ -13444,8 +13447,19 @@ const SB_BITE_ORDERS = {
     'border-asc': { label: 'Shortest frontier first', hint: 'Small claims are carved out first; the big ones work around them' },
     'area-desc':  { label: 'Biggest neighbour first', hint: 'By the biter\u2019s own area, not by how much border it holds' },
     'area-asc':   { label: 'Smallest neighbour first', hint: 'The minnows get their pick before the giants move' },
-    'clockwise':  { label: 'Clockwise from north',    hint: 'Round the frontier in order, ignoring size entirely' }
+    'clockwise':  { label: 'Clockwise from north',    hint: 'Round the frontier in order, ignoring size entirely' },
+    'convex':     { label: 'Most convex frontier first', hint: 'Whoever wraps furthest around a protrusion \u2014 panhandles are eaten first, and it is re-judged after every bite' }
 };
+// How far apart the samples are when the turning of a frontier is measured, as a fraction of the
+// country's own diagonal. This is the "macro" in macro convexity, and it is a window with a floor
+// and a ceiling. At full resolution the turning of a border is dominated by the wiggle of the
+// river it follows and every frontier scores high: at a fortieth of the country Zambia's frontier
+// with Zimbabwe more than doubles, from 45° to 104°, which is noise being counted as shape. At a
+// sixth it is too coarse the other way — Angola's Cazombo salient is about 220 km across and the
+// step was 317 km, so the very feature this order exists to find was resampled out of existence.
+// A twelfth finds it (Zambia 143° against Namibia's 117°) and still separates the neighbours
+// cleanly, and the answer is stable from a ninth to a twentieth.
+const SB_CONVEX_STEP = 1 / 12;
 let sbBiteOrder = 'border';
 
 // Real land borders from elsewhere in the world, normalised to a unit span, used as the SHAPE
@@ -13694,6 +13708,59 @@ function sbEatCountry(rawTopo, goneName) {
     let ringCx = 0, ringCy = 0, ringCn = 0;
     legs.forEach(l => l.pts.forEach(pt => { ringCx += pt[0]; ringCy += pt[1]; ringCn++; }));
     ringCx /= (ringCn || 1); ringCy /= (ringCn || 1);
+    // The country's own diagonal, for the macro sampling step.
+    let dx0 = Infinity, dy0 = Infinity, dx1 = -Infinity, dy1 = -Infinity;
+    legs.forEach(l => l.pts.forEach(pt => {
+        dx0 = Math.min(dx0, pt[0]); dy0 = Math.min(dy0, pt[1]);
+        dx1 = Math.max(dx1, pt[0]); dy1 = Math.max(dy1, pt[1]);
+    }));
+    const countryDiam = Math.hypot(dx1 - dx0, dy1 - dy0) || 1;
+    const turnStep = countryDiam * SB_CONVEX_STEP;
+
+    // How convex is the MOST convex part of this polyline? Turning is sampled at `step`, so the
+    // answer is about the shape of the stretch rather than the wiggle of the line; the ring is
+    // normalised to counter-clockwise, so turning left is positive and a run that wraps around a
+    // protrusion accumulates it.
+    //
+    // The score is the largest total over any CONTIGUOUS run of samples (Kadane), not the total
+    // over the whole stretch, and that is the difference between finding a panhandle and not.
+    // Angola's Cazombo salient is the case the order was asked for: the tip is convex, and so is
+    // the corner where the salient's south side meets its east side — but the corner at its BASE
+    // is reflex by just as much, and the three cancel to nothing. The net turning of Zambia's
+    // frontier is −16°, which is to say "straight", when what is actually there is a right
+    // angle round a spit of land. Asking for the most convex PART of the border finds it.
+    // `pre` and `post` are the boundary a macro step either side of the stretch, so a frontier
+    // that ENDS at a sharp convex corner is credited with it — the corner matters most of all,
+    // and the tip of a salient is often a tripoint, belonging to a frontier's end rather than to
+    // its middle. Those two corners are SHARED with whoever is round them, so they count HALF.
+    // At full credit a frontier claims corners that are not its border at all: Angola's southern
+    // frontier scored 196° almost entirely on the corner where the Atlantic coast turns north.
+    const macroTurning = (pts, step, pre, post) => {
+        if (pts.length < 2) return 0;
+        const r2 = [pts[0]];
+        let acc = 0;
+        for (let i = 1; i < pts.length; i++) {
+            acc += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+            if (acc >= step) { r2.push(pts[i]); acc = 0; }
+        }
+        const last = pts[pts.length - 1];
+        if (r2[r2.length - 1] !== last) r2.push(last);
+        const nBare = r2.length;
+        if (pre) r2.unshift(pre);
+        if (post) r2.push(post);
+        if (r2.length < 3) return 0;
+        let best2 = 0, run = 0;
+        for (let i = 1; i + 1 < r2.length; i++) {
+            const shared = (pre && i === 1) || (post && i === r2.length - 2);
+            const ax = r2[i][0] - r2[i - 1][0], ay = r2[i][1] - r2[i - 1][1];
+            const bx = r2[i + 1][0] - r2[i][0], by = r2[i + 1][1] - r2[i][1];
+            const ang = Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * (shared ? 0.5 : 1);
+            run = Math.max(0, run + ang);
+            if (run > best2) best2 = run;
+        }
+        return nBare < 2 ? 0 : best2;
+    };
+
     const rankOf = {
         'border':     nm2 => -borderKm.get(nm2),
         'border-asc': nm2 => borderKm.get(nm2),
@@ -13706,7 +13773,10 @@ function sbEatCountry(rawTopo, goneName) {
             if (!mp) return 0;
             const a = Math.atan2(mp[0] - ringCx, mp[1] - ringCy);
             return a < 0 ? a + Math.PI * 2 : a;
-        }
+        },
+        // Judged live, not here — see `rankLive`. All this decides is the order of the queue,
+        // which for this mode only settles where the leftover sits.
+        'convex':     () => 0
     }[SB_BITE_ORDERS[sbBiteOrder] ? sbBiteOrder : 'border'];
     const queue = eligible.sort((a, b) => (rankOf(a) - rankOf(b)) || (a < b ? -1 : 1));
     // The leftover is the BIGGEST neighbour that touches this one in one place. It never bites,
@@ -14032,6 +14102,21 @@ function sbEatCountry(rawTopo, goneName) {
             // so it stays with the donor and falls to a later biter or to the leftover, and no
             // reconciliation is needed anywhere.
             if (!oneLobe(piece)) return null;
+            // And no bite takes the region whole, however convex or however deep the only cut
+            // that lands happens to be. Namibia's Caprivi Strip is the case: it is so thin that
+            // the shallowest slide of Zambia's frontier that still lands cleanly is one that has
+            // crossed the entire country, and Zambia came away with 99% of Namibia. Capping the
+            // achieved area (not merely what was asked for) makes that read as too deep, so the
+            // slide backs off or the neighbour is crowded out and the rest divides normally.
+            if (aP > areaHere * SB_BITE_MAX_FRAC) return null;
+            // Nor does it take several times what it was asked for. Overshoot used to cost
+            // nothing at all — `reach` was capped at 1, so a cut taking eight times its ask
+            // scored as perfectly as one taking exactly it — and where the only cuts that land
+            // are deep ones, that is what got taken: Myanmar, which bounds India's north-eastern
+            // salient and is owed 9%, came away with 73% of India. Refusing the overshoot makes
+            // the bisection back off, and if nothing shallower lands the neighbour is crowded
+            // out, which is the honest answer.
+            if (aP > want * SB_BITE_OVERSHOOT) return null;
             return { piece, rest, cut, spliced, area: aP };
         };
 
@@ -14122,7 +14207,9 @@ function sbEatCountry(rawTopo, goneName) {
                     extYs = src.ys; extFlip = flip;
                     const got = solve();
                     if (!got || got.at.area < want * 0.05) continue;   // barely a scratch
-                    const reach = Math.min(1, got.at.area / want);
+                    // Symmetric fit: as bad to take three times the ask as a third of it. The
+                    // old `min(1, area/want)` treated every overshoot as a perfect score.
+                    const reach = got.at.area <= want ? got.at.area / want : want / got.at.area;
                     const score = reach * 3 + compactness(closed(got.at.rest));
                     if (!best || score > best.score) best = { score, reach, got, src, flip, sc };
                 }
@@ -14154,36 +14241,80 @@ function sbEatCountry(rawTopo, goneName) {
         // it could reach, what the region looked like before the cut — exists only in this loop.
         const story = [];
         let liveRing = ring;
-        for (let qi = 0; qi < queue.length - 1; qi++) {
-            const nm = queue[qi];
+        // Everyone but the leftover, picked from one at a time. Selection is by the order in
+        // force and is made HERE rather than by sorting up front, because one of the orders —
+        // most convex frontier — is a question about the border as it stands, and the border
+        // changes with every bite. For the orders whose key is fixed this is the same sequence a
+        // sort would give, since a neighbour's key cannot change and one whose frontier has been
+        // swallowed can never get it back.
+        const remaining = new Set(queue.slice(0, -1));
+        const ownOf = new Map(queue.map(n => [n, new Set(mainGroup.get(n))]));
+        while (remaining.size) {
             if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
-            const own = new Set(mainGroup.get(nm));
             const L = liveRing.length;
-            // The LONGEST contiguous run of this neighbour's legs, not the first: a spliced bite
+            // The LONGEST contiguous run of each candidate's legs, not the first: a spliced bite
             // leaves verbatim copies of boundary stretches in the ring, and a scan that stops at
             // the first fragment would bite from a corridor instead of the real frontier.
-            let start = -1, end = -1, bestLen = 0;
-            for (let i = 0; i < L; i++) {
-                const prev = liveRing[(i - 1 + L) % L];
-                if (!own.has(liveRing[i].leg) || own.has(prev.leg)) continue;
-                let j = i, len = 0;
-                while (own.has(liveRing[j].leg) && len <= L) { j = (j + 1) % L; len++; }
-                if (len > bestLen) { bestLen = len; start = i; end = j; }
+            const runOf = nm2 => {
+                const own2 = ownOf.get(nm2);
+                let st2 = -1, en2 = -1, bl = 0;
+                for (let i = 0; i < L; i++) {
+                    const prev = liveRing[(i - 1 + L) % L];
+                    if (!own2.has(liveRing[i].leg) || own2.has(prev.leg)) continue;
+                    let j = i, len = 0;
+                    while (own2.has(liveRing[j].leg) && len <= L) { j = (j + 1) % L; len++; }
+                    if (len > bl) { bl = len; st2 = i; en2 = j; }
+                }
+                return st2 < 0 ? null : { start: st2, end: en2 };
+            };
+            // The stretch itself, and the single point a macro step along the boundary either
+            // side of it — the tip of Angola's Cazombo salient, the thin bit that juts east and
+            // the whole reason this order exists, is the DRC/Zambia tripoint, so it sits at a
+            // frontier's END rather than in its middle and would otherwise go unseen.
+            const runPointsOf = (rg, i0, i1) => {
+                const n2 = rg.length, out = [];
+                for (let j = i0; ; j = (j + 1) % n2) { out.push(rg[j].p); if (j === i1) break; }
+                return out;
+            };
+            const stepAway = (rg, from, dir, stop, step) => {
+                const n2 = rg.length;
+                let acc = 0, k = from;
+                while (acc < step) {
+                    const nx = (k + dir + n2) % n2;
+                    acc += Math.hypot(rg[nx].p[0] - rg[k].p[0], rg[nx].p[1] - rg[k].p[1]);
+                    k = nx;
+                    if (k === stop) return null;
+                }
+                return rg[k].p;
+            };
+            let nm = null, start = -1, end = -1, bestKey = 0;
+            for (const cand of remaining) {
+                const rn = runOf(cand);
+                if (!rn) continue;
+                let key;
+                if (sbBiteOrder === 'convex') {
+                    key = -macroTurning(runPointsOf(liveRing, rn.start, rn.end), turnStep,
+                        stepAway(liveRing, rn.start, -1, rn.end, turnStep),
+                        stepAway(liveRing, rn.end, 1, rn.start, turnStep));
+                } else key = rankOf(cand);
+                // Ties by name, so nothing depends on iteration order.
+                if (nm === null || key < bestKey - 1e-12 || (Math.abs(key - bestKey) <= 1e-12 && cand < nm)) {
+                    nm = cand; start = rn.start; end = rn.end; bestKey = key;
+                }
             }
+            if (nm === null) break;                          // nobody has a frontier left
+            remaining.delete(nm);
             const left = Math.abs(areaOf(closed(liveRing)));
             const want = Math.min(targetOf(nm) * (scale.get(nm) || 1), left * SB_BITE_MAX_FRAC);
             const base0 = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want,
                             asked: scale.get(nm) || 1 };
-            // Nothing left to bite from: an earlier, deeper bite slid clean past this
-            // neighbour's stretch of the boundary and took it. Recorded, so the story says so.
-            if (start < 0) { story.push({ kind: 'swallowed', ...base0 }); continue; }
             // Recorded before the attempt, so a neighbour that is crowded out can still be SHOWN
             // holding the stretch of border it was crowded out of.
             const fpts = [];
             for (let k = start; ; k = (k + 1) % L) { fpts.push(toDeg(liveRing[k].p)); if (k === end) break; }
             // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
             const avoidLegs = new Set();
-            legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !own.has(li)) avoidLegs.add(li); });
+            legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !ownOf.get(nm).has(li)) avoidLegs.add(li); });
             const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs);
             const base = { ...base0, frontier: fpts };
             if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
@@ -14200,6 +14331,12 @@ function sbEatCountry(rawTopo, goneName) {
                 source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys }
             });
         }
+        // Anyone never picked had no frontier left to bite from by the time it could have been:
+        // an earlier, deeper bite slid clean past its stretch of the boundary and took it.
+        for (const nm of remaining) story.push({
+            kind: 'swallowed', name: nm, share: shareOf(nm), borderKm: borderKm.get(nm),
+            want: targetOf(nm) * (scale.get(nm) || 1), asked: scale.get(nm) || 1
+        });
         // Whoever has not bitten keeps what is left, whole — which is why the last in the queue
         // never bites: nothing to reconcile, and no leftover stranded in the middle.
         //

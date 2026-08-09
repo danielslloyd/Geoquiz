@@ -289,6 +289,16 @@ both mirrorings; candidates are ranked by **how much of the owed area they reach
 of the remainder as the tie-break. Depth is one bisection (`solve`) and every invalid
 configuration reads as "too deep", so the slide backs off exactly as far as it must.
 
+**A bite is bounded three ways**: it may not take more than `SB_BITE_MAX_FRAC` (80%) of the
+region still standing, nor more than `SB_BITE_OVERSHOOT` (2.5×) of what it was asked for, and
+candidates are ranked on a SYMMETRIC fit — as bad to take three times the ask as a third of it.
+Overshoot used to cost nothing at all, because `reach` was capped at 1: a cut taking eight times
+its ask scored as perfectly as one taking exactly it, and where the only cuts that land are deep
+ones that is what got taken. Myanmar, which bounds India's north-eastern salient and is owed 9%,
+came away with **73% of India**; Zambia, whose frontier with Namibia is the tip of the Caprivi
+Strip, came away with **99% of Namibia**. Refusing the overshoot makes the bisection back off,
+and if nothing shallower lands the neighbour is crowded out, which is the honest answer.
+
 **Three escalations keep the bites aggressive**, because the first cut of this construction was
 honest but timid — the moment the far coast came near, it backed off to a nibble:
 
@@ -390,7 +400,7 @@ holding **44.6% → 39.6%**. Further passes move neither; damping 1.0 and 0.4 bo
 than 0.7, since a bite that cannot go deeper keeps asking for more and an undamped ask
 overshoots past what it can have.
 
-## Who's Missing: five turn orders
+## Who's Missing: six turn orders
 
 Who bites first changes the map completely — the first bite cuts an untouched country and every
 later one works around it — and there is no single right answer, so it is a choice
@@ -399,17 +409,55 @@ something settled in the code. Measured over the same twenty countries:
 
 | Order | Share error | Leftover holds | Absorbers |
 |---|---|---|---|
-| Longest frontier first (default) | 0.309 | **39.6%** | 3.60 |
-| Shortest frontier first | 0.261 | 47.4% | **4.10** |
-| Biggest neighbour first | 0.335 | 42.6% | 3.75 |
-| Smallest neighbour first | **0.239** | 45.6% | 3.70 |
-| Clockwise from north | 0.314 | 43.6% | 3.80 |
+| Longest frontier first (default) | 0.213 | 45.1% | 3.75 |
+| Shortest frontier first | 0.257 | 47.8% | **4.10** |
+| Biggest neighbour first | 0.265 | 48.0% | 3.75 |
+| Smallest neighbour first | **0.199** | **45.0%** | 3.85 |
+| Clockwise from north | 0.232 | 46.5% | 3.95 |
+| Most convex frontier first | 0.275 | 49.1% | 3.65 |
 
-The two "smallest first" orders share out more accurately — small claims carved from an
-untouched country are the ones most likely to be met exactly — while the default keeps the
-leftover from dominating, which is the failure people actually notice. Only the ORDER changes:
-eligibility, shares and the leftover (still the biggest neighbour touching in exactly one place)
-are identical across all five, so the comparison means something.
+Only the ORDER changes: eligibility, shares and the leftover (still the biggest neighbour
+touching in exactly one place) are identical across all six, so the comparison means something.
+Selection is made **at each step rather than by sorting up front**, because one of the orders is
+a question about the border as it stands and the border changes with every bite; for the five
+whose key is fixed this is the same sequence a sort would give, since a key cannot change and a
+frontier that has been swallowed can never come back.
+
+### Most convex frontier first
+
+"The neighbour that owns the most convex remaining part of the border", and every word of it is
+load-bearing. It is the order that eats the panhandles first — Angola's Cazombo salient, the thin
+bit that juts east, goes to Zambia before anything else is cut; India starts with Myanmar, which
+bounds the north-eastern salient.
+
+Three things it has to get right, and each was wrong first:
+
+* **The most convex PART, not the average.** A salient's tip is convex and so is the corner where
+  its far side turns — but the corner at its BASE is reflex by just as much, and summing the
+  three gives zero. The net turning of Zambia's frontier with Angola is −16°, which reads as
+  "straight", when what is there is a right angle round a spit of land. The score is therefore
+  the largest total over any CONTIGUOUS run of samples (Kadane), which finds the salient and
+  ignores the base.
+* **A frontier gets HALF credit for the corners at its ends.** The tip of a salient is often a
+  tripoint — Cazombo's is where the DRC and Zambia meet — so it sits at the END of a frontier
+  rather than in its middle, and a stretch measured strictly between its own endpoints turns
+  around nothing. The measure therefore looks one macro step past each end. At FULL credit that
+  backfires: a frontier claims corners that are not its border at all, and Angola's southern
+  frontier scored 196° almost entirely on the corner where the Atlantic coast turns north. Half,
+  because the corner is shared with whoever is round it.
+* **The macro window has a floor and a ceiling** (`SB_CONVEX_STEP`, a twelfth of the country's
+  diagonal). At a fortieth, Zambia's frontier with Zimbabwe more than doubles from 45° to 104° —
+  that is the wiggle of the river being counted as shape, which is exactly what "macro" was
+  meant to exclude. At a sixth it is too coarse the other way: Cazombo is about 220 km across
+  and the step was 317 km, so the one feature this order exists to find was resampled out of
+  existence. A twelfth finds it (Zambia 143° against Namibia's 117°) and the answer is stable
+  from a ninth to a twentieth.
+
+Two limits worth knowing. A protrusion whose tip is a tripoint is split between two neighbours
+and each is credited with half of it, so the order between *them* is decided by the rest of their
+frontiers. And a neighbour can only bite first if it is not the **leftover** — for Angola the DRC
+holds the salient's northern side and never bites at all, because it has the longest single-place
+frontier and is holding the surplus.
 
 **A neighbour touching this one in two separate places bites from its longest frontier** and its
 other arcs stay where they are, becoming its border with whoever ends up behind them (a bite may
