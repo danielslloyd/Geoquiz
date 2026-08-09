@@ -9208,6 +9208,7 @@ function updateModeOverlays() {
         g.select('.draw-border-truth').attr('d', path(drawBorderState.target));
     }
     if (mc.sbQuizMode) sbUpdateOverlay();
+    if (mc.missingSandboxMode) msDrawStory();
 }
 
 // ---- satellite ----
@@ -13417,7 +13418,31 @@ const SB_BITE_STOP_FRAC = 0.05;
 const SB_BITE_CURVES = 5;
 // Points along a bite. Enough for a borrowed border to keep its character, few enough that
 // checking it against the whole region is cheap.
-const SB_BITE_SAMPLES = 33;
+const SB_BITE_SAMPLES = 49;
+// How much of the borrowed border's wander survives being pushed deep into a country.
+//
+// This is the number that decides whether a bite looks like a border or like a parabola, and it
+// used to be missing entirely. The wiggle was applied at the SOURCE border's own amplitude —
+// at most 0.28 of the chord — while the depth needed to reach a big neighbour's share grew to
+// several times the chord. At that point the wander is a tenth of the shape and what is left is
+// the smooth arch underneath it: a parabola with a slight fuzz on top, which is exactly what a
+// hand-drawn cut looks like and exactly what borrowing a real border was meant to avoid.
+//
+// Scaling the wander WITH the depth keeps the two in proportion, so a bite is as wiggly relative
+// to its own size at 800 km deep as at 80. At 1.0 the ratio is held exactly.
+const SB_BITE_WIGGLE_GAIN = 1.0;
+// The bite's envelope ramps in over this much of its length and out over that much again, each
+// drawn from [MIN, MIN+VAR] per candidate so no two bites turn at the same place and none is
+// symmetric about its middle. Shorter ramps mean a longer flat run, and measured over all 212
+// bites the world produces, shortening them from 0.16-0.42 to 0.14-0.36 took the departure from
+// a pure sine arch from 0.150 to 0.178 (a real land border, resampled the same way, is 0.268).
+// How deep a bite has to be, in units of the chord between its tripoints, before it stops
+// following the old frontier's shape and starts running straight. A new border is straighter
+// than the one it replaces, but only once it is deep enough to have left it.
+// Measured over the whole world: 0.25 gives 266 bites against 253 at 1.0 and 263 at 0.5.
+const SB_BITE_STRAIGHTEN = 0.25;
+const SB_BITE_RAMP_MIN = 0.14;
+const SB_BITE_RAMP_VAR = 0.22;
 
 // Real land borders from elsewhere in the world, normalised to a unit span, used as the SHAPE
 // of every bite. A new border invented from a smooth curve looks invented: real ones wander,
@@ -13454,7 +13479,9 @@ function sbBorderShapes(topo, owners, arcs) {
         // A ruler has nothing to lend, and a hook mapped onto a chord folds back over itself.
         if (big < 0.02 || big > 0.28) return;
         ys[0] = 0; ys[SB_BITE_SAMPLES - 1] = 0;
-        out.push(ys);
+        // The identity rides along so the sandbox can say — and draw — where a bitemark came
+        // from. It costs nothing: these are references into the arc table, not copies.
+        out.push({ ys, id, owners: gs.map(sbGeomName), pts });
     });
     sbBorderShapeCache = { src: topo, list: out };
     return out;
@@ -13681,18 +13708,62 @@ function sbEatCountry(rawTopo, goneName) {
             }
             fr[0] = P; fr[SB_BITE_SAMPLES - 1] = Q;
         }
-        // lam 0 → the frontier, so no land at all; lam 1 → the straight chord, with the borrowed
-        // border's wiggle fully faded in; beyond that a smooth bulge pushes on into the country.
-        // Area grows with lam throughout, which is what makes one bisection enough.
-        const build = (ys, lam) => {
-            const w = Math.min(1, lam), extra = Math.max(0, lam - 1);
+        const smooth = u => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
+        // The frontier's own inward normal at each sample, which is what a shallow bite is pushed
+        // along. Oriented against the global inward normal so a wiggly frontier cannot flip one
+        // of them around and fold the cut back through itself.
+        const fn = fr.map((_, i) => {
+            const a = fr[Math.max(0, i - 1)], b = fr[Math.min(SB_BITE_SAMPLES - 1, i + 1)];
+            const tx = b[0] - a[0], ty = b[1] - a[1], L2 = Math.hypot(tx, ty);
+            if (!(L2 > 0)) return [nx, ny];
+            let mx = -ty / L2, my = tx / L2;
+            if (mx * nx + my * ny < 0) { mx = -mx; my = -my; }
+            return [mx, my];
+        });
+
+        // lam IS the depth, in units of the chord: 0 leaves the frontier exactly where it is and
+        // takes nothing, and the area behind the cut grows with it throughout, which is what makes
+        // one bisection enough.
+        //
+        // Three things about how the cut is pushed, and each of them is a difference between a
+        // bite that reads as a border and one that reads as a drawing.
+        //
+        // A SHALLOW bite is the frontier offset along ITS OWN normal, not a blend toward the
+        // chord between the tripoints. The blend was the older construction and it has a hole in
+        // it exactly where it is least affordable: a concave frontier has its own chord lying
+        // outside the country, so the very shallowest cut was already out of bounds and the
+        // backoff — which only ever gets shallower — could not rescue it. That is not a rare
+        // shape. Angola holds 21% of Zambia's frontier and was refused on the FIRST bite of an
+        // untouched country, and Zambia then went 80% to one neighbour. Offsetting instead means
+        // the shallowest cut is a copy of a real border a hair inside the country, inside by
+        // construction rather than by luck, and the straightening only comes in as the bite gets
+        // deep enough to need it (`w`, over SB_BITE_STRAIGHTEN of the chord).
+        //
+        // The push has a FLAT TOP, not a sine arch. `sin(πt)` is a single smooth hump with one
+        // maximum in the middle, which is a parabola to the eye however much wander is laid over
+        // it — and the deeper the bite the more the hump dominates. A ramp-hold-ramp envelope
+        // instead runs the cut PARALLEL to the frontier across most of its length, which is what
+        // a border between two countries actually does: it makes its turn near each end and then
+        // holds a course. The two ramps are different lengths, seeded per candidate, so the shape
+        // is never symmetric about its middle — symmetry is the other half of what made the old
+        // cut look constructed.
+        //
+        // And the borrowed wander is scaled BY THE DEPTH (`gain`), so it stays the same fraction
+        // of the shape at any size. See SB_BITE_WIGGLE_GAIN.
+        const build = (ys, lam, a0, a1) => {
+            const w = smooth(lam / SB_BITE_STRAIGHTEN);
+            const gain = 1 + lam * SB_BITE_WIGGLE_GAIN;
             const out = [];
             for (let i = 0; i < SB_BITE_SAMPLES; i++) {
                 const t = i / (SB_BITE_SAMPLES - 1);
                 const bx = fr[i][0] + (P[0] + dx * t - fr[i][0]) * w;
                 const by = fr[i][1] + (P[1] + dy * t - fr[i][1]) * w;
-                const off = span * (ys[i] * w + extra * Math.sin(Math.PI * t));
-                out.push([bx + nx * off, by + ny * off]);
+                // Straighten the direction of the push alongside the baseline it rides on.
+                let ux2 = fn[i][0] * (1 - w) + nx * w, uy2 = fn[i][1] * (1 - w) + ny * w;
+                const uL = Math.hypot(ux2, uy2) || 1; ux2 /= uL; uy2 /= uL;
+                const env = Math.min(smooth(t / a0), smooth((1 - t) / a1));
+                const off = span * (ys[i] * w * gain + lam * env);
+                out.push([bx + ux2 * off, by + uy2 * off]);
             }
             out[0] = P; out[SB_BITE_SAMPLES - 1] = Q;
             return out;
@@ -13737,16 +13808,27 @@ function sbEatCountry(rawTopo, goneName) {
         };
 
         let best = null;
+        // Two passes. The first offers the flat-topped envelopes, which is the shape wanted; the
+        // second, run only if not one of them would fit, falls back to a single round hump —
+        // wider in the middle and therefore able to squeeze its depth through a region a flat run
+        // cannot cross. It recovers the twelve bites in the world that the flat top costs
+        // (212 against 224) without rounding off any bite that did not need it.
+        for (let pass = 0; pass < 2 && !best; pass++)
         for (let s = 0; s < SB_BITE_CURVES; s++) {
-            const base = shapes[(seed + s * 37) % shapes.length];
+            const src = shapes[(seed + s * 37) % shapes.length];
+            // Ramp lengths for this candidate's envelope, from the same seed the border was
+            // picked with — so the asymmetry is as deterministic as everything else here.
+            const h = ((seed + s * 2654435761) >>> 0);
+            const a0 = pass ? 0.5 : SB_BITE_RAMP_MIN + ((h >>> 4) & 255) / 255 * SB_BITE_RAMP_VAR;
+            const a1 = pass ? 0.5 : SB_BITE_RAMP_MIN + ((h >>> 13) & 255) / 255 * SB_BITE_RAMP_VAR;
             for (const flip of [1, -1]) {
-                const ys = base.map(v => v * flip);
+                const ys = src.ys.map(v => v * flip);
                 // How deep to go for the share this neighbour is owed. The area behind the cut
                 // grows with lam throughout, so one bisection finds it.
                 let lo = 0, hi = 8.0;
                 for (let it = 0; it < 22; it++) {
                     const mid2 = (lo + hi) / 2;
-                    if (Math.abs(areaOf(pieceRing(build(ys, mid2)))) < want) lo = mid2; else hi = mid2;
+                    if (Math.abs(areaOf(pieceRing(build(ys, mid2, a0, a1)))) < want) lo = mid2; else hi = mid2;
                 }
                 const lam = (lo + hi) / 2;
                 // ...and then as much of that as will actually fit. A share of the ORIGINAL
@@ -13757,20 +13839,21 @@ function sbEatCountry(rawTopo, goneName) {
                 // can reach, not nothing. Feasibility falls off with depth — near lam 0 the cut
                 // is a copy of the real frontier and is inside by construction — so backing off
                 // is another bisection, on whether it fits rather than on how big it is.
-                let cut = build(ys, lam);
+                let cut = build(ys, lam, a0, a1);
+                let got = lam, backed = false;
                 if (!fits(cut)) {
                     let bad = lam, good = 0, found = null;
                     for (let it = 0; it < 8; it++) {
                         const mid2 = (good + bad) / 2;
-                        const c2 = build(ys, mid2);
+                        const c2 = build(ys, mid2, a0, a1);
                         if (fits(c2)) { good = mid2; found = c2; } else bad = mid2;
                     }
                     if (!found || good < lam * 0.12) continue;   // barely a scratch: crowded out
-                    cut = found;
+                    cut = found; got = good; backed = true;
                 }
                 const leftRing = restV.map(v => v.p).concat(cut.slice(1, -1)).concat([restV[0].p]);
                 const score = compactness(leftRing);
-                if (!best || score > best.score) best = { score, cut };
+                if (!best || score > best.score) best = { score, cut, src, flip, lam, got, backed };
             }
         }
         if (!best) return null;
@@ -13781,11 +13864,19 @@ function sbEatCountry(rawTopo, goneName) {
         for (let i = cut.length - 2; i >= 1; i--) piece.push({ p: cut[i], leg: -1 });
         const rest = restV.map((v, i) => ({ p: v.p, leg: i === restV.length - 1 ? -1 : v.leg }));
         for (let i = 1; i < cut.length - 1; i++) rest.push({ p: cut[i], leg: -1 });
-        return { piece, rest };
+        return {
+            piece, rest, cut,
+            src: best.src, flip: best.flip, backed: best.backed, depthKm: best.got * span
+        };
     };
 
     // ---------------- go round, biggest share first ----------------
     const pieces = new Map();
+    // A running account of the operation, for the sandbox to replay. It is written here rather
+    // than reconstructed afterwards because most of what makes a step worth watching — which
+    // border the bitemark was traced from, what the neighbour was owed against what it could
+    // reach, what the region looked like before the cut — exists only inside this loop.
+    const story = [];
     let liveRing = ring;
     const seedOf = nm => { let h = 0; for (let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0; return h; };
     for (let qi = 0; qi < queue.length - 1; qi++) {
@@ -13805,16 +13896,44 @@ function sbEatCountry(rawTopo, goneName) {
         // a bite that swallows the entire remainder leaves the next neighbour nothing to bite
         // into and the one after that nothing at all.
         const left = Math.abs(areaOf(closed(liveRing)));
-        const got = bite(liveRing, start, end, Math.min(shareOf(nm) * area0, left * 0.62), seedOf(nm));
-        if (!got) continue;                              // crowded out
+        const want = Math.min(shareOf(nm) * area0, left * 0.62);
+        const before = liveRing;
+        // Recorded before the attempt, so a neighbour that is crowded out can still be SHOWN
+        // holding the stretch of border it was crowded out of.
+        const fpts = [];
+        for (let k = start; ; k = (k + 1) % L) { fpts.push(toDeg(liveRing[k].p)); if (k === end) break; }
+        const got = bite(liveRing, start, end, want, seedOf(nm));
+        const base = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want, frontier: fpts };
+        if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
         pieces.set(nm, got.piece);
         liveRing = got.rest;
+        story.push({
+            kind: 'bite', ...base,
+            took: Math.abs(areaOf(closed(got.piece))), leftBefore: left,
+            backed: got.backed, depthKm: got.depthKm,
+            regionBefore: closed(before).map(toDeg),
+            cut: got.cut.map(toDeg),
+            piece: closed(got.piece).map(toDeg),
+            source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys }
+        });
     }
     // Whoever has not bitten keeps what is left, whole. Which is also why the last in the queue
     // never bites: there is nothing to reconcile and no leftover in the middle by construction.
-    const leftover = queue.find(n => !pieces.has(n));
-    if (!leftover) return sbNo('divides');
+    // The LAST in the queue, which is the one deliberately chosen up front — not merely the first
+    // that happens to hold no piece. Those are two different countries whenever a bite is crowded
+    // out, and taking the first one wrong in both directions: the country picked to be the
+    // leftover, on the grounds that it touches this one in exactly one place, got nothing at all,
+    // while the whole remainder went to a neighbour that may well touch in two — which is the one
+    // case the outline cannot express, and the reason the choice was made up front. Germany was
+    // handing 68% of itself to a Czechia that had already been crowded out of biting.
+    const leftover = queue[queue.length - 1];
+    if (!leftover || pieces.has(leftover)) return sbNo('divides');
     pieces.set(leftover, liveRing);
+    story.push({
+        kind: 'leftover', name: leftover, share: shareOf(leftover) || 0,
+        borderKm: borderKm.get(leftover), took: Math.abs(areaOf(closed(liveRing))),
+        piece: closed(liveRing).map(toDeg)
+    });
 
     // Every scrap accounted for, and no piece folded through another. The area check is exact by
     // construction — each bite splits a region in two — so a failure here means a fold.
@@ -13919,7 +14038,9 @@ function sbEatCountry(rawTopo, goneName) {
     splitDisputedGlacier(features);
     tagTerritories(features);
     fixCountryWinding(features);
-    return { features, absorbers };
+    // The local metric is km per degree in both axes, so every area the story carries is already
+    // in km² and nothing has to be converted on the way out.
+    return { features, absorbers, story, outline: closed(ring).map(toDeg), goneArea };
 }
 
 // Airports, fetched on demand exactly as the lakes are — only one round wants them, and the
@@ -14662,46 +14783,220 @@ function msHandleClick(name) {
               `${MS_STATES.fails.label}</span><br><span class="ms-hint">${MS_STATES.fails.hint}.</span>`);
         return;
     }
-    // Do it.
+    msBeginStory(nm, eaten, topo);
+}
+
+// ---------------- the story ----------------
+// Performing the surgery and showing the answer is the least interesting thing this tool can
+// do: the finished map is a map, and the whole reason the operation is worth a sandbox is that
+// the RULE is not visible in its result. Which neighbour was owed what, which of them could not
+// reach what it was owed, and — the part nobody would guess — that the shape of every new border
+// was traced off a real border somewhere else in the world, are all invisible the moment the
+// last cut closes.
+//
+// So a click walks through it a bite at a time. The map holds the country still and draws what
+// each step did to it; the panel says why that step was taken and shows the border its shape
+// came from. Only the final step actually replaces the world.
+
+// One per absorber, in bite order. Distinct hues rather than a ramp: these are labels, not
+// quantities, and two neighbours next to each other have to be told apart at a glance.
+const MS_PIECE_COLOURS = ['#d08a2c', '#3d8f5f', '#4a7fb5', '#b5544a', '#8a6fb0', '#3f9b96', '#b08a3a', '#7a8f3d'];
+
+function msBeginStory(nm, eaten, topo) {
     msState.shown = nm;
-    gameState.countries = eaten.features;
-    drawCountries();
     const R2 = SB_EARTH_R_KM * SB_EARTH_R_KM;
     const before = worldTopoForDetail(topo);
-    const goneFeat = topojson.feature(before,
-        before.objects.countries.geometries.find(gm => namesMatch(sbGeomName(gm), nm)));
-    const total = d3.geoArea(goneFeat) * R2;
+    const colours = new Map();
+    eaten.story.forEach((s, i) => colours.set(s.name, MS_PIECE_COLOURS[i % MS_PIECE_COLOURS.length]));
+    // The real, audited shares — measured on the finished geometry rather than on what each bite
+    // meant to take, which is exactly the difference the last step is there to report.
     const shares = eaten.absorbers.map(a => {
         const after = eaten.features.find(f => f.properties.name === a);
         const was = before.objects.countries.geometries.find(gm => namesMatch(sbGeomName(gm), a));
         const gain = (after && was) ? d3.geoArea(after) * R2 - d3.geoArea(topojson.feature(before, was)) * R2 : 0;
-        return { a, pct: total ? gain / total * 100 : 0 };
+        return { a, pct: eaten.goneArea ? gain / eaten.goneArea * 100 : 0 };
     }).sort((x, y) => y.pct - x.pct);
+    msState.story = { nm, eaten, colours, shares, i: 0, applied: false };
     // Frame the neighbourhood — this is the sandbox, so there is no answer to give away.
     if (sbFitToFeatures([nm, ...eaten.absorbers], 0.1)) drawCountries();
     msPaint();
-    countriesGroup.selectAll('path.country').classed('ms-absorber', d => {
-        const n2 = d && d.properties && (d.properties.parent || d.properties.name);
-        return !!n2 && eaten.absorbers.some(a => namesMatch(a, n2));
+    msRenderStory();
+}
+
+const msStorySteps = st => st.eaten.story.length + 2;   // the shares, each bite, the result
+
+function msGoStory(d) {
+    const st = msState && msState.story;
+    if (!st) return;
+    const i = Math.max(0, Math.min(msStorySteps(st) - 1, st.i + d));
+    if (i === st.i) return;
+    st.i = i;
+    // The world is only really replaced on the last step, and put back on the way out of it.
+    const wantApplied = (i === msStorySteps(st) - 1);
+    if (wantApplied !== st.applied) {
+        st.applied = wantApplied;
+        gameState.countries = wantApplied ? st.eaten.features : msState.world;
+        drawCountries();
+        msPaint();
+    }
+    msRenderStory();
+}
+
+function msRenderStory() {
+    const st = msState && msState.story;
+    if (!st) return;
+    const total = msStorySteps(st);
+    const gone = displayLabelForName(st.nm);
+    const km = v => Math.round(v).toLocaleString() + ' km²';
+    const pct = v => (v < 1 ? '<1' : Math.round(v)) + '%';
+    let head = '', body = '';
+
+    if (st.i === 0) {
+        head = `Who holds the frontier`;
+        body = `<p>${gone} has ${st.eaten.story.length} neighbour${st.eaten.story.length === 1 ? '' : 's'} with a real share of its land border. ` +
+               `Each is owed that same share of its <strong>${km(st.eaten.goneArea)}</strong> — whoever holds most of the frontier ends up with most of the land, ` +
+               `which is the rule anybody would guess.</p>` +
+               `<div class="ms-shares">` + st.eaten.story.map(s =>
+                   `<div class="ms-share"><span><i class="ms-dot" style="background:${st.colours.get(s.name)}"></i>${displayLabelForName(s.name)}` +
+                   (s.kind === 'leftover' ? ` <em class="ms-tag">keeps the rest</em>` : '') + `</span>` +
+                   `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(s.share * 100))}%;background:${st.colours.get(s.name)}"></i></span>` +
+                   `<span class="ms-pct">${pct(s.share * 100)}</span></div>`).join('') + `</div>` +
+               `<p class="ms-hint">In that order, biggest bite first — except for the one at the bottom, which never bites at all. ` +
+               `It is the biggest neighbour touching ${gone} in exactly one place, and it simply keeps whatever is left, ` +
+               `so there is nothing to reconcile at the end and never a scrap stranded in the middle.</p>`;
+    } else if (st.i === total - 1) {
+        head = `${gone} is gone`;
+        body = `<p><strong>${km(st.eaten.goneArea)}</strong> shared out, and the seam is invisible by construction: ` +
+               `only the arcs that moved were rewritten, so every other vertex of every other country is bit-identical.</p>` +
+               `<div class="ms-shares">` + st.shares.map(sv =>
+                   `<div class="ms-share"><span><i class="ms-dot" style="background:${st.colours.get(sv.a) || '#888'}"></i>${displayLabelForName(sv.a)}</span>` +
+                   `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(sv.pct))}%;background:${st.colours.get(sv.a) || '#888'}"></i></span>` +
+                   `<span class="ms-pct">${pct(sv.pct)}</span></div>`).join('') + `</div>` +
+               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button>`;
+    } else {
+        const s = st.eaten.story[st.i - 1];
+        const c = st.colours.get(s.name);
+        const who = displayLabelForName(s.name);
+        head = `<i class="ms-dot" style="background:${c}"></i>${who} — ${pct(s.share * 100)} of the frontier`;
+        if (s.kind === 'crowded') {
+            // "Crowded out" is only true once something has been taken. On the very first step
+            // nothing has, and the honest reason is the geometry of this country's own frontier.
+            const first = st.i === 1;
+            body = `<p>${who} is owed <strong>${km(s.want)}</strong>, and cannot have it. ` +
+                   (first
+                     ? `No cut across ${who}'s stretch of border stays inside ${gone} at any depth — that stretch is shaped so that anything drawn between its two ends leaves the country.`
+                     : `The region has been bitten into by now, and no cut from ${who}'s stretch of border stays inside what is left.`) +
+                   ` Its share falls to the others.</p>`;
+        } else if (s.kind === 'leftover') {
+            body = `<p>${who} never bites. Whatever is still standing when everyone else has finished is its — ` +
+                   `<strong>${km(s.took)}</strong>, ${pct(s.took / st.eaten.goneArea * 100)} of the country.</p>` +
+                   `<p class="ms-hint">Which is also where the shortfalls end up. A bite that could not reach everything it was owed left the rest here, ` +
+                   `so the country with the longest frontier tends to finish with rather more than its share.</p>`;
+        } else {
+            // What it actually got, not whether the backoff ran: a cut can fail at the depth the
+            // bisection first asked for and pass a fraction of a per cent shallower, and saying
+            // "it took what it could reach" about a bite that got everything is simply wrong.
+            const reach = s.took / s.want;
+            body = `<p>Owed ${pct(s.share * 100)} of the country — <strong>${km(s.want)}</strong> — out of the ${km(s.leftBefore)} still standing. ` +
+                   (reach < 0.97
+                     ? `The full depth swept clean across the remainder and out the far side, so it takes what it can reach instead: <strong>${km(s.took)}</strong>.`
+                     : `It takes <strong>${km(s.took)}</strong>.`) + `</p>` +
+                   `<p>The bitemark is traced from the real <strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+                   `${s.source.flip < 0 ? ', mirrored' : ''}, stretched between the two tripoints at the ends of that frontier. ` +
+                   `Only the depth is arithmetic — bisected until the piece is the right size.</p>` +
+                   msSourceSvg(s.source);
+        }
+    }
+    msSay(
+        `<div class="ms-story-head"><strong>${head}</strong></div>` +
+        `<div class="ms-story-body">${body}</div>` +
+        `<div class="ms-story-nav">` +
+        `<button class="control-btn" id="ms-prev"${st.i ? '' : ' disabled'}>‹ Back</button>` +
+        `<span class="ms-story-count">${st.i + 1} / ${total}</span>` +
+        `<button class="control-btn" id="ms-next"${st.i === total - 1 ? ' disabled' : ''}>Next ›</button>` +
+        `</div>`);
+    const prev = document.getElementById('ms-prev');
+    const next = document.getElementById('ms-next');
+    if (prev) prev.addEventListener('click', () => msGoStory(-1));
+    if (next) next.addEventListener('click', () => msGoStory(1));
+    const back = document.getElementById('ms-restore');
+    if (back) back.addEventListener('click', () => msRestore());
+    msDrawStory();
+}
+
+// The borrowed border, drawn on its own. Claiming a shape came from the Mongolia–China border is
+// only worth saying if you can see that it did, and the same offsets are what the cut on the map
+// was built from — so the two read as the same line.
+function msSourceSvg(src) {
+    const ys = src.ys || [];
+    if (ys.length < 3) return '';
+    const W = 190, H = 74, pad = 8;
+    const big = Math.max(0.05, ...ys.map(Math.abs));
+    const sc = (H / 2 - pad) / big;
+    const d = ys.map((y, i) =>
+        `${i ? 'L' : 'M'}${(pad + i * (W - 2 * pad) / (ys.length - 1)).toFixed(1)},${(H / 2 - y * src.flip * sc).toFixed(1)}`).join('');
+    return `<svg class="ms-source" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true">` +
+           `<line class="ms-source-chord" x1="${pad}" y1="${H / 2}" x2="${W - pad}" y2="${H / 2}"/>` +
+           `<path class="ms-source-line" d="${d}"/></svg>`;
+}
+
+// The map half of the story. Its own layer on the svg rather than inside the map group, and
+// re-projected from stored lon/lat on every call, so it follows a pan or a wheel like every
+// other overlay in the app.
+function msDrawStory() {
+    if (typeof svg === 'undefined' || !svg) return;
+    let layer = svg.select('g.ms-story');
+    const st = msState && msState.story;
+    if (!st || st.applied) { layer.remove(); return; }
+    if (layer.empty()) layer = svg.append('g').attr('class', 'ms-story');
+    layer.raise().selectAll('*').remove();
+    const D = pts => {
+        let out = '', open = false;
+        pts.forEach(p => {
+            const q = projection(p);
+            if (!q || !isFinite(q[0])) { open = false; return; }
+            out += (open ? 'L' : 'M') + q[0].toFixed(1) + ',' + q[1].toFixed(1);
+            open = true;
+        });
+        return out;
+    };
+    // The country that is going, always — every step is a step of taking it apart.
+    layer.append('path').attr('class', 'ms-ghost').attr('d', D(st.eaten.outline) + 'Z');
+
+    const step = st.i === 0 ? null : st.eaten.story[st.i - 1];
+    // Everything already eaten, faint and named, so a step is read against what came before it.
+    st.eaten.story.slice(0, Math.max(0, st.i - 1)).forEach(s => {
+        if (!s.piece) return;
+        layer.append('path').attr('class', 'ms-piece-done').attr('d', D(s.piece) + 'Z')
+            .style('fill', st.colours.get(s.name));
     });
-    msSay(`<strong>${displayLabelForName(nm)}</strong> is gone — ` +
-          `${Math.round(total).toLocaleString()} km² shared out.<br>` +
-          `<div class="ms-shares">` + shares.map(sv =>
-            `<div class="ms-share"><span>${displayLabelForName(sv.a)}</span>` +
-            `<span class="ms-bar"><i style="width:${Math.max(1, Math.round(sv.pct))}%"></i></span>` +
-            `<span class="ms-pct">${sv.pct < 1 ? '<1' : Math.round(sv.pct)}%</span></div>`).join('') +
-        `</div><button class="control-btn ms-restore" id="ms-restore">Put it back</button>`);
-    const btn = document.getElementById('ms-restore');
-    if (btn) btn.addEventListener('click', () => msRestore());
+    if (!step) {
+        // The shares step: every neighbour's stretch of the frontier, in its own colour.
+        st.eaten.story.forEach(s => {
+            if (!s.frontier) return;
+            layer.append('path').attr('class', 'ms-frontier').attr('d', D(s.frontier))
+                .style('stroke', st.colours.get(s.name));
+        });
+    } else {
+        const c = st.colours.get(step.name);
+        if (step.frontier)
+            layer.append('path').attr('class', 'ms-frontier live').attr('d', D(step.frontier)).style('stroke', c);
+        if (step.piece)
+            layer.append('path').attr('class', 'ms-piece').attr('d', D(step.piece) + 'Z').style('fill', c);
+        if (step.cut)
+            layer.append('path').attr('class', 'ms-cut').attr('d', D(step.cut)).style('stroke', c);
+    }
 }
 
 function msRestore(quiet) {
     if (!msState || !msState.shown) return;
     msState.shown = null;
+    msState.story = null;
     gameState.countries = msState.world;
     if (projection && projection.center) fitFlatWorld(projection);
     drawCountries();
     msPaint();
+    msDrawStory();
     if (!quiet) msSay('Pick a country off the map.');
 }
 
@@ -14709,6 +15004,7 @@ function removeMissingSandbox() {
     const box = document.getElementById('ms-panel');
     if (box) box.remove();
     if (msState && msState.shown) gameState.countries = msState.world;
+    if (typeof svg !== 'undefined' && svg) svg.select('g.ms-story').remove();
     msState = null;
 }
 

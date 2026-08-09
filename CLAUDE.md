@@ -271,11 +271,41 @@ be reconciled afterwards and there is never a leftover stranded in the middle.
 (`sbBorderShapes`, one pass over every arc that two countries share), stretched across the two
 tripoints at the ends of the biter's frontier. A bite has to be a curve of some kind, and every
 curve anyone would invent looks invented; a border that already exists looks like a border
-because it is one. On top of the borrowed wiggle sits a single smooth bulge whose depth is
-bisected until the piece has the area that neighbour is owed — so the shape comes from geography
-and only the size is arithmetic. Each bite tries several borrowed borders in both directions and
-keeps the one leaving the most **compact** remainder, which is what stops the region degenerating
-into a ribbon by the third bite.
+because it is one. Only the depth is arithmetic, bisected until the piece has the area that
+neighbour is owed. Each bite tries several borrowed borders in both directions and keeps the one
+leaving the most **compact** remainder, which is what stops the region degenerating into a ribbon
+by the third bite.
+
+**Three things decide whether a bite reads as a border or as a drawing**, and the first two were
+wrong for as long as this existed — the borrowed border was in there, and you could not see it.
+
+* **The wander is scaled by the DEPTH** (`SB_BITE_WIGGLE_GAIN`). It used to be applied at the
+  source border's own amplitude, at most 0.28 of the chord, while the depth needed to reach a big
+  neighbour's share grew to several times the chord. At that point the wander is a tenth of the
+  shape and what is left is the smooth arch underneath it — a parabola with a fuzz on top, which
+  is exactly what a hand-drawn cut looks like and exactly what borrowing a real border was meant
+  to avoid.
+* **The push has a FLAT TOP, not a sine arch.** `sin(πt)` has one maximum in the middle and reads
+  as a parabola however much wander is laid over it. A ramp-hold-ramp envelope runs the cut
+  *parallel* to the frontier across most of its length, which is what a border between two
+  countries actually does: it turns near each end and then holds a course. The two ramps are
+  different lengths, seeded per candidate (`SB_BITE_RAMP_MIN`/`_VAR`), so no bite is symmetric
+  about its middle — symmetry was the other half of what made the old cut look constructed.
+* **A SHALLOW bite is the frontier offset along its own normal**, straightening toward the chord
+  only as it gets deep (`SB_BITE_STRAIGHTEN`). The old construction blended frontier→chord first
+  and bulged afterwards, which has a hole in it exactly where it is least affordable: **a concave
+  frontier has its own chord lying outside the country**, so the shallowest cut was already out
+  of bounds and the backoff — which only ever gets shallower — could not rescue it. Not a rare
+  shape: Angola holds 21% of Zambia's frontier and was refused on the **first** bite of an
+  untouched country, and Zambia then went 80% to a single neighbour. Offsetting makes the
+  shallowest cut a copy of a real border a hair inside the country, inside by construction rather
+  than by luck. Measured over the world: **266 bites against 219, and 106 neighbours crowded out
+  against 153** — 2.83 absorbers per country, up from 2.51.
+
+Measured over the bites the world produces, departure from a best-fit sine arch went from
+**0.075 to 0.177**; a real land border resampled the same way is 0.268. Two passes are tried —
+the flat-topped envelopes first, and a single round hump only if not one of them fits, since a
+round hump can squeeze its depth through a region a flat run cannot cross.
 
 Three things the construction has to get right, each of which was wrong first and each caught by
 an audit rather than by looking:
@@ -309,7 +339,15 @@ so its piece is whatever remains, and that region can contain its own second fro
 would then be both referenced by its ring and copied into the outline. So the leftover is chosen
 up front as the *biggest* neighbour touching in exactly one place: it absorbs every bite that
 came up short, and the country with the longest frontier is the one that should hold the surplus.
-Making it the smallest handed Czechia 76% of Germany. **Biting smallest-first was tried and is
+Making it the smallest handed Czechia 76% of Germany.
+
+**And it has to be the one that was chosen, not merely the first left holding nothing.** Those
+are different countries the moment a bite is crowded out, and taking the first went wrong in both
+directions at once: the country deliberately picked to be the leftover — on the grounds that it
+touches this one in exactly one place — got nothing at all, while the whole remainder went to a
+neighbour that may well touch in two, which is the single case the outline cannot express and the
+entire reason the choice was made up front. Germany was handing 68% of itself to a Czechia that
+had already been crowded out of biting. **Biting smallest-first was tried and is
 worse** on every count — the big bites then cut across a region three small ones have already
 nibbled the edges off, and back off to slivers (Burkina Faso came out 92/8 between two neighbours
 instead of 79/20/1 between three).
@@ -334,11 +372,43 @@ runs, and every untouched country bit-identical (the one exception per round is 
 antimeridian ring re-decodes differently because the rebuilt topology carries absolute
 coordinates rather than a quantization transform).
 
-**Known limit: the shares are approximate.** Bites that back off leave their shortfall to the
-leftover, so the country with the longest frontier tends to end up with rather more than its
-share (Germany → Czechia 68%, Netherlands 18%, France 14%). The ordering is right and every
-neighbour that can bite does; closing the gap needs the bites to iterate rather than take one
-pass.
+**Known limit: the shares are approximate.** A bite reaches on average 55% of what it is owed,
+and every shortfall falls to the leftover, so the country holding the longest single-place
+frontier finishes with rather more than its share (Germany → Austria 67%, Netherlands 18%,
+France 13%, Poland 2%). The ordering is right and every neighbour that can bite does; closing the
+gap needs the bites to **iterate** rather than take one pass, which in turn needs each cut edge to
+remember which neighbour made it, so a second bite can be taken from a frontier that is itself a
+previous bite.
+
+## Who's Missing: the step-by-step story
+
+Performing the surgery and showing the finished map is the least interesting thing the sandbox can
+do, because **the rule is not visible in its result**. Which neighbour was owed what, which of
+them could not reach it, and — the part nobody would guess — that the shape of every new border
+was traced off a real border somewhere else in the world, are all invisible the moment the last
+cut closes. The seam is invisible *by construction*; that is the whole point of working at the arc
+level, and it is also why the finished map cannot explain itself.
+
+So a click walks through it a bite at a time: a shares step, one step per neighbour, and the
+result. `sbEatCountry` returns a `story` array written **inside** the bite loop rather than
+reconstructed afterwards, because most of what makes a step worth watching (the borrowed border's
+identity, what the neighbour was owed against what it could reach, the region as it stood before
+the cut) exists nowhere else. The map holds the country still and draws what each step did to it
+— `msDrawStory` re-projects from stored lon/lat on every call, so it follows a pan or a wheel like
+every other overlay — and only the **last** step replaces the world, putting it back on the way
+out of that step.
+
+Each bite step also draws the borrowed border **on its own** (`msSourceSvg`). Claiming a shape came
+from the Mongolia–China border is only worth saying if you can see that it did, and the offsets
+drawn there are the same ones the cut on the map was built from.
+
+Two things the copy has to get right, both of which were wrong first and both of which had the
+story telling a lie about machinery that was working correctly:
+* **"Crowded out" is only true once something has been taken.** On the first step nothing has, and
+  the honest reason is the shape of that neighbour's own frontier.
+* **Report what a bite GOT, not whether the backoff ran.** A cut can fail at the depth the
+  bisection first asked for and pass a fraction of a per cent shallower, and saying "it took what
+  it could reach" about a bite that got everything reads as a bug in the surgery.
 
 Candidates for the quiz must be at least **twice the area at which the map would draw them as a
 dot rather than an outline** (`SB_MISSING_MIN_KM2`) — "which one is missing" is not a question

@@ -3962,6 +3962,36 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .ms-pct { text-align: right; font-variant-numeric: tabular-nums; }
 .ms-restore { margin-top: 6px; }
 
+/* ---- Who's Missing sandbox: the step-by-step story ------------------------------------- */
+.ms-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 6px; vertical-align: baseline; }
+.ms-story-head { margin-bottom: 6px; }
+.ms-tag { font-style: normal; font-size: 0.68rem; opacity: 0.6; }
+.ms-story-body p { margin: 0 0 7px; }
+.ms-story-nav { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ms-story-nav .control-btn { padding: 3px 10px; font-size: 0.78rem; }
+.ms-story-nav .control-btn[disabled] { opacity: 0.4; cursor: default; }
+.ms-story-count { flex: 1; text-align: center; font-size: 0.75rem; opacity: 0.7;
+    font-variant-numeric: tabular-nums; }
+/* The borrowed border, drawn on its own so the claim can be checked by eye. */
+.ms-source { display: block; margin: 4px auto 2px; max-width: 100%; height: auto; }
+.ms-source-chord { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.ms-source-line { fill: none; stroke: var(--text); stroke-width: 1.6;
+    stroke-linejoin: round; stroke-linecap: round; }
+
+/* The map half. Nothing here takes pointer events — the country underneath stays clickable. */
+g.ms-story { pointer-events: none; }
+.ms-ghost { fill: none; stroke: var(--text); stroke-width: 1.2; stroke-dasharray: 5 4;
+    opacity: 0.55; vector-effect: non-scaling-stroke; }
+.ms-piece { fill-opacity: 0.55; stroke: #fff; stroke-width: 1;
+    vector-effect: non-scaling-stroke; }
+.ms-piece-done { fill-opacity: 0.22; stroke: none; }
+.ms-frontier { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.55;
+    vector-effect: non-scaling-stroke; }
+.ms-frontier.live { stroke-width: 4.5; opacity: 1; }
+.ms-cut { fill: none; stroke-width: 2.5; stroke-dasharray: 7 4; stroke-linecap: round;
+    vector-effect: non-scaling-stroke; }
+
 /* ---- Who's Missing: the outline of the hole -------------------------------------------- */
 /* The seam where a country was absorbed is invisible by construction — that is the whole point
    of the surgery — so the reveal has to draw the shape back in rather than point at it. */
