@@ -740,15 +740,53 @@ Two things gave the old canvas generator away: it was a 320×213 **raster** besi
 SVGs (every flag in the app is fetched as `.svg`), so sharpness alone decided the round; and its
 eight-layout vocabulary put a plain disc on screen constantly when exactly one country has one.
 
+**The palette is taken WHOLE from another real flag**, not assembled colour by colour. A colour
+scheme is a thing a country has rather than a set of independent choices — red-white-black is the
+pan-Arab vocabulary, gold-green-red the pan-African one — and picking three colours one at a time
+by regional frequency produces combinations no flag has ever worn. `sbDonorPalette` reads a donor
+flag's chromatic buckets with the **exact shade it actually uses** (the point of borrowing a
+scheme is that country's particular green, not a generic one), ranked by how much of the design
+carries them; `sbBuildFakeFlag` maps the seed's buckets onto that list **rank for rank**, so the
+seed's dominant colour takes the donor's dominant colour and its emblem colour takes the donor's
+emblem colour. The old per-colour picker survives as the fallback for when no donor can be read.
+
+**And with `sbFlagMixMatch` on — the "Mix & match" button in the controls bar, default ON — the
+donor lends its EMBLEM too.** `sbFindMotif` measures a flag: a flag is a field with something on
+it, and the something is whatever is between `SB_MOTIF_MIN_FRAC` and `SB_MOTIF_MAX_FRAC` of the
+area and no more than 3:1 elongated (a sliver is a stripe or a border, and transplanting one
+reads as damage). Measuring needs `getBBox`, so the candidate is laid out inside a hidden SVG
+attached to the document — the only way to ask an arbitrary SVG how big a part of it is without
+reimplementing path parsing. About half the world's flags yield one (13 of 24 sampled), which is
+roughly the share that carry a charge.
+
+Two things that finder has to get right. It prefers the **GROUP** a shape belongs to wherever one
+still fits the band: a charge is usually several elements — a crescent is a disc with a disc
+punched out of it, Saint Kitts' two stars are two paths — and taking the single biggest element
+transplanted a bare white disc, which reads as a hole in the flag rather than as an emblem. And
+the transplant **replaces** the seed's own emblem (`sbSeedMotif`, matched back by serialisation
+so the node can be removed) rather than adding to it, because two emblems on one flag is not a
+design any country has.
+
+The motif goes in **before** the recolour, so it is repainted into the new palette along with
+everything else and does not read as pasted on.
+
+**Four flags are never forged** (`SB_NO_FORGE`): those carrying the shahada or the takbir, where
+the words themselves are the flag. They still appear as real options.
+
 Colours are classified into perceptual **buckets** (near-identical hexes are the same colour for
-this purpose) and replaced from the seed's own **region**, weighted by how common each is there —
-so an African seed stays in the pan-African vocabulary. Three constraints, all of which were
-wrong first time and all visible in a sample of draws:
+this purpose). Three constraints, all of which were wrong first time and all visible in a sample
+of draws:
 * the mapping must be **injective** — two colours landing on the same one merges the shapes they
   distinguished, and Ethiopia's star dissolves into its field;
 * **never map into white or black** — they are what emblems and outlines are drawn in;
 * a replacement must be **≥90 RGB units away**, or the swap (navy for blue, maroon for red) is
   invisible at tile size and the round becomes "which one looks very slightly off".
+
+**On the reveal all four tiles are named** (`sbNameImageTiles`, the same withhold-then-write
+pattern Upside Down uses, with the credit's height reserved so nothing jumps): three countries
+and one "invented". The answer to "which of these is not a flag" is largely "and here is what the
+other three were", and reading three names off a sentence and matching them back to three
+pictures is work the tiles can do for free.
 
 Seeds are rejected when the design is simple enough that another real country might already own
 the recoloured version — plain bi/tricolours are exactly that hazard (Ireland/Ivory Coast,

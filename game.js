@@ -1483,6 +1483,13 @@ function startGameWithMode(mode) {
         colourBtn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
     }
 
+    // Mix & match: offered only where there is a forgery being made.
+    const mixBtn = document.getElementById('flag-mix-toggle');
+    if (mixBtn) {
+        mixBtn.style.display = gameState.mode === 'sb-fake-flag' ? '' : 'none';
+        mixBtn.textContent = 'Mix & match: ' + (sbFlagMixMatch ? 'On' : 'Off');
+    }
+
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
     if (projToggle) {
@@ -7315,6 +7322,12 @@ function setupEventListeners() {
 
     const colourBtn = document.getElementById('map-colour-toggle');
     if (colourBtn) colourBtn.addEventListener('click', () => setMapColour(!mapColourOn));
+
+    const mixBtn = document.getElementById('flag-mix-toggle');
+    if (mixBtn) mixBtn.addEventListener('click', function () {
+        sbSetFlagMix(!sbFlagMixMatch);
+        this.textContent = 'Mix & match: ' + (sbFlagMixMatch ? 'On' : 'Off');
+    });
 
     // Orbital scoring-weight sliders.
     [
@@ -16128,9 +16141,20 @@ function sbColourBucket(rgb) {
     return best;
 }
 
+// Whether the fake may also borrow a MOTIF, not only a palette. Off, it is one flag wearing
+// another's colours; on, it is one flag wearing another's colours and carrying a third country's
+// emblem in place of its own.
+let sbFlagMixMatch = true;
+
 // Choose a stand-in for one bucket: common in this region, and CLOSE to what it replaces.
 // Distance is a penalty rather than a bonus deliberately — a near-miss recolour (a slightly
 // wrong green) is far harder to catch than a garish one, and the round is meant to be hard.
+//
+// Kept as the FALLBACK. The palette a fake wears is now taken whole from another real flag (see
+// `sbDonorPalette`), because a colour scheme is a thing a country has rather than a set of
+// independent choices: red-white-black is the pan-Arab vocabulary, gold-green-red the
+// pan-African one, and picking three colours one at a time by regional frequency produces
+// combinations no flag has ever worn. This is what runs when no donor could be read.
 function sbPickReplacement(bucketKey, region, taken) {
     const weights = SB_REGION_PALETTE[region] || SB_REGION_PALETTE_DEFAULT;
     const from = SB_FLAG_BUCKETS.find(b => b.key === bucketKey);
@@ -16183,29 +16207,213 @@ function sbSvgColourNodes(doc) {
     return out;
 }
 
-// Build a recoloured copy of one real flag. Async because the source has to be fetched.
-// Returns {url, seed, from, to} or null when this seed is unsuitable.
-async function sbBuildFakeFlag(seedName, code, region) {
-    let text;
+// One flag's SVG, parsed, with the network and the obvious duds handled once.
+const sbFlagDocCache = new Map();
+async function sbFlagDoc(code) {
+    if (sbFlagDocCache.has(code)) return sbFlagDocCache.get(code);
+    let out = null;
     try {
         const res = await fetch(`https://flagcdn.com/${code}.svg`);
-        if (!res.ok) return null;
-        text = await res.text();
-    } catch (_) { return null; }
-    // Enormous files (Mexico's coat of arms is 140 kB of gradients) are slow and recolour badly.
-    if (!text || text.length > 40000 || /<image/i.test(text)) return null;
+        if (res.ok) {
+            const text = await res.text();
+            // Enormous files (Mexico's coat of arms is 140 kB of gradients) are slow and
+            // recolour badly; a raster embedded in an SVG cannot be recoloured at all.
+            if (text && text.length <= 40000 && !/<image/i.test(text)) {
+                const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+                if (doc && !doc.querySelector('parsererror') && doc.documentElement) out = doc;
+            }
+        }
+    } catch (_) { out = null; }
+    sbFlagDocCache.set(code, out);
+    return out;
+}
 
-    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-    if (!doc || doc.querySelector('parsererror') || !doc.documentElement) return null;
-    const nodes = sbSvgColourNodes(doc);
-    if (!nodes.length) return null;
-
+// Bucket a document's colour nodes, biggest first. "Biggest" is by node count rather than by
+// drawn area, which is cruder but needs no layout: a flag's field is one rect and its emblem is
+// forty paths, so the ranking has to be read as "how much of the DESIGN is this colour", not
+// "how much of the cloth". That is the right question here anyway — it is the emblem colour of
+// one flag that should become the emblem colour of the other.
+function sbBucketNodes(nodes) {
     const buckets = new Map();
     nodes.forEach(n => {
         const b = sbColourBucket(n.rgb);
         if (!buckets.has(b.key)) buckets.set(b.key, []);
         buckets.get(b.key).push(n);
     });
+    return buckets;
+}
+
+// A donor's palette: its chromatic buckets in order of prominence, with the exact RGB it
+// actually uses rather than the bucket's nominal one — the point of borrowing a scheme is to get
+// that country's particular green, not a generic one.
+async function sbDonorPalette(code) {
+    const doc = await sbFlagDoc(code);
+    if (!doc) return null;
+    const nodes = sbSvgColourNodes(doc);
+    if (!nodes.length) return null;
+    const buckets = sbBucketNodes(nodes);
+    const out = [];
+    buckets.forEach((list, key) => {
+        if (key === 'white' || key === 'black') return;
+        // The commonest exact shade in the bucket, so a flag with a light and a dark green
+        // contributes the one it is mostly made of.
+        const tally = new Map();
+        list.forEach(n => { const h = sbHex(n.rgb); tally.set(h, (tally.get(h) || 0) + 1); });
+        let bestHex = null, bestN = -1;
+        tally.forEach((c, h) => { if (c > bestN) { bestN = c; bestHex = h; } });
+        out.push({ key, n: list.length, rgb: sbParseColour(bestHex) || SB_FLAG_BUCKETS.find(b => b.key === key).rgb });
+    });
+    if (!out.length) return null;
+    out.sort((a, b) => b.n - a.n);
+    return out;
+}
+
+// A transplantable MOTIF: the emblem a flag carries, as a serialisable subtree plus the box it
+// occupies. Found by measuring — a flag is a field with something on it, and the something is
+// whatever is small enough not to be the field and big enough not to be a seam.
+//
+// getBBox needs layout, so the candidate is measured inside a hidden SVG attached to the
+// document. That is the only way to ask an arbitrary SVG "how big is this part of you" without
+// reimplementing path parsing.
+const SB_MOTIF_MIN_FRAC = 0.0015;  // smaller than this is detail, not an emblem
+const SB_MOTIF_MAX_FRAC = 0.30;    // bigger than this is the field, or a whole band
+function sbFindMotif(doc) {
+    const root = doc.documentElement;
+    const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
+    const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    if (!(W > 0 && H > 0)) return null;
+    const host = document.createElement('div');
+    host.setAttribute('style', 'position:absolute;width:0;height:0;overflow:hidden;opacity:0;pointer-events:none');
+    const live = document.importNode(root, true);
+    host.appendChild(live);
+    document.body.appendChild(host);
+    let best = null;
+    try {
+        const kids = [];
+        const walk = (el, depth) => {
+            for (const c of el.children) {
+                if (/^(defs|metadata|title|desc|style|clipPath|mask|linearGradient|radialGradient|pattern|filter)$/i.test(c.tagName)) continue;
+                kids.push(c);
+                if (depth < 2 && c.tagName.toLowerCase() === 'g') walk(c, depth + 1);
+            }
+        };
+        walk(live, 0);
+        kids.forEach(el => {
+            let b = null;
+            try { b = el.getBBox(); } catch (_) { return; }
+            if (!b || !(b.width > 0) || !(b.height > 0)) return;
+            const frac = (b.width * b.height) / (W * H);
+            if (frac < SB_MOTIF_MIN_FRAC || frac > SB_MOTIF_MAX_FRAC) return;
+            // An emblem is compact. A 10:1 sliver is a stripe or a border, and transplanting one
+            // onto another flag reads as damage rather than as a charge.
+            const ar = Math.max(b.width / b.height, b.height / b.width);
+            if (ar > 3) return;
+            if (!best || frac > best.frac) best = { el, frac, b };
+        });
+        // Prefer the GROUP a shape belongs to, where there is one that still fits the band. A
+        // charge is very often several elements: a crescent is a disc with a disc punched out of
+        // it, a star-and-crescent is that plus a star, and Saint Kitts' two stars are two paths.
+        // Taking the single biggest element gets half the construction and transplants a bare
+        // white disc, which reads as a hole in the flag rather than as an emblem.
+        if (best) {
+            let up = best.el.parentElement;
+            while (up && up !== live && up.tagName.toLowerCase() === 'g') {
+                let pb = null;
+                try { pb = up.getBBox(); } catch (_) { pb = null; }
+                if (!pb || !(pb.width > 0) || !(pb.height > 0)) break;
+                const frac = (pb.width * pb.height) / (W * H);
+                const ar = Math.max(pb.width / pb.height, pb.height / pb.width);
+                if (frac > SB_MOTIF_MAX_FRAC || ar > 3) break;
+                best = { el: up, frac, b: pb };
+                up = up.parentElement;
+            }
+        }
+        if (!best) return null;
+        return {
+            xml: new XMLSerializer().serializeToString(best.el),
+            box: { x: best.b.x, y: best.b.y, w: best.b.width, h: best.b.height },
+            vb: { w: W, h: H }
+        };
+    } catch (_) {
+        return null;
+    } finally {
+        host.remove();
+    }
+}
+
+// Put the donor's emblem where the seed's was — or, if the seed has none, in the middle, which
+// is where a flag with one shape on it almost always puts it. Removing the seed's own first is
+// what makes this a SWAP rather than a pile: two emblems on one flag is not a design any country
+// has, and the round is meant to produce something that could plausibly be a country's flag.
+function sbTransplantMotif(doc, motif, seedMotif) {
+    const root = doc.documentElement;
+    const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
+    const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    if (!(W > 0 && H > 0)) return false;
+    // Where it goes, and how big: the seed's own emblem box when there is one, otherwise a
+    // centred box a third of the flag's height.
+    let dst = seedMotif ? seedMotif.box : null;
+    if (!dst) {
+        const h = H * 0.34, w = h * (motif.box.w / motif.box.h);
+        dst = { x: (W - w) / 2, y: (H - h) / 2, w, h };
+    }
+    // Uniform scale, so the emblem is not stretched into a different shape on the way across.
+    const k = Math.min(dst.w / motif.box.w, dst.h / motif.box.h);
+    const tx = dst.x + (dst.w - motif.box.w * k) / 2 - motif.box.x * k;
+    const ty = dst.y + (dst.h - motif.box.h * k) / 2 - motif.box.y * k;
+    if (seedMotif && seedMotif.el && seedMotif.el.parentNode) seedMotif.el.parentNode.removeChild(seedMotif.el);
+    const frag = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(${tx},${ty}) scale(${k})">` +
+        motif.xml + `</g></svg>`, 'image/svg+xml');
+    if (!frag || frag.querySelector('parsererror')) return false;
+    const g = frag.documentElement.firstElementChild;
+    if (!g) return false;
+    root.appendChild(doc.importNode(g, true));
+    return true;
+}
+
+// The seed's own emblem, located in the seed's OWN document so the node can be removed.
+function sbSeedMotif(doc) {
+    const found = sbFindMotif(doc);
+    if (!found) return null;
+    // sbFindMotif measures a COPY, so match the original back by its serialisation — the two
+    // documents are identical at this point, so the first exact match is the right node.
+    const root = doc.documentElement;
+    const all = [];
+    const walk = (el, depth) => {
+        for (const c of el.children) {
+            all.push(c);
+            if (depth < 2 && c.tagName.toLowerCase() === 'g') walk(c, depth + 1);
+        }
+    };
+    walk(root, 0);
+    const ser = new XMLSerializer();
+    const el = all.find(c => ser.serializeToString(c) === found.xml) || null;
+    return el ? { ...found, el } : null;
+}
+
+// Build a recoloured copy of one real flag. Async because the source has to be fetched.
+// Returns {url, seed, changes, donor, motifFrom} or null when this seed is unsuitable.
+async function sbBuildFakeFlag(seedName, code, region, donor) {
+    const src = await sbFlagDoc(code);
+    if (!src) return null;
+    // A private copy: the parsed docs are cached and a fake must not scribble on one.
+    const doc = new DOMParser().parseFromString(
+        new XMLSerializer().serializeToString(src), 'image/svg+xml');
+    if (!doc || doc.querySelector('parsererror') || !doc.documentElement) return null;
+
+    // The motif goes in BEFORE the recolour, so the transplanted emblem is repainted into the
+    // new palette along with everything else and does not read as pasted on.
+    let motifFrom = null;
+    if (donor && donor.motif && sbFlagMixMatch) {
+        if (sbTransplantMotif(doc, donor.motif, sbSeedMotif(doc))) motifFrom = donor.name;
+    }
+
+    const nodes = sbSvgColourNodes(doc);
+    if (!nodes.length) return null;
+    const buckets = sbBucketNodes(nodes);
 
     // White and black are structural — outlines, emblem detail, the field a charge sits on —
     // and recolouring them reads as a broken image rather than as another country's flag.
@@ -16223,17 +16431,38 @@ async function sbBuildFakeFlag(seedName, code, region) {
     // Seeded with the colours that are STAYING, so a replacement can never collide with one of
     // the flag's own untouched colours either.
     const taken = new Set([...buckets.keys()]);
-    chromatic.forEach(key => {
-        const rep = sbPickReplacement(key, region, taken);
+    // The seed's chromatic buckets in the same order the donor's are ranked, so the flag's
+    // dominant colour takes the donor's dominant colour and its emblem colour takes the donor's
+    // emblem colour. Rank-to-rank is what makes the result read as a colour SCHEME rather than
+    // as three unrelated substitutions.
+    const ranked = chromatic.slice().sort((a, b) => buckets.get(b).length - buckets.get(a).length);
+    const pool = (donor && donor.palette ? donor.palette : []).slice();
+    const repFor = key => {
+        // The donor's next unused colour, skipping any that is already in this flag (the
+        // mapping must stay INJECTIVE: two of a flag's colours landing on the same one merges
+        // the shapes they distinguished, and Ethiopia's star dissolves into its field) or too
+        // near what it replaces to be seen at tile size.
+        const from = SB_FLAG_BUCKETS.find(b => b.key === key);
+        for (let i = 0; i < pool.length; i++) {
+            const c = pool[i];
+            if (taken.has(c.key)) continue;
+            if (sbRgbDist(from.rgb, c.rgb) < 90) continue;
+            pool.splice(i, 1);
+            return c;
+        }
+        return sbPickReplacement(key, region, taken);
+    };
+    ranked.forEach(key => {
+        const rep = repFor(key);
         if (!rep) return;
         taken.add(rep.key);
         changes.push({ from: key, to: rep.key });
         // Shift every shade in the bucket by the same delta, so an emblem's light and dark
         // greens stay light and dark relative to each other instead of flattening to one tone.
-        const src = SB_FLAG_BUCKETS.find(b => b.key === key);
+        const from = SB_FLAG_BUCKETS.find(b => b.key === key);
         buckets.get(key).forEach(n => {
             const shifted = [0, 1, 2].map(i =>
-                Math.max(0, Math.min(255, n.rgb[i] + (rep.rgb[i] - src.rgb[i]))));
+                Math.max(0, Math.min(255, n.rgb[i] + (rep.rgb[i] - from.rgb[i]))));
             const hex = sbHex(shifted);
             if (n.inStyle) {
                 const style = n.el.getAttribute('style') || '';
@@ -16249,7 +16478,9 @@ async function sbBuildFakeFlag(seedName, code, region) {
     const out = new XMLSerializer().serializeToString(doc);
     return {
         url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out),
-        seed: seedName, changes
+        seed: seedName, changes,
+        donor: (donor && donor.palette && donor.palette.length) ? donor.name : null,
+        motifFrom
     };
 }
 
@@ -16259,28 +16490,56 @@ async function sbBuildFakeFlag(seedName, code, region) {
 let sbFakeFlagReady = null;
 let sbFakeFlagPending = false;
 
+// Not used as SEEDS. These flags carry the shahada or the takbir — the words themselves are the
+// flag — so recolouring one and passing it off as an invention is a different act from doing it
+// to a tricolour. They still appear as real options; they are simply never the thing forged.
+const SB_NO_FORGE = new Set(['sa', 'af', 'iq', 'ir']);
+
 function sbPrepareFakeFlag() {
     if (sbFakeFlagReady || sbFakeFlagPending) return;
     const pool = sbPool().filter(n => {
         const d = (window.countryData || {})[effectiveDataName(n)];
-        return d && d.code;
+        return d && d.code && !SB_NO_FORGE.has(d.code);
     });
     if (!pool.length) return;
     sbFakeFlagPending = true;
     // Roughly a third of seeds are rejected (too plain to be safe, too big to recolour, an
     // all-white palette), so try several within one preparation rather than making the caller
     // poll through the failures.
+    const codeOf = n => { const d = (window.countryData || {})[effectiveDataName(n)]; return d && d.code; };
     (async () => {
         for (let t = 0; t < 8 && !sbFakeFlagReady; t++) {
             const seed = sbRandom(pool);
-            const d = (window.countryData || {})[effectiveDataName(seed)];
-            if (!d || !d.code) continue;
+            const code = codeOf(seed);
+            if (!code) continue;
             try {
-                const r = await sbBuildFakeFlag(seed, d.code, sbContinentOf(seed));
+                // A DONOR supplies the palette, and its emblem too when mixing is on. It is
+                // drawn from anywhere in the world rather than from the seed's own region: the
+                // point of the round is a flag that looks like it could exist, and a flag
+                // wearing a scheme from the far side of the world is exactly as plausible as
+                // one wearing its neighbour's — flags travel.
+                let donor = null;
+                for (let d2 = 0; d2 < 4 && !donor; d2++) {
+                    const dn = sbRandom(pool.filter(n => !namesMatch(n, seed)));
+                    const dc = dn && codeOf(dn);
+                    if (!dc) continue;
+                    const palette = await sbDonorPalette(dc);
+                    if (!palette) continue;
+                    const doc = sbFlagMixMatch ? await sbFlagDoc(dc) : null;
+                    donor = { name: dn, palette, motif: doc ? sbFindMotif(doc) : null };
+                }
+                const r = await sbBuildFakeFlag(seed, code, sbContinentOf(seed), donor);
                 if (r) sbFakeFlagReady = r;
             } catch (_) { /* try another seed */ }
         }
     })().finally(() => { sbFakeFlagPending = false; });
+}
+
+// Mixing changes what is prepared, so anything already made under the old setting is dropped.
+function sbSetFlagMix(on) {
+    sbFlagMixMatch = !!on;
+    sbFakeFlagReady = null;
+    sbPrepareFakeFlag();
 }
 
 function sbClaimFakeFlag() {
@@ -16788,17 +17047,23 @@ const SB_QUIZZES = {
             const real = shuffleArray(pool.filter(n => !namesMatch(n, fake.seed))).slice(0, 3);
             if (real.length < 3) return null;
             const opts = shuffleArray([
-                { label: 'A', src: fake.url, fake: true },
-                ...real.map(n => ({ label: 'B', src: getFlagUrl(effectiveDataName(n)), name: n }))
+                { label: 'A', src: fake.url, fake: true, credit: 'invented' },
+                ...real.map(n => ({ label: 'B', src: getFlagUrl(effectiveDataName(n)), name: n,
+                                    credit: displayLabelForName(n) }))
             ]).map((o, i) => ({ ...o, label: 'ABCD'[i] }));
             const right = opts.find(o => o.fake);
-            const swaps = fake.changes.map(c => `${c.from} → ${c.to}`).join(', ');
             return {
                 highlight: [], imageOptions: opts, correct: right.label,
                 options: opts.map(o => o.label),
                 prompt: 'Three of these are real national flags. Which one was <strong>invented</strong>?',
-                explain: `${right.label} — that is ${fake.seed}'s flag with its colours changed (${swaps}). ` +
-                         `The others really belong to ${real.join(', ')}.`
+                // The three real ones are NAMED on the reveal, on the tiles themselves (see
+                // `sbNameImageTiles`) rather than listed in a sentence underneath: the answer to
+                // "which of these is not a flag" is largely "and here is what the other three
+                // are", and reading three names off a list and matching them back to three
+                // pictures is work the tiles can do for free.
+                explain: `That is ${displayLabelForName(fake.seed)}'s flag` +
+                         (fake.donor ? ` wearing ${displayLabelForName(fake.donor)}'s colours` : ' recoloured') +
+                         (fake.motifFrom ? `, with ${displayLabelForName(fake.motifFrom)}'s emblem on it` : '') + '.'
             };
         }
     },
@@ -17901,9 +18166,23 @@ function sbRenderImageOptions(opts, correct) {
     opts.forEach(o => {
         const b = document.createElement('button');
         b.className = 'option-btn sb-img';
-        b.innerHTML = `<img src="${o.src}" alt=""><span>${o.label}</span>`;
+        b.innerHTML = `<img src="${o.src}" alt=""><span>${o.label}</span>` +
+                      `<span class="sb-img-credit"></span>`;
+        if (o.credit) b.dataset.credit = o.credit;
         b.onclick = () => handleMultipleChoiceAnswer(o.label, correct, b);
         grid.appendChild(b);
+    });
+}
+
+// On the reveal, say what each of the four actually is. Three of them are real flags and the
+// round has just spent itself asking you to tell them apart from a forgery — being told which
+// countries they were is most of what there is to learn from it, and a tile can say so where a
+// sentence underneath has to be matched back to a picture.
+function sbNameImageTiles() {
+    document.querySelectorAll('.option-btn.sb-img').forEach(btn => {
+        const el = btn.querySelector('.sb-img-credit');
+        if (el && !el.textContent) el.textContent = btn.dataset.credit || '';
+        if (btn.dataset.credit === 'invented') btn.classList.add('sb-img-fake');
     });
 }
 
@@ -18276,6 +18555,9 @@ function sbPlayRevealAnimation() {
     let hold = 0;
     if (q.equatorPair) { sbRevealEquator(q.equatorPair); hold = SB_EQ_REVEAL_MS + 1800; }
     if (q.shapeOptions) { sbNameShapeTiles(); sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
+    // Long enough to read four country names off four tiles, which is the thing this round has
+    // to hand back — a shorter pause and the naming may as well not have happened.
+    if (q.imageOptions) { sbNameImageTiles(); hold = Math.max(hold, 2800); }
     if (q.scaleOptions) { sbNormaliseScaleTiles(); hold = Math.max(hold, 1900); }
     // Who's Missing: close in on the neighbourhood and outline the hole. During the round the
     // map is deliberately NOT framed — framing it would name the answer — so the zoom is the

@@ -3694,6 +3694,12 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .option-btn.sb-shape span { font-size: 0.82rem; line-height: 1.2; text-wrap: balance;
     min-height: 1.2em; }
 .option-btn.sb-img span, .option-btn.sb-shape span { font-weight: 700; }
+/* What each flag actually was, written in on the reveal. Reserved height so four tiles do not
+   jump when the names arrive; quieter than the letter above it, because the letter is how you
+   answered and this is what you were answering about. */
+.option-btn.sb-img .sb-img-credit { font-weight: 500; font-size: 0.8rem; opacity: 0.8;
+    min-height: 1.2em; line-height: 1.2; }
+.option-btn.sb-img.sb-img-fake .sb-img-credit { font-style: italic; opacity: 0.95; }
 
 /* Tile-only rounds (Upside Down, Spot the Fake Flag) hide the map and skip the 300px side
    panel, so the four tiles ARE the screen — sized to fill it rather than to fit a column.
