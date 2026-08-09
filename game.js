@@ -1034,7 +1034,10 @@ function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
     button.classList.add('selected');
 
     if (isCorrect) {
-        button.classList.add('correct');
+        // A round whose reveal is an argument marks its own buttons, at the end of it — see
+        // `deferMark`. Turning this one green on the click states the conclusion before the
+        // animation has made the case, which on Mercator Lies is the whole round.
+        if (!(gameState.sbQuestion && gameState.sbQuestion.deferMark)) button.classList.add('correct');
         handleCorrectAnswer(button);
         // Highlight correct country on globe if applicable
         if (gameState.questionType === 'identify') {
@@ -1046,7 +1049,10 @@ function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
         scheduleWrongThenCorrect(() => {
             let correctButton = null;
             document.querySelectorAll('.option-btn').forEach(btn => {
-                if (btn.textContent === correctAnswer) {
+                // `data-answer` when a renderer has one, because a tile need not WEAR its answer:
+                // Upside Down withholds the country names until the round is decided, and its
+                // buttons are blank while it matters.
+                if ((btn.dataset.answer || btn.textContent) === correctAnswer) {
                     btn.classList.add('correct');
                     correctButton = btn;
                 }
@@ -1305,6 +1311,12 @@ function startGameWithMode(mode) {
     document.body.classList.toggle('sb-tall-active', !!(modeConfig.sbQuizMode && modeConfig.sbNoMap));
     document.body.classList.toggle('sb-wide-panel',
         !!(modeConfig.sbQuizMode && modeConfig.sbEngine === 'estimate'));
+    // And hand the map box back, for the same reason `sbTeardown` does: the tile-only rounds
+    // hide it inline, an inline style outlives the mode that wrote it, and every mode after one
+    // of those would otherwise draw into a box measuring 0x0. The sandbox rounds set it both
+    // ways per round, so clearing it here cannot fight them.
+    const mapBox0 = document.getElementById('map-container');
+    if (mapBox0) mapBox0.style.display = '';
     // Globe modes (but not spaceship, which has its own bespoke inset layout) get the
     // map/globe maximised with question/flag/multiple-choice in a narrow side panel —
     // see .globe-layout/.globe-side-panel in style.css. Places-been uses the same side
@@ -1325,8 +1337,11 @@ function startGameWithMode(mode) {
         'globe-side-layout', (!!modeConfig.useGlobe || !!modeConfig.placesMode ||
         !!modeConfig.flagPlaceMode || !!modeConfig.sandboxMode || !!modeConfig.statePuzzleMode) &&
         !modeConfig.spaceshipMode && !modeConfig.freeExploreMode && !modeConfig.useWorldQuizLayout &&
-        modeConfig.sbEngine !== 'order' && !modeConfig.sbNoMap);
+        modeConfig.sbEngine !== 'order' && !modeConfig.sbNoMap && !modeConfig.sbFullMap);
     document.querySelector('.container').classList.toggle('explore-overlay-layout', !!modeConfig.freeExploreMode);
+    // Map edge to edge, everything else floating on it. Same trick as Free Explore's overlay
+    // layout, and for the same reason: there is not enough furniture to justify a column.
+    document.querySelector('.container').classList.toggle('sb-full-map', !!modeConfig.sbFullMap);
     // Widens the side panel for the piece/flag tray (and only there) on top of globe-side-layout.
     document.querySelector('.container').classList.toggle('state-puzzle-layout',
         !!modeConfig.flagPlaceMode || !!modeConfig.statePuzzleMode);
@@ -3572,8 +3587,13 @@ function handleCorrectAnswer(element, award = true) {
     gameState.answeredCorrectly = true;
     if (award) gameState.score++;
 
-    // Always confirm a correct answer with a green highlight (path, dot, or button).
-    if (element) {
+    // Always confirm a correct answer with a green highlight (path, dot, or button) — except
+    // where the round's reveal is an argument and marks its own buttons at the end of it
+    // (`deferMark`, and `sbMarkCorrectOption` does the marking). Stating the conclusion on the
+    // click and then playing the case for it is the wrong way round.
+    const defer = element && !element.ownerSVGElement &&
+                  gameState.sbQuestion && gameState.sbQuestion.deferMark;
+    if (element && !defer) {
         const sel = d3.select(element).classed('selected', false).classed('target', true).classed('correct', true);
         // Raise map highlights so their outline isn't clipped by neighbouring shapes.
         if (element.ownerSVGElement) raiseHighlight(sel);
@@ -5321,6 +5341,7 @@ function teardownActiveGame() {
     document.querySelector('.container').classList.remove('globe-side-layout');
     document.querySelector('.container').classList.remove('explore-overlay-layout');
     document.querySelector('.container').classList.remove('state-puzzle-layout');
+    document.querySelector('.container').classList.remove('sb-full-map');
     closeCountryPopup();
     const placesPanel = document.getElementById('places-panel');
     if (placesPanel) placesPanel.remove();
@@ -5988,6 +6009,16 @@ function showShapeIdSelector() {
                 <span class="mode-name">${SHAPE_ID_TIERS[k].label}</span>
                 <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
             </button>`).join('')}
+        </div>
+        <p class="selector-sub">Or ask a different question about the same silhouettes — these two
+           are world-only, so the choice above does not apply to them.</p>
+        <div class="mode-buttons">
+            ${SB_IN_SHAPE_ID.map(k => `
+            <button class="mode-btn" data-shapequiz="${k}">
+                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
+                <span class="mode-name">${SB_QUIZZES[k].label}</span>
+                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
+            </button>`).join('')}
         </div>`;
     sel.querySelectorAll('[data-shaperegion]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -5998,6 +6029,9 @@ function showShapeIdSelector() {
     });
     sel.querySelectorAll('[data-shapetier]').forEach(btn => {
         btn.addEventListener('click', () => startShapeIdMode(shapeIdRegion, btn.dataset.shapetier));
+    });
+    sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
+        btn.addEventListener('click', () => startGameWithMode(btn.dataset.shapequiz));
     });
 }
 
@@ -6947,6 +6981,7 @@ function goHome() {
     document.querySelector('.container').classList.remove('globe-side-layout');
     document.querySelector('.container').classList.remove('explore-overlay-layout');
     document.querySelector('.container').classList.remove('state-puzzle-layout');
+    document.querySelector('.container').classList.remove('sb-full-map');
 
     // Tear down the Places panel and return to a clean, mode-less URL.
     const placesPanel = document.getElementById('places-panel');
@@ -12882,8 +12917,13 @@ const SANDBOX_SUBMODES = [
 // The quick quizzes, as sandbox tiles of their own. Generated from SB_QUIZZES so the registry
 // stays the single source of truth; Who's Missing is skipped because it now has its own tile on
 // the landing page.
+// Two of the quizzes are questions about a silhouette and nothing else, which is what Name the
+// Shape is, so they are offered there rather than here — see SHAPE_ID_QUIZZES. Who's Missing is
+// on the landing page for the same kind of reason.
+const SB_IN_SHAPE_ID = ['sb-upside-down', 'sb-out-of-scale'];
+
 function sandboxQuizTiles() {
-    return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing').map(k => ({
+    return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' && !SB_IN_SHAPE_ID.includes(k)).map(k => ({
         key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
     }));
 }
@@ -13410,6 +13450,10 @@ const sbNo = w => { sbEatWhy = w; return null; };
 
 // A neighbour holding less of the land border than this is crowded out rather than handed a
 // splinter, and its share goes to the others.
+// Mercator Lies will not deal a country smaller than this: the reveal carries both silhouettes
+// to the equator and stands them side by side, and a microstate arrives there as a dot.
+const SB_LIE_MIN_KM2 = 1000;
+
 const SB_BITE_MIN_SHARE = 0.05;
 // Stop biting once this little of the country is left and give the rest away whole. Chasing the
 // last few per cent produces slivers, and a sliver is the one thing that looks edited.
@@ -16157,7 +16201,8 @@ function sbClaimFakeFlag() {
 const SB_QUIZZES = {
     // ---------- the map lies to you ----------
     'sb-mercator-lie': {
-        engine: 'fact', flat: true, hiRes: true, icon: 'compare_arrows', label: 'Mercator Lies',
+        engine: 'fact', flat: true, hiRes: true, fullMap: true,
+        icon: 'compare_arrows', label: 'Mercator Lies',
         desc: 'Which is really bigger? The map is not helping',
         build() {
             // Most rounds pick pairs the MAP gets wrong: the one that looks bigger on a Mercator
@@ -16194,7 +16239,11 @@ const SB_QUIZZES = {
                 sbWholeCache.set(n, ok);
                 return ok;
             };
-            const pool = sbPool().filter(n => sbAreaKm2(n) && getCountryCentroid(n) && whole(n));
+            // A floor of 1,000 km². Below it the two silhouettes carried to the equator are
+            // specks the comparison cannot be read off, and the question stops being about the
+            // projection and becomes about whether you happen to know two microstates.
+            const pool = sbPool().filter(n => sbAreaKm2(n) >= SB_LIE_MIN_KM2 &&
+                                              getCountryCentroid(n) && whole(n));
             const found = { lie: null, honest: null };
             for (let t = 0; t < 400; t++) {
                 const a = sbRandom(pool), b = sbRandom(pool);
@@ -16236,6 +16285,10 @@ const SB_QUIZZES = {
                     // Read by sbRevealEquator: on the answer, both countries slide down to the
                     // equator and shrink to their true relative size.
                     equatorPair: [a, b],
+                    // The reveal paints the shapes and marks the buttons at the very end of the
+                    // carry, so the shared handlers must not do it the moment a tile is clicked.
+                    deferMark: true,
+                    areas: { [displayLabelForName(a)]: ka, [displayLabelForName(b)]: kb },
                     options: shuffleArray([displayLabelForName(a), displayLabelForName(b)]),
                     prompt: `Which really has the larger <strong>area</strong> — ` +
                             `${displayLabelForName(a)} or ${displayLabelForName(b)}?`,
@@ -16831,6 +16884,11 @@ Object.keys(SB_QUIZZES).forEach(key => {
         // Rounds whose question lives entirely in the answer tiles. Still loads the map (the
         // tiles are cut from its geometry); just never shows it, and skips the side panel.
         sbNoMap: !!q.noMap,
+        // The opposite arrangement: the map takes the whole window and the prompt, the answer
+        // buttons and the feedback float on top of it. For a round whose subject is two shapes
+        // on a world map, a 300px column beside it is 300px taken off the only thing being
+        // looked at — and the reveal then zooms into that map, so it wants every pixel.
+        sbFullMap: !!q.fullMap,
         // Past the detail toggle's ceiling, to the 10m atlas — for rounds judged on outline.
         sbHiRes: !!q.hiRes
     };
@@ -17184,6 +17242,14 @@ function sbApplyBoardMarks() {
         else if (kind === 'wrong') el.attr('fill', sbHatchPattern('sb-hatch-red', red));
     });
     const layer = sbOverlay();
+    // Where a flag sits relative to its country. Centred on the centroid it covers the very
+    // shape it is naming, and on Near to Far it also lands on the spoke arriving from the
+    // anchor. So each flag is pushed clear of its own country, along the direction AWAY from
+    // the anchor — which is the side the spoke does not come in on.
+    //
+    // Recomputed on every redraw rather than stored, because both the size of a country on
+    // screen and the direction between two of them change with pan and zoom.
+    const off = sbFlagOffsets(bm);
     Object.keys(bm.marks).forEach(name => {
         const f = sbFeature(name);
         if (!f) return;
@@ -17197,15 +17263,106 @@ function sbApplyBoardMarks() {
         const url = bm.flags ? getFlagUrl(effectiveDataName(name)) : null;
         if (url) {
             const w = 30, h = 20;
+            const o = off[normalizeName(name)] || [0, 0];
             grp.append('image').attr('class', 'sb-mark-flag')
-               .attr('href', url).attr('x', -w / 2).attr('y', -h / 2)
+               .attr('href', url).attr('x', o[0] - w / 2).attr('y', o[1] - h / 2)
                .attr('width', w).attr('height', h).attr('preserveAspectRatio', 'xMidYMid slice');
-            grp.append('rect').attr('class', 'sb-mark-flag-edge')
-               .attr('x', -w / 2).attr('y', -h / 2).attr('width', w).attr('height', h);
         } else {
             grp.append('text').attr('text-anchor', 'middle').text(displayLabelForName(name));
         }
     });
+}
+
+// How far outside its own outline a flag is parked, in projection units.
+const SB_FLAG_CLEAR = 16;
+
+// One offset per flagged country, in projection units from its own centroid.
+//
+// Every country but the anchor is pushed straight out along the line FROM the anchor, so the
+// flag ends up on the far side of the country from the spoke. The anchor is the awkward one: it
+// has a spoke running to every other country, so there is no "away" — its flag goes into the
+// WIDEST ANGULAR GAP between those spokes, which is the one direction on that map guaranteed to
+// hold no line, no other flag and no country the round is talking about.
+function sbFlagOffsets(bm) {
+    const out = {};
+    if (!bm || !bm.flags || !projection || !path) return out;
+    const at = nm => {
+        const f = sbFeature(nm);
+        if (!f) return null;
+        const c = d3.geoCentroid(f);
+        if (!c || !isFinite(c[0])) return null;
+        const p = projection(c);
+        if (!p || !isFinite(p[0])) return null;
+        let b = null;
+        try { b = path.bounds(f); } catch (_) { b = null; }
+        return { p, b };
+    };
+    // How far out along `u` the country's own drawn extent reaches. The half-diagonal of the
+    // projected box is the cheap bound that is never too small, which is what matters: a flag
+    // that stops short is on top of the country again.
+    const reach = (o, u) => {
+        if (!o.b || !isFinite(o.b[0][0])) return SB_FLAG_CLEAR;
+        const hw = Math.abs(o.b[1][0] - o.b[0][0]) / 2, hh = Math.abs(o.b[1][1] - o.b[0][1]) / 2;
+        return Math.abs(u[0]) * hw + Math.abs(u[1]) * hh;
+    };
+    const anchor = bm.anchor;
+    const a = anchor && at(anchor);
+    const others = Object.keys(bm.marks).filter(n => !anchor || !namesMatch(n, anchor));
+    const angles = [];
+    others.forEach(n => {
+        const o = at(n);
+        if (!o) return;
+        let u = [0, -1];
+        if (a) {
+            const dx = o.p[0] - a.p[0], dy = o.p[1] - a.p[1], L = Math.hypot(dx, dy);
+            if (L > 1) { u = [dx / L, dy / L]; angles.push(Math.atan2(dy, dx)); }
+        }
+        const r = reach(o, u) + SB_FLAG_CLEAR;
+        out[normalizeName(n)] = [u[0] * r, u[1] * r];
+    });
+    if (a && angles.length) {
+        // The widest gap between consecutive spokes, taken round the circle.
+        angles.sort((x, y) => x - y);
+        let best = -1, mid = -Math.PI / 2;
+        for (let i = 0; i < angles.length; i++) {
+            const nx = angles[(i + 1) % angles.length];
+            let gap = nx - angles[i];
+            if (i === angles.length - 1) gap += Math.PI * 2;
+            if (gap > best) { best = gap; mid = angles[i] + gap / 2; }
+        }
+        const u = [Math.cos(mid), Math.sin(mid)];
+        const r = reach(a, u) + SB_FLAG_CLEAR;
+        out[normalizeName(anchor)] = [u[0] * r, u[1] * r];
+    }
+    // A direction is not enough on a crowded map: two countries close together end up with
+    // their flags on top of each other, and a spoke to a third can run right through one. Each
+    // flag is therefore allowed to slide FURTHER OUT along its own ray until it is clear —
+    // outward only, so it never drifts back over its own country or round to the spoke's side.
+    const spokes = (bm.spokes || []).map(arc => arc.map(c => projection(c))
+        .filter(p => p && isFinite(p[0])));
+    const boxes = [];
+    Object.keys(out).forEach(k => {
+        const src = Object.keys(bm.marks).find(n => normalizeName(n) === k);
+        const o = src && at(src);
+        if (!o) return;
+        const v = out[k], L = Math.hypot(v[0], v[1]) || 1;
+        const u = [v[0] / L, v[1] / L];
+        let r = L;
+        for (let step = 0; step < 5; step++) {
+            const cx = o.p[0] + u[0] * r, cy = o.p[1] + u[1] * r;
+            const box = { x: cx - 15, y: cy - 10, w: 30, h: 20 };
+            const clashFlag = boxes.some(b2 => !(box.x + box.w < b2.x || b2.x + b2.w < box.x ||
+                                                 box.y + box.h < b2.y || b2.y + b2.h < box.y));
+            const clashLine = spokes.some(pts => pts.some(p =>
+                p[0] > box.x - 2 && p[0] < box.x + box.w + 2 &&
+                p[1] > box.y - 2 && p[1] < box.y + box.h + 2));
+            if (!clashFlag && !clashLine) break;
+            r += SB_FLAG_CLEAR;
+        }
+        out[k] = [u[0] * r, u[1] * r];
+        boxes.push({ x: o.p[0] + u[0] * r - 15, y: o.p[1] + u[1] * r - 10, w: 30, h: 20 });
+    });
+    return out;
 }
 
 // Fit the live projection to a set of features, in PROJECTION units (the viewBox), not client
@@ -17258,7 +17415,8 @@ function sbRevealDistanceMap(q) {
     q.correct.forEach(n => { marks[n] = 'right'; });
     // Flags rather than names: five country names written across a zoomed map is more type
     // than map, and a flag says which country in a quarter of the width.
-    q.boardMarks = { marks, flags: true };
+    // The anchor is named so the flags can be placed relative to it — see sbFlagOffsets.
+    q.boardMarks = { marks, flags: true, anchor: q.anchor };
     if (!sbFitToFeatures(names, 0.09)) return;
     drawCountries();
 
@@ -17276,7 +17434,11 @@ function sbRevealDistanceMap(q) {
         // No distance written on the line. The order is the answer and it is already in the
         // list beside the map; a number at every midpoint only competed with the shapes.
         if (d) layer.append('path').datum(arc).attr('class', 'sb-dist-line').attr('d', d);
+        // Kept in lon/lat so the flag placement can project them fresh on every redraw and
+        // slide a flag clear of a spoke it happens to be sitting on.
+        (q.boardMarks.spokes = q.boardMarks.spokes || []).push(arc);
     });
+    sbApplyBoardMarks();
     layer.selectAll('g.sb-marklab').raise();
 }
 
@@ -17751,11 +17913,26 @@ function sbRenderShapeOptions(opts, correct) {
                 }
             } catch (_) { d = ''; }
         }
+        // The tile is ANONYMOUS while the round is live. Naming it hands over the one thing the
+        // question is really asking for — you cannot know that a shape is upside down without
+        // first knowing which country it is, and a caption does that half for you. The name goes
+        // in on the reveal (`sbNameShapeTiles`), where it is what makes the answer sayable.
         b.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><g class="sb-shape-inner">` +
-            `<path class="sb-shape-path" d="${d}"></path></g></svg><span>${o.label}</span>`;
+            `<path class="sb-shape-path" d="${d}"></path></g></svg><span class="sb-shape-name"></span>`;
         if (undo) b.dataset.undo = JSON.stringify(undo);
+        b.dataset.answer = o.label;
         b.onclick = () => handleMultipleChoiceAnswer(o.label, correct, b);
         grid.appendChild(b);
+    });
+}
+
+// The names go on once the round is decided — see `sbRenderShapeOptions` for why they are not
+// there before. Written into the span rather than rebuilt, so the shape, its transform and the
+// pending un-flip animation all survive being labelled.
+function sbNameShapeTiles() {
+    document.querySelectorAll('.sb-shape').forEach(btn => {
+        const span = btn.querySelector('.sb-shape-name');
+        if (span && !span.textContent) span.textContent = btn.dataset.answer || '';
     });
 }
 
@@ -17928,7 +18105,7 @@ function sbPlayRevealAnimation() {
     if (!q) return;
     let hold = 0;
     if (q.equatorPair) { sbRevealEquator(q.equatorPair); hold = SB_EQ_REVEAL_MS + 1800; }
-    if (q.shapeOptions) { sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
+    if (q.shapeOptions) { sbNameShapeTiles(); sbRightShapeTile(); hold = Math.max(hold, SB_RIGHT_MS + 900); }
     if (q.scaleOptions) { sbNormaliseScaleTiles(); hold = Math.max(hold, 1900); }
     // Who's Missing: close in on the neighbourhood and outline the hole. During the round the
     // map is deliberately NOT framed — framing it would name the answer — so the zoom is the
@@ -17973,9 +18150,36 @@ function sbPlayRevealAnimation() {
         drawCountries();
         hold = Math.max(hold, 2200);
     }
-    if (hold) setTimeout(() => {
-        if (gameState.sbQuestion === q) scheduleAutoAdvance(hold);
-    }, 0);
+    if (hold) {
+        // The reveal owns the clock, and that means it owns marking the right answer too.
+        //
+        // The shared wrong-answer path (`scheduleWrongThenCorrect`) marks the correct option
+        // after one pause, through `autoAdvanceTimer` — the same timer this reschedule clears,
+        // and this one is deferred a tick so it always wins. So in every round with a reveal
+        // animation, a wrong answer never got the right one marked at all. It is marked here
+        // instead, at the END of the animation, which is also where these rounds want it: on
+        // Mercator Lies the colours are the punchline of the carry to the equator, and on
+        // Upside Down there is nothing to name until the tiles have been named.
+        // Four fifths of the way through, not a fixed lead before the end: every reveal here is
+        // built as "animation, then a pause to read it", so a proportion lands after the motion
+        // whatever the motion cost, where a fixed lead either fires mid-flight on a short one or
+        // leaves no time to see the mark on a long one.
+        const q0 = q, at = hold * SB_MARK_AT;
+        setTimeout(() => { if (gameState.sbQuestion === q0) sbMarkCorrectOption(q0.correct); }, at);
+        setTimeout(() => { if (gameState.sbQuestion === q0) scheduleAutoAdvance(hold); }, 0);
+    }
+}
+
+// How far through a reveal's hold the right answer lights up.
+const SB_MARK_AT = 0.8;
+
+// Mark the option carrying this answer. `data-answer` first, because a tile need not wear its
+// answer — Upside Down's are blank until the reveal names them.
+function sbMarkCorrectOption(correct) {
+    if (!correct) return;
+    document.querySelectorAll('.option-btn').forEach(btn => {
+        if ((btn.dataset.answer || btn.textContent) === correct) btn.classList.add('correct');
+    });
 }
 
 // Up to 9 bonus points on the same exp(-x/scale) curve the spaceship and blind-puzzle modes
@@ -18348,7 +18552,10 @@ function sbDecimate(g, budget) {
 
 const SB_EQ_MOVE_MS = 1900;
 const SB_EQ_ZOOM_MS = 1300;
-const SB_EQ_REVEAL_MS = SB_EQ_MOVE_MS + SB_EQ_ZOOM_MS;
+// The tell: areas, the inequality, and the colours going on. Held apart from the zoom so the
+// answer arrives after the picture has finished making its own case.
+const SB_EQ_TELL_MS = 800;
+const SB_EQ_REVEAL_MS = SB_EQ_MOVE_MS + SB_EQ_ZOOM_MS + SB_EQ_TELL_MS;
 function sbRevealEquator(pair) {
     if (!svg || !projection || !path || typeof projection.rotate !== 'function') return;
     const feats = pair.map(sbFeature).filter(Boolean);
@@ -18434,14 +18641,32 @@ function sbRevealEquator(pair) {
         // stylesheet, and a CSS declaration beats a presentation attribute however specific the
         // attribute looks — so the colours were being computed correctly and then thrown away,
         // and every shape came out plain amber.
-        if (it.right) p.style('fill', green).style('fill-opacity', 0.6);
-        else if (it.mine && wrongPick) p.style('fill', sbHatchPattern('sb-hatch-red', red));
-        return { it, wrap, p };
+        //
+        // And it is painted LAST, after the carry and the zoom have both finished — see the
+        // `tell` phase below. Colouring on the click gives the answer away while the shapes are
+        // still travelling, which is the one stretch of the round where the picture is making
+        // the argument on its own.
+        return { it, wrap, p, paint: () => {
+            if (it.right) p.style('fill', green).style('fill-opacity', 0.6);
+            else if (it.mine && wrongPick) p.style('fill', sbHatchPattern('sb-hatch-red', red));
+        } };
     });
     // Labels are children of the LAYER, not of their shape, so they can share one baseline —
     // hung off each shape they sat at different heights and read as two separate captions.
     const labels = items.map(it => layer.append('text').attr('class', 'sb-equator-label')
         .attr('text-anchor', 'middle').attr('opacity', 0).text(it.label));
+    // Under each name, the area it is being compared on — the number the whole round is about,
+    // and the one thing the picture cannot say for itself. It arrives AFTER the names, so the
+    // eye reads the two silhouettes, then what they are, then how big they are.
+    const areaOf2 = it => (q.areas && q.areas[it.label]) || sbAreaKm2(it.f.properties.name) || 0;
+    const areas = items.map(it => layer.append('text').attr('class', 'sb-equator-area')
+        .attr('text-anchor', 'middle').attr('opacity', 0)
+        .text(Math.round(areaOf2(it)).toLocaleString() + ' km²'));
+    // ...and between them, the comparison itself. A greater-than sign is the shortest possible
+    // statement of the answer, and it points at the country that won.
+    const bigLeft = areaOf2(items[0]) >= areaOf2(items[1]);
+    const sign = layer.append('text').attr('class', 'sb-equator-sign')
+        .attr('text-anchor', 'middle').attr('opacity', 0).text(bigLeft ? '>' : '<');
 
     // The map goes away entirely rather than dimming: what is left is the whole point, and a
     // ghost of the world behind it is only something else to look at.
@@ -18493,6 +18718,22 @@ function sbRevealEquator(pair) {
         lab.attr('x', items[i].X).attr('y', labY).attr('font-size', (16 / S) + 'px')
            .transition().delay(moveMs).duration(zoomMs).attr('opacity', 1);
     });
+    // Phase three, the TELL: the areas under the names, the inequality between them, and only
+    // then the colours on the shapes. Everything before this is the picture arguing for itself;
+    // this is the caption underneath it, and putting any of it earlier answers the question
+    // while the shapes are still moving.
+    const tellMs = reduce ? 0 : SB_EQ_TELL_MS;
+    areas.forEach((a, i) => {
+        a.attr('x', items[i].X).attr('y', labY + 20 / S).attr('font-size', (13 / S) + 'px')
+         .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
+    });
+    sign.attr('x', (items[0].X + items[1].X) / 2).attr('y', anchorY + 8 / S)
+        .attr('font-size', (34 / S) + 'px')
+        .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
+    const paintAll = () => shapes.forEach(s => s.paint());
+    if (!tellMs) paintAll();
+    else setTimeout(() => { if (layer.node() && layer.node().isConnected) paintAll(); },
+                    moveMs + zoomMs + tellMs * 0.5);
 
     // d3 transitions run on requestAnimationFrame, which a backgrounded (or non-compositing)
     // tab does not fire — the same trap the puzzle's piece `settle` documents. setTimeout still
@@ -18506,8 +18747,11 @@ function sbRevealEquator(pair) {
             wrap.interrupt().attr('transform', it.end);
         });
         labels.forEach(l => l.interrupt().attr('opacity', 1));
+        areas.forEach(a => a.interrupt().attr('opacity', 1));
+        sign.interrupt().attr('opacity', 1);
+        paintAll();
         if (countriesGroup) countriesGroup.style('opacity', 0);
-    }, moveMs + zoomMs + 60);
+    }, moveMs + zoomMs + tellMs + 60);
 }
 
 // Redrawn on every re-path so every overlay element follows drag, wheel and pinch — the
@@ -18586,6 +18830,13 @@ function sbHighlight(names) {
 // but a stale listener would still fire under the next mode and rewrite gameState.sbGuess.
 function sbTeardown() {
     sbStopClock();
+    // Hand the map box back. The tile-only rounds hide it with an INLINE `display: none`, which
+    // outlives the mode that set it — and only the sandbox's own round setup ever sets it the
+    // other way, so any mode entered afterwards that expects a map got a zero-height one. Draw
+    // the Border was the visible casualty: a board fully built, drawn into an element measuring
+    // 0x0, and no error anywhere to say so.
+    const mapBox = document.getElementById('map-container');
+    if (mapBox) mapBox.style.display = '';
     if (typeof svg !== 'undefined' && svg) {
         svg.on('click.sbpin', null);
         svg.on('click.shapestep', null);

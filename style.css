@@ -742,6 +742,58 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     }
 }
 
+/* ---- sb-full-map: the map IS the round ------------------------------------------------ */
+/* Mercator Lies asks about two shapes on a world map and then zooms that map into them, so a
+   300px column beside it is 300px taken off the only thing anybody is looking at. The map goes
+   edge to edge and the prompt, the two answer buttons and the feedback float on top: the prompt
+   banded across the top, the answers side by side along the bottom. Click-through in the gaps,
+   like the Free Explore overlay, so a drag that starts between the cards still pans the map. */
+.container.sb-full-map .globe-layout {
+    display: block;
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+.container.sb-full-map .map-container { height: 100%; margin-bottom: 0; }
+.container.sb-full-map .globe-side-panel {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+}
+.container.sb-full-map .globe-side-panel > * { pointer-events: auto; }
+.container.sb-full-map .question-container {
+    position: absolute;
+    top: 10px; left: 50%; transform: translateX(-50%);
+    width: min(760px, calc(100% - 24px));
+    margin: 0;
+    padding: 10px 16px;
+    backdrop-filter: blur(3px);
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+.container.sb-full-map #multiple-choice-container {
+    position: absolute;
+    bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: min(760px, calc(100% - 24px));
+    margin: 0;
+}
+/* Two answers, side by side — the question is a comparison, so the buttons should read as one. */
+.container.sb-full-map .options-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+}
+.container.sb-full-map .option-btn {
+    backdrop-filter: blur(3px);
+    background: color-mix(in srgb, var(--panel) 90%, transparent);
+    font-size: 1.05rem;
+    padding: 14px 12px;
+}
+@media (max-width: 600px) {
+    .container.sb-full-map .question-container { padding: 8px 12px; font-size: 0.92rem; }
+    .container.sb-full-map .option-btn { font-size: 0.95rem; padding: 11px 8px; }
+}
+
 @media (max-width: 1024px) {
     .container.globe-side-layout .globe-layout {
         flex-direction: column;
@@ -3573,6 +3625,13 @@ body.sun-path-active #sun-path-panel .sandbox-title {
    there is nothing for a stroked label to survive against — the outline only made it shout. */
 .sb-equator-label { fill: var(--text); font-family: Georgia, 'Times New Roman', serif;
                     font-weight: 400; letter-spacing: 0.02em; }
+/* The area under each name, and the inequality between them — the caption, arriving after the
+   picture has finished making its case. Quieter than the names, since the name says which
+   country and the number only says how big. */
+.sb-equator-area { fill: var(--text); fill-opacity: 0.72;
+                   font-family: Georgia, 'Times New Roman', serif; font-weight: 400; }
+.sb-equator-sign { fill: var(--text); fill-opacity: 0.9;
+                   font-family: Georgia, 'Times New Roman', serif; font-weight: 400; }
 
 /* Route-lettered answer buttons: a fat colour swatch plus the letter in the same colour, so the
    button and its line on the map read as one object. */
@@ -3615,8 +3674,11 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     fill: #fff; fill-opacity: 0.96; stroke: rgba(0, 0, 0, 0.5); stroke-width: 1;
     vector-effect: non-scaling-stroke;
 }
-/* Named, not lettered — so the caption is a country and needs room to wrap. */
-.option-btn.sb-shape span { font-size: 0.82rem; line-height: 1.2; text-wrap: balance; }
+/* Named, not lettered — so the caption is a country and needs room to wrap. It is EMPTY until
+   the round is decided, and the min-height holds its place: the name arriving must not resize
+   every tile, because the reveal is also un-flipping a shape inside one of them. */
+.option-btn.sb-shape span { font-size: 0.82rem; line-height: 1.2; text-wrap: balance;
+    min-height: 1.2em; }
 .option-btn.sb-img span, .option-btn.sb-shape span { font-weight: 700; }
 
 /* Tile-only rounds (Upside Down, Spot the Fake Flag) hide the map and skip the 300px side
@@ -3649,6 +3711,7 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .container:not(.globe-side-layout) .option-btn.sb-img span {
     font-size: 1.15rem;
     flex: 0 0 auto;
+    min-height: 1.2em;
 }
 
 .options-grid.sb-picker { display: block; padding: 4px; }
@@ -3729,14 +3792,16 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 /* Near to Far: one spoke per country. Hairline — the spokes are there to say WHICH pair of
    points each distance was measured between, and at 2px five of them converging on the anchor
    read as a solid wedge over the countries they are pointing at. */
+/* Dashed, so a spoke reads as a MEASUREMENT rather than as another border on a map already
+   full of them — and so the countries it crosses stay legible through it. */
 .sb-dist-line { fill: none; stroke: var(--accent, #d08a2c); stroke-width: 0.9;
-    stroke-opacity: 0.9; vector-effect: non-scaling-stroke; pointer-events: none; }
+    stroke-opacity: 0.9; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke;
+    pointer-events: none; }
 
 /* Board marks can be flagged instead of named: five country names across a zoomed map is more
-   type than map. The edge is a separate rect because an <image> takes no stroke. */
+   type than map. No frame around them — a flag is already a rectangle of solid colour, and a
+   border on top of one only says "this is a picture", which nobody was in doubt about. */
 .sb-mark-flag { pointer-events: none; }
-.sb-mark-flag-edge { fill: none; stroke: rgba(0, 0, 0, 0.65); stroke-width: 1.5;
-    vector-effect: non-scaling-stroke; pointer-events: none; }
 
 /* Flyover: a coastline-only world, with the route and its two airports over it. */
 .sb-coast-only { fill: none; stroke: var(--land-stroke, #7d8a99); stroke-width: 1;

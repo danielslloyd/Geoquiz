@@ -170,13 +170,15 @@ moved further, out of the drawer entirely and onto the **landing page**: **Who's
 two places (static markup in `index.html` and `resetModeSelector`'s template) and both were
 updated.
 
-Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (twenty-four of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
+Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (twelve of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
 
 Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds twenty-four tiles of its own.
 
 ## Sandbox quizzes (Quick Quizzes)
 
-Twenty-four short modes, almost all **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
+Fifteen short modes — twelve under Quick Quizzes, plus Who's Missing on the landing page and
+Upside Down and Out of Scale under Name the Shape (`SB_IN_SHAPE_ID`; `sandboxQuizTiles` skips all
+three). Almost all are **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
 
 ### Two from the second wave
 
@@ -775,6 +777,14 @@ Notes worth keeping:
   draws only keep pairs where the bigger-looking country is the smaller one — the projection is
   the adversary, not the distractor list.
 
+  **It plays on a full-bleed map** (`fullMap` on the spec → `sbFullMap` → `.container.sb-full-map`),
+  with the prompt banded across the top and the two answers side by side along the bottom, both
+  floating on the map rather than beside it. A comparison of two shapes on a world map is a round
+  whose whole content is the map, and the reveal then zooms that map into them, so a 300px column
+  is 300px off the only thing anyone is looking at. Same overlay trick as Free Explore, including
+  the click-through gaps so a drag between the cards still pans. And no country under
+  `SB_LIE_MIN_KM2` (1,000 km²) is dealt: carried to the equator a microstate arrives as a dot.
+
   **Its reveal (`sbRevealEquator`) takes the map away and CARRIES both countries to the
   equator, re-projecting every frame**, so each one visibly un-stretches on the way down. Carried,
   not scaled: a uniform scale by cos(latitude) is the right answer for a shape small enough to
@@ -807,6 +817,15 @@ Notes worth keeping:
     `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
     u = 1 is the same final framing, with everything between anchored on the shapes.
 
+  **The reveal is in three phases, and the third is the only one that gives anything away.**
+  Phase one carries each country south (or north) over its own longitude; phase two closes the
+  pair up and brings the camera in; phase three — the *tell*, `SB_EQ_TELL_MS` — puts the **area**
+  under each name, the **inequality sign** between them, and only then the colours on the shapes,
+  with the answer buttons following at four fifths of the hold. Everything before that is the
+  picture arguing for itself, and any of it arriving earlier answers the question while the
+  shapes are still moving. The sign points at the country that won, which is the shortest possible
+  statement of the answer.
+
   The **answer is painted on the shapes**: the bigger country fills green and a wrong pick is
   hatched red, so the right answer and the mistake are on screen together. As an inline **style**,
   not an attribute — `.sb-equator-shape` sets `fill` in the stylesheet, and a CSS declaration beats
@@ -836,8 +855,13 @@ Notes worth keeping:
   the outline, becomes the tell. Verified — all four tiles fitted to an identical 94-unit height
   in a 110-unit box. In practice the mirrors and the half-turn win almost every draw; a
   quarter-turn is nearly always the *least* similar, so it is rare rather than absent. The
-  tiles are **named, not lettered**: a letter labels a tile, but the country's own name is the
-  thing being asked about and it makes the answer sayable. That also means a decided card paints
+  tiles are **named, not lettered** — but not until the round is decided. A name hands over
+  the half of the question nobody notices you are answering: you cannot know a shape is upside
+  down without first knowing which country it is, and a caption does that for you. The tiles are
+  blank while it matters, carry their answer in `data-answer`, and are labelled by
+  `sbNameShapeTiles` from the reveal. The caption's box keeps its height throughout (a
+  `min-height` on the span), because the reveal is also un-flipping a shape inside one of the
+  tiles and cannot have every tile resize under it. That also means a decided card paints
   its background green or red under the silhouette, so the silhouette is drawn **white with a
   dark edge** on a decided card — filled in the same green it sat on, the correct answer read as
   a blank green card.
@@ -960,6 +984,27 @@ board left a blue planet with a silhouette on it and nothing else. `drawLakes` n
 guard for the same reason: the lake overlay is also a sibling, and while the board removing the
 group once was enough at first, any later redraw put the world's lakes back over the lone shape.
 
+### A reveal owns the clock, and the marking with it
+
+Every animated reveal used to have the same defect, and it was invisible because it only showed
+on a WRONG answer: the shared `scheduleWrongThenCorrect` marks the correct option after one
+pause, through `autoAdvanceTimer` — the very timer `sbPlayRevealAnimation` reschedules to hold
+its animation, deferred a tick so it always wins. So in every round with a reveal animation the
+right answer was never marked at all.
+
+It is marked by the reveal instead (`sbMarkCorrectOption`), **four fifths of the way through the
+hold** — a proportion rather than a fixed lead, because these reveals are all "animation, then a
+pause to read it", and a fixed lead either fires mid-flight on a short one or leaves no time to
+see the mark on a long one.
+
+Two rounds go further and ask for the marking to be withheld from their own click, via
+`deferMark` on the round spec (honoured in `handleCorrectAnswer` and `handleMultipleChoiceAnswer`,
+and only for buttons — a map highlight still fills green immediately). Turning the button green
+the instant it is clicked states the conclusion before the animation has made the case, which on
+Mercator Lies is the entire round. `sbMarkCorrectOption` and the shared reveal both prefer a
+button's **`data-answer`** over its text, because a tile need not wear its answer — see Upside
+Down.
+
 ### Reveals that hand the board back
 
 `sbApplyBoardMarks` is the counterpart to `sbCustomBoard`: a reveal that wants the ordinary map
@@ -980,11 +1025,27 @@ re-applied at the end of every `drawCountries`, which is the one place every red
   actually measured between (`sbNearestPair`), or it would draw one distance and label it with
   another.
 
-  The spokes are **hairline** and carry no distance label: the order is the answer and it is
-  already in the list beside the map, so a number at every midpoint only competed with the
+  The spokes are **hairline and dashed** and carry no distance label: the order is the answer and
+  it is already in the list beside the map, so a number at every midpoint only competed with the
   shapes, and at 2px five spokes converging on the anchor read as a solid wedge over the very
-  countries they point at. Countries are marked with a **small flag** rather than their name —
-  five country names written across a zoomed map is more type than map (`boardMarks.flags`).
+  countries they point at. Dashed because a spoke is a MEASUREMENT, not another border on a map
+  already full of them. Countries are marked with a **small flag** rather than their name — five
+  country names written across a zoomed map is more type than map (`boardMarks.flags`) — and with
+  no frame around it, since a flag is already a rectangle of solid colour and a border on one
+  only says "this is a picture".
+
+  **Where the flag goes is the whole of `sbFlagOffsets`.** Centred on the centroid it covers the
+  shape it is naming, and here it also lands on the spoke arriving from the anchor. So each flag
+  is pushed clear of its own country along the direction AWAY from the anchor — the side the
+  spoke does not come in on. The anchor is the awkward one: it has a spoke to every other
+  country, so there is no "away", and its flag goes into the **widest angular gap** between them,
+  which is the one direction guaranteed to hold no line, no other flag and no country the round
+  is talking about. A final pass lets any flag still clashing slide **further out along its own
+  ray** — outward only, so it never drifts back over its country or round to the spoke's side.
+  Recomputed on every redraw rather than stored, since both a country's size on screen and the
+  direction between two of them change with pan and zoom. Measured over eight rounds (48 flags,
+  240 sample points): 0 flag-on-flag overlaps, 0 flag-on-spoke, 2 points brushing an unrelated
+  country.
 
   The distance itself is **nearest point to nearest point** (`sbKmApart`), not centroid to
   centroid, and it is measured over the **framing core** rather than the whole feature: "how far
@@ -1042,6 +1103,12 @@ geometry — but never show it, and skip `globe-side-layout` so the tiles fill t
 a 300px column. `#map-container`'s `display` is set **both ways every round**, because an inline
 `display: none` outlives the mode that set it and the next quiz would open on a zero-height map
 whose overlay silently measured 0×0.
+
+That is only half the problem, and the other half was outside the sandbox entirely: nothing
+handed the map box back when you LEFT one of those rounds. **Draw the Border** was the visible
+casualty — a board fully built and drawn into an element measuring 0×0, with no error anywhere
+to say so. Both `sbTeardown()` and `startGameWithMode` now clear the inline style, and the
+sandbox rounds set it both ways per round, so neither can fight the other.
 
 Two shared CSS defects were fixed at source in the same pass, both of which had been mis-rendering
 these rounds since they were written:
@@ -1560,7 +1627,7 @@ Measured: a 300 km miss goes from a 2 px gap at k = 1 to a 15 px gap at k = 6.6,
 inside the box. The transition carries the usual **`setTimeout` backstop** — d3 transitions are
 rAF-driven, and without it a backgrounded tab leaves the result framed on the whole world. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
 | `skyline-id` | **Hidden from the menu** (photo pool not yet vetted) — the mode, data, and CSS are all intact; only its 3 entry points (top-bar icon in `index.html`, landing card in `index.html` **and** in `resetModeSelector()`'s template in `game.js`) are HTML-commented out. Reachable directly via `startGameWithMode('skyline-id')`. Uncomment those 3 blocks to bring it back. A real photograph of a large city's skyline — name the city from 4 choices (`skylineIdMode`). **No map at all.** Photos are fetched live from **Wikimedia Commons** (`commonsSearch`; CORS-open via `origin=*`, and every file carries machine-readable licensing). `skylineLicenceOk` keeps only PD/CC0/CC-BY/CC-BY-SA — NonCommercial, NoDerivatives and unrecognised licences are dropped — and the photographer + licence + Commons link are shown **only after the round is decided** (`revealSkylineCredit`, called from `handleCorrectAnswer` and `giveUp`), because the file title almost always names the city. `skylineQuery` appends the state/country from the entry's `label`: without it `"Toledo" skyline` returns Toledo **Spain** above Toledo Ohio, and `"St. Petersburg"` lands in Russia; the term costs ~5% of hits and fixes the wrong-city answers. `skylineCandidates` drops non-photos (SVG/portrait/maps/logos) and *ranks* rather than rejects on whether the title names the city. Whether a city has a usable photo is only knowable after searching, so `resolveSkylineTarget` retries with another city on a miss and remembers barren ones in `skylineNoPhoto`; it reserves its pick in `usedCountries` **before** the search returns so `prefetchNextSkyline` (which resolves the next round in the background — a search takes 0.5–6 s) can't collide with a live pick. Distractors are ranked by `skylineDistractorScore`: same country dominates, then same region, then closeness in **log** population — so Abidjan draws Addis Ababa/Casablanca/Alexandria, never a suburb. Options are display `label`s, not keys |
-| `sb-*` (24 keys) | The **Quick Quizzes** under Sandbox — `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-daylight-lat`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-missing`, `sb-fake-flag`, `sb-upside-down`, plus the second wave: `sb-antipode`, `sb-straight-on`, `sb-how-far`, `sb-out-of-scale`, `sb-subsolar`, `sb-blind-drop`, `sb-border-hops`, `sb-bridge`, `sb-further-north`, `sb-read-band`. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
+| `sb-*` (15 keys) | `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-fake-flag`, `sb-border-hops` under **Quick Quizzes**; `sb-missing` on the landing page; `sb-upside-down` and `sb-out-of-scale` under **Name the Shape**. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
 
 ## UI Structure
 
