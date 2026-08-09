@@ -755,29 +755,42 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     min-height: 0;
 }
 .container.sb-full-map .map-container { height: 100%; margin-bottom: 0; }
+/* The prompt and its two answers are ONE thing to read — a question and the two ways of
+   answering it — so they stack together at the top rather than sitting at opposite edges of the
+   map with the whole picture between them. */
 .container.sb-full-map .globe-side-panel {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
     position: absolute;
-    inset: 0;
+    inset: 10px 12px auto 12px;
     z-index: 5;
     pointer-events: none;
 }
 .container.sb-full-map .globe-side-panel > * { pointer-events: auto; }
 .container.sb-full-map .question-container {
-    position: absolute;
-    top: 10px; left: 50%; transform: translateX(-50%);
-    width: min(760px, calc(100% - 24px));
+    width: min(760px, 100%);
     margin: 0;
     padding: 10px 16px;
     backdrop-filter: blur(3px);
     background: color-mix(in srgb, var(--panel) 88%, transparent);
 }
 .container.sb-full-map #multiple-choice-container {
-    position: absolute;
-    bottom: 14px; left: 50%; transform: translateX(-50%);
-    width: min(760px, calc(100% - 24px));
+    width: min(760px, 100%);
     margin: 0;
 }
+/* A pick that is waiting for the reveal: grey, and nothing else. It says "this is the one you
+   chose" without saying whether that was right, which is the whole point of holding the verdict
+   until the animation has made its case. */
+.option-btn.sb-picked-wait,
+.option-btn.sb-picked-wait:hover {
+    background: color-mix(in srgb, var(--text) 22%, var(--panel));
+    border-color: color-mix(in srgb, var(--text) 34%, transparent);
+    color: var(--text);
+    opacity: 0.85;
+}
+
 /* Two answers, side by side — the question is a comparison, so the buttons should read as one. */
 .container.sb-full-map .options-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -810,6 +823,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 }
 
 .map-container {
+    position: relative;             /* anchors the reveal's own controls (sb-view-bar) */
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -3798,6 +3812,15 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     stroke-opacity: 0.9; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke;
     pointer-events: none; }
 
+/* Near to Far's projection switch, floating over the map it changes. Small and quiet: it is a
+   way of re-reading an answer already given, not part of the question. */
+.sb-view-bar { position: absolute; top: 10px; left: 10px; z-index: 4; display: flex; gap: 4px; }
+.sb-view-btn { font: inherit; font-size: 0.72rem; padding: 4px 9px; cursor: pointer;
+    color: var(--text); background: color-mix(in srgb, var(--panel) 88%, transparent);
+    border: 1px solid var(--border); border-radius: 6px; backdrop-filter: blur(2px); }
+.sb-view-btn.active { background: var(--accent, #d08a2c); border-color: var(--accent, #d08a2c);
+    color: #fff; font-weight: 700; }
+
 /* Board marks can be flagged instead of named: five country names across a zoomed map is more
    type than map. No frame around them — a flag is already a rectangle of solid colour, and a
    border on top of one only says "this is a picture", which nobody was in doubt about. */
@@ -4039,6 +4062,11 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
     font-size: 0.78rem; color: var(--text); background: var(--surface-2);
     border: 1px solid var(--border); border-radius: 5px; }
 .ms-unit { flex: none; opacity: 0.6; font-size: 0.75rem; }
+/* A checkbox reads the other way round from the labelled controls above it — box first, then
+   what it does — so the label is allowed to take the width the selects give to their input. */
+.ms-order.ms-check { cursor: pointer; }
+.ms-order.ms-check input { flex: none; margin: 0; }
+.ms-order.ms-check span { flex: 1; opacity: 1; }
 
 .ms-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
     margin-right: 6px; vertical-align: baseline; }

@@ -1030,19 +1030,27 @@ function handleMultipleChoiceAnswer(selectedAnswer, correctAnswer, button) {
     // Same idea for the sandbox quizzes: the reason IS the payoff, so it is said either way.
     if (gameState.questionType === 'sandbox-fact') recordSandboxAnswer(selectedAnswer, isCorrect);
 
-    // Visual feedback
-    button.classList.add('selected');
+    // Visual feedback — except on a round that has asked to hold its verdict, where the only
+    // thing a click may say is "this is the one you chose". `.selected` is the accent colour and
+    // reads as approval, so a deferred round gets a plain grey instead, right or wrong.
+    const deferring = !!(gameState.sbQuestion && gameState.sbQuestion.deferMark);
+    button.classList.add(deferring ? 'sb-picked-wait' : 'selected');
 
     if (isCorrect) {
         // A round whose reveal is an argument marks its own buttons, at the end of it — see
         // `deferMark`. Turning this one green on the click states the conclusion before the
         // animation has made the case, which on Mercator Lies is the whole round.
-        if (!(gameState.sbQuestion && gameState.sbQuestion.deferMark)) button.classList.add('correct');
+        if (!deferring) button.classList.add('correct');
         handleCorrectAnswer(button);
         // Highlight correct country on globe if applicable
         if (gameState.questionType === 'identify') {
             highlightCountryOnGlobe(gameState.targetCountry);
         }
+    } else if (deferring) {
+        // Nothing but "you picked this" until the reveal has finished. Red on the click says the
+        // answer is no before the picture has said anything at all, and on Mercator Lies the
+        // picture is the argument. `sbMarkCorrectOption` paints it red at the end.
+        button.classList.add('sb-picked-wait');
     } else {
         button.classList.add('incorrect');
         handleIncorrectAnswer(button);
@@ -5701,6 +5709,36 @@ function startShapeIdMode(region, tier) {
     startGameWithMode('country-shape-id');
 }
 
+// The two sandbox quizzes that live under Name the Shape take a region the same way, and by the
+// same reconfigure-in-place trick — `sbPool()` and `sbFeature()` read `gameState.currentQuizList`
+// and `gameState.countries` and neither has ever cared which atlas they came from, so a state is
+// as good a silhouette as a country with nothing else to change.
+//
+// AlbersUSA is forced off for the same reason Shape ID forces it off: these rounds fit a
+// projection to one shape at a time, and a composite cannot do that. The shared caches are keyed
+// by NAME, so they have to go when the pool does.
+function startShapeQuizMode(key, region) {
+    const m = QUIZ_MODES[key];
+    if (!m) return;
+    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
+    m.quizList = base.quizList;
+    m.dataObjKey = base.dataObjKey;
+    m.mapObject = base.mapObject;
+    m.itemLabel = base.itemLabel;
+    m.itemLabelPlural = base.itemLabelPlural;
+    m.useAlbersUsa = false;
+    // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
+    // every other region ships one resolution and uses its own URL.
+    m.mapUrl = base.mapObject === 'countries'
+        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+        : base.mapUrl;
+    m.totalQuestions = Math.min(10, base.quizList.length);
+    shapeDescriptorCache = null;
+    sbWholeCache.clear();
+    startGameWithMode(key);
+}
+
 function renderCountryShapeIdQuestion() {
     gameState.questionType = 'country-shape-id';
     const tier = SHAPE_ID_TIERS[shapeIdTier] || SHAPE_ID_TIERS.outline;
@@ -6010,8 +6048,7 @@ function showShapeIdSelector() {
                 <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
             </button>`).join('')}
         </div>
-        <p class="selector-sub">Or ask a different question about the same silhouettes — these two
-           are world-only, so the choice above does not apply to them.</p>
+        <p class="selector-sub">Or ask a different question about the same silhouettes.</p>
         <div class="mode-buttons">
             ${SB_IN_SHAPE_ID.map(k => `
             <button class="mode-btn" data-shapequiz="${k}">
@@ -6031,7 +6068,7 @@ function showShapeIdSelector() {
         btn.addEventListener('click', () => startShapeIdMode(shapeIdRegion, btn.dataset.shapetier));
     });
     sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
-        btn.addEventListener('click', () => startGameWithMode(btn.dataset.shapequiz));
+        btn.addEventListener('click', () => startShapeQuizMode(btn.dataset.shapequiz, shapeIdRegion));
     });
 }
 
@@ -13144,6 +13181,12 @@ function sbKmApart(a, b) {
 
 // Only countries that are BOTH in the quiz list and actually drawn — otherwise a round can ask
 // about something the map never shows.
+// "country" or "state", whichever this round's pool is made of. Two of the quizzes run over
+// either, and a prompt that says "country" over a board of Idahos is simply wrong.
+function sbItemLabel() {
+    return (QUIZ_MODES[gameState.mode] || {}).itemLabel || 'country';
+}
+
 function sbPool() {
     const drawn = new Set((gameState.countries || []).map(f => normalizeName(f.properties.name)));
     return (gameState.currentQuizList || []).filter(n => drawn.has(normalizeName(n)));
@@ -13508,6 +13551,13 @@ const SB_BITE_ALGOS = {
     'front':     { label: 'Propagating front (smoothed)', hint: 'Every point moves along its own normal, a step at a time — reaches ground the rigid slides cannot, and rounds the border off doing it' }
 };
 let sbBiteAlgo = 'turns';
+// Where a cut's END-CONTINUATIONS get their shape. Off, they are traced from real borders
+// sampled anywhere in the topology — the claim being that what is borrowed is the CHARACTER of a
+// border and not a particular one. On, a cut is continued in the trace of the very frontier it
+// is made of, which is a different claim about what a border is and worth being able to see.
+// The cost is variety: one shape to try instead of five, so the search has fewer ways out when
+// a cut will not land.
+let sbBiteOwnTrace = false;
 // `efficient` searches this many depths per rotation, over these rotations (radians, about the
 // frontier's own midpoint). Slight is the operative word: past about 12° the stencil's ends have
 // swung so far that its continuations bear no relation to the tripoints it started between, and
@@ -13929,7 +13979,7 @@ function sbEatCountry(rawTopo, goneName) {
 
     // One bite: slide the frontier that runs from ring vertex i0 to i1 into the country until
     // `want` km² sits behind it, and cut there. Returns {piece, rest, cut, ...} or null.
-    const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs, allowPct) => {
+    const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs, turns) => {
         const n = r.length;
         const areaHere = Math.abs(areaOf(closed(r)));
         if (!(areaHere > 0)) return null;
@@ -13980,6 +14030,25 @@ function sbEatCountry(rawTopo, goneName) {
                           run[seg - 1][1] + (run[seg][1] - run[seg - 1][1]) * u]);
             }
         }
+        // The frontier's OWN trace, normalised exactly as a borrowed one is: offsets from its
+        // own chord, as a fraction of its own span. With `sbBiteOwnTrace` on, this is the only
+        // shape offered for the end-continuations, so a cut is continued in the character of the
+        // border it is made of rather than in somebody else's — which is a different claim about
+        // what a border is, and worth being able to see. (It costs a little variety: one shape
+        // instead of five, so the search has fewer ways out when a cut will not land.)
+        const ownTrace = () => {
+            if (!(span > total * 0.05)) return null;      // nearly closed: no chord to measure from
+            const ux = (Q[0] - P[0]) / span, uy = (Q[1] - P[1]) / span;
+            const ys = [];
+            for (let i = 0; i < SB_BITE_SAMPLES; i++) {
+                const k = Math.round(i * (run.length - 1) / (SB_BITE_SAMPLES - 1));
+                const dx = run[k][0] - P[0], dy = run[k][1] - P[1];
+                ys.push((-uy * dx + ux * dy) / span);
+            }
+            ys[0] = 0; ys[SB_BITE_SAMPLES - 1] = 0;
+            return { ys, id: -1, own: true, owners: [], pts: run };
+        };
+
         // End tangents, each pointing outward past its own end.
         const tanOut = (a, b) => { const d2 = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1; return [(a[0] - b[0]) / d2, (a[1] - b[1]) / d2]; };
         const tP = tanOut(st0[0], st0[2]);
@@ -14356,7 +14425,11 @@ function sbEatCountry(rawTopo, goneName) {
             return out;
         };
 
-        const grow1 = 1 + Math.max(0, allowPct) / 100;
+        // COMPOUNDED, not accumulated. A turn's budget is a percentage of the border as it
+        // stands at the start of that turn, so three turns of 10% is 1.10³ = 1.331 rather than
+        // 1.30 — which is what "10% growth per turn" means, and the difference grows with every
+        // turn taken. `turns` is what the pass loop hands over; it starts at 1.
+        const grow1 = Math.pow(1 + Math.max(0, sbBiteGrowth) / 100, Math.max(1, turns));
         const stepMax = countryDiam * SB_BITE_STEP_FRAC;
         let extYs = null, extFlip = 1;
         // A step is acceptable when the cut LANDS, is no longer than the budget, and has not
@@ -14458,6 +14531,14 @@ function sbEatCountry(rawTopo, goneName) {
             return win || near;
         };
 
+        // The shapes on offer for the end-continuations: one borrowed set, or the frontier's own
+        // trace when `sbBiteOwnTrace` is on (and it falls back to the borrowed ones for a
+        // frontier too nearly closed to have a chord).
+        const own1 = sbBiteOwnTrace ? ownTrace() : null;
+        const srcs = own1 ? [own1]
+                          : Array.from({ length: SB_BITE_CURVES },
+                                       (_, i) => shapes[(seed + i * 37) % shapes.length]);
+
         let best = null;
         const score = got => {
             // Symmetric fit: as bad to take three times the ask as a third of it.
@@ -14474,7 +14555,7 @@ function sbEatCountry(rawTopo, goneName) {
             // the continuations decide the cut's ENDS and the rotation decides its middle, so a
             // single curve separates the rotations perfectly well and a full cross-product of the
             // two costs four times as much for the same answer.
-            const src0 = shapes[seed % shapes.length];
+            const src0 = srcs[0];
             const ranked = [];
             for (const ang of SB_BITE_SPINS) {
                 let bestHere = null;
@@ -14488,22 +14569,20 @@ function sbEatCountry(rawTopo, goneName) {
             ranked.sort((a, b) => b.k - a.k);
             const keep = ranked.slice(0, 2).map(x => x.ang);
             if (!keep.length) keep.push(0);
-            for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
-                const src = shapes[(seed + s2 * 37) % shapes.length];
+            srcs.forEach(src => {
                 for (const flip of [1, -1]) for (const ang of keep) {
                     extYs = src.ys; extFlip = flip;
                     take(efficient(ang), src, flip);
                 }
-            }
+            });
         } else {
             const move = sbBiteAlgo === 'front' ? propagate : () => slide(0);
-            for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
-                const src = shapes[(seed + s2 * 37) % shapes.length];
+            srcs.forEach(src => {
                 for (const flip of [1, -1]) {
                     extYs = src.ys; extFlip = flip;
                     take(move(), src, flip);
                 }
-            }
+            });
         }
         if (!best) return null;
         const at = best.got.at;
@@ -14600,7 +14679,7 @@ function sbEatCountry(rawTopo, goneName) {
             const left = Math.abs(areaOf(closed(liveRing)));
             const want = Math.min(targetOf(nm) * (scale.get(nm) || 1), left * SB_BITE_MAX_FRAC);
             const base0 = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want,
-                            asked: scale.get(nm) || 1, turns: Math.round((allow.get(nm) || sbBiteGrowth) / Math.max(1, sbBiteGrowth)) };
+                            asked: scale.get(nm) || 1, turns: allow.get(nm) || 1 };
             // Recorded before the attempt, so a neighbour that is crowded out can still be SHOWN
             // holding the stretch of border it was crowded out of.
             const fpts = [];
@@ -14608,7 +14687,7 @@ function sbEatCountry(rawTopo, goneName) {
             // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
             const avoidLegs = new Set();
             legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !ownOf.get(nm).has(li)) avoidLegs.add(li); });
-            const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs, allow.get(nm) || sbBiteGrowth);
+            const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs, allow.get(nm) || 1);
             const base = { ...base0, frontier: fpts };
             if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
             const before = liveRing;
@@ -14622,7 +14701,7 @@ function sbEatCountry(rawTopo, goneName) {
                 regionBefore: closed(before).map(toDeg),
                 cut: got.cut.map(toDeg),
                 piece: closed(got.piece).map(toDeg),
-                source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys }
+                source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys, own: !!got.src.own }
             });
         }
         // Anyone never picked had no frontier left to bite from by the time it could have been:
@@ -14705,7 +14784,7 @@ function sbEatCountry(rawTopo, goneName) {
     // invisible-seam kind this surgery exists to prevent. Recomputing is the same code with the
     // same guarantees, and a front allowed 20% in one go lands where two 10% turns would.
     let scale = new Map(queue.map(n => [n, 1]));
-    let allow = new Map(queue.map(n => [n, sbBiteGrowth]));
+    let allow = new Map(queue.map(n => [n, 1]));
     // Who holds the surplus. Every construction here needs SOMEBODY who does not bite — the last
     // few per cent of a country cannot be chased without producing slivers, and a neighbour that
     // has already bitten cannot take the remainder as well, since its own outline would then be
@@ -14744,7 +14823,7 @@ function sbEatCountry(rawTopo, goneName) {
             if (n === run.leftover) return;
             if (!run.pieces.has(n)) {
                 // Crowded out or swallowed: another turn's worth of room to try again with.
-                nextAllow.set(n, (allow.get(n) || sbBiteGrowth) + sbBiteGrowth);
+                nextAllow.set(n, (allow.get(n) || 1) + 1);
                 moved = true;
                 return;
             }
@@ -14752,7 +14831,7 @@ function sbEatCountry(rawTopo, goneName) {
             const want2 = run.share2(n);
             if (!(got > 0) || !(want2 > 0)) return;
             if (got < want2 * 0.97) {
-                nextAllow.set(n, (allow.get(n) || sbBiteGrowth) + sbBiteGrowth);
+                nextAllow.set(n, (allow.get(n) || 1) + 1);
                 moved = true;
             }
             // Clamped tighter than it once was. The binding constraint is now the growth
@@ -15615,9 +15694,14 @@ function msBuildPanel() {
         `<label class="ms-order"><span>Growth per turn</span>` +
         `<input type="number" id="ms-growth" min="0" max="200" step="5" value="${sbBiteGrowth}">` +
         `<span class="ms-unit">%</span></label>` +
-        `<div class="ms-order-hint">How much longer a border may get on one turn. A border that ` +
-        `came up short is given another turn — and since the slide is rigid, two turns land exactly ` +
-        `where one deeper slide would.</div>` +
+        `<div class="ms-order-hint">How much longer a border may get on one turn, measured against ` +
+        `the border as it stands at the start of that turn — so three turns of 10% is 1.10³, not ` +
+        `1.30. A border that came up short is given another turn.</div>` +
+        `<label class="ms-order ms-check"><input type="checkbox" id="ms-own-trace"` +
+        `${sbBiteOwnTrace ? ' checked' : ''}><span>Continue with the same border</span></label>` +
+        `<div class="ms-order-hint">Where a cut's two ends get their shape once the moved frontier ` +
+        `runs out. Off, they are traced from real borders sampled anywhere in the world; on, from ` +
+        `the frontier being moved.</div>` +
         `<div class="ms-detail" id="ms-detail">Pick a country off the map.</div>`;
     host.appendChild(box);
     const redo = note => {
@@ -15640,6 +15724,11 @@ function msBuildPanel() {
         const hint = document.getElementById('ms-order-hint');
         if (hint) hint.textContent = SB_BITE_ORDERS[sbBiteOrder].hint;
         redo('Order changed. Pick a country off the map.');
+    });
+    const ownT = document.getElementById('ms-own-trace');
+    if (ownT) ownT.addEventListener('change', () => {
+        sbBiteOwnTrace = ownT.checked;
+        redo('Continuations changed. Pick a country off the map.');
     });
     const grow = document.getElementById('ms-growth');
     if (grow) grow.addEventListener('change', () => {
@@ -15839,7 +15928,10 @@ function msRenderStory() {
                        `lands near the right size, it takes whichever wins the most land per kilometre of new border.`
                      : `, against a budget of ${sbBiteGrowth}% a turn.`) +
                    ` Where the moved copy ran out, ` +
-                   `its ends were continued along a tracing of the real <strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+                   (s.source.own
+                     ? `its ends were continued along a tracing of <strong>this same frontier</strong>`
+                     : `its ends were continued along a tracing of the real ` +
+                       `<strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border`) +
                    `${s.source.flip < 0 ? ', mirrored' : ''}:</p>` +
                    msSourceSvg(s.source);
         }
@@ -16714,13 +16806,17 @@ const SB_QUIZZES = {
     // ---------- one of these is drawn at a lie ----------
     'sb-out-of-scale': {
         engine: 'fact', hiRes: true, icon: 'photo_size_select_large', label: 'Out of Scale', noMap: true,
-        desc: 'Four countries at one scale — except one',
+        desc: 'Four outlines at one scale — except one',
         build() {
             const pool = sbPool().filter(n => {
                 const f = sbFeature(n);
                 if (!f) return false;
                 const km = sbAreaKm2(n);
-                if (!km || km < 20000 || km > 3000000) return false;
+                // A band, not a floor: at one shared scale the biggest tile is what sets the
+                // scale for all four, so a Russia among them shrinks the other three to dots.
+                // The floor is lower over the states, which are simply smaller than countries.
+                const lo = sbItemLabel() === 'country' ? 20000 : 5000;
+                if (!km || km < lo || km > 3000000) return false;
                 const parts = featureParts(f);
                 if (parts.length > 1) {
                     const areas = parts.map(c => d3.geoArea({ type: 'Polygon', coordinates: c }));
@@ -16847,7 +16943,9 @@ const SB_QUIZZES = {
             return {
                 highlight: [], shapeOptions: opts, correct: displayLabelForName(target),
                 options: opts.map(o => o.label),
-                prompt: 'Each of these is a real country outline, but one has been <strong>turned or flipped</strong>. Which?',
+                // "country" is not always the word: this quiz runs over the fifty states too.
+                prompt: `Each of these is a real ${sbItemLabel()} outline, but one has been ` +
+                        `<strong>turned or flipped</strong>. Which?`,
                 explain: `${displayLabelForName(target)} is ${tf.say}. ` +
                          `The others are ${picks.filter((_, i) => i !== idx).join(', ')}, the right way round.`
             };
@@ -17092,7 +17190,11 @@ function sbRenderMulti(q, head) {
     const host = chips
         ? (() => { const d = document.createElement('div'); d.className = 'sb-picker-list'; grid.appendChild(d); return d; })()
         : grid;
-    q.options.forEach(opt => {
+    // Alphabetical. A "pick every one that applies" round is read by SEARCHING it — you have a
+    // country in mind and you want to find out whether it is on the list — and a shuffled list
+    // of twenty-odd names has to be read end to end for every one of them. There is nothing to
+    // give away by ordering it: the truth is a subset, not a position.
+    q.options.slice().sort((x, y) => x.localeCompare(y)).forEach(opt => {
         const b = document.createElement('button');
         b.className = chips ? 'sb-pick-btn sb-multi' : 'option-btn sb-multi';
         b.textContent = opt;
@@ -17154,16 +17256,26 @@ function sbSubmitMulti() {
 // backing the country was really being marked by the dashed outline these reveals used to carry,
 // which is the wrong thing to look at: the answer is about which COUNTRIES, and a country is a
 // shape rather than an edge.
-function sbHatchPattern(id, colour) {
+// `unit` is the pattern's pitch in the coordinate space of whatever it is filling. That matters
+// because a `userSpaceOnUse` pattern is resolved in the user space IN FORCE for the element
+// referencing it: fill a shape sitting inside a group scaled by six and the hatch is scaled by
+// six too, so Mercator Lies' 3.4-unit stripes came out twenty pixels wide by the end of its
+// zoom. Passing the pitch divided by that scale keeps the stripes the same width on screen.
+function sbHatchPattern(id, colour, unit) {
     let defs = svg.select('defs');
     if (defs.empty()) defs = svg.append('defs');
-    if (!defs.select('#' + id).empty()) return `url(#${id})`;
+    const u = unit || 7;
+    const existing = defs.select('#' + id);
+    if (!existing.empty()) {
+        if (unit == null) return `url(#${id})`;
+        existing.remove();                       // a sized one is per-round, not cacheable
+    }
     const pat = defs.append('pattern').attr('id', id)
-        .attr('width', 7).attr('height', 7).attr('patternUnits', 'userSpaceOnUse')
+        .attr('width', u).attr('height', u).attr('patternUnits', 'userSpaceOnUse')
         .attr('patternTransform', 'rotate(45)');
-    pat.append('rect').attr('width', 7).attr('height', 7).attr('fill', colour).attr('fill-opacity', 0.42);
-    pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 7)
-        .attr('stroke', colour).attr('stroke-width', 3.4).attr('stroke-opacity', 0.85);
+    pat.append('rect').attr('width', u).attr('height', u).attr('fill', colour).attr('fill-opacity', 0.42);
+    pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', u)
+        .attr('stroke', colour).attr('stroke-width', u * 0.34).attr('stroke-opacity', 0.85);
     return `url(#${id})`;
 }
 
@@ -17402,6 +17514,33 @@ function sbRevealNeighbourMap(q, picked) {
     drawCountries();
 }
 
+// Near to Far's reveal offers three ways of looking at the same five distances, because the
+// answer it is explaining is a set of GREAT-CIRCLE distances and no flat map shows those
+// honestly. On a plain Mercator the spokes are visibly bent and the far ones are stretched by
+// latitude; centring the Mercator on the anchor at least puts the subject in the middle; and a
+// GNOMONIC centred on the anchor is the one projection on which every great circle through the
+// centre is a straight line, so each spoke is drawn as the shortest path it actually is and the
+// five can be compared by eye. It is also wildly distorted at the edges, which is exactly why it
+// is a choice rather than the default.
+const SB_DIST_VIEWS = [
+    { key: 'mercator', label: 'Mercator' },
+    { key: 'centred',  label: 'Centred' },
+    { key: 'gnomonic', label: 'Gnomonic' }
+];
+let sbDistView = 'mercator';
+
+// Build the projection this view asks for, rotated onto the anchor where that is the point.
+function sbDistProjection(view, anchorLonLat) {
+    if (view === 'gnomonic' && anchorLonLat) {
+        // clipAngle well short of 90°: at the horizon a gnomonic runs to infinity, and a country
+        // straddling it would be drawn across the whole plane.
+        return d3.geoGnomonic().rotate([-anchorLonLat[0], -anchorLonLat[1]]).clipAngle(75).precision(0.2);
+    }
+    const p = d3.geoMercator().precision(0);
+    if (view === 'centred' && anchorLonLat) p.rotate([-anchorLonLat[0], 0, 0]).center([0, anchorLonLat[1]]);
+    return p;
+}
+
 // Near to Far's reveal: the anchor, the five countries, and a spoke to each labelled with the
 // distance it was ordered by. The round is played as a column of names with no map at all, so
 // this is the only place the geography that decided the answer is ever shown.
@@ -17417,8 +17556,15 @@ function sbRevealDistanceMap(q) {
     // than map, and a flag says which country in a quarter of the width.
     // The anchor is named so the flags can be placed relative to it — see sbFlagOffsets.
     q.boardMarks = { marks, flags: true, anchor: q.anchor };
+    // Swap the live projection for the one this view asks for. The board is the ordinary map at
+    // this point, so everything downstream — the fills, the flags, the spokes, a later pan —
+    // simply uses whatever `projection` is; nothing here needs to know which of the three it is.
+    const c0 = getCountryCentroid(q.anchor) || d3.geoCentroid(sbFeature(q.anchor) || {});
+    const proj = sbDistProjection(sbDistView, c0 && isFinite(c0[0]) ? c0 : null);
+    if (proj) { projection = proj; path = d3.geoPath().projection(projection); }
     if (!sbFitToFeatures(names, 0.09)) return;
     drawCountries();
+    sbDistViewControl(q);
 
     const layer = sbOverlay();
     q.correct.forEach((n, i) => {
@@ -17440,6 +17586,30 @@ function sbRevealDistanceMap(q) {
     });
     sbApplyBoardMarks();
     layer.selectAll('g.sb-marklab').raise();
+}
+
+// The three-way view switch, parked over the map's top-left corner. Redrawing is a plain re-run
+// of the whole reveal: it is idempotent (the marks and the spokes are rebuilt from the round,
+// not accumulated), which is what makes switching cost one call rather than a teardown.
+function sbDistViewControl(q) {
+    const box = document.getElementById('map-container');
+    if (!box) return;
+    let bar = document.getElementById('sb-dist-views');
+    if (bar) bar.remove();
+    bar = document.createElement('div');
+    bar.id = 'sb-dist-views';
+    bar.className = 'sb-view-bar';
+    bar.innerHTML = SB_DIST_VIEWS.map(v =>
+        `<button type="button" class="sb-view-btn${v.key === sbDistView ? ' active' : ''}" ` +
+        `data-view="${v.key}">${v.label}</button>`).join('');
+    box.appendChild(bar);
+    bar.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => {
+        if (b.dataset.view === sbDistView) return;
+        sbDistView = b.dataset.view;
+        q.boardMarks = null;
+        if (svg) svg.select('g.sb-overlay').remove();
+        sbRevealDistanceMap(q);
+    }));
 }
 
 // ---- engine: estimate (a number, on a log slider) ----
@@ -18179,7 +18349,13 @@ function sbMarkCorrectOption(correct) {
     if (!correct) return;
     document.querySelectorAll('.option-btn').forEach(btn => {
         if ((btn.dataset.answer || btn.textContent) === correct) btn.classList.add('correct');
+        // ...and a pick that has been waiting grey since the click finally hears the verdict.
+        else if (btn.classList.contains('sb-picked-wait')) {
+            btn.classList.remove('sb-picked-wait');
+            btn.classList.add('incorrect');
+        }
     });
+    document.querySelectorAll('.sb-picked-wait').forEach(b => b.classList.remove('sb-picked-wait'));
 }
 
 // Up to 9 bonus points on the same exp(-x/scale) curve the spaceship and blind-puzzle modes
@@ -18648,7 +18824,9 @@ function sbRevealEquator(pair) {
         // the argument on its own.
         return { it, wrap, p, paint: () => {
             if (it.right) p.style('fill', green).style('fill-opacity', 0.6);
-            else if (it.mine && wrongPick) p.style('fill', sbHatchPattern('sb-hatch-red', red));
+            // The hatch is sized in the layer's own space, which by now is scaled by S — see
+            // sbHatchPattern. Without that division the stripes end up as wide as a country.
+            else if (it.mine && wrongPick) p.style('fill', sbHatchPattern('sb-hatch-red-eq', red, 5 / S));
         } };
     });
     // Labels are children of the LAYER, not of their shape, so they can share one baseline —
@@ -18699,13 +18877,50 @@ function sbRevealEquator(pair) {
     // lunge at a random spot and then a scramble across to the countries. Written as
     // `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
     // u = 1 is the same final framing, with everything between anchored on the shapes.
-    const layerEnd = `translate(${W / 2},${H / 2}) scale(${S}) translate(${-anchorX},${-anchorY})`;
-    const zoomTween = () => u => {
-        const k = Math.exp(Math.log(S) * u);                       // geometric, so it reads as even
-        const px = anchorX + (W / 2 - anchorX) * u, py = anchorY + (H / 2 - anchorY) * u;
-        return `translate(${px},${py}) scale(${k}) translate(${-anchorX},${-anchorY})`;
+    // The camera is PACED BY WHAT IS ON SCREEN, not by a curve of its own. At every frame the
+    // two shapes' current boxes are unioned and the scale is capped at what that union will
+    // take; a geometric ramp toward S ignores the fact that the pair is still spread across the
+    // map early on, so it closed in faster than they closed up and each shape spent the middle
+    // of the move half out of frame. Written as `k = target^e`, with target the live fit, the
+    // camera can never exceed what fits, starts at exactly 1, and lands on exactly S — the fit
+    // of the final layout, which is the same formula at e = 1.
+    const ease = d3.easeCubicInOut;
+    const fitFor = (w2, h2) => Math.min(W * 0.82 / Math.max(w2, 1e-6), H * 0.66 / Math.max(h2, 1e-6));
+    const frameAt = e => {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        items.forEach(it => {
+            const cxE = it.cx + (it.X - it.cx) * e, cyE = it.cy + (anchorY - it.cy) * e;
+            x0 = Math.min(x0, cxE - it.w / 2); x1 = Math.max(x1, cxE + it.w / 2);
+            y0 = Math.min(y0, cyE - it.h / 2); y1 = Math.max(y1, cyE + it.h / 2);
+        });
+        return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0,
+                 k: fitFor(x1 - x0, y1 - y0) };
     };
-    layer.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attrTween('transform', zoomTween);
+    const camAt = u => {
+        const e = ease(u), f = frameAt(e);
+        // `target^e` alone is not enough: where the live fit is BELOW 1 — the pair spanning
+        // nearly the whole frame at the start — raising it to a power less than one lifts it
+        // back above the fit and the shapes overflow. Capping at the fit itself makes the
+        // invariant hold by construction at every u, and at u = 0 it either leaves the identity
+        // alone (the usual case) or pulls back just far enough to hold both, which is right.
+        const k = Math.min(f.k, Math.pow(Math.min(f.k, S), e));
+        // The pan has to respect the frame too, not only the zoom. The union's centre travels
+        // from wherever the map had it to the middle, and the scale grows on its own schedule,
+        // so there is a window where the shapes have grown but the camera has not finished
+        // sliding — clamping the centre to keep the (already-fitting) union inside closes it.
+        // Both ends satisfy the clamp already, so it changes nothing at u = 0 or u = 1.
+        const hw = k * f.w / 2, hh = k * f.h / 2;
+        const clamp = (v, half, span) => half * 2 >= span ? span / 2
+                                                          : Math.max(half, Math.min(span - half, v));
+        const px = clamp(f.cx + (W / 2 - f.cx) * e, hw, W);
+        const py = clamp(f.cy + (H / 2 - f.cy) * e, hh, H);
+        return `translate(${px},${py}) scale(${k}) translate(${-f.cx},${-f.cy})`;
+    };
+    const layerEnd = camAt(1);
+    // The tween eases inside camAt, so the transition itself must run linear or the easing is
+    // applied twice and the pacing this exists for is thrown away.
+    const zoomTween = () => camAt;
+    layer.transition().delay(moveMs).duration(zoomMs).ease(d3.easeLinear).attrTween('transform', zoomTween);
     shapes.forEach(({ it, wrap }) => {
         it.end = `translate(${it.X - it.cx},${anchorY - it.cy})`;
         wrap.transition().delay(moveMs).duration(zoomMs).ease(d3.easeCubicInOut).attr('transform', it.end);
@@ -18837,6 +19052,10 @@ function sbTeardown() {
     // 0x0, and no error anywhere to say so.
     const mapBox = document.getElementById('map-container');
     if (mapBox) mapBox.style.display = '';
+    // Near to Far's projection switch is a child of the map box, not of the overlay group, so
+    // emptying the SVG does not take it with it.
+    const viewBar = document.getElementById('sb-dist-views');
+    if (viewBar) viewBar.remove();
     if (typeof svg !== 'undefined' && svg) {
         svg.on('click.sbpin', null);
         svg.on('click.shapestep', null);

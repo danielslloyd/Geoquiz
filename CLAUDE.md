@@ -180,6 +180,20 @@ Fifteen short modes — twelve under Quick Quizzes, plus Who's Missing on the la
 Upside Down and Out of Scale under Name the Shape (`SB_IN_SHAPE_ID`; `sandboxQuizTiles` skips all
 three). Almost all are **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
 
+### The two that live under Name the Shape
+
+**Upside Down** and **Out of Scale** are questions about a silhouette and nothing else, which is
+what Name the Shape is, so they are offered there rather than in Quick Quizzes (`SB_IN_SHAPE_ID`;
+`sandboxQuizTiles` skips them). They take that screen's region toggle too, by the same
+reconfigure-in-place trick as `startShapeIdMode` — `startShapeQuizMode(key, region)`. Nothing in
+either quiz needed changing for it: `sbPool()` and `sbFeature()` read
+`gameState.currentQuizList` and `gameState.countries` and have never cared which atlas those came
+from, so a state is as good a silhouette as a country. AlbersUSA is forced off (these rounds fit
+a projection to one shape at a time and a composite cannot), the name-keyed caches are cleared
+with the pool, Upside Down's prompt says "state" or "country" via `sbItemLabel()`, and Out of
+Scale's area floor drops from 20,000 to 5,000 km² because states are simply smaller. Measured:
+12 of 12 draws succeed for both quizzes over both regions.
+
 ### Two from the second wave
 
 Ten more were written and eight were cut again. The two that stayed are the two that could not
@@ -400,6 +414,19 @@ twice. The other two constructions use the positional rule (the biggest neighbou
 exactly one place); this one **measures** it, running the division once for each of the three
 biggest candidates and keeping whichever ends up with the most compact territory.
 
+### Where the ends of a cut get their shape
+
+The middle of a new border is the frontier being moved; its two ENDS are continuations run out to
+wherever they land, and those need a shape from somewhere. By default they are traced from real
+borders sampled anywhere in the topology (`sbBorderShapes`) -- the claim being that what is
+borrowed is the CHARACTER of a border rather than a particular one. **`sbBiteOwnTrace`** (a
+checkbox in the sandbox panel) instead continues a cut in the trace of the very frontier it is
+made of, which is a different claim about what a border is and worth being able to see.
+
+The cost is variety: one shape to try instead of five, so the search has fewer ways out when a
+cut will not land. Measured over the world: still **145 of 191** divide, share error 0.237
+against 0.209, absorbers 2.71 against 2.78, turns 2.03 against 1.88.
+
 ### Most land per new border
 
 Every depth and every slight rotation about the frontier's own midpoint (`SB_BITE_SPINS`, to
@@ -420,7 +447,10 @@ costs four times as much for the same answer.
 
 `sbBiteGrowth` (**default 10**, editable in the sandbox panel) caps how much longer the new
 border may be than **the old boundary the bite swallowed** -- the frontier plus whatever coast
-and foreign border ends up inside the piece -- and that comparison is the whole of it.
+and foreign border ends up inside the piece -- and that comparison is the whole of it. It
+**compounds**: a turn's budget is a percentage of the border as it stands at the START of that
+turn, so three turns of 10% is 1.10³ rather than 1.30, which is what "10% growth per turn"
+means, and the gap widens with every turn taken.
 
 Measured against the frontier ALONE, as it was, a rigid slide is charged for its two
 end-continuations as if they were extravagance, when they are the one thing it cannot do without:
@@ -778,8 +808,9 @@ Notes worth keeping:
   the adversary, not the distractor list.
 
   **It plays on a full-bleed map** (`fullMap` on the spec → `sbFullMap` → `.container.sb-full-map`),
-  with the prompt banded across the top and the two answers side by side along the bottom, both
-  floating on the map rather than beside it. A comparison of two shapes on a world map is a round
+  with the prompt and its two answers stacked together at the top, floating on the map rather
+  than beside it — a question and the two ways of answering it are one thing to read, and
+  putting them at opposite edges of the map left the whole picture between them. A comparison of two shapes on a world map is a round
   whose whole content is the map, and the reveal then zooms that map into them, so a 300px column
   is 300px off the only thing anyone is looking at. Same overlay trick as Free Explore, including
   the click-through gaps so a drag between the cards still pans. And no country under
@@ -793,6 +824,23 @@ Notes worth keeping:
   move, and it is the one that shows the shape changing rather than only the size. Verified: the
   drawn area ratio at the end matches the true area ratio to within 3%, against a map ratio that
   had one of them looking nearly twice the other.
+
+  **The camera is paced by what is on screen**, not by a curve of its own. At every frame the
+  two shapes' current boxes are unioned and the scale is capped at what that union will take
+  (`frameAt`/`camAt`, `k = min(fit, min(fit, S)^e)`), and the pan is clamped to keep that union
+  inside the frame. A geometric ramp toward the final scale ignores the fact that the pair is
+  still spread across the map early on, so the camera closed in faster than the shapes closed up
+  and each spent the middle of the move half out of frame. Two subtleties, both of which break
+  it: the transition must run **linear**, since the easing is applied inside `camAt` and would
+  otherwise be applied twice; and raising the fit to a power below one LIFTS it above the fit
+  wherever the fit is under 1, so the result is also capped at the fit itself. Verified by
+  replaying the camera over 4,000 random layouts × 61 frames: **244,000 samples, worst overhang
+  0.0000 px**.
+
+  **The hatch is sized in the layer's own space.** A `userSpaceOnUse` pattern is resolved in the
+  user space in force for the element referencing it, so a shape inside a group scaled by 46 gets
+  a hatch scaled by 46 too — the 3.4-unit stripes came out as one flat block of colour.
+  `sbHatchPattern` takes a pitch, and the reveal passes its own divided by the fit scale.
 
   Four things that construction has to get right:
   * **Rotate onto the prime meridian first.** A rotation by −φ about the y axis only lands a
@@ -816,6 +864,12 @@ Notes worth keeping:
     at a random spot and then a scramble across to the countries. Written as
     `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
     u = 1 is the same final framing, with everything between anchored on the shapes.
+
+  **A click says only "this is the one you chose".** Not green, not red — a plain grey
+  (`sb-picked-wait`, and `deferMark` is what suppresses the usual classes in
+  `handleMultipleChoiceAnswer` and `handleCorrectAnswer`). The verdict arrives with everything
+  else at the end of the animation; colouring the button on the click states the conclusion
+  before the picture has made the case, which on this round is the entire round.
 
   **The reveal is in three phases, and the third is the only one that gives anything away.**
   Phase one carries each country south (or north) over its own longitude; phase two closes the
@@ -885,6 +939,10 @@ Notes worth keeping:
   endpoint **pixel-identical** to how the country would have been drawn untransformed. The
   auto-advance is held back for the flip, and the tween has the usual `setTimeout` backstop,
   since d3 transitions are rAF-driven and a backgrounded tab would strand the shape mid-swing.
+* **`multi` lists its options alphabetically.** A "pick every one that applies" round is read by
+  SEARCHING it — you have a country in mind and you want to know whether it is on the list — and
+  a shuffled column of twenty-odd names has to be read end to end for every one of them. There is
+  nothing to give away by ordering it: the truth is a subset, not a position.
 * **`sb-all-neighbours` always offers twelve names**, however many of them are real
   neighbours. A list that shrinks with the answer count tells you how many to pick before you
   have looked at the map.
@@ -1033,6 +1091,19 @@ re-applied at the end of every `drawCountries`, which is the one place every red
   country names written across a zoomed map is more type than map (`boardMarks.flags`) — and with
   no frame around it, since a flag is already a rectangle of solid colour and a border on one
   only says "this is a picture".
+
+  **Three ways of looking at it** (`SB_DIST_VIEWS`, `sbDistView`, the switch floating over the
+  map's top-left corner), because the answer being explained is a set of GREAT-CIRCLE distances
+  and no flat map shows those honestly. Plain **Mercator** bends every spoke and stretches the
+  far ones by latitude; **Centred** at least puts the anchor in the middle of its own map; and
+  **Gnomonic** centred on the anchor is the one projection on which every great circle through
+  the centre is a straight line, so each spoke is drawn as the shortest path it actually is and
+  the five can be compared by eye. Measured as the sagitta of each spoke against its own chord,
+  over one round's five spokes: Mercator 1.4 / 0.5 / 18.4 / 29.5 / **41.5%**, and gnomonic
+  **0.00% on all five**. It is wildly distorted at the edges, which is why it is a choice rather
+  than the default; `clipAngle(75)` keeps it short of the horizon, where a gnomonic runs to
+  infinity. Switching re-runs the whole reveal, which is idempotent — the marks and the spokes
+  are rebuilt from the round rather than accumulated.
 
   **Where the flag goes is the whole of `sbFlagOffsets`.** Centred on the centroid it covers the
   shape it is naming, and here it also lands on the spoke arriving from the anchor. So each flag
