@@ -269,8 +269,8 @@ be reconciled afterwards and there is never a leftover stranded in the middle.
 
 **The shape of each bite is a STENCIL, and the stencil is the frontier itself**: the biter's own
 stretch of the old boundary, moved inward until the land behind it is the share that neighbour is
-owed — by **front propagation**, in small steps, with a cap on how much longer the border may get
-(see below). Nothing is pinned and nothing is stretched — the
+owed. HOW it is moved is a choice of three constructions — see below — two of which move it
+rigidly, so every corner of the new border is a corner the old one had. Nothing is pinned and nothing is stretched — the
 tripoints do not anchor the cut, and the new border lands wherever the slid copy happens to meet
 the old boundary. Two earlier constructions pinned the cut's ends at the tripoints and stretched
 a borrowed curve between them, and both times the arithmetic showed through the geography (first
@@ -340,30 +340,106 @@ Two things that test has to get right, both of which had it silently passing eve
   that way, unchanged through two tolerance rewrites, which is what made it look like a
   tolerance problem and not a bookkeeping one.
 
-## Who's Missing: the front, and the growth budget
+## Who's Missing: three constructions
 
-A rigid slide could not tell the difference between the ground it should cross and the ground it
-should stop at, so it wrapped around things and the new borders came out far too convex. The
-frontier is now moved inward **a step at a time**, each step taken from the border the last one
-left (`advance`/`propagate`, steps of a twenty-fourth of the country), and it keeps going until it
-has its share or until the border it is leaving behind has grown past its budget.
+How the frontier is moved in is a **choice** (`SB_BITE_ALGOS`, `sbBiteAlgo`, the first select in
+the sandbox panel), because the three ways of doing it are genuinely different answers rather
+than one answer and two mistakes. The difference between them is entirely about what happens to
+the SHAPE of the border being moved.
 
-**The budget is the whole idea, and it works because of what offsetting a curve does.** Move a
-frontier that bulges away from the country inward and it gets SHORTER; move one that bows into
-the country inward and it gets LONGER, fast, wrapping around whatever made it concave. Capping
-the growth therefore lets the front run freely across the easy ground and stops it exactly where
-it would begin to wrap. `sbBiteGrowth` is that cap as a percentage, **default 10**, and it is
-editable in the sandbox panel. Measured over twenty countries that divide:
+Two of them move the frontier **rigidly**, which is an isometry: the stencil's length and every
+one of its corners are the frontier's own, exactly, at any depth. The third moves each point
+along its own local normal in small smoothed steps.
 
-| Growth per turn | Border ends | Share error | Leftover holds | Turns used |
-|---|---|---|---|---|
-| 5% | 16% longer | 0.465 | 56.9% | 4.6 |
-| **10%** | **30% longer** | **0.344** | **51.4%** | **4.1** |
-| 25% | 47% longer | 0.291 | 48.9% | 3.0 |
-| 60% | 77% longer | 0.254 | 48.1% | 2.7 |
+| | What it solves for | Share error | Leftover holds | Border ends | Crowded out | Swallowed | Per country |
+|---|---|---|---|---|---|---|---|
+| **Rigid slide, one per turn** (default) | the share, as deep as the turn's budget allows | 0.209 | 55.0% | **39% shorter** | 42 | 72 | 295 ms |
+| **Most land per new border** | the cheapest border that lands near the share | **0.181** | 56.4% | 36% shorter | **21** | 73 | 386 ms |
+| **Propagating front (smoothed)** | the share, bending round obstacles | 0.245 | 64.5% | 7% shorter | 98 | 7 | 288 ms |
 
-Tighter is smoother and less accurate, and the trade is monotone — which is what a knob should
-look like. The old unbounded construction sits off the bottom of that table.
+All three divide the same **145 of 191** countries and are refused for the same reasons, so the
+comparison means something.
+
+**The number that decides it is not in that table.** The complaint the two rigid constructions
+exist to answer is that the front's borders came out *rounded*, and rounding is measurable.
+Taking the mean absolute turning per 100 km of a cut, against the same measure on the real
+frontier it replaced, over 27-30 bites across ten countries:
+
+| | New border | The real frontier it replaced |
+|---|---|---|
+| Rigid slide | 103.8 deg/100 km | 82.2 |
+| Most land per new border | 102.4 | 86.9 |
+| Propagating front | **52.1** | 74.4 |
+
+The front's borders are **30% smoother than a real border**, which is exactly what "many small
+smoothed offsets" does to any curve: repeated smoothed offsetting converges on a circle whatever
+it started as. The rigid ones come out slightly *busier* than the frontier, because their
+end-continuations and their splices are traced off real borders too.
+
+### The rigid slide, one bite per turn
+
+The deepest straight-in translation of the frontier that still lands, still fits the growth
+budget and has not passed the share (`rigid`/`slide`). A bite that came up short is not deepened
+on the spot: it is given another **turn**, with another turn's worth of budget, by the pass loop
+-- and because the slide is rigid, two turns of a translation are exactly one deeper translation,
+so iterating the turns costs the shape nothing at all. That is only true of a rigid move, and it
+is precisely what the front cannot say.
+
+**The ladder is walked to the top, not walked until something fails.** "Invalid means too deep"
+is true of a front, which deforms continuously, and false of a rigid slide: a translation can
+fail at 80 km because its ends happen to land where their continuations cannot get back out, and
+succeed perfectly at 300 km. Stopping at the first failure left France's bites at 71, 92 and 102
+km into a country 1,100 km across -- three nibbles, and Italy holding 88% of France.
+
+Its last clause is **who holds the surplus**. Somebody has to not bite: the last few per cent of
+a country cannot be chased without producing slivers, and a neighbour that has already bitten
+cannot take the remainder as well, since its own outline would then be written into the arcs
+twice. The other two constructions use the positional rule (the biggest neighbour touching in
+exactly one place); this one **measures** it, running the division once for each of the three
+biggest candidates and keeping whichever ends up with the most compact territory.
+
+### Most land per new border
+
+Every depth and every slight rotation about the frontier's own midpoint (`SB_BITE_SPINS`, to
+12 degrees; past that the ends have swung so far that the cut stops reading as that border at
+all), and among the cuts landing in the **ballpark** of the share the one taken is whichever gets
+the most land per kilometre of border it creates. That ratio is a convexity measure in disguise
+-- a cut that wraps round something spends border and gains almost no land -- so maximising it
+bends the choice toward straight cuts without ever having to say the word. It crowds out **half
+as many** neighbours as the plain slide, because a rotation can reach ground a translation
+cannot.
+
+The rotations are ranked on one borrowed continuation and only the best two get the full
+cross-product of curves and mirrorings: the continuations decide the cut's ENDS and the rotation
+decides its middle, so a single curve separates the rotations perfectly well and the full product
+costs four times as much for the same answer.
+
+### The growth budget, and what it is measured against
+
+`sbBiteGrowth` (**default 10**, editable in the sandbox panel) caps how much longer the new
+border may be than **the old boundary the bite swallowed** -- the frontier plus whatever coast
+and foreign border ends up inside the piece -- and that comparison is the whole of it.
+
+Measured against the frontier ALONE, as it was, a rigid slide is charged for its two
+end-continuations as if they were extravagance, when they are the one thing it cannot do without:
+the ends of a rigid stencil travel as far as its middle, so the continuations are at least as
+long as the depth, and at a 10% budget France's bites came out at 71, 92 and 102 km. Measured
+against what the bite actually consumed, the budget means what it says, and the answer over the
+whole world is that these cuts are **shorter** than the borders they replace -- which is the
+right sign, since a bite that cuts across a country replaces a wiggly frontier plus a stretch of
+coast with one line.
+
+A consequence worth stating plainly: under the rigid constructions the budget therefore **rarely
+binds**, and depth is limited by the share and by whether the cut lands at all. It is the front's
+knob much more than theirs.
+
+### What the front is still for
+
+It is the only one of the three that can bend a border round an obstacle -- and the price of the
+bounded steps that let it do so is that it often cannot reach any land at all. That is why the
+two failure modes are opposites. The front leaves **98** neighbours with nothing because it could
+not get anywhere; the rigid slides reach much further and instead **swallow** small neighbours on
+the way past (72 and 73, against the front's 7).
 
 Three things the front has to get right, and each of them broke it completely when wrong:
 
@@ -371,30 +447,24 @@ Three things the front has to get right, and each of them broke it completely wh
   the radius of a concave notch; past that the front crosses itself and ties a loop, and a loop is
   arbitrarily long. Untrimmed, the first step of every bite in the world blew a 10% budget
   immediately and **not one country could be divided at all**. Two Laplacian passes pull the loops
-  out — which is also exactly the right thing to do to a border, being the same "add no detail
-  that was not there" the cap is asking for.
+  out -- and they are also, precisely, what rounds the borders off.
 * **Measure the budget on the CUT, not the stencil.** The stencil is only the middle of the new
   border; the ends are continuations run out to wherever they land. Measured on the stencil, the
   reported growth was 83%, 145%, 241% against a cap of 10.
-* **The ends lag behind the middle** (`SB_BITE_END_DRAG`). They are not pinned — pinning them at
-  the tripoints is the construction this replaced — but they cannot wander inland either, because
-  the cut's ends must be continued out to the boundary to close the bite and a continuation
-  starting deep inside cannot find its way back. Without the lag France lost every neighbour but
-  one at **any** budget: Spain and Switzerland could not land a cut at all.
+* **The ends lag behind the middle** (`SB_BITE_END_DRAG`). They are not pinned -- pinning them at
+  the tripoints is the construction this replaced -- but they cannot wander inland either,
+  because the cut's ends must be continued out to the boundary to close the bite and a
+  continuation starting deep inside cannot find its way back. Without the lag France lost every
+  neighbour but one at **any** budget.
 
-**The turns iterate.** One turn of 10% cannot reach a share, so a border that came up short is
-given another turn — another 10% on top of what it has already spent — while one that got what it
-was owed is left where it stopped. Bites use 4.1 turns on average and no more than six. The turns
-are re-run from scratch rather than continued from the last cut, for the reason a second bite has
-always been avoided here: it would have to be merged with the first, and two rings sharing a
-boundary need a polygon union, whose failures are exactly the invisible-seam kind this surgery
-exists to prevent. Recomputing is the same code with the same guarantees, and a front allowed 20%
-in one go lands where two 10% turns would.
+**The turns iterate** under all three. A border that came up short is given another turn --
+another `sbBiteGrowth` per cent on top of what it has already spent -- while one that got what it
+was owed is left where it stopped. The turns are re-run from scratch rather than continued from
+the last cut, for the reason a second bite has always been avoided here: it would have to be
+merged with the first, and two rings sharing a boundary need a polygon union, whose failures are
+exactly the invisible-seam kind this surgery exists to prevent. Recomputing is the same code with
+the same guarantees.
 
-The cost is honest and worth stating: **109 neighbours across the world are now crowded out**
-where 14 were before, because a bounded front often cannot reach any land at all. What it buys is
-that almost nothing is **swallowed** any more — 5, against 81 — since a bounded front does not
-sweep across a small neighbour's whole frontier on its way past.
 
 **A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
 neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
@@ -461,8 +531,9 @@ overshoots past what it can have.
 
 Who bites first changes the map completely — the first bite cuts an untouched country and every
 later one works around it — and there is no single right answer, so it is a choice
-(`SB_BITE_ORDERS`, `sbBiteOrder`, the select at the top of the sandbox panel) rather than
-something settled in the code. Measured over the same twenty countries:
+(`SB_BITE_ORDERS`, `sbBiteOrder`, the second select in the sandbox panel — under the choice of
+construction) rather than something settled in the code. Measured over the same twenty countries,
+under the propagating front:
 
 | Order | Share error | Leftover holds | Absorbers |
 |---|---|---|---|
@@ -473,8 +544,10 @@ something settled in the code. Measured over the same twenty countries:
 | Clockwise from north | 0.232 | 46.5% | 3.95 |
 | Most convex frontier first | 0.275 | 49.1% | 3.65 |
 
-Only the ORDER changes: eligibility, shares and the leftover (still the biggest neighbour
-touching in exactly one place) are identical across all six, so the comparison means something.
+Only the ORDER changes: eligibility, shares and the leftover are identical across all six, so the
+comparison means something. (The rigid slide is the one construction that picks its own leftover
+by measurement rather than by position — see "three constructions" above — so the orders stay
+comparable within a construction, not across them.)
 Selection is made **at each step rather than by sorting up front**, because one of the orders is
 a question about the border as it stands and the border changes with every bite; for the five
 whose key is fixed this is the same sequence a sort would give, since a key cannot change and a
@@ -523,9 +596,11 @@ alternating run of arcs is common, and disqualifying a neighbour for it cost Pol
 and Slovakia. The one country that cannot be split like that is the **leftover** — it never bites,
 so its piece is whatever remains, and that region can contain its own second frontier, whose arc
 would then be both referenced by its ring and copied into the outline. So the leftover is chosen
-up front as the *biggest* neighbour touching in exactly one place: it absorbs every bite that
-came up short, and the country with the longest frontier is the one that should hold the surplus.
-Making it the smallest handed Czechia 76% of Germany.
+up front from the neighbours touching in exactly one place — by default the *biggest* of them,
+since it absorbs every bite that came up short and the country with the longest frontier is the
+one that should hold the surplus. Making it the smallest handed Czechia 76% of Germany. (The
+rigid slide instead runs the division once per candidate and keeps whichever finishes least
+contorted; the candidate pool is the same.)
 
 **And it has to be the one that was chosen, not merely the first left holding nothing.** Those
 are different countries the moment a bite is crowded out, and taking the first went wrong in both
@@ -560,11 +635,11 @@ bit-identical (the one exception per round is Australia, whose antimeridian ring
 differently because the rebuilt topology carries absolute coordinates rather than a quantization
 transform).
 
-**Known limit: a bounded front often cannot reach any land at all.** Germany comes out Austria
-50%, Poland 19%, Netherlands 14%, France 9%, Czechia 6%, Switzerland 2% — every neighbour taking
-part, but the leftover holding half, because nobody's border could be moved far without bending
-it. Loosening `sbBiteGrowth` trades that back the other way along the table above, which is what
-the knob is for.
+**Known limit: neither failure mode is fixed, only traded.** Under the rigid slide Germany comes
+out Czechia 37%, Netherlands 23%, Poland 20%, Austria 20% — four neighbours of six, the other two
+swallowed by cuts that swept past their frontiers. Under the front every neighbour takes part and
+the leftover holds half, because nobody's border could be moved far without bending it. That is
+the choice the picker exists to offer.
 
 ## Who's Missing: the step-by-step story
 
@@ -827,12 +902,15 @@ neighbour).
 countries of surgery, chunked 40 ms at a time, to colour a map nobody had asked a question of
 yet. Every escalation since (splices, stretch, contiguity, six passes) made that sweep cost more:
 the same pass is 26 s now. `msVerdictFor` computes one country's verdict when it is clicked and
-caches it in the same map the legend counts, so the legend shows a running tally of what has
-been TRIED rather than a census of the world, and the surgery a click just performed is reused
-rather than repeated. Entry is instant; a click is a fraction of a second. Clicking an ineligible
-country explains itself rather than doing nothing — that is the more interesting half of the
-tool. Changing the turn order clears every verdict, since they were all reached under the old
-one.
+not before, and the surgery a click performs is reused by the story rather than repeated. Entry
+is instant; a click is a fraction of a second. Clicking an ineligible country explains itself
+rather than doing nothing — that is the more interesting half of the tool.
+
+**And the verdict is forgotten as soon as the next country is picked**, so exactly one country is
+ever coloured. The map used to accumulate a colour per country tried, with a legend tallying
+them, which turned a tool for looking at one operation into a scoreboard of a survey nobody had
+asked for — and a stale one, since every verdict was reached under whatever construction and turn
+order happened to be set at the time. Each country starts over.
 
 ### The five-colour map
 

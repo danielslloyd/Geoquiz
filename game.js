@@ -13443,6 +13443,38 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // being stamped out in one go.
 const SB_BITE_STEP_FRAC = 1 / 24;
 const SB_BITE_STEPS = 26;
+
+// HOW a bite is taken. Three constructions, and the difference between them is entirely about
+// what happens to the SHAPE of the border being moved.
+//
+// `front` moves every point of the frontier along its own local normal, a step at a time,
+// smoothing between steps. That is the only one of the three that can bend a border round an
+// obstacle — and it is also why it rounds them off: many small offsets of a curve, each smoothed,
+// converge on a circle whatever they started as. It is kept because it reaches land the rigid
+// ones cannot.
+//
+// The other two move the frontier RIGIDLY, which is an isometry — the stencil's length and every
+// one of its corners are the frontier's own, exactly, at any depth. They differ in what they are
+// solving for: `turns` for the share (go as deep as the budget allows, once per turn), `efficient`
+// for the cheapest border that gets near the share (search depth AND a small rotation, and keep
+// whichever takes the most land per kilometre of new border).
+const SB_BITE_ALGOS = {
+    'turns':     { label: 'Rigid slide, one per turn', hint: 'The frontier itself, moved straight in — as deep as one turn’s growth allows, and again next turn if it came up short' },
+    'efficient': { label: 'Most land per new border', hint: 'Searches depths and slight rotations of the frontier and keeps whichever takes the most land per kilometre of border it creates' },
+    'front':     { label: 'Propagating front (smoothed)', hint: 'Every point moves along its own normal, a step at a time — reaches ground the rigid slides cannot, and rounds the border off doing it' }
+};
+let sbBiteAlgo = 'turns';
+// `efficient` searches this many depths per rotation, over these rotations (radians, about the
+// frontier's own midpoint). Slight is the operative word: past about 12° the stencil's ends have
+// swung so far that its continuations bear no relation to the tripoints it started between, and
+// the cut stops reading as that border at all.
+const SB_BITE_SCAN = 14;
+const SB_BITE_SPINS = [0, 0.06, -0.06, 0.13, -0.13, 0.21, -0.21];
+// Of the land a bite could take, how far either side of its share still counts as "the ballpark".
+// Inside it the choice is made on border length alone, which is the whole idea; outside it the
+// bite is simply the wrong size and no amount of efficiency redeems it.
+const SB_BITE_BALLPARK_LO = 0.55;
+const SB_BITE_BALLPARK_HI = 1.8;
 // How much of the front's speed its two ends keep, and over what share of its length that is
 // ramped back up to full. The ends have to lag: they are what gets continued out to the boundary
 // to close the bite, and a continuation starting deep inland cannot find its way back out.
@@ -14095,6 +14127,16 @@ function sbEatCountry(rawTopo, goneName) {
                     .concat(innerPts.map(pt => ({ p: pt, leg: -1 })));
             const piece = fwd ? mk(A, wAB, B, inner.slice().reverse())
                               : mk(B, wBA, A, inner);
+            // The OLD boundary this bite is replacing: the stretch of the region's own ring that
+            // ends up inside the piece. That, not the frontier, is what the new border has to be
+            // measured against — a bite consumes the frontier AND whatever coast or foreign
+            // border lies between the frontier's ends and where the cut finally lands, and all of
+            // it disappears into the interior. Measured against the frontier alone, a rigid slide
+            // was charged for its two end-continuations as if they were extravagance, when they
+            // are the one thing it cannot do without: at a 10% budget France's bites came out at
+            // 71, 92 and 102 km into a country 1,100 km across.
+            const hostLen = fwd ? lenOf([A.p].concat(wAB.map(k => r[k].p), [B.p]))
+                                : lenOf([B.p].concat(wBA.map(k => r[k].p), [A.p]));
             const rest = fwd ? mk(B, wBA, A, inner)
                              : mk(A, wAB, B, inner.slice().reverse());
             if (piece.length < 3 || rest.length < 3) return null;
@@ -14138,7 +14180,7 @@ function sbEatCountry(rawTopo, goneName) {
             // the bisection back off, and if nothing shallower lands the neighbour is crowded
             // out, which is the honest answer.
             if (aP > want * SB_BITE_OVERSHOOT) return null;
-            return { piece, rest, cut, spliced, area: aP, cutLen: lenOf(cut) };
+            return { piece, rest, cut, spliced, area: aP, cutLen: lenOf(cut), hostLen };
         };
 
         // Is this ring a single lobe? Split it wherever it revisits a vertex and check that no
@@ -14194,19 +14236,14 @@ function sbEatCountry(rawTopo, goneName) {
             return !(total > 0) || (total - biggest) / total <= SB_BITE_LOBE_TOL;
         };
 
-        // ---- the front, advanced a step at a time ----
+        // ---- moving the frontier in ----
         //
-        // A bite is no longer one rigid slide solved for depth. The frontier is moved inward in
-        // small steps, each taken from the border the last one left, and it keeps going until it
-        // has the area it was asked for or until the border it is leaving behind has grown past
-        // `sbBiteGrowth`. That cap is the whole point: offsetting a curve inward SHORTENS it
-        // where the country bulges away and LENGTHENS it where the country bows in, so the front
-        // runs freely across the easy ground and stops exactly where it would begin wrapping
-        // around something. One rigid slide could not tell those apart and wrapped every time.
-        //
-        // Each step is a bisection on the step length against the growth cap, and then — only
-        // when the front has gone far enough — a bisection back down against the area, so the
-        // bite lands on its share rather than past it.
+        // Three constructions, chosen by `sbBiteAlgo`. Two of them move the frontier RIGIDLY, and
+        // that is the point of them: a rigid transform is an isometry, so the stencil is the
+        // frontier's own shape and its own length at every depth, corner for corner. The third
+        // moves each point along its own normal in small smoothed steps, which is the only way to
+        // bend a border round an obstacle and also the reason it rounds borders off — repeated
+        // smoothed offsets of any curve converge on a circle.
         const spacing = Math.max(total / (M - 1), 1e-6);
         const resample = pts => {
             const out = [pts[0]];
@@ -14260,7 +14297,22 @@ function sbEatCountry(rawTopo, goneName) {
             return resample(out);
         };
 
-        const maxLen = total * (1 + Math.max(0, allowPct) / 100);
+        // The frontier moved RIGIDLY: straight in by `d`, and turned by `ang` about its own
+        // midpoint. Nothing here can change the stencil's length or any angle in it, which is
+        // what "the border keeps its shape" means and what the propagating front cannot promise.
+        const pivot = st0[(M - 1) >> 1];
+        const rigid = (d, ang) => {
+            const ca = Math.cos(ang || 0), sa = Math.sin(ang || 0);
+            const out = new Array(M);
+            for (let i = 0; i < M; i++) {
+                const ux = st0[i][0] - pivot[0], uy = st0[i][1] - pivot[1];
+                out[i] = [pivot[0] + ux * ca - uy * sa + nx * d,
+                          pivot[1] + ux * sa + uy * ca + ny * d];
+            }
+            return out;
+        };
+
+        const grow1 = 1 + Math.max(0, allowPct) / 100;
         const stepMax = countryDiam * SB_BITE_STEP_FRAC;
         let extYs = null, extFlip = 1;
         // A step is acceptable when the cut LANDS, is no longer than the budget, and has not
@@ -14268,7 +14320,7 @@ function sbEatCountry(rawTopo, goneName) {
         // leaves behind, continuations and all — and not on the stencil: the stencil is only the
         // middle of it, and measuring there let the ends run out to wherever they liked. Reported
         // growth was 83%, 145%, 241% against a cap of 10.
-        const okStep = at => at && at.cutLen <= maxLen && at.area <= want;
+        const okStep = at => at && at.cutLen <= at.hostLen * grow1 && at.area <= want;
         const propagate = () => {
             let st = st0, landed = null, moved = 0;
             for (let it = 0; it < SB_BITE_STEPS; it++) {
@@ -14292,17 +14344,121 @@ function sbEatCountry(rawTopo, goneName) {
             return landed;
         };
 
+        // ---- the rigid slide, one bite per turn ----
+        //
+        // The deepest straight-in translation that still lands, still fits the growth budget and
+        // has not passed the share. A ladder of depths first and a short bisection on the last
+        // rung: a plain bisection from zero cannot be used, because the SHALLOW cuts are the ones
+        // that fail — a barely-moved frontier still lies along the old boundary and its
+        // continuations have nowhere to go — so "invalid" does not mean "too deep" near the
+        // bottom and the bisection would walk the wrong way.
+        //
+        // A bite that came up short is not deepened here. It is given another TURN, with another
+        // turn's worth of growth budget, by the pass loop — and because the slide is rigid, two
+        // turns of a translation are exactly one deeper translation, so iterating the turns costs
+        // the shape nothing at all. That is only true of a rigid move; it is precisely what the
+        // propagating front cannot say.
+        const maxDepth = diam;
+        const slide = ang => {
+            // The WHOLE ladder is walked, not walked until something fails. "Invalid means too
+            // deep" is true of a front, which deforms continuously, and false of a rigid slide:
+            // a translation can fail at 80 km because its ends happen to land where their
+            // continuations cannot get back out, and succeed perfectly at 300 km. Stopping at the
+            // first failure left France's bites at 71, 92 and 102 km into a country 1,100 km
+            // across — three nibbles and Italy holding 63% of it.
+            let lo = 0, best2 = null, gap = maxDepth / SB_BITE_SCAN;
+            for (let i = 1; i <= SB_BITE_SCAN; i++) {
+                const d = maxDepth * i / SB_BITE_SCAN;
+                const at = attempt(rigid(d, ang));
+                if (okStep(at)) { lo = d; best2 = at; }
+            }
+            if (!best2) {
+                // Nothing on the ladder: the rungs may simply have stepped over the window where
+                // this frontier lands. Walk it finely near the bottom, where every bite starts.
+                gap = maxDepth / (SB_BITE_SCAN * SB_BITE_SCAN);
+                for (let i = 1; i <= SB_BITE_SCAN; i++) {
+                    const at = attempt(rigid(gap * i, ang));
+                    if (okStep(at)) { lo = gap * i; best2 = at; }
+                }
+                if (!best2) return null;
+            }
+            // Refine upward from the deepest rung that landed.
+            let hi = Math.min(maxDepth, lo + gap);
+            for (let b = 0; b < 6; b++) {
+                const mid = (lo + hi) / 2;
+                const at = attempt(rigid(mid, ang));
+                if (okStep(at)) { lo = mid; best2 = at; } else hi = mid;
+            }
+            return { at: best2, moved: lo };
+        };
+
+        // ---- the same slide, judged on what the border COSTS ----
+        //
+        // Every depth and every slight rotation is tried, and among the cuts that land in the
+        // ballpark of the share the one taken is whichever gets the most land per kilometre of
+        // border it creates. That ratio is a convexity measure in disguise: a cut that wraps
+        // round something spends border and gains almost no land, so maximising it bends the
+        // choice toward straight cuts without ever having to say the word.
+        const efficient = ang => {
+            let win = null, near = null;
+            for (let i = 1; i <= SB_BITE_SCAN; i++) {
+                const d = maxDepth * i / SB_BITE_SCAN;
+                const at = attempt(rigid(d, ang));
+                if (!at || at.cutLen > at.hostLen * grow1 || !(at.cutLen > 0)) continue;
+                const reach = at.area <= want ? at.area / want : want / at.area;
+                if (!near || reach > near.reach) near = { at, moved: d, reach, ang };
+                if (at.area < want * SB_BITE_BALLPARK_LO || at.area > want * SB_BITE_BALLPARK_HI) continue;
+                const yield2 = at.area / at.cutLen;
+                if (!win || yield2 > win.yield2) win = { at, moved: d, yield2, ang };
+            }
+            return win || near;
+        };
+
         let best = null;
-        for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
-            const src = shapes[(seed + s2 * 37) % shapes.length];
-            for (const flip of [1, -1]) {
-                extYs = src.ys; extFlip = flip;
-                const got = propagate();
-                if (!got || got.at.area < want * 0.05) continue;   // barely a scratch
-                // Symmetric fit: as bad to take three times the ask as a third of it.
-                const reach = got.at.area <= want ? got.at.area / want : want / got.at.area;
-                const score = reach * 3 + compactness(closed(got.at.rest));
-                if (!best || score > best.score) best = { score, reach, got, src, flip };
+        const score = got => {
+            // Symmetric fit: as bad to take three times the ask as a third of it.
+            const reach = got.at.area <= want ? got.at.area / want : want / got.at.area;
+            return { reach, score: reach * 3 + compactness(closed(got.at.rest)) };
+        };
+        const take = (got, src, flip) => {
+            if (!got || got.at.area < want * 0.05) return;        // barely a scratch
+            const sc = score(got);
+            if (!best || sc.score > best.score) best = { ...sc, got, src, flip };
+        };
+        if (sbBiteAlgo === 'efficient') {
+            // Which rotations are worth a full look, judged on one borrowed continuation only —
+            // the continuations decide the cut's ENDS and the rotation decides its middle, so a
+            // single curve separates the rotations perfectly well and a full cross-product of the
+            // two costs four times as much for the same answer.
+            const src0 = shapes[seed % shapes.length];
+            const ranked = [];
+            for (const ang of SB_BITE_SPINS) {
+                let bestHere = null;
+                for (const flip of [1, -1]) {
+                    extYs = src0.ys; extFlip = flip;
+                    const got = efficient(ang);
+                    if (got && (!bestHere || (got.yield2 || 0) > bestHere)) bestHere = got.yield2 || 1e-9;
+                }
+                if (bestHere) ranked.push({ ang, k: bestHere });
+            }
+            ranked.sort((a, b) => b.k - a.k);
+            const keep = ranked.slice(0, 2).map(x => x.ang);
+            if (!keep.length) keep.push(0);
+            for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
+                const src = shapes[(seed + s2 * 37) % shapes.length];
+                for (const flip of [1, -1]) for (const ang of keep) {
+                    extYs = src.ys; extFlip = flip;
+                    take(efficient(ang), src, flip);
+                }
+            }
+        } else {
+            const move = sbBiteAlgo === 'front' ? propagate : () => slide(0);
+            for (let s2 = 0; s2 < SB_BITE_CURVES; s2++) {
+                const src = shapes[(seed + s2 * 37) % shapes.length];
+                for (const flip of [1, -1]) {
+                    extYs = src.ys; extFlip = flip;
+                    take(move(), src, flip);
+                }
             }
         }
         if (!best) return null;
@@ -14311,7 +14467,8 @@ function sbEatCountry(rawTopo, goneName) {
             piece: at.piece, rest: at.rest, cut: at.cut,
             src: best.src, flip: best.flip, spliced: at.spliced,
             backed: at.area < want * 0.97, depthKm: best.got.moved,
-            growth: total > 0 ? at.cutLen / total - 1 : 0
+            spin: best.got.ang || 0,
+            growth: at.hostLen > 0 ? at.cutLen / at.hostLen - 1 : 0
         };
     };
 
@@ -14319,11 +14476,13 @@ function sbEatCountry(rawTopo, goneName) {
     // The whole division is a function of one thing: how much land each neighbour is TOLD to
     // take. Making that a parameter is what lets the shares be corrected — see the pass loop
     // below.
-    const keepLegs = new Set(mainGroup.get(queue[queue.length - 1]));
     const seedOf = nm => { let h = 0; for (let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0; return h; };
     const targetOf = nm => shareOf(nm) * area0;
 
-    const runOnce = (scale, allow) => {
+    const runOnce = (scale, allow, lf) => {
+        const leftover = lf || queue[queue.length - 1];
+        if (!leftover) return null;
+        const keepLegs = new Set(mainGroup.get(leftover));
         const pieces = new Map();
         // A running account of the operation, for the sandbox to replay. It is written here
         // rather than reconstructed afterwards because most of what makes a step worth watching
@@ -14337,7 +14496,7 @@ function sbEatCountry(rawTopo, goneName) {
         // changes with every bite. For the orders whose key is fixed this is the same sequence a
         // sort would give, since a neighbour's key cannot change and one whose frontier has been
         // swallowed can never get it back.
-        const remaining = new Set(queue.slice(0, -1));
+        const remaining = new Set(queue.filter(n => n !== leftover));
         const ownOf = new Map(queue.map(n => [n, new Set(mainGroup.get(n))]));
         while (remaining.size) {
             if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
@@ -14415,6 +14574,7 @@ function sbEatCountry(rawTopo, goneName) {
                 kind: 'bite', ...base,
                 took: Math.abs(areaOf(closed(got.piece))), leftBefore: left,
                 backed: got.backed, depthKm: got.depthKm, growth: got.growth, spliced: got.spliced,
+                algo: sbBiteAlgo, spin: got.spin,
                 regionBefore: closed(before).map(toDeg),
                 cut: got.cut.map(toDeg),
                 piece: closed(got.piece).map(toDeg),
@@ -14437,8 +14597,7 @@ function sbEatCountry(rawTopo, goneName) {
         // nothing at all, while the whole remainder went to a neighbour that may well touch in
         // two — the one case the outline cannot express, and the reason the choice is made up
         // front. Germany was handing 68% of itself to a Czechia already crowded out of biting.
-        const leftover = queue[queue.length - 1];
-        if (!leftover || pieces.has(leftover)) return null;
+        if (pieces.has(leftover)) return null;
         pieces.set(leftover, liveRing);
         story.push({
             kind: 'leftover', name: leftover, share: shareOf(leftover) || 0,
@@ -14503,9 +14662,35 @@ function sbEatCountry(rawTopo, goneName) {
     // same guarantees, and a front allowed 20% in one go lands where two 10% turns would.
     let scale = new Map(queue.map(n => [n, 1]));
     let allow = new Map(queue.map(n => [n, sbBiteGrowth]));
+    // Who holds the surplus. Every construction here needs SOMEBODY who does not bite — the last
+    // few per cent of a country cannot be chased without producing slivers, and a neighbour that
+    // has already bitten cannot take the remainder as well, since its own outline would then be
+    // written into the arcs twice. The default rule is positional: the biggest neighbour that
+    // touches this country in exactly one place.
+    //
+    // `turns` chooses it instead, which is the last clause of that algorithm: the remainder goes
+    // to whichever neighbour ends up LEAST CONVEX holding it. That is measured, not guessed — the
+    // division is run once per candidate and the winner is the one whose finished territory is
+    // most compact. Only the three biggest candidates are tried: the surplus is by definition the
+    // land nobody could reach, and a small neighbour handed it comes out as a country with a
+    // balloon attached whatever else is true of it.
+    let leftover = queue[queue.length - 1];
+    if (sbBiteAlgo === 'turns' && singles.length > 1) {
+        const cands = singles.slice().sort((a, b) => borderKm.get(b) - borderKm.get(a)).slice(0, 3);
+        let pick = null;
+        cands.forEach(c => {
+            const run = runOnce(scale, allow, c);
+            if (!run) return;
+            const held = run.pieces.get(c);
+            if (!held) return;
+            const k = compactness(closed(held));
+            if (!pick || k > pick.k) pick = { c, k };
+        });
+        if (pick) leftover = pick.c;
+    }
     let bestRun = null;
     for (let pass = 0; pass < SB_BITE_PASSES; pass++) {
-        const run = runOnce(scale, allow);
+        const run = runOnce(scale, allow, leftover);
         if (!run) break;
         if (!bestRun || run.err < bestRun.err) bestRun = run;
         if (run.err < 0.02) break;                           // shares are as close as they get
@@ -15310,7 +15495,12 @@ function renderMissingSandbox() {
 // page doing something other than what the visitor wanted, and every one of the four escalations
 // since (splices, stretch, contiguity, four passes) made it cost more: the same sweep is 26 s
 // now. The tool is for poking at one country at a time, so the verdict is computed for the
-// country under the cursor and cached in the same map the legend counts.
+// country under the cursor and nowhere else.
+//
+// It is also FORGOTTEN as soon as the next country is picked. The map used to accumulate a
+// colour per country tried, which turned a tool for looking at one operation into a scoreboard
+// of a survey nobody asked for — and a stale one, since every verdict was reached under whatever
+// construction and turn order happened to be set at the time. Each country starts over.
 function msVerdictFor(nm) {
     if (msState.verdicts.has(nm)) return msState.verdicts.get(nm);
     const topo = worldTopoCache[worldCountriesUrl()];
@@ -15346,7 +15536,6 @@ function msPaint() {
     });
     apply(countriesGroup.selectAll('path.country'));
     if (islandMarkersGroup) apply(islandMarkersGroup.selectAll('circle'));
-    msRefreshCounts();
 }
 
 // The verdict map is keyed by the quiz's own names; a click may arrive with a territory's.
@@ -15365,6 +15554,13 @@ function msBuildPanel() {
     box.id = 'ms-panel';
     box.className = 'ms-panel';
     box.innerHTML =
+        `<label class="ms-order"><span>How a bite is taken</span>` +
+        `<select id="ms-algo-sel">` +
+        Object.keys(SB_BITE_ALGOS).map(k =>
+            `<option value="${k}"${k === sbBiteAlgo ? ' selected' : ''} title="${SB_BITE_ALGOS[k].hint}">` +
+            `${SB_BITE_ALGOS[k].label}</option>`).join('') +
+        `</select></label>` +
+        `<div class="ms-order-hint" id="ms-algo-hint">${SB_BITE_ALGOS[sbBiteAlgo].hint}</div>` +
         `<label class="ms-order"><span>Turn order</span>` +
         `<select id="ms-order-sel">` +
         Object.keys(SB_BITE_ORDERS).map(k =>
@@ -15376,26 +15572,24 @@ function msBuildPanel() {
         `<input type="number" id="ms-growth" min="0" max="200" step="5" value="${sbBiteGrowth}">` +
         `<span class="ms-unit">%</span></label>` +
         `<div class="ms-order-hint">How much longer a border may get on one turn. A border that ` +
-        `came up short is given another turn, so a bite is many small moves rather than one big one.</div>` +
-        `<div class="ms-legend">` +
-        Object.keys(MS_STATES).map(k =>
-            `<div class="ms-key" title="${MS_STATES[k].hint}">` +
-            `<span class="ms-swatch ${MS_STATES[k].cls}"></span>` +
-            `<span class="ms-key-label">${MS_STATES[k].label}</span>` +
-            `<span class="ms-count" data-count="${k}">—</span></div>`).join('') +
-        `</div>` +
+        `came up short is given another turn — and since the slide is rigid, two turns land exactly ` +
+        `where one deeper slide would.</div>` +
         `<div class="ms-detail" id="ms-detail">Pick a country off the map.</div>`;
     host.appendChild(box);
-    // Every verdict was reached under the old settings and some may not survive the new ones, so
-    // the map goes back to unknown rather than showing stale colours.
     const redo = note => {
         const was = msState.shown;
         msRestore(true);
-        msState.verdicts.clear();
         msPaint();
         if (was) msHandleClick(was);
         else msSay(note);
     };
+    const algo = document.getElementById('ms-algo-sel');
+    if (algo) algo.addEventListener('change', () => {
+        sbBiteAlgo = algo.value;
+        const hint = document.getElementById('ms-algo-hint');
+        if (hint) hint.textContent = SB_BITE_ALGOS[sbBiteAlgo].hint;
+        redo('Construction changed. Pick a country off the map.');
+    });
     const sel = document.getElementById('ms-order-sel');
     if (sel) sel.addEventListener('change', () => {
         sbBiteOrder = sel.value;
@@ -15412,17 +15606,6 @@ function msBuildPanel() {
     });
 }
 
-// The counts are of what has been TRIED, not of the world — nothing is computed until it is
-// clicked, so a running tally is the only honest thing to show.
-function msRefreshCounts() {
-    const tally = {};
-    msState.verdicts.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
-    Object.keys(MS_STATES).forEach(k => {
-        const el = document.querySelector(`[data-count="${k}"]`);
-        if (el) el.textContent = tally[k] || '—';
-    });
-}
-
 function msSay(html) {
     const el = document.getElementById('ms-detail');
     if (el) el.innerHTML = html;
@@ -15435,6 +15618,8 @@ function msHandleClick(name) {
     const nm = msName(name);
     if (msState.shown && namesMatch(msState.shown, nm)) { msRestore(); return; }
     msRestore(true);
+    // The previous country's verdict goes with it: only what is in hand is ever coloured.
+    msState.verdicts.clear();
     msSay(`<strong>${displayLabelForName(nm)}</strong> — working it out…`);
     msState.lastEaten = null;
     const verdict = msVerdictFor(nm);
@@ -15535,9 +15720,13 @@ function msRenderStory() {
                    (s.kind === 'leftover' ? ` <em class="ms-tag">keeps the rest</em>` : '') + `</span>` +
                    `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(s.share * 100))}%;background:${st.colours.get(s.name)}"></i></span>` +
                    `<span class="ms-pct">${pct(s.share * 100)}</span></div>`).join('') + `</div>` +
-               `<p class="ms-hint">In that order, biggest bite first — except for the one at the bottom, which never bites at all. ` +
-               `It is the biggest neighbour touching ${gone} in exactly one place, and it simply keeps whatever is left, ` +
-               `so there is nothing to reconcile at the end and never a scrap stranded in the middle.</p>`;
+               `<p class="ms-hint">In that order, biggest bite first — except for the one at the bottom, which never bites at all ` +
+               `and simply keeps whatever is left, so there is nothing to reconcile at the end and never a scrap stranded in ` +
+               `the middle. ` +
+               (sbBiteAlgo === 'turns'
+                 ? `Which neighbour that is was decided by trying them: the division was run once for each of the three ` +
+                   `biggest, and the one holding the surplus is whichever came out with the least contorted territory.`
+                 : `It is the biggest neighbour touching ${gone} in exactly one place.`) + `</p>`;
     } else if (st.i === total - 1) {
         head = `${gone} is gone`;
         body = `<p><strong>${km(st.eaten.goneArea)}</strong> shared out, and the seam is invisible by construction: ` +
@@ -15586,12 +15775,26 @@ function msRenderStory() {
                    (reach < 0.97
                      ? `Sliding any deeper stopped landing cleanly, so it takes what the slide can reach: <strong>${km(s.took)}</strong>.`
                      : `It takes <strong>${km(s.took)}</strong>.`) + `</p>` +
-                   `<p>The bitemark is this frontier itself, moved <strong>${Math.round(s.depthKm)} km</strong> into the country ` +
-                   `over ${s.turns > 1 ? `<strong>${s.turns} turns</strong>` : `<strong>one turn</strong>`} — a real border at true ` +
-                   `amplitude, because it is the one that was already there. It advances in small steps and stops when the border ` +
-                   `it leaves behind has grown by more than the budget: this one ended ` +
+                   `<p>The bitemark is this frontier itself, moved <strong>${Math.round(s.depthKm)} km</strong> into the country` +
+                   (s.spin ? `, turned <strong>${Math.abs(s.spin * 180 / Math.PI).toFixed(0)}°</strong> ` +
+                             `${s.spin > 0 ? 'anticlockwise' : 'clockwise'}` : '') +
+                   (s.algo === 'front'
+                     ? ` over ${s.turns > 1 ? `<strong>${s.turns} turns</strong>` : `<strong>one turn</strong>`}. ` +
+                       `Every point of it moved along its own normal, a step at a time, which is what lets it bend round ` +
+                       `an obstacle — and what rounds it off.`
+                     : ` — one rigid move, so every corner of it is a corner the old border had. ` +
+                       (s.turns > 1 ? `It took <strong>${s.turns} turns</strong> to get there, which costs the shape nothing: ` +
+                                      `two translations of a curve are one deeper translation of the same curve.`
+                                    : `One turn was enough.`)) +
+                   ` The cut it leaves behind ended ` +
                    `<strong>${s.growth >= 0 ? Math.round(s.growth * 100) + '% longer' : Math.round(-s.growth * 100) + '% shorter'}</strong> ` +
-                   `than the frontier it replaced. Where the moved copy ran out, ` +
+                   `than the old boundary it swallowed — this frontier plus whatever coast and foreign border ` +
+                   `ended up inside the bite` +
+                   (s.algo === 'efficient'
+                     ? `, which is the number this construction is minimising: of every depth and every slight turn that ` +
+                       `lands near the right size, it takes whichever wins the most land per kilometre of new border.`
+                     : `, against a budget of ${sbBiteGrowth}% a turn.`) +
+                   ` Where the moved copy ran out, ` +
                    `its ends were continued along a tracing of the real <strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
                    `${s.source.flip < 0 ? ', mirrored' : ''}:</p>` +
                    msSourceSvg(s.source);
