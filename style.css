@@ -3963,6 +3963,14 @@ circle.island-marker.ms-few     { fill: var(--incorrect, #c0503f); fill-opacity:
 .ms-restore { margin-top: 6px; }
 
 /* ---- Who's Missing sandbox: the step-by-step story ------------------------------------- */
+/* Turn order: the one thing about the surgery that is a matter of taste rather than of rule. */
+.ms-order { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; margin-bottom: 4px; }
+.ms-order span { flex: none; opacity: 0.85; }
+.ms-order select { flex: 1; min-width: 0; padding: 3px 6px; font: inherit; font-size: 0.78rem;
+    color: var(--text); background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 5px; }
+.ms-order-hint { font-size: 0.72rem; opacity: 0.65; line-height: 1.35; margin-bottom: 10px; }
+
 .ms-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
     margin-right: 6px; vertical-align: baseline; }
 .ms-story-head { margin-bottom: 6px; }

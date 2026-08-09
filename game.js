@@ -13422,6 +13422,31 @@ const SB_BITE_SAMPLES = 49;
 // Resampling is for cost, not shape — at these densities a 110m frontier keeps every corner.
 const SB_BITE_STENCIL = 64;
 const SB_BITE_EXT = 16;
+// A bite may not take more than this of what is still standing, however much it is owed — the
+// neighbours after it need something to bite into.
+const SB_BITE_MAX_FRAC = 0.8;
+// How many times the whole division is re-run with corrected targets, and how hard each pass
+// pulls toward them. Measured over twenty countries that divide: one pass leaves a share error
+// of 0.415 and the leftover holding 44.6% of the country; six passes take that to 0.309 and
+// 39.6%, and further passes move neither. Damping 1.0 and 0.4 both score worse than 0.7 — a
+// bite that cannot go deeper keeps asking for more, and an undamped ask overshoots past it.
+const SB_BITE_PASSES = 6;
+const SB_BITE_DAMP = 0.7;
+// A stray lobe smaller than this share of the bite is a rounding spur, not a detached territory.
+const SB_BITE_LOBE_TOL = 0.01;
+
+// Who bites first. The order changes the map completely — the first bite cuts an untouched
+// country and every later one works around it — and there is no single right answer, so it is
+// offered as a choice rather than settled in the code. `border` is the default: the rule the
+// shares themselves follow, so the biggest share gets the cleanest run at the land.
+const SB_BITE_ORDERS = {
+    'border':     { label: 'Longest frontier first', hint: 'The neighbour owed most bites first, into an untouched country' },
+    'border-asc': { label: 'Shortest frontier first', hint: 'Small claims are carved out first; the big ones work around them' },
+    'area-desc':  { label: 'Biggest neighbour first', hint: 'By the biter\u2019s own area, not by how much border it holds' },
+    'area-asc':   { label: 'Smallest neighbour first', hint: 'The minnows get their pick before the giants move' },
+    'clockwise':  { label: 'Clockwise from north',    hint: 'Round the frontier in order, ignoring size entirely' }
+};
+let sbBiteOrder = 'border';
 
 // Real land borders from elsewhere in the world, normalised to a unit span, used as the SHAPE
 // of every bite. A new border invented from a smooth curve looks invented: real ones wander,
@@ -13654,13 +13679,47 @@ function sbEatCountry(rawTopo, goneName) {
     if (!eligible.length) eligible = [...borderKm.keys()];
     totalLand = eligible.reduce((a, n) => a + borderKm.get(n), 0);
     // Ties broken by name, so the answer never depends on the order the atlas listed them in.
-    const queue = eligible.sort((a, b) => (borderKm.get(b) - borderKm.get(a)) || (a < b ? -1 : 1));
+    // The RANK is whichever order is in force; only the ordering changes, never who is eligible
+    // or what anyone is owed, so the five orders are strictly comparable.
+    const areaOfCountry = nm2 => {
+        const gm = geoms.find(g2 => namesMatch(sbGeomName(g2), nm2));
+        return gm ? d3.geoArea(topojson.feature(topo, gm)) : 0;
+    };
+    const midOfFrontier = nm2 => {
+        const g = mainGroup.get(nm2) || [];
+        if (!g.length) return null;
+        const pts = legs[g[Math.floor(g.length / 2)]].pts;
+        return pts[Math.floor(pts.length / 2)];
+    };
+    let ringCx = 0, ringCy = 0, ringCn = 0;
+    legs.forEach(l => l.pts.forEach(pt => { ringCx += pt[0]; ringCy += pt[1]; ringCn++; }));
+    ringCx /= (ringCn || 1); ringCy /= (ringCn || 1);
+    const rankOf = {
+        'border':     nm2 => -borderKm.get(nm2),
+        'border-asc': nm2 => borderKm.get(nm2),
+        'area-desc':  nm2 => -areaOfCountry(nm2),
+        'area-asc':   nm2 => areaOfCountry(nm2),
+        // Bearing of each neighbour's frontier from the country's own middle, clockwise from due
+        // north — a purely positional order, and the only one that ignores size altogether.
+        'clockwise':  nm2 => {
+            const mp = midOfFrontier(nm2);
+            if (!mp) return 0;
+            const a = Math.atan2(mp[0] - ringCx, mp[1] - ringCy);
+            return a < 0 ? a + Math.PI * 2 : a;
+        }
+    }[SB_BITE_ORDERS[sbBiteOrder] ? sbBiteOrder : 'border'];
+    const queue = eligible.sort((a, b) => (rankOf(a) - rankOf(b)) || (a < b ? -1 : 1));
     // The leftover is the BIGGEST neighbour that touches this one in one place. It never bites,
     // so it keeps whatever is left — which means it also absorbs every bite that failed, and the
     // country with the longest frontier is the one that should be holding the surplus. Making it
     // the smallest instead handed Czechia 76% of Germany.
-    const firstSingle = queue.findIndex(n => groupsOf(n).length === 1);
-    if (firstSingle < 0) return sbNo('twoplaces');
+    // The leftover is picked on frontier length whatever the biting order, so switching order
+    // changes who bites when and not who holds the surplus — otherwise the five orders would be
+    // five different questions.
+    const singles = eligible.filter(n => groupsOf(n).length === 1);
+    if (!singles.length) return sbNo('twoplaces');
+    const chosenLeftover = singles.reduce((a, b) => borderKm.get(b) > borderKm.get(a) ? b : a);
+    const firstSingle = queue.indexOf(chosenLeftover);
     // Biggest bites first. Smallest-first was tried and is worse on every count — the big bites
     // then have to cut across a region three small ones have already nibbled the edges off, and
     // back off to slivers (Burkina Faso came out 92/8 between two neighbours instead of 79/20/1
@@ -13772,6 +13831,24 @@ function sbEatCountry(rawTopo, goneName) {
         }
         const diam = Math.hypot(bx1 - bx0, by1 - by0);
         if (!(diam > 0)) return null;
+        // A uniform grid over the ring's edges. The crossing sweep is the hot loop of the whole
+        // surgery — a hundred cut segments against every ring edge, several hundred times a bite,
+        // four times over — and testing only the cells a segment actually passes through takes
+        // Germany from 1.3 s to a fraction of it. Cell size is set so a typical country has a few
+        // hundred cells; edges longer than a cell are registered in every cell they span.
+        const gN = Math.max(4, Math.min(64, Math.round(Math.sqrt(n))));
+        const gW = (bx1 - bx0) / gN || 1, gH = (by1 - by0) / gN || 1;
+        const gcx = x => Math.max(0, Math.min(gN - 1, Math.floor((x - bx0) / gW)));
+        const gcy = y => Math.max(0, Math.min(gN - 1, Math.floor((y - by0) / gH)));
+        const grid = new Array(gN * gN);
+        for (let k = 0; k < n; k++) {
+            const b2 = eb[k];
+            for (let gx = gcx(b2[0]); gx <= gcx(b2[2]); gx++)
+                for (let gy = gcy(b2[1]); gy <= gcy(b2[3]); gy++) {
+                    const gi = gy * gN + gx;
+                    if (grid[gi]) grid[gi].push(k); else grid[gi] = [k];
+                }
+        }
 
         // Is this point on the region's own land? Plain ray casting over the ring.
         const within = q => {
@@ -13837,19 +13914,28 @@ function sbEatCountry(rawTopo, goneName) {
             if (!head || !tail) return null;
             const S = head.slice().reverse().concat(st, tail);
             const xs = [];
+            const hit = new Set();
             for (let c = 0; c + 1 < S.length; c++) {
                 const a = S[c], b = S[c + 1];
                 const sx0 = Math.min(a[0], b[0]), sy0 = Math.min(a[1], b[1]),
                       sx1 = Math.max(a[0], b[0]), sy1 = Math.max(a[1], b[1]);
-                for (let k = 0; k < n; k++) {
-                    const bb = eb[k];
-                    if (bb[0] > sx1 || bb[2] < sx0 || bb[1] > sy1 || bb[3] < sy0) continue;
-                    const t = segX(a, b, r[k].p, r[(k + 1) % n].p);
-                    if (t !== null) {
-                        xs.push({ c, t, k, p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] });
-                        if (xs.length > 12) return null;
+                hit.clear();
+                for (let gx = gcx(sx0); gx <= gcx(sx1); gx++)
+                    for (let gy = gcy(sy0); gy <= gcy(sy1); gy++) {
+                        const bucket = grid[gy * gN + gx];
+                        if (!bucket) continue;
+                        for (const k of bucket) {
+                            if (hit.has(k)) continue;
+                            hit.add(k);
+                            const bb = eb[k];
+                            if (bb[0] > sx1 || bb[2] < sx0 || bb[1] > sy1 || bb[3] < sy0) continue;
+                            const t = segX(a, b, r[k].p, r[(k + 1) % n].p);
+                            if (t !== null) {
+                                xs.push({ c, t, k, p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] });
+                                if (xs.length > 12) return null;
+                            }
+                        }
                     }
-                }
             }
             // S starts and ends outside, so crossings alternate in-out and the count is even.
             if (xs.length < 2 || xs.length % 2) return null;
@@ -13934,7 +14020,72 @@ function sbEatCountry(rawTopo, goneName) {
             // deep rather than corrupting the country.
             const aP = Math.abs(areaOf(closed(piece))), aR = Math.abs(areaOf(closed(rest)));
             if (Math.abs((aP + aR) / areaHere - 1) > 0.005) return null;
+            // CONTIGUITY. A spliced cut can touch itself, and where it does the piece is pinched
+            // into lobes joined by nothing but a zero-width corridor — which draws as a country
+            // acquiring a detached blob somewhere across the map, connected to it on paper only.
+            // Measured over the world, one bite in seven was pinched like that, and the detached
+            // part ran to 80% of the bite (Argentina handing Brazil a lobe it never touched).
+            //
+            // The lobes cannot be split off and handed back: a stray lobe meets the remainder at
+            // a single point, and a ring cannot express that. So a pinched cut is REFUSED, which
+            // the bisection reads as too deep and slides back from — the land was never taken,
+            // so it stays with the donor and falls to a later biter or to the leftover, and no
+            // reconciliation is needed anywhere.
+            if (!oneLobe(piece)) return null;
             return { piece, rest, cut, spliced, area: aP };
+        };
+
+        // Is this ring a single lobe? Split it wherever it revisits a vertex and check that no
+        // detached part carries real area. Frontier vertices are what mark the lobe that counts,
+        // but a piece with any substantial stray at all is refused, so it is enough to compare
+        // the largest lobe against the whole.
+        // Two vertices are the same pinch point if they are CLOSE, not if they are identical. A
+        // pinch is a computed intersection landing back on a ring vertex, and those agree to
+        // within decimetres rather than to the last bit — an exact-match test found none of them
+        // and every stray lobe sailed through. The tolerance is a millionth of the region, so a
+        // couple of metres on a big country, which no genuine pair of 110m vertices comes near.
+        //
+        // A spatial hash rather than all-pairs: the piece can be 300 vertices and this runs
+        // inside the depth bisection, several hundred times a bite.
+        const pinchTol = Math.max(1e-3, diam * 1e-6);
+        const oneLobe = pv => {
+            const cell = new Map();
+            const stack = [pv.map(v => v.p)];
+            let biggest = 0, total = 0, guard = 0;
+            while (stack.length) {
+                if (guard++ > 4000) return false;            // pathological: refuse rather than guess
+                const rr = stack.pop();
+                cell.clear();
+                let cutAt = null;
+                for (let i2 = 0; i2 < rr.length; i2++) {
+                    const cx2 = Math.floor(rr[i2][0] / pinchTol), cy2 = Math.floor(rr[i2][1] / pinchTol);
+                    for (let dx2 = -1; dx2 <= 1 && !cutAt; dx2++) for (let dy2 = -1; dy2 <= 1 && !cutAt; dy2++) {
+                        // EVERY index in the cell, not just the latest. Consecutive vertices are
+                        // often close enough to share a cell, and one index per cell let the
+                        // second of them evict the first — which is exactly the vertex a distant
+                        // pinch partner was going to match against. Nineteen stray lobes survived
+                        // that way, unchanged through two tolerance rewrites.
+                        const bucket = cell.get((cx2 + dx2) + ':' + (cy2 + dy2));
+                        if (!bucket) continue;
+                        for (const j2 of bucket) {
+                            if (i2 - j2 <= 2) continue;
+                            if (Math.hypot(rr[i2][0] - rr[j2][0], rr[i2][1] - rr[j2][1]) <= pinchTol) { cutAt = [j2, i2]; break; }
+                        }
+                    }
+                    if (cutAt) break;
+                    const k2 = cx2 + ':' + cy2;
+                    const b2 = cell.get(k2);
+                    if (b2) b2.push(i2); else cell.set(k2, [i2]);
+                }
+                if (!cutAt) {
+                    const a2 = Math.abs(areaOf(rr.concat([rr[0]])));
+                    total += a2; if (a2 > biggest) biggest = a2;
+                    continue;
+                }
+                stack.push(rr.slice(cutAt[0], cutAt[1]));
+                stack.push(rr.slice(0, cutAt[0]).concat(rr.slice(cutAt[1])));
+            }
+            return !(total > 0) || (total - biggest) / total <= SB_BITE_LOBE_TOL;
         };
 
         // The slide, solved by bisection: every invalid configuration counts as too deep, so lo
@@ -13987,87 +14138,154 @@ function sbEatCountry(rawTopo, goneName) {
         };
     };
 
-    // ---------------- go round, biggest share first ----------------
-    const pieces = new Map();
-    // A running account of the operation, for the sandbox to replay. It is written here rather
-    // than reconstructed afterwards because most of what makes a step worth watching — which
-    // border the bitemark was traced from, what the neighbour was owed against what it could
-    // reach, what the region looked like before the cut — exists only inside this loop.
-    const story = [];
-    // The one frontier a bite may never swallow: the leftover's, since the rewrite needs it.
+    // ---------------- go round, in the order in force ----------------
+    // The whole division is a function of one thing: how much land each neighbour is TOLD to
+    // take. Making that a parameter is what lets the shares be corrected — see the pass loop
+    // below.
     const keepLegs = new Set(mainGroup.get(queue[queue.length - 1]));
-    let liveRing = ring;
     const seedOf = nm => { let h = 0; for (let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0; return h; };
-    for (let qi = 0; qi < queue.length - 1; qi++) {
-        const nm = queue[qi];
-        if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
-        const own = new Set(mainGroup.get(nm));
-        const L = liveRing.length;
-        // The LONGEST contiguous run of this neighbour's legs, not the first: a spliced bite
-        // leaves verbatim copies of boundary stretches in the ring, and a scan that stops at
-        // the first fragment would bite from a corridor instead of the real frontier.
-        let start = -1, end = -1, bestLen = 0;
-        for (let i = 0; i < L; i++) {
-            const prev = liveRing[(i - 1 + L) % L];
-            if (!own.has(liveRing[i].leg) || own.has(prev.leg)) continue;
-            let j = i, len = 0;
-            while (own.has(liveRing[j].leg) && len <= L) { j = (j + 1) % L; len++; }
-            if (len > bestLen) { bestLen = len; start = i; end = j; }
-        }
-        // Nothing left to bite from: an earlier, deeper bite slid clean past this neighbour's
-        // stretch of the boundary and took it. Recorded, so the story can say so.
-        if (start < 0) { story.push({ kind: 'swallowed', name: nm, share: shareOf(nm), borderKm: borderKm.get(nm) }); continue; }
-        // Owed a share of the whole country, but never more than most of what is still there:
-        // a bite that swallows the entire remainder leaves the next neighbour nothing to bite
-        // into and the one after that nothing at all.
-        const left = Math.abs(areaOf(closed(liveRing)));
-        const want = Math.min(shareOf(nm) * area0, left * 0.62);
-        const before = liveRing;
-        // Recorded before the attempt, so a neighbour that is crowded out can still be SHOWN
-        // holding the stretch of border it was crowded out of.
-        const fpts = [];
-        for (let k = start; ; k = (k + 1) % L) { fpts.push(toDeg(liveRing[k].p)); if (k === end) break; }
-        // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
-        const avoidLegs = new Set();
-        legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !own.has(li)) avoidLegs.add(li); });
-        const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs);
-        const base = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want, frontier: fpts };
-        if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
-        pieces.set(nm, got.piece);
-        liveRing = got.rest;
-        story.push({
-            kind: 'bite', ...base,
-            took: Math.abs(areaOf(closed(got.piece))), leftBefore: left,
-            backed: got.backed, depthKm: got.depthKm, stretch: got.stretch, spliced: got.spliced,
-            regionBefore: closed(before).map(toDeg),
-            cut: got.cut.map(toDeg),
-            piece: closed(got.piece).map(toDeg),
-            source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys }
-        });
-    }
-    // Whoever has not bitten keeps what is left, whole. Which is also why the last in the queue
-    // never bites: there is nothing to reconcile and no leftover in the middle by construction.
-    // The LAST in the queue, which is the one deliberately chosen up front — not merely the first
-    // that happens to hold no piece. Those are two different countries whenever a bite is crowded
-    // out, and taking the first one wrong in both directions: the country picked to be the
-    // leftover, on the grounds that it touches this one in exactly one place, got nothing at all,
-    // while the whole remainder went to a neighbour that may well touch in two — which is the one
-    // case the outline cannot express, and the reason the choice was made up front. Germany was
-    // handing 68% of itself to a Czechia that had already been crowded out of biting.
-    const leftover = queue[queue.length - 1];
-    if (!leftover || pieces.has(leftover)) return sbNo('divides');
-    pieces.set(leftover, liveRing);
-    story.push({
-        kind: 'leftover', name: leftover, share: shareOf(leftover) || 0,
-        borderKm: borderKm.get(leftover), took: Math.abs(areaOf(closed(liveRing))),
-        piece: closed(liveRing).map(toDeg)
-    });
+    const targetOf = nm => shareOf(nm) * area0;
 
-    // Every scrap accounted for, and no piece folded through another. The area check is exact by
-    // construction — each bite splits a region in two — so a failure here means a fold.
-    let sum = 0;
-    for (const [, pv] of pieces) sum += Math.abs(areaOf(closed(pv)));
-    if (Math.abs(sum / area0 - 1) > 0.02) return sbNo('divides');
+    const runOnce = scale => {
+        const pieces = new Map();
+        // A running account of the operation, for the sandbox to replay. It is written here
+        // rather than reconstructed afterwards because most of what makes a step worth watching
+        // — which border the bitemark was traced from, what the neighbour was owed against what
+        // it could reach, what the region looked like before the cut — exists only in this loop.
+        const story = [];
+        let liveRing = ring;
+        for (let qi = 0; qi < queue.length - 1; qi++) {
+            const nm = queue[qi];
+            if (Math.abs(areaOf(closed(liveRing))) < area0 * SB_BITE_STOP_FRAC) break;
+            const own = new Set(mainGroup.get(nm));
+            const L = liveRing.length;
+            // The LONGEST contiguous run of this neighbour's legs, not the first: a spliced bite
+            // leaves verbatim copies of boundary stretches in the ring, and a scan that stops at
+            // the first fragment would bite from a corridor instead of the real frontier.
+            let start = -1, end = -1, bestLen = 0;
+            for (let i = 0; i < L; i++) {
+                const prev = liveRing[(i - 1 + L) % L];
+                if (!own.has(liveRing[i].leg) || own.has(prev.leg)) continue;
+                let j = i, len = 0;
+                while (own.has(liveRing[j].leg) && len <= L) { j = (j + 1) % L; len++; }
+                if (len > bestLen) { bestLen = len; start = i; end = j; }
+            }
+            const left = Math.abs(areaOf(closed(liveRing)));
+            const want = Math.min(targetOf(nm) * (scale.get(nm) || 1), left * SB_BITE_MAX_FRAC);
+            const base0 = { name: nm, share: shareOf(nm), borderKm: borderKm.get(nm), want,
+                            asked: scale.get(nm) || 1 };
+            // Nothing left to bite from: an earlier, deeper bite slid clean past this
+            // neighbour's stretch of the boundary and took it. Recorded, so the story says so.
+            if (start < 0) { story.push({ kind: 'swallowed', ...base0 }); continue; }
+            // Recorded before the attempt, so a neighbour that is crowded out can still be SHOWN
+            // holding the stretch of border it was crowded out of.
+            const fpts = [];
+            for (let k = start; ; k = (k + 1) % L) { fpts.push(toDeg(liveRing[k].p)); if (k === end) break; }
+            // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
+            const avoidLegs = new Set();
+            legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !own.has(li)) avoidLegs.add(li); });
+            const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs);
+            const base = { ...base0, frontier: fpts };
+            if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
+            const before = liveRing;
+            pieces.set(nm, got.piece);
+            liveRing = got.rest;
+            story.push({
+                kind: 'bite', ...base,
+                took: Math.abs(areaOf(closed(got.piece))), leftBefore: left,
+                backed: got.backed, depthKm: got.depthKm, stretch: got.stretch, spliced: got.spliced,
+                regionBefore: closed(before).map(toDeg),
+                cut: got.cut.map(toDeg),
+                piece: closed(got.piece).map(toDeg),
+                source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys }
+            });
+        }
+        // Whoever has not bitten keeps what is left, whole — which is why the last in the queue
+        // never bites: nothing to reconcile, and no leftover stranded in the middle.
+        //
+        // The LAST in the queue, which is the one deliberately chosen up front — not merely the
+        // first that happens to hold no piece. Those are two different countries whenever a bite
+        // is crowded out, and taking the first went wrong in both directions: the country picked
+        // to be the leftover, on the grounds that it touches this one in exactly one place, got
+        // nothing at all, while the whole remainder went to a neighbour that may well touch in
+        // two — the one case the outline cannot express, and the reason the choice is made up
+        // front. Germany was handing 68% of itself to a Czechia already crowded out of biting.
+        const leftover = queue[queue.length - 1];
+        if (!leftover || pieces.has(leftover)) return null;
+        pieces.set(leftover, liveRing);
+        story.push({
+            kind: 'leftover', name: leftover, share: shareOf(leftover) || 0,
+            borderKm: borderKm.get(leftover), took: Math.abs(areaOf(closed(liveRing))),
+            piece: closed(liveRing).map(toDeg)
+        });
+        // Every scrap accounted for, and no piece folded through another. Exact by construction
+        // — each bite splits a region in two — so a failure here means a fold.
+        let sum2 = 0;
+        for (const [, pv] of pieces) sum2 += Math.abs(areaOf(closed(pv)));
+        if (Math.abs(sum2 / area0 - 1) > 0.02) return null;
+        // How far the finished division is from the shares it was meant to produce — and the
+        // measure has to be against the share of the land that was actually GOING SPARE, not
+        // against the original one. A neighbour that gets nothing (its frontier swallowed by an
+        // earlier bite, or no cut of its own that lands) leaves its share to be held by someone,
+        // and whoever holds it is over by exactly that much however the rest is arranged: total
+        // absolute error against the original shares is a constant, and scoring against it made
+        // every correction look like a wash. Germany's second pass moved Austria from 37% to 26%
+        // and pulled every other neighbour toward its share, and scored WORSE.
+        //
+        // Renormalising over the neighbours that actually took part asks the right question —
+        // "of the land that could be shared, was it shared in the right proportions?" — and the
+        // share of those that took no part is added on top, so a run that includes more of them
+        // still wins.
+        const part = queue.filter(n => pieces.has(n));
+        const pool2 = part.reduce((t, n) => t + shareOf(n), 0) || 1;
+        let err = 0;
+        for (const nm of queue) {
+            if (!pieces.has(nm)) { err += shareOf(nm); continue; }
+            err += Math.abs(Math.abs(areaOf(closed(pieces.get(nm)))) / area0 - shareOf(nm) / pool2);
+        }
+        return { pieces, story, leftover, err, share2: n2 => shareOf(n2) / pool2 };
+    };
+
+    // ---------------- iterate, until the shares stop improving ----------------
+    // One pass gets the ORDER right and the sizes wrong: a bite limited by geometry leaves its
+    // shortfall to the leftover, which finishes with far more than its share. The fix is not a
+    // cleverer single cut but a second look — having seen where the surplus ended up, ASK the
+    // neighbours that could take more to take more, and run the whole division again.
+    //
+    // Re-running from scratch rather than biting twice is deliberate. A second bite from a
+    // neighbour would have to be merged with its first, and two rings that share a boundary
+    // stretch need a polygon union — a whole machine, and one whose failures would be exactly
+    // the invisible-seam kind this surgery exists to avoid. Re-running is a fixed point on the
+    // targets instead: same code, same guarantees, four times.
+    //
+    // Each pass asks every biter for what the LAST pass says it should have had — its share of
+    // the land that actually went round — nudged by how far short of (or past) that it came.
+    // Damped, because a bite that cannot go deeper will keep asking for more forever and a bite
+    // that can will overshoot; and clamped, because a target four times a neighbour's share is
+    // no longer that neighbour's share by any reading.
+    let scale = new Map(queue.map(n => [n, 1]));
+    let bestRun = null;
+    for (let pass = 0; pass < SB_BITE_PASSES; pass++) {
+        const run = runOnce(scale);
+        if (!run) break;
+        if (!bestRun || run.err < bestRun.err) bestRun = run;
+        if (run.err < 0.02) break;                           // shares are as close as they get
+        const next = new Map(scale);
+        let moved = false;
+        queue.forEach(n => {
+            if (n === run.leftover || !run.pieces.has(n)) return;
+            const got = Math.abs(areaOf(closed(run.pieces.get(n)))) / area0;
+            const want2 = run.share2(n);
+            if (!(got > 0) || !(want2 > 0)) return;
+            const k = Math.max(0.5, Math.min(4, (scale.get(n) || 1) * (1 + SB_BITE_DAMP * (want2 / got - 1))));
+            if (Math.abs(k - (scale.get(n) || 1)) > 0.01) moved = true;
+            next.set(n, k);
+        });
+        if (!moved) break;
+        scale = next;
+    }
+    if (!bestRun) return sbNo('divides');
+    const pieces = bestRun.pieces, story = bestRun.story;
 
     // ---------------- rewrite the arcs ----------------
     // Each absorber's own arc becomes the whole outline of what it has taken: its piece, walked
@@ -14820,46 +15038,37 @@ function renderMissingSandbox() {
         `<strong>Who’s Missing — sandbox.</strong> Click any country to dissolve it into its neighbours.`;
     msState = { verdicts: new Map(), shown: null, world: gameState.countries };
     msBuildPanel();
-    msClassify();
+    msPaint();
 }
 
-// The verdicts, worked out in the background.
+// One country's verdict, worked out when it is clicked and not before.
 //
-// Chunked rather than looped: the surgery is ~30 ms a country and forty of them in one pass is
-// a second and a half of frozen page — on a tool whose whole point is that you can poke at it.
-// The cheap structural rules are settled first so the map is already meaningful (and already
-// mostly correct) while the expensive audit fills in behind them.
-function msClassify() {
+// This used to sweep the whole world on entry — 191 countries of surgery, chunked 40 ms at a
+// time, to colour a map nobody had asked a question of yet. It cost a couple of seconds of the
+// page doing something other than what the visitor wanted, and every one of the four escalations
+// since (splices, stretch, contiguity, four passes) made it cost more: the same sweep is 26 s
+// now. The tool is for poking at one country at a time, so the verdict is computed for the
+// country under the cursor and cached in the same map the legend counts.
+function msVerdictFor(nm) {
+    if (msState.verdicts.has(nm)) return msState.verdicts.get(nm);
     const topo = worldTopoCache[worldCountriesUrl()];
     const facts = ensureCountryFacts();
-    if (!topo || !facts) { setTimeout(msClassify, 250); return; }
+    if (!topo || !facts) return null;
     const named = new Set(topo.objects.countries.geometries.map(sbGeomName).filter(Boolean));
-    const pool = sbPool();
-    const candidates = [];
-    pool.forEach(n => {
-        if (!named.has(n)) { msState.verdicts.set(n, 'few'); return; }
-        candidates.push(n);
-    });
-    msPaint();
-
-    let i = 0;
-    const step = () => {
-        if (!msState || gameState.questionType !== 'missing-sandbox') return;
-        const t0 = Date.now();
-        while (i < candidates.length && Date.now() - t0 < 40) {
-            const n = candidates[i++];
-            let eaten = null;
-            try { eaten = sbEatCountry(topo, n); } catch (_) { eaten = null; }
-            const km = sbAreaKm2(n) || 0;
-            const inBand = km >= SB_MISSING_MIN_KM2 && km < 900000;
-            const stopped = sbEatWhy === 'island' ? 'coastal'
-                          : (sbEatWhy === 'tiny' || sbEatWhy === 'enclave' || sbEatWhy === 'twoplaces') ? 'few' : 'fails';
-            msState.verdicts.set(n, eaten ? (inBand ? 'ok' : 'okBig') : stopped);
-        }
-        msPaint();
-        if (i < candidates.length) setTimeout(step, 0);
-    };
-    setTimeout(step, 0);
+    let v;
+    if (!named.has(nm)) v = 'few';
+    else {
+        let eaten = null;
+        try { eaten = sbEatCountry(topo, nm); } catch (_) { eaten = null; }
+        const km = sbAreaKm2(nm) || 0;
+        const inBand = km >= SB_MISSING_MIN_KM2 && km < 900000;
+        const stopped = sbEatWhy === 'island' ? 'coastal'
+                      : (sbEatWhy === 'tiny' || sbEatWhy === 'enclave' || sbEatWhy === 'twoplaces') ? 'few' : 'fails';
+        v = eaten ? (inBand ? 'ok' : 'okBig') : stopped;
+        msState.lastEaten = eaten;
+    }
+    msState.verdicts.set(nm, v);
+    return v;
 }
 
 function msPaint() {
@@ -14894,6 +15103,13 @@ function msBuildPanel() {
     box.id = 'ms-panel';
     box.className = 'ms-panel';
     box.innerHTML =
+        `<label class="ms-order"><span>Turn order</span>` +
+        `<select id="ms-order-sel">` +
+        Object.keys(SB_BITE_ORDERS).map(k =>
+            `<option value="${k}"${k === sbBiteOrder ? ' selected' : ''} title="${SB_BITE_ORDERS[k].hint}">` +
+            `${SB_BITE_ORDERS[k].label}</option>`).join('') +
+        `</select></label>` +
+        `<div class="ms-order-hint" id="ms-order-hint">${SB_BITE_ORDERS[sbBiteOrder].hint}</div>` +
         `<div class="ms-legend">` +
         Object.keys(MS_STATES).map(k =>
             `<div class="ms-key" title="${MS_STATES[k].hint}">` +
@@ -14903,14 +15119,30 @@ function msBuildPanel() {
         `</div>` +
         `<div class="ms-detail" id="ms-detail">Pick a country off the map.</div>`;
     host.appendChild(box);
+    const sel = document.getElementById('ms-order-sel');
+    if (sel) sel.addEventListener('change', () => {
+        sbBiteOrder = sel.value;
+        const hint = document.getElementById('ms-order-hint');
+        if (hint) hint.textContent = SB_BITE_ORDERS[sbBiteOrder].hint;
+        // Every verdict was reached under the old order and some of them may not survive the
+        // new one, so the map goes back to unknown rather than showing stale colours.
+        const was = msState.shown;
+        msRestore(true);
+        msState.verdicts.clear();
+        msPaint();
+        if (was) msHandleClick(was);
+        else msSay('Order changed. Pick a country off the map.');
+    });
 }
 
+// The counts are of what has been TRIED, not of the world — nothing is computed until it is
+// clicked, so a running tally is the only honest thing to show.
 function msRefreshCounts() {
     const tally = {};
     msState.verdicts.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
     Object.keys(MS_STATES).forEach(k => {
         const el = document.querySelector(`[data-count="${k}"]`);
-        if (el) el.textContent = tally[k] || 0;
+        if (el) el.textContent = tally[k] || '—';
     });
 }
 
@@ -14926,16 +15158,21 @@ function msHandleClick(name) {
     const nm = msName(name);
     if (msState.shown && namesMatch(msState.shown, nm)) { msRestore(); return; }
     msRestore(true);
-    const verdict = msState.verdicts.get(nm);
-    if (!verdict) { msSay(`<strong>${displayLabelForName(nm)}</strong> — still working that one out…`); return; }
+    msSay(`<strong>${displayLabelForName(nm)}</strong> — working it out…`);
+    msState.lastEaten = null;
+    const verdict = msVerdictFor(nm);
+    msPaint();
+    if (!verdict) { msSay(`<strong>${displayLabelForName(nm)}</strong> — the map is still loading.`); return; }
     if (verdict === 'coastal' || verdict === 'few') {
         msSay(`<strong>${displayLabelForName(nm)}</strong><br><span class="ms-verdict ${MS_STATES[verdict].cls}">` +
               `${MS_STATES[verdict].label}</span><br><span class="ms-hint">${MS_STATES[verdict].hint}</span>`);
         return;
     }
     const topo = worldTopoCache[worldCountriesUrl()];
-    let eaten = null;
-    try { eaten = sbEatCountry(topo, nm); } catch (_) { eaten = null; }
+    // Reuse the surgery the verdict just performed rather than repeating it — it is the most
+    // expensive thing this tool does, and it is deterministic, so a second run is pure waste.
+    let eaten = msState.lastEaten || null;
+    if (!eaten) { try { eaten = sbEatCountry(topo, nm); } catch (_) { eaten = null; } }
     if (!eaten) {
         msState.verdicts.set(nm, 'fails');
         msPaint();
@@ -15061,7 +15298,14 @@ function msRenderStory() {
             // bisection first asked for and pass a fraction of a per cent shallower, and saying
             // "it took what it could reach" about a bite that got everything is simply wrong.
             const reach = s.took / s.want;
-            body = `<p>Owed ${pct(s.share * 100)} of the country — <strong>${km(s.want)}</strong> — out of the ${km(s.leftBefore)} still standing. ` +
+            // The share and the ASK are two different numbers once the passes have corrected the
+            // targets, and printing the ask against the word "owed" made the arithmetic look
+            // broken — 21% of Zambia is 158,742 km², not the 188,702 Angola was asked for.
+            const owed = s.share * st.eaten.goneArea;
+            body = `<p>Owed ${pct(s.share * 100)} of the country — <strong>${km(owed)}</strong> — ` +
+                   (s.asked > 1.02
+                     ? `and asked for <strong>${km(s.want)}</strong> of the ${km(s.leftBefore)} still standing, because neighbours that can take nothing leave their share to be shared out again. `
+                     : `out of the ${km(s.leftBefore)} still standing. `) +
                    (reach < 0.97
                      ? `Sliding any deeper stopped landing cleanly, so it takes what the slide can reach: <strong>${km(s.took)}</strong>.`
                      : `It takes <strong>${km(s.took)}</strong>.`) + `</p>` +

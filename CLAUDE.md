@@ -309,6 +309,26 @@ honest but timid — the moment the far coast came near, it backed off to a nibb
   side — it shows up as leaked area, and that candidate reads as too deep rather than
   corrupting the country.
 
+**Every bite must be ONE lobe, touching the biter.** A spliced cut can touch itself, and where
+it does the piece is pinched into lobes joined by nothing but a zero-width corridor — which
+draws as a country acquiring a detached blob somewhere across the map, connected to it on paper
+only. One bite in seven was pinched like that and the detached part ran to **80%** of the bite
+(Argentina handing Brazil a lobe it never touched). The lobes cannot be split off and handed
+back — a stray lobe meets the remainder at a single point, and a ring cannot express that — so
+a pinched cut is REFUSED, which the bisection reads as too deep and slides back from. The land
+was never taken, so it stays with the donor and falls to a later biter or to the leftover, and
+nothing needs reconciling. **Zero stray lobes** over the world, against 41 before.
+
+Two things that test has to get right, both of which had it silently passing everything:
+* **Two vertices are the same pinch point if they are CLOSE, not identical.** A pinch is a
+  computed intersection landing back on a ring vertex and those agree to within decimetres; the
+  tolerance is a millionth of the region, which no genuine pair of 110m vertices comes near.
+* **A spatial-hash cell has to hold EVERY index in it, not the latest.** Consecutive vertices
+  often share a cell, and one-index-per-cell let the second evict the first — which is exactly
+  the vertex a distant pinch partner was going to match against. Nineteen stray lobes survived
+  that way, unchanged through two tolerance rewrites, which is what made it look like a
+  tolerance problem and not a bookkeeping one.
+
 **A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
 neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
 construction exists to avoid. Two frontiers are protected because the arc rewrite needs them:
@@ -337,10 +357,59 @@ the rest joining `avoidLegs`.
 
 One rule carried over from the earlier constructions, still doing its work: **a bite that cannot
 have everything it is owed takes what it can reach, not nothing.** With the splices and the
-stretch this is now rare — bites reach on average **95% of what they are owed** (55% under the
-pinned construction, 78% before the escalations), only 5 neighbours in the world are crowded out
-entirely (was 153), and a neighbour whose whole stretch of boundary an earlier, deeper bite slid
-past is recorded as `swallowed` so the story can say what happened to it.
+stretch this is now rare — only a handful of neighbours in the world are crowded out entirely
+(was 153), and a neighbour whose whole stretch of boundary an earlier, deeper bite slid past is
+recorded as `swallowed` so the story can say what happened to it.
+
+## Who's Missing: the bites iterate
+
+One pass gets the ORDER right and the sizes wrong. A bite stopped short by geometry, and a
+neighbour swallowed before its turn, both leave their share to be held by somebody — and that
+somebody is the leftover, which finishes far over its share. The fix is not a cleverer single
+cut but a **second look**: having seen where the surplus ended up, ask the neighbours that could
+take more to take more, and run the whole division again (`runOnce`, six passes,
+`SB_BITE_DAMP` 0.7).
+
+Re-running from scratch rather than biting twice is deliberate. A second bite from a neighbour
+would have to be merged with its first, and two rings sharing a boundary stretch need a polygon
+union — a whole machine, and one whose failures would be exactly the invisible-seam kind this
+surgery exists to avoid. Re-running is a fixed point on the targets instead: same code, same
+guarantees, six times.
+
+**The objective had to be renormalised before any of it showed up.** A neighbour that gets
+nothing leaves its share to be held by someone, and whoever holds it is over by exactly that
+much however the rest is arranged — so total absolute error against the *original* shares is a
+constant, and scoring against it made every correction look like a wash. Germany's second pass
+moved Austria from 37% to 26% and pulled every other neighbour toward its share, and scored
+**worse**. Renormalising over the neighbours that actually took part asks the right question —
+*of the land that could be shared, was it shared in the right proportions?* — with the share of
+those that took no part added on top, so a run that includes more of them still wins.
+
+Measured over twenty countries that divide: share error **0.415 → 0.309** and the leftover's
+holding **44.6% → 39.6%**. Further passes move neither; damping 1.0 and 0.4 both score worse
+than 0.7, since a bite that cannot go deeper keeps asking for more and an undamped ask
+overshoots past what it can have.
+
+## Who's Missing: five turn orders
+
+Who bites first changes the map completely — the first bite cuts an untouched country and every
+later one works around it — and there is no single right answer, so it is a choice
+(`SB_BITE_ORDERS`, `sbBiteOrder`, the select at the top of the sandbox panel) rather than
+something settled in the code. Measured over the same twenty countries:
+
+| Order | Share error | Leftover holds | Absorbers |
+|---|---|---|---|
+| Longest frontier first (default) | 0.309 | **39.6%** | 3.60 |
+| Shortest frontier first | 0.261 | 47.4% | **4.10** |
+| Biggest neighbour first | 0.335 | 42.6% | 3.75 |
+| Smallest neighbour first | **0.239** | 45.6% | 3.70 |
+| Clockwise from north | 0.314 | 43.6% | 3.80 |
+
+The two "smallest first" orders share out more accurately — small claims carved from an
+untouched country are the ones most likely to be met exactly — while the default keeps the
+leftover from dominating, which is the failure people actually notice. Only the ORDER changes:
+eligibility, shares and the leftover (still the biggest neighbour touching in exactly one place)
+are identical across all five, so the comparison means something.
 
 **A neighbour touching this one in two separate places bites from its longest frontier** and its
 other arcs stay where they are, becoming its border with whoever ends up behind them (a bite may
@@ -386,13 +455,12 @@ bit-identical (the one exception per round is Australia, whose antimeridian ring
 differently because the rebuilt topology carries absolute coordinates rather than a quantization
 transform).
 
-**Known limit: the deepest bites can swallow a later biter whole.** Germany now comes out
-Czechia 21% (its full share), Netherlands 18% (full), Poland 17% (full), Switzerland 7% (full),
-Austria 37% — and France 0%, because Czechia's slide took the whole left bank of the Rhine
-before France's turn came. That is the construction working as designed (“if a bite cuts off
-another neighbour, so be it”), and the story says so; sharing the loss around instead would
-need the bites to **iterate**, so a second bite can be taken from a frontier that is itself a
-previous bite.
+**Known limit: the deepest bites can swallow a later biter whole.** Germany comes out Czechia
+24%, Netherlands 21%, Poland 20%, Switzerland 6%, Austria 30% — and France 0%, because Czechia's
+slide takes the whole left bank of the Rhine before France's turn comes. That is the
+construction working as asked (“if a bite cuts off another neighbour, so be it”); the passes
+then share France's 15% among the neighbours that remain, and the story names it as a step of
+its own rather than leaving a neighbour silently absent.
 
 ## Who's Missing: the step-by-step story
 
@@ -646,14 +714,21 @@ and clicking one performs the operation. It exists because the eligibility rules
 obvious from outside — "landlocked, two neighbours or more, and the finished geometry has to
 audit clean" sounds like small print until you see it rule out four countries in five.
 
-Measured at 110m: **144 removable**; 22 are too small to have a boundary worth cutting, 18 are
-islands with no land neighbour (the only structural bar left), 4 contain an enclave, and 3 will
-not divide. The whole classification takes 0.9 s. The classification is **chunked** (40 ms
-of work, then yield): the surgery is ~30 ms a country and forty in one pass is a second and a
-half of frozen page, on a tool whose whole point is that you can poke at it. The cheap
-structural rules are settled first so the map is already meaningful while the audit fills in
-behind them. Clicking an ineligible country explains itself rather than doing nothing — that is
-the more interesting half of the tool.
+Measured at 110m: **145 removable**; 22 are too small to have a boundary worth cutting, 18 are
+islands with no land neighbour (the only structural bar left), 4 contain an enclave, 1 has no
+neighbour touching it in a single place, and 1 will not divide (Lesotho, whose whole ring is one
+neighbour).
+
+**Nothing is computed until it is clicked.** This used to sweep the whole world on entry — 191
+countries of surgery, chunked 40 ms at a time, to colour a map nobody had asked a question of
+yet. Every escalation since (splices, stretch, contiguity, six passes) made that sweep cost more:
+the same pass is 26 s now. `msVerdictFor` computes one country's verdict when it is clicked and
+caches it in the same map the legend counts, so the legend shows a running tally of what has
+been TRIED rather than a census of the world, and the surgery a click just performed is reused
+rather than repeated. Entry is instant; a click is a fraction of a second. Clicking an ineligible
+country explains itself rather than doing nothing — that is the more interesting half of the
+tool. Changing the turn order clears every verdict, since they were all reached under the old
+one.
 
 ### The five-colour map
 
