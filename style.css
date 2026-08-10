@@ -4304,3 +4304,73 @@ g.ms-story { pointer-events: none; }
   background-size: 12px 12px;
   background-position: 0 0, 6px 6px;
 }
+
+/* ---- Flag workshop: dropdowns, wiring, wheel, charge dialog -------------------------- */
+.ws-drop { position: relative; }
+.ws-drop-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px;
+               font: inherit; font-size: 0.88rem; cursor: pointer; text-align: left;
+               border: 1px solid var(--border, #b9ac93); border-radius: 5px;
+               background: var(--surface, #efe7d7); color: inherit; }
+.ws-drop-btn img { height: 18px; width: 27px; object-fit: contain; flex: 0 0 auto; }
+.ws-drop-btn span:not(.ws-caret) { flex: 1 1 auto; }
+.ws-caret { opacity: 0.6; }
+.ws-none { font-style: italic; opacity: 0.75; }
+.ws-drop-panel { position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 3px);
+                 padding: 6px; border: 1px solid var(--border, #b9ac93); border-radius: 6px;
+                 background: var(--bg, #f7f2e7); box-shadow: 0 6px 18px rgba(0,0,0,0.18); }
+.ws-drop-list { max-height: 210px; overflow-y: auto; margin-top: 5px; }
+.ws-drop-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 6px;
+               font: inherit; font-size: 0.85rem; cursor: pointer; text-align: left;
+               border: 1px solid transparent; border-radius: 4px; background: none; color: inherit; }
+.ws-drop-row img { height: 15px; width: 23px; object-fit: contain; }
+.ws-drop-row:hover, .ws-drop-row.kb-active { background: var(--surface, #efe7d7);
+                                             border-color: var(--accent, #d08a2c); }
+
+.ws-wheel-row { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; }
+.ws-wheel { border-radius: 50%; cursor: grab; touch-action: none;
+            box-shadow: 0 0 0 1px var(--border, #b9ac93); }
+.ws-wheel-side { flex: 1 1 auto; min-width: 0; }
+.ws-lite { display: flex; align-items: center; gap: 5px; font-size: 0.82rem; }
+.ws-lite input { flex: 1 1 auto; min-width: 60px; }
+.ws-sw.sm { width: 15px; height: 15px; display: inline-block; margin: 2px 2px 0 0; }
+.ws-sw.sm.on { outline: 2px solid var(--accent, #d08a2c); outline-offset: 1px; }
+
+/* Two columns of colours with the mapping drawn between them. The SVG sits in the middle track
+   of the grid rather than over the whole thing, so a wire never covers a swatch you want to
+   grab. */
+.ws-wire-grid { position: relative; display: grid; grid-template-columns: auto 1fr auto;
+                gap: 0 4px; align-items: start; margin-top: 6px; }
+.ws-col { display: flex; flex-direction: column; gap: 6px; }
+.ws-col-lab { font-size: 0.72rem; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.04em; }
+.ws-node { width: 30px; height: 24px; border-radius: 5px; cursor: grab; touch-action: none;
+           border: 1px solid var(--border, #b9ac93); }
+.ws-node.add { display: flex; align-items: center; justify-content: center; cursor: pointer;
+               background: none; border-style: dashed; font-size: 1rem; line-height: 1;
+               color: inherit; opacity: 0.7; }
+.ws-node.add:hover { opacity: 1; border-color: var(--accent, #d08a2c); }
+.ws-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ws-wire-line { fill: none; stroke: var(--text, #3a3226); stroke-width: 1.6; opacity: 0.4; }
+.ws-wire-line.pinned { stroke: var(--accent, #d08a2c); stroke-width: 2.4; opacity: 0.95; }
+.ws-wire-line.live { stroke: var(--accent, #d08a2c); stroke-width: 2; stroke-dasharray: 5 4; opacity: 1; }
+
+.ws-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center;
+              justify-content: center; background: rgba(0,0,0,0.45); padding: 16px; }
+.ws-dialog { width: min(620px, 100%); max-height: 86vh; overflow-y: auto; padding: 14px 16px;
+             border-radius: 10px; background: var(--bg, #f7f2e7);
+             border: 1px solid var(--border, #b9ac93); box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
+.ws-dialog-head { display: flex; justify-content: space-between; align-items: center;
+                  margin-bottom: 4px; font-size: 1.02rem; }
+.ws-browse { max-height: 300px; overflow-y: auto; }
+
+/* The wiring grid is laid out LEFT, not centred with the rest of the panel, and its middle track
+   is a fixed span rather than 1fr: wires stretched across the full width read as a diagram of
+   the panel rather than of the mapping, and at that length it stops being obvious which swatch
+   each one lands on. */
+.ws-wire-grid { grid-template-columns: auto 86px auto; justify-content: start; text-align: left; }
+.ws-col-lab { white-space: nowrap; }
+
+/* The wires' SVG is absolutely positioned, so grid auto-placement skips it entirely and the
+   donor column lands in the middle track with the third collapsed to nothing. The two columns
+   are therefore placed by hand. */
+.ws-wire-grid > .ws-col:first-of-type { grid-column: 1; }
+.ws-wire-grid > .ws-col:last-of-type { grid-column: 3; }

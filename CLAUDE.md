@@ -933,37 +933,56 @@ Both a group and its children are offered: which of them is "the emblem" is exac
 the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
 pieces.
 
-### The charge menu
+### The charge menu, and charges made of several pieces
 
-Browsing is one thing and building is another, so they are two things. A flag's pieces are
-**ticked** rather than placed — several at a time, from as many flags as you like — and go into a
-**menu** that outlives the browsing. Anything in the menu can then be placed as often as you
-like, in any of four named slots (centre, canton, hoist, fly) at any size: those are the places a
-flag ever puts a charge, and a free x/y turns a two-click job into a fiddle. Shape-by-shape
-placement made every reuse a re-hunt through a country's parts.
+Browsing is one thing and building is another, so they are two things: browsing happens in a
+**sub-panel**, and what comes out of it goes into a **menu** that outlives the browsing. Anything
+in the menu can be placed as often as you like, in any of four named slots (centre, canton, hoist,
+fly) at any size — those are the places a flag ever puts a charge, and a free x/y turns a
+two-click job into a fiddle.
+
+**Several pieces ticked together are ONE charge.** Albania's eagle is two halves and Kenya's
+shield is a shield plus two spears; picking them one at a time and placing them one at a time asks
+somebody to reassemble by eye what the flag had already assembled. `wsCombine` keeps each part's
+own matrix and its own inherited paint on a wrapper of its own, so the composite is the pieces
+exactly where they stood relative to each other, and its box is their union.
 
 A charge tile is drawn on a **checkerboard**, because half the world's charges are white and the
 other half black: a plain light tile hid every white crescent, and a plain dark one would hide
 every black eagle.
 
-### The palette mapping, shown and steerable
+### The palette, wired
 
 The palette is measured on the **composed** document, so a borrowed charge is part of the flag by
 the time its colours are read — which is what makes a charge get recoloured ALONGSIDE the design
 rather than pasted on wearing its own country's colours. Adding Brazil's rhombus to Japan puts
 `#ffcb00` into Japan's palette, and the donor's scheme is then laid across all of it.
 
-The mapping is **shown as a mapping**: one row per colour the flag has, and beside it every
-donor colour it could take, with the current one ringed. Clicking one pins it. The wheel above
-edits the donor's colours themselves — hue round, saturation out from the middle, lightness on
-its own slider underneath, since lightness is the axis the contrast rests on and belongs where it
-can be moved without disturbing the other two.
+The mapping is drawn as **two columns of swatches with a wire between each pair** — yours down one
+side, the donor's down the other. Dragging a wire's end onto another swatch is how it is changed,
+which is the same gesture as the thing it represents, and **several wires may land on one swatch**.
+That lifts the injectivity rule for exactly those entries: two of a flag's colours landing on one
+merges the shapes they distinguished, which is a defect when the search does it by accident and a
+decision when a person does it on purpose — a tricolour with two of its bands the same is a
+bicolour, and somebody may want one. `sbRepaint`'s `pick` argument is how that is expressed, and
+the quiz never passes one. A **placeholder at the foot of the donor column** adds a colour the
+donor never had, starting at the complement of whatever it has most of.
 
-**A pinned mapping lifts the injectivity rule for exactly those entries.** Two of a flag's
-colours landing on one merges the shapes they distinguished, which is a defect when the search
-does it by accident and a decision when a person does it on purpose: a tricolour with two of its
-bands the same is a bicolour, and somebody may want one. `sbRepaint`'s `pick` argument is how
-that is expressed, and the quiz never passes one.
+The **wheel carries every donor colour at once**, one dot each, and dragging a dot moves that
+colour. A palette is a set of relationships and the wheel is where they are visible: three dots
+evenly spread is a triad, two opposite is a complement, a huddle is a scheme with no contrast in
+it — which is the whole reason to show them together rather than one at a time. Hue and saturation
+are the two axes a wheel HAS, so those are what dragging changes; lightness gets a slider, which
+is right anyway because it is the axis the contrast rests on. The field behind the dots is drawn
+at a fixed mid lightness rather than at any one colour's: redrawing it in the lightness of
+whichever colour was last touched puts every other dot on ground that has nothing to do with it.
+
+Two layout notes that cost an hour between them. The base and donor pickers are **custom
+dropdowns showing the flag as well as the name**, because "Chad" and "Romania" are the same answer
+to somebody choosing a palette and completely different flags, and a native `<select>` cannot
+carry an image. And the wires' SVG is absolutely positioned, so **grid auto-placement skips it
+entirely** — the donor column landed in the middle track with the third collapsed to nothing, and
+the two columns have to be placed by hand.
 
 **The panel is APPENDED to `#question-container`, not written over it.** That container holds
 `#feedback` and `#question-text`, which every other mode's setup writes to unconditionally, so
