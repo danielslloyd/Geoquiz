@@ -970,7 +970,7 @@ the round is scored on the clock (`speedBonus`).
 `sbEatWhy` records which rule refused an attempt (`island`, `enclave`, `twoplaces`, `tiny`,
 `divides`), so the sandbox can say what stopped it instead of shrugging.
 
-### Spot the Fake Flag
+### False Flag
 
 The fake is a **real flag with its colours changed**, fetched from flagcdn and recoloured in SVG.
 Two things gave the old canvas generator away: it was a 320×213 **raster** beside three vector
@@ -2065,7 +2065,7 @@ Exactly one view rotates its Mercator projection as you interact with it: **`isF
 | `draw-border` | The target is **cut out** of the map and you trace its outline with the pointer (`drawBorderMode`). Runs over **any geography** (world, US, India, Germany, England, Mexico) via `showDrawBorderSelector`. Scored by the symmetric mean distance between the drawn loop and the real one. See Draw the Border below |
 | `sun-moon` | View-only: where the sun and moon are directly overhead, the sunrise line, and the night side shaded, at any date and time (`sunMoonMode`). Optional nautical time-zone overlay and satellite imagery. See Sun & Moon below |
 | `sun-path` | **3D**: why sunrise and sunset move through the year, shown three ways at once for one latitude and date — a horizon POV, the tilted earth in space, and the celestial dome (`sunPathMode`). No map. See Sun Path below |
-| `flag-workshop` | Build a flag out of other flags — a real design, another country's colours, and charges borrowed from anywhere — and save it into Spot the Fake Flag (`flagWorkshopMode`). No map, no score. See The fake flag workshop below |
+| `flag-workshop` | Build a flag out of other flags — a real design, another country's colours, and charges borrowed from anywhere — and save it into False Flag (`flagWorkshopMode`). No map, no score. See The fake flag workshop below |
 | `spaceship-sandbox` | A flat world plotting every sub-point the orbital view could pick (400 live samples of `pickCoastalTarget`) with each chosen spot's heading spoke, plus a seed editor that freezes 10 spots into a shareable hash (`sandboxMode`). See Spaceship sandbox below |
 | `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`, 1–60×), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed.
 

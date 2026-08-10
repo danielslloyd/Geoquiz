@@ -13272,7 +13272,7 @@ const SANDBOX_SUBMODES = [
     { key: 'framing-sandbox', icon: 'crop_free', label: 'Shape Framing',
       desc: 'Which polygons a country is framed by — switch its outliers in and out' },
     { key: 'flag-workshop', icon: 'palette', label: 'Flag Workshop',
-      desc: 'Build a flag out of other flags, and save it into Spot the Fake Flag' },
+      desc: 'Build a flag out of other flags, and save it into False Flag' },
     { key: 'spaceship-sandbox', icon: 'tune', label: 'Spaceship Sandbox',
       desc: 'Every spot the orbital quiz can pick; build and share a seed' }
 ];
@@ -17578,9 +17578,28 @@ function sbHex(rgb) {
 // Every place a colour can hide in one of these files.
 const SB_COLOUR_ATTRS = ['fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color'];
 
+// Every place a colour hides in one of these files — including the place it hides by NOT being
+// written down. SVG's default fill is black, so a band with no `fill` at all is a black band, and
+// Germany, Belgium, Estonia and Angola all draw their black exactly that way. Nothing here saw it:
+// black was absent from the palette, its pixels matched no known colour and were discarded as
+// antialiasing, and the recolour had no node to write to even if it had wanted one. A synthetic
+// entry is added for any drawable element that inherits no fill from anywhere, and writing to it
+// creates the attribute, which is what makes the band recolourable at all.
+const SB_PAINTABLE = /^(path|rect|circle|ellipse|polygon|polyline)$/i;
+function sbDefaultsToBlack(el) {
+    if (!SB_PAINTABLE.test(el.tagName)) return false;
+    for (let up = el; up; up = up.parentElement) {
+        if (up.hasAttribute && up.hasAttribute('fill')) return false;
+        const st = up.getAttribute && up.getAttribute('style');
+        if (st && /(^|;)\s*fill\s*:/i.test(st)) return false;
+    }
+    return true;
+}
+
 function sbSvgColourNodes(doc) {
     const out = [];
     doc.querySelectorAll('*').forEach(el => {
+        if (sbDefaultsToBlack(el)) out.push({ el, attr: 'fill', rgb: [0, 0, 0] });
         SB_COLOUR_ATTRS.forEach(a => {
             const v = el.getAttribute(a);
             const rgb = sbParseColour(v);
@@ -17743,9 +17762,14 @@ async function sbFlagPalette(code, doc) {
     const areas = await sbFlagAreas(code, doc);
     if (!areas) return null;
     const out = [];
+    // The floor is a twentieth of a per cent, not a fifth. Black is almost always an OUTLINE --
+    // the edge of a charge, the rule between two bands -- and an outline covers very little cloth
+    // however much of the design depends on it. At 0.2% every flag whose black was a line rather
+    // than a field lost it, and lost it silently: the palette came back one colour shorter and the
+    // mapping never had it to place.
     areas.forEach((share, hex) => {
         const rgb = sbParseColour(hex);
-        if (rgb && share > 0.002) out.push({ hex, rgb, share });   // under 0.2% is a hairline
+        if (rgb && share > 0.0005) out.push({ hex, rgb, share });
     });
     if (!out.length) return null;
     out.sort((a2, b2) => b2.share - a2.share);
@@ -17976,7 +18000,7 @@ function sbRepaint(doc, palette, donor, pick) {
 // hang on which flag has no way of being right. A PERSON does, so the workshop hands over every
 // piece of every flag and gets out of the way: pick a design, pick whose colours it wears, and
 // borrow as many charges as you like from anywhere in the world. What comes out is saved back to
-// the same list Spot the Fake Flag deals from, so a fake anybody makes here is one somebody else
+// the same list False Flag deals from, so a fake anybody makes here is one somebody else
 // has to catch.
 //
 // Everything is composed from the real SVGs, so a hand-made fake is a vector at exactly the
@@ -17996,6 +18020,8 @@ function wsParts(code, doc) {
     const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
     const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
     const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    const X0v = vb.length === 4 && isFinite(vb[0]) ? vb[0] : 0;
+    const Y0v = vb.length === 4 && isFinite(vb[1]) ? vb[1] : 0;
     if (!(W > 0 && H > 0)) { wsPartsCache.set(code, []); return []; }
     const host = document.createElement('div');
     // A real size, not zero. `getCTM` is measured to the nearest VIEWPORT, so it folds in the
@@ -18082,6 +18108,7 @@ function wsParts(code, doc) {
                         // outline drawn after the shape it outlines covers it — so the composite
                         // is assembled by `seq` and the ranking is only ever a way of looking.
                         out.push({ xml: new XMLSerializer().serializeToString(c), defs, ctm: pctm, inherit, box,
+                                   vb: { x: X0v, y: Y0v, w: W, h: H },
                                    tag: c.tagName.toLowerCase(), frac, seq: out.length });
                     }
                 }
@@ -18102,21 +18129,6 @@ function wsParts(code, doc) {
     return kept;
 }
 
-// Where a borrowed charge goes. Named rather than freely positioned: these are the four places a
-// flag ever puts one, and a free x/y turns a two-click job into a fiddle.
-const WS_SLOTS = [
-    { key: 'centre', label: 'Centre', at: [0.5, 0.5] },
-    { key: 'canton', label: 'Canton', at: [0.25, 0.27] },
-    { key: 'hoist',  label: 'Hoist',  at: [0.17, 0.5] },
-    { key: 'fly',    label: 'Fly',    at: [0.75, 0.5] }
-];
-
-// base   {name, code}                the design being built on
-// donor  {name, palette}              whose colours it wears
-// tweak  Map<donorIndex, rgb>         hand-edited donor colours, off the wheel
-// pick   Map<baseHex, donorIndex>     hand-made mapping; several base colours may share one
-// menu   [{part, from}]               charges collected off other flags, ready to place
-// added  [{part, from, slot, size}]   charges actually on the flag
 let wsState = null;
 const wsFresh = () => ({ base: null, donor: null, tweak: new Map(), pick: new Map(), extra: [],
                          menu: [], added: [], browse: null, sel: new Set(), wheel: 0 });
@@ -18160,12 +18172,17 @@ async function wsCompose() {
     const Y0 = vb.length === 4 && isFinite(vb[1]) ? vb[1] : 0;
     if (!(W > 0 && H > 0)) return null;
     st.added.forEach((a, i) => {
-        const slot = WS_SLOTS.find(s => s.key === a.slot) || WS_SLOTS[0];
-        const h = H * a.size, w = h * (a.part.box.w / a.part.box.h);
-        // Uniform, so a borrowed charge is never stretched into a different shape on the way over.
-        const k = Math.min(w / a.part.box.w, h / a.part.box.h);
-        const cx = X0 + W * slot.at[0] - a.part.box.w * k / 2 - a.part.box.x * k;
-        const cy = Y0 + H * slot.at[1] - a.part.box.h * k / 2 - a.part.box.y * k;
+        // WHERE IT WAS. A charge is not an ornament that can go anywhere: a canton belongs in the
+        // canton, a crescent sits where that flag's crescent sits, and moving it was most of what
+        // made a composed flag look composed rather than designed. So a piece keeps its own place
+        // in the base flag's proportions -- two thirds of the way along its own flag is two thirds
+        // of the way along this one -- and its own size relative to the cloth.
+        const dv = a.part.vb || { x: 0, y: 0, w: a.part.box.w, h: a.part.box.h };
+        const k = Math.min(W / dv.w, H / dv.h);          // uniform: never stretched on the way over
+        const tx = X0 + ((a.part.box.x - dv.x) / dv.w) * W;
+        const ty = Y0 + ((a.part.box.y - dv.y) / dv.h) * H;
+        const cx = tx - a.part.box.x * k;
+        const cy = ty - a.part.box.y * k;
         // Every id in the borrowed fragment is renamed, because two charges from two flags will
         // both call their gradient "a" and the second would quietly take over the first. The
         // rename covers the definition and every reference to it in one pass, so the fragment
@@ -18197,7 +18214,7 @@ async function wsCompose() {
     // that the answer follows what is actually on the cloth — which is also what makes a borrowed
     // charge get recoloured ALONGSIDE the design rather than pasted on in its own country's
     // colours: by the time the palette is read, the charge is part of the flag.
-    const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length + a.slot + a.size).join('|');
+    const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length).join('|');
     const palette = await sbFlagPalette(key, doc);
     st.palette = palette;
     let changes = null, mapping = null;
@@ -18336,7 +18353,17 @@ const wsCodeOf = n => ((window.countryData || {})[effectiveDataName(n)] || {}).c
 function wsCombine(parts0) {
     if (!parts0.length) return null;
     if (parts0.length === 1) return parts0[0];
-    const parts = parts0.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
+    // The menu offers a group AND its children, because which of them is "the charge" is the
+    // judgement being handed over -- but tick both and the child is drawn twice, once inside its
+    // group and once on top, which is how Argentina's sun came out with its face over its own
+    // eyes. Anything already contained in another ticked piece is dropped.
+    const keep = parts0.filter(a => !parts0.some(b => b !== a && b.xml.indexOf(a.xml) >= 0));
+    if (!keep.length) return parts0[0];
+    if (keep.length === 1) return keep[0];
+    // ...and the survivors are assembled in the DONOR'S drawing order, not the menu's, which
+    // ranks by size so the charge is easy to find. An outline drawn after the shape it outlines
+    // covers it.
+    const parts = keep.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
     const x0 = Math.min(...parts.map(q => q.box.x)), y0 = Math.min(...parts.map(q => q.box.y));
     const x1 = Math.max(...parts.map(q => q.box.x + q.box.w)), y1 = Math.max(...parts.map(q => q.box.y + q.box.h));
     return {
@@ -18345,6 +18372,7 @@ function wsCombine(parts0) {
             return `<g transform="matrix(${(q.ctm || [1, 0, 0, 1, 0, 0]).join(',')})"${inh}>${q.xml}</g>`;
         }).join(''),
         defs: parts[0].defs,
+        vb: parts[0].vb,
         ctm: [1, 0, 0, 1, 0, 0],
         inherit: {},
         box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
@@ -18417,7 +18445,7 @@ function renderFlagWorkshop() {
     panel = document.createElement('div');
     panel.id = 'ws-panel';
     const qt = document.getElementById('question-text');
-    if (qt) qt.innerHTML = '<strong>Flag Workshop</strong> \u2014 build one out of the others, and save it into Spot the Fake Flag.';
+    if (qt) qt.innerHTML = '<strong>Flag Workshop</strong> \u2014 build one out of the others, and save it into False Flag.';
     panel.innerHTML =
         `<div class="ws">` +
         `<div class="ws-stage"><img id="ws-preview" alt="the flag as it stands">` +
@@ -18436,20 +18464,17 @@ function renderFlagWorkshop() {
         `<div id="ws-wire"></div></section>` +
 
         `<section class="ws-sec"><h4>Charges</h4>` +
-        `<div class="ws-hint">Pieces borrowed off other flags. Several picked together become ONE ` +
-        `charge \u2014 an eagle's two halves are an eagle. Everything in the menu can be placed as often ` +
-        `as you like, and is recoloured with the rest of the flag.</div>` +
+        `<div class="ws-hint">Pieces borrowed off other flags, each landing where it sat on its own — ` +
+        `a canton in the canton, a crescent where that flag's crescent was. Several picked together ` +
+        `become ONE charge: an eagle's two halves are an eagle. Everything is recoloured with the ` +
+        `rest of the flag.</div>` +
         `<div class="ws-row"><button class="control-btn" id="ws-open-charges">Browse flags for charges\u2026</button></div>` +
         `<div class="ws-swatches" id="ws-menu"></div>` +
-        `<div class="ws-row"><label>Where <select id="ws-slot">` +
-        WS_SLOTS.map(sl => `<option value="${sl.key}">${sl.label}</option>`).join('') +
-        `</select></label>` +
-        `<label>Size <input type="range" id="ws-size" min="8" max="70" value="34"></label></div>` +
         `<h5 class="ws-sub">On the flag</h5>` +
         `<div class="ws-added" id="ws-added"></div></section>` +
 
         `<section class="ws-sec"><h4>Save</h4>` +
-        `<div class="ws-hint">Saved flags are dealt into Spot the Fake Flag, alongside the ones ` +
+        `<div class="ws-hint">Saved flags are dealt into False Flag, alongside the ones ` +
         `the quiz invents for itself.</div>` +
         `<div class="ws-row"><input type="text" id="ws-name" class="ws-filter" placeholder="Name it (optional)">` +
         `<button class="control-btn" id="ws-save">Save to the fake list</button></div>` +
@@ -18734,9 +18759,7 @@ function wsPaintMenu() {
     box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
         const m = wsState.menu[+bt.dataset.i];
         if (!m) return;
-        const slot = (document.getElementById('ws-slot') || {}).value || 'centre';
-        const size = (+(document.getElementById('ws-size') || {}).value || 34) / 100;
-        wsState.added.push({ part: m.part, from: m.from, slot, size });
+        wsState.added.push({ part: m.part, from: m.from });
         wsPaintAdded();
         wsRefresh();
     }));
@@ -18769,7 +18792,7 @@ function wsPaintAdded() {
     if (!box) return;
     if (!wsState.added.length) { box.innerHTML = `<div class="ws-hint">Nothing placed yet.</div>`; return; }
     box.innerHTML = wsState.added.map((a, i) =>
-        `<span class="ws-chip">${displayLabelForName(a.from)} \u00b7 ${a.slot}` +
+        `<span class="ws-chip">${displayLabelForName(a.from)}` +
         `<button type="button" class="ws-x" data-i="${i}" title="Take it off">\u00d7</button></span>`).join('');
     box.querySelectorAll('.ws-x').forEach(bt => bt.addEventListener('click', () => {
         wsState.added.splice(+bt.dataset.i, 1);
@@ -18833,7 +18856,7 @@ function wsSave() {
     wsSaveAll(list);
     if (nameEl) nameEl.value = '';
     wsPaintSaved();
-    showToast('Saved. It will turn up in Spot the Fake Flag.');
+    showToast('Saved. It will turn up in False Flag.');
 }
 
 // A HAND-MADE fake, when there is one, half the time. Not always: a workshop with three flags in
@@ -19336,7 +19359,7 @@ const SB_QUIZZES = {
 
     // ---------- spot the invention ----------
     'sb-fake-flag': {
-        engine: 'fact', icon: 'flag', label: 'Spot the Fake Flag', noMap: true,
+        engine: 'fact', icon: 'flag', label: 'False Flag', noMap: true,
         desc: 'Three real flags and one that never existed',
         // The fake is fetched and recoloured off the network, so the round waits for one to be
         // ready rather than generating it inline.
