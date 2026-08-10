@@ -488,7 +488,26 @@ straight line that found it — a trace sampled from the topology, at the chord'
 is a real border at true amplitude. Then give the piece to **whoever holds the longest stretch of
 its edge**: the land goes to whoever the land is already up against. Repeat on what is left.
 
-Three things it has to get right:
+**No cut may take more than `sbChordMax` (default 30%) of the ORIGINAL country** — not of what
+is left, which is a much weaker limit and what `SB_BITE_MAX_FRAC` already bounds. Against the
+original it means the same thing on the first cut as on the fourth; without it the first cut
+regularly took 60% and everything after it was a trimming. The cap is applied twice, because the
+candidate ranking measures the STRAIGHT chord's area and the drawn border bulges either side of
+it: at one check a 30% cap was letting through pieces of 37%.
+
+**A country that has taken is not out of the running.** Its two pieces have to become one ring,
+because the rewrite gives each absorber one arc and one outline — and they can, whenever the
+second was cut off the remainder along the first one's own cut, which is a shared run of identical
+vertices and a splice rather than a polygon union. `chordMerge` finds the longest such run (the
+two rings traverse it in opposite directions, both being wound the same way) and walks round the
+outside of both. It returns null when there is no such run, and that is what keeps the
+one-arc-one-outline invariant: two pieces that meet nowhere cannot be one outline.
+
+Measured over 197 countries with the cap at 30%: **106 divide** (up from 99), 2.74 cuts each, 46
+repeat bites, no cut over 30.0%, **zero split absorbers**, area conserved everywhere, 25 s for the
+world.
+
+Three more things it has to get right:
 
 * **Shoelace prefix sums.** The area a chord cuts off is O(1) from a running sum, not O(n) from a
   walk, which is what makes trying all sixty-odd thousand pairs on every round cheap enough to be

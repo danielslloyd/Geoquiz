@@ -13568,6 +13568,13 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // Measured, its cuts turned 52 degrees per 100 km against 74 for the real frontiers they
 // replaced -- 30% SMOOTHER than a real border, which is exactly the complaint it existed to
 // answer and never could.
+// The biggest bite a chord may take, as a share of the ORIGINAL country -- not of what is left,
+// which is what `SB_BITE_MAX_FRAC` bounds. Measured against the original it means the same thing
+// on the first cut as on the fourth: no country walks off with a third of another. Without it the
+// first cut regularly took 60% and everything after it was a trimming.
+const SB_CHORD_MAX_DEFAULT = 30;
+let sbChordMax = SB_CHORD_MAX_DEFAULT;
+
 const SB_BITE_ALGOS = {
     'slide': { label: 'Slide the border in',
                hint: 'The frontier itself, moved straight in and slightly turned - whichever depth takes the most land per kilometre of new border' },
@@ -14613,7 +14620,12 @@ function sbEatCountry(rawTopo, goneName) {
     // Repeat on what is left. Nobody may take twice, because the rewrite gives each absorber one
     // arc and one outline, so a second piece would have to be merged with the first -- a polygon
     // union, and the one machine this surgery has always refused to build.
-    const chordCandidates = 44;
+// How many of the ranked pairs get the full treatment — a real border traced across them and
+// checked against every edge of the boundary. It is the budget that decides how much of a country
+// gets cut up rather than left: with the bite capped at a share of the whole, the pairs that pass
+// are scarcer, and at 44 every round was ending with hundreds of pairs untried and half the
+// country going to the leftover.
+    const chordCandidates = 160;
     // The same two guards a slid bite is held to, in standalone form: `bite` owns its own copies
     // as closures over one region's ring. A piece pinched into two lobes, or an absorber joined
     // to its piece by a thread, draws exactly as badly here as it does there.
@@ -14660,6 +14672,35 @@ function sbEatCountry(rawTopo, goneName) {
         }
         return runs === 1 && longest >= chordNeck;
     };
+    // Two rings that share a run of identical vertices, spliced into one. This is not a general
+    // polygon union and does not pretend to be: the second piece was cut off the remainder that
+    // the first one left, so wherever they touch they touch along the FIRST cut, vertex for
+    // vertex, in opposite directions. Finding that run and walking round the outside of both is
+    // the whole of it -- and returning null when there is no such run is what keeps the rewrite's
+    // one-arc-one-outline invariant, since two pieces that meet nowhere cannot be one outline.
+    const chordMerge = (A, B) => {
+        const key = v => Math.round(v[0] * 1e6) + ',' + Math.round(v[1] * 1e6);
+        const at = new Map();
+        B.forEach((v, i2) => { const k2 = key(v.p); if (!at.has(k2)) at.set(k2, i2); });
+        const nA = A.length, nB = B.length;
+        let a0 = -1, b0 = -1, len = 0;
+        for (let i2 = 0; i2 < nA; i2++) {
+            const j2 = at.get(key(A[i2].p));
+            if (j2 === undefined) continue;
+            // Shared runs go the opposite way round: both rings are wound the same way, so the
+            // boundary between them is traversed forwards by one and backwards by the other.
+            let L = 1;
+            while (L < Math.min(nA, nB) &&
+                   key(A[(i2 + L) % nA].p) === key(B[(j2 - L + nB * 2) % nB].p)) L++;
+            if (L > len) { len = L; a0 = i2; b0 = j2; }
+        }
+        if (len < 2) return null;
+        const a1 = (a0 + len - 1) % nA, b1 = (b0 - len + 1 + nB * 2) % nB;
+        const out = [];
+        for (let k2 = a1; ; k2 = (k2 + 1) % nA) { out.push(A[k2]); if (k2 === a0) break; if (out.length > nA) return null; }
+        for (let k2 = (b0 + 1) % nB; k2 !== b1; k2 = (k2 + 1) % nB) { out.push(B[k2]); if (out.length > nA + nB) return null; }
+        return out.length >= 3 ? out : null;
+    };
     const chordDivide = () => {
         const pieces = new Map();
         const story = [];
@@ -14693,7 +14734,8 @@ function sbEatCountry(rawTopo, goneName) {
                 return Math.abs((S[j] - S[i] + (b[0] * a[1] - a[0] * b[1])) / 2);
             };
             const cand = [];
-            const lo = area0 * 0.02, hi = areaLeft * SB_BITE_MAX_FRAC;
+            const lo = area0 * 0.02;
+            const hi = Math.min(areaLeft * SB_BITE_MAX_FRAC, area0 * Math.max(0.02, sbChordMax / 100));
             for (let i = 0; i < L; i++) {
                 const oi = ownerOfLeg(live[i].leg);
                 for (let j = i + 4; j < L; j++) {
@@ -14759,26 +14801,47 @@ function sbEatCountry(rawTopo, goneName) {
                         if (piece.length < 3 || rest.length < 3) continue;
                         const aP = Math.abs(areaOf(closed(piece))), aR = Math.abs(areaOf(closed(rest)));
                         if (Math.abs((aP + aR) / areaLeft - 1) > 0.005) continue;
+                        // The cap again, on what the piece ACTUALLY came to. The candidate filter
+                        // measures the straight chord's area and the drawn border bulges either
+                        // side of it, so a 30% cap was letting through pieces of 37%.
+                        if (aP > hi) continue;
                         // Who gets it: whoever holds the longest run of border inside the piece,
                         // among those who have not already taken one.
                         const held = new Map();
                         for (let k = 0; k + 1 < piece.length; k++) {
                             const nm2 = ownerOfLeg(piece[k].leg);
-                            if (!nm2 || used.has(nm2)) continue;
+                            if (!nm2) continue;
                             held.set(nm2, (held.get(nm2) || 0) +
                                 Math.hypot(piece[k + 1].p[0] - piece[k].p[0], piece[k + 1].p[1] - piece[k].p[1]));
                         }
-                        let who = null, bestLen = 0;
-                        held.forEach((v, nm2) => { if (v > bestLen || (v === bestLen && who && nm2 < who)) { bestLen = v; who = nm2; } });
-                        if (!who) continue;
-                        if (!chordOneRun(piece, new Set(mainGroup.get(who)))) continue;
+                        if (!held.size) continue;
                         if (!chordOneLobe(piece) || !chordOneLobe(rest)) continue;
+                        // Everyone who holds any of this piece's edge, in order, so a candidate
+                        // that cannot be given the piece for a structural reason falls through to
+                        // the next rather than losing the cut altogether.
+                        const rank2 = [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+                        let who = null, merged = null;
+                        for (const [nm2] of rank2) {
+                            if (!chordOneRun(piece, new Set(mainGroup.get(nm2)))) continue;
+                            if (!pieces.has(nm2)) { who = nm2; merged = piece; break; }
+                            // A country that has already taken is NOT out of the running. Its two
+                            // pieces have to become one ring, though, because the rewrite gives it
+                            // one arc and one outline -- and they can, whenever the second was cut
+                            // off the remainder along the first one's own cut, which is a shared
+                            // run of identical vertices and a splice rather than a polygon union.
+                            const m2 = chordMerge(pieces.get(nm2), piece);
+                            if (!m2 || !chordOneLobe(m2)) continue;
+                            if (!chordOneRun(m2, new Set(mainGroup.get(nm2)))) continue;
+                            who = nm2; merged = m2; break;
+                        }
+                        if (!who) continue;
                         // The whole tally, not just the winner: the assignment is the second half
                         // of this construction and the story cannot show it being made without
                         // the numbers it was made on.
                         const edges = [...held.entries()].map(e2 => ({ name: e2[0], km: e2[1] }))
                             .sort((x, y) => y.km - x.km);
-                        got = { i, j, piece, rest, cut: path2, who, ar: aP, src, flip, areaLeft, edges,
+                        got = { i, j, piece, rest: rest, whole: merged, again: pieces.has(who),
+                                cut: path2, who, ar: aP, src, flip, areaLeft, edges,
                                 chord: [P, Q], chordKm: span, rank: c, ratio: cand[c].k, bestRatio: cand[0].k,
                                 tried: Math.min(cand.length, chordCandidates), pairs: cand.length };
                         break;
@@ -14789,17 +14852,21 @@ function sbEatCountry(rawTopo, goneName) {
             // Somebody must be left to hold what remains, with a frontier long enough to write an
             // outline onto -- the same requirement the slide's leftover has, arrived at from the
             // other end.
+            // Somebody must be left to hold what remains. "Somebody" now includes countries that
+            // have already taken, since a second piece can be merged into the first — testing
+            // against `used` was left over from when it could not, and it stopped the cutting
+            // early with half of Germany still in the remainder.
             const stillFree = new Set();
             for (let k = 0; k < got.rest.length; k++) {
                 const nm2 = ownerOfLeg(got.rest[k].leg);
-                if (nm2 && !used.has(nm2) && nm2 !== got.who) stillFree.add(nm2);
+                if (nm2) stillFree.add(nm2);
             }
             if (!stillFree.size) break;
-            pieces.set(got.who, got.piece);
+            pieces.set(got.who, got.whole);
             used.add(got.who);
             minBite = Math.min(minBite, got.ar);
             story.push({
-                kind: 'chord', name: got.who, algo: 'chord',
+                kind: 'chord', name: got.who, algo: 'chord', again: got.again,
                 took: got.ar, leftBefore: got.areaLeft,
                 chord: got.chord.map(toDeg), chordKm: got.chordKm,
                 ratio: got.ratio, bestRatio: got.bestRatio, rank: got.rank,
@@ -14815,17 +14882,21 @@ function sbEatCountry(rawTopo, goneName) {
         const held = new Map();
         for (let k = 0; k + 1 < live.length; k++) {
             const nm2 = ownerOfLeg(live[k].leg);
-            if (!nm2 || used.has(nm2)) continue;
+            if (!nm2) continue;
             held.set(nm2, (held.get(nm2) || 0) +
                 Math.hypot(live[k + 1].p[0] - live[k].p[0], live[k + 1].p[1] - live[k].p[1]));
         }
-        let bestLen = 0;
-        held.forEach((v, nm2) => {
+        if (!chordOneLobe(live)) return null;
+        let restWhole = null;
+        [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).forEach(([nm2]) => {
+            if (leftover) return;
             if (!chordOneRun(live, new Set(mainGroup.get(nm2)))) return;
-            if (v > bestLen || (v === bestLen && leftover && nm2 < leftover)) { bestLen = v; leftover = nm2; }
+            if (!pieces.has(nm2)) { leftover = nm2; restWhole = live; return; }
+            const m2 = chordMerge(pieces.get(nm2), live);
+            if (m2 && chordOneLobe(m2) && chordOneRun(m2, new Set(mainGroup.get(nm2)))) { leftover = nm2; restWhole = m2; }
         });
-        if (!leftover || !chordOneLobe(live)) return null;
-        pieces.set(leftover, live);
+        if (!leftover) return null;
+        pieces.set(leftover, restWhole);
         story.push({
             kind: 'chord-rest', name: leftover, algo: 'chord',
             took: Math.abs(areaOf(closed(live))), minBite: isFinite(minBite) ? minBite : 0,
@@ -15944,6 +16015,13 @@ function msBuildPanel() {
             `${SB_BITE_ALGOS[k].label}</option>`).join('') +
         `</select></label>` +
         `<div class="ms-order-hint" id="ms-algo-hint">${SB_BITE_ALGOS[sbBiteAlgo].hint}</div>` +
+        `<div id="ms-chord-only">` +
+        `<label class="ms-order"><span>Biggest bite</span>` +
+        `<input type="number" id="ms-chord-max" min="5" max="80" step="5" value="${sbChordMax}">` +
+        `<span class="ms-unit">%</span></label>` +
+        `<div class="ms-order-hint">The most any one cut may take, as a share of the whole country ` +
+        `— not of what is left, which is a different and much weaker limit. At 60% the first cut ` +
+        `took most of the country and every later one was a trimming.</div></div>` +
         `<div id="ms-slide-only">` +
         `<label class="ms-order"><span>Turn order</span>` +
         `<select id="ms-order-sel">` +
@@ -15973,6 +16051,8 @@ function msBuildPanel() {
     const slideOnly = () => {
         const box2 = document.getElementById('ms-slide-only');
         if (box2) box2.style.display = sbBiteAlgo === 'chord' ? 'none' : '';
+        const box3 = document.getElementById('ms-chord-only');
+        if (box3) box3.style.display = sbBiteAlgo === 'chord' ? '' : 'none';
     };
     slideOnly();
     const algo = document.getElementById('ms-algo-sel');
@@ -15989,6 +16069,13 @@ function msBuildPanel() {
         const hint = document.getElementById('ms-order-hint');
         if (hint) hint.textContent = SB_BITE_ORDERS[sbBiteOrder].hint;
         redo('Order changed. Pick a country off the map.');
+    });
+    const cmax = document.getElementById('ms-chord-max');
+    if (cmax) cmax.addEventListener('change', () => {
+        const v = Math.max(5, Math.min(80, +cmax.value));
+        cmax.value = isFinite(v) ? v : SB_CHORD_MAX_DEFAULT;
+        sbChordMax = +cmax.value;
+        redo('Bite size changed. Pick a country off the map.');
     });
     const grow = document.getElementById('ms-growth');
     if (grow) grow.addEventListener('change', () => {
@@ -17133,11 +17220,11 @@ async function wsCompose() {
         const refs = xml => xml
             .replace(/(href=")#([^"]+)"/g, (m2, pre, id) => `${pre}#${tag}${id}"`)
             .replace(/url\(#([^)]+)\)/g, (m2, id) => `url(#${tag}${id})`);
-        const keepIds = xml => refs(xml).replace(/id="([^"]+)"/g, (m2, id) => `id="${tag}${id}"`);
+        const keepIds = xml => refs(xml).replace(/\bid="([^"]+)"/g, (m2, id) => `id="${tag}${id}"`);
         // The drawn copy loses its ids — it is also inside the definitions, and one document
         // cannot carry the same id twice. Its REFERENCES are renamed all the same, so it still
         // reaches the definitions rather than anything belonging to another borrowed charge.
-        const dropIds = xml => refs(xml).replace(/id="[^"]+"/g, '');
+        const dropIds = xml => refs(xml).replace(/\bid="[^"]+"/g, '');
         const m = a.part.ctm || [1, 0, 0, 1, 0, 0];
         const inh = Object.keys(a.part.inherit || {})
             .map(k2 => ` ${k2}="${a.part.inherit[k2]}"`).join('');
