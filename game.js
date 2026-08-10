@@ -90,9 +90,266 @@ function worldCountriesUrl() {
 // Convert a freshly-fetched world-atlas topology into country features, applying
 // client-side simplification for the 'medium' detail level (which loads the 50m
 // source). Modes that force their own resolution (spaceship, shape ID) skip it.
+// ==================== CUTTING THE LAKES OUT ====================
+//
+// A lake is water, and the countries around one do not share a border across it: the DRC does
+// not border Tanzania, they are on opposite shores of Lake Tanganyika. Natural Earth draws it
+// the other way — the country polygons run right across the lake and meet in the middle — so
+// every consequence of "which polygon is this point in" was wrong over water: a click in the
+// middle of Tanganyika landed in a country, areas counted the lake as land, centroids were
+// pulled out into it, and the border graph had neighbours that share nothing but a horizon.
+//
+// So the lakes are STAMPED OUT of the polygons. That is a polygon difference and there is no
+// clipping library here, so this is one: Greiner-Hormann, difference only, with the degeneracy
+// handling that algorithm famously needs.
+
+// Greiner-Hormann for A minus B. Both rings are open (no repeated last point) arrays of [x, y].
+// Returns an array of rings, or null if the configuration defeated it — the caller then leaves
+// the country alone, which is exactly today's behaviour and never worse than it.
+const GH_EPS = 1e-12;
+function ghPointIn(q, ring) {
+    let hit = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i], b = ring[j];
+        if ((a[1] > q[1]) !== (b[1] > q[1]) &&
+            q[0] < (b[0] - a[0]) * (q[1] - a[1]) / (b[1] - a[1]) + a[0]) hit = !hit;
+    }
+    return hit;
+}
+function ghRingArea(r) {
+    let a = 0;
+    for (let i = 0; i < r.length; i++) { const b = r[(i + 1) % r.length]; a += r[i][0] * b[1] - b[0] * r[i][1]; }
+    return a / 2;
+}
+function ghDifference(A, B) {
+    const mk = ring => {
+        const list = ring.map(p2 => ({ x: p2[0], y: p2[1], inter: false, alpha: 0,
+                                       entry: false, visited: false, nb: null }));
+        list.forEach((n, i) => { n.next = list[(i + 1) % list.length]; n.prev = list[(i - 1 + list.length) % list.length]; });
+        return list;
+    };
+    const a0 = mk(A), b0 = mk(B);
+    const heads = [a0[0], b0[0]];
+    const walk = h => { const out = []; let n = h; do { out.push(n); n = n.next; } while (n !== h); return out; };
+
+    // Every crossing, inserted into BOTH lists in order along their own edge. Any intersection
+    // landing exactly on a vertex is a degeneracy this algorithm cannot classify, so the whole
+    // attempt is abandoned and the caller retries with the lake nudged — which is the standard
+    // and, on real coordinates, entirely effective answer to it.
+    let degenerate = false;
+    const aEdges = walk(heads[0]).filter(n => !n.inter);
+    const bEdges = walk(heads[1]).filter(n => !n.inter);
+    const found = [];
+    aEdges.forEach(pa => {
+        const qa = pa.next;
+        bEdges.forEach(pb => {
+            const qb = pb.next;
+            const rx = qa.x - pa.x, ry = qa.y - pa.y;
+            const sx = qb.x - pb.x, sy = qb.y - pb.y;
+            const den = rx * sy - ry * sx;
+            if (!den) return;
+            const t = ((pb.x - pa.x) * sy - (pb.y - pa.y) * sx) / den;
+            const u = ((pb.x - pa.x) * ry - (pb.y - pa.y) * rx) / den;
+            if (t < -GH_EPS || t > 1 + GH_EPS || u < -GH_EPS || u > 1 + GH_EPS) return;
+            if (t < 1e-9 || t > 1 - 1e-9 || u < 1e-9 || u > 1 - 1e-9) { degenerate = true; return; }
+            found.push({ pa, pb, t, u, x: pa.x + rx * t, y: pa.y + ry * t });
+        });
+    });
+    if (degenerate) return null;
+    if (!found.length) {
+        // No crossings: one is inside the other, or they are disjoint.
+        if (ghPointIn([B[0][0], B[0][1]], A)) return { rings: [A], holes: [B] };
+        if (ghPointIn([A[0][0], A[0][1]], B)) return { rings: [], holes: [] };
+        return { rings: [A], holes: [] };
+    }
+    const insert = (edgeStart, node, alpha) => {
+        let cur = edgeStart;
+        while (cur.next.inter && cur.next.alpha < alpha) cur = cur.next;
+        node.next = cur.next; node.prev = cur;
+        cur.next.prev = node; cur.next = node;
+    };
+    found.forEach(f => {
+        const na = { x: f.x, y: f.y, inter: true, alpha: f.t, entry: false, visited: false, nb: null };
+        const nb2 = { x: f.x, y: f.y, inter: true, alpha: f.u, entry: false, visited: false, nb: null };
+        na.nb = nb2; nb2.nb = na;
+        insert(f.pa, na, f.t);
+        insert(f.pb, nb2, f.u);
+    });
+    // Entry/exit. The two rings are labelled OPPOSITELY, and that is the whole of what makes the
+    // traversal cut a hole rather than keep one: on A a crossing is an entry when what follows is
+    // outside B, and on B when what follows is inside A. Verified against squares with known
+    // answers before it was pointed at a map — with both labels the same way round the same code
+    // returns the intersection (a corner clip of 1 rather than the 99 that is left), which is a
+    // plausible enough picture to have gone unnoticed on a coastline.
+    let st = ghPointIn([a0[0].x, a0[0].y], B);
+    walk(heads[0]).forEach(n => { if (n.inter) { n.entry = st; st = !st; } });
+    st = ghPointIn([b0[0].x, b0[0].y], A);
+    walk(heads[1]).forEach(n => { if (n.inter) { n.entry = !st; st = !st; } });
+
+    // The traversal. From an unvisited crossing on A, walk whichever way that crossing's flag
+    // says until the next crossing, jump to its twin on the other ring, and repeat until the walk
+    // arrives back where it began. Each closed walk is one ring of the answer.
+    const rings = [];
+    let guard = 0;
+    walk(heads[0]).filter(n => n.inter).forEach(start => {
+        if (start.visited) return;
+        const ring = [[start.x, start.y]];
+        let cur = start;
+        start.visited = true;
+        if (start.nb) start.nb.visited = true;
+        do {
+            if (guard++ > 400000) return;
+            if (cur.entry) { do { cur = cur.next; ring.push([cur.x, cur.y]); } while (!cur.inter); }
+            else { do { cur = cur.prev; ring.push([cur.x, cur.y]); } while (!cur.inter); }
+            cur.visited = true;
+            if (cur.nb) cur.nb.visited = true;
+            cur = cur.nb;
+            if (!cur) return;
+        } while (cur !== start);
+        if (ring.length >= 4) rings.push(ring);
+    });
+    if (guard > 400000) return null;
+    return { rings, holes: [] };
+}
+
+// One country polygon minus one lake ring, retried with the lake nudged when a crossing lands
+// exactly on a vertex. Natural Earth derives some borders FROM the lake outline, so shared
+// vertices are common rather than exotic and the retry is the ordinary path, not the rare one.
+function cutLakeFromPoly(poly, lake) {
+    for (let t = 0; t < 5; t++) {
+        const d = t ? (t % 2 ? 1 : -1) * 1e-7 * Math.ceil(t / 2) : 0;
+        const L = t ? lake.map(q => [q[0] + d, q[1] + d * 0.7]) : lake;
+        const r = ghDifference(poly[0], L);
+        if (!r) continue;
+        if (!r.rings.length && !r.holes.length) return { gone: true };
+        return { rings: r.rings, holes: (r.holes || []).map(h => h.slice().reverse()) };
+    }
+    return null;
+}
+
+const lakeCutCache = new WeakMap();
+let lakeCutRings = null;         // the lakes to cut with, once they have arrived
+let lakeCutStats = null;
+
+// Every lake as a plain ring with its bounding box, biggest first. Small ones are skipped: a
+// pond is not worth a boolean, and at 110m most of them are a handful of points.
+function lakeCutPrepare(feats) {
+    const out = [];
+    (feats || []).forEach(f => {
+        const parts = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : (f.geometry.coordinates || []);
+        parts.forEach(pp => {
+            const ring = (pp[0] || []).slice();
+            if (ring.length > 3 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+            if (ring.length < 8) return;
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            ring.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]);
+                                x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+            out.push({ ring, bb: [x0, y0, x1, y1], area: Math.abs(ghRingArea(ring)) });
+        });
+    });
+    out.sort((a, b) => b.area - a.area);
+    return out;
+}
+
+// The whole pass: every country, every lake whose box overlaps it. Bounding boxes first because
+// almost every pair fails on them in four comparisons, and a boolean is thousands of times
+// dearer than that.
+function cutLakesFromFeatures(features) {
+    if (!lakeCutRings || !lakeCutRings.length) return features;
+    if (lakeCutCache.has(features)) return lakeCutCache.get(features);
+    const stats = { clipped: 0, holed: 0, failed: 0, pairs: 0 };
+    const out = features.map(f => {
+        const g = f.geometry;
+        if (!g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) return f;
+        let parts = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+        let touched = false;
+        lakeCutRings.forEach(lk => {
+            const next = [];
+            parts.forEach(pp => {
+                const outer = pp[0] || [];
+                if (outer.length < 4) { next.push(pp); return; }
+                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+                outer.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]);
+                                     x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+                if (lk.bb[0] > x1 || lk.bb[2] < x0 || lk.bb[1] > y1 || lk.bb[3] < y0) { next.push(pp); return; }
+                // A ring that crosses the antimeridian has no meaningful planar signed area, and
+                // the winding fix below depends on one. Russia is the case, and a mis-wound
+                // Russia swallows the Canadian Arctic. So such a ring is UNWRAPPED first — every
+                // negative longitude shifted east by 360 — which makes it an ordinary ring again;
+                // no lake goes anywhere near ±180°, so the lake needs no shifting and the result
+                // is wrapped back on the way out. Without it Baikal and Ladoga stayed land.
+                const wrapped = x1 - x0 > 180;
+                const unwrap = q => wrapped && q[0] < 0 ? [q[0] + 360, q[1]] : q;
+                const rewrap = q => q[0] > 180 ? [q[0] - 360, q[1]] : q;
+                stats.pairs++;
+                const open = outer.map(unwrap);
+                if (open.length > 3 && open[0][0] === open[open.length - 1][0] &&
+                    open[0][1] === open[open.length - 1][1]) open.pop();
+                const r = cutLakeFromPoly([open], lk.ring);
+                if (!r) { stats.failed++; next.push(pp); return; }
+                if (r.gone) { touched = true; return; }
+                if (!r.rings.length && !r.holes.length) { next.push(pp); return; }
+                touched = true;
+                // WINDING. d3 reads a GeoJSON ring as spherical: counter-clockwise is the
+                // inside and clockwise is everything else on the earth. The clipper produces
+                // rings in whatever order the traversal happened to walk them, so a ring that
+                // came out backwards is not a country — it is the whole world except that
+                // country, and every point inside it reads as outside. Tanzania, Canada, the USA
+                // and Russia all vanished that way, which is to say every country with a big lake
+                // in it. Each output ring is turned to match the ring it came from, and each hole
+                // to the opposite.
+                const want = Math.sign(ghRingArea(open)) || 1;
+                const turn = (ring, sgn) => (Math.sign(ghRingArea(ring)) || 1) === sgn ? ring : ring.slice().reverse();
+                const out2 = ring => (wrapped ? ring.map(rewrap) : ring);
+                if (r.holes && r.holes.length) {
+                    stats.holed++;
+                    next.push([outer].concat(pp.slice(1),
+                        r.holes.map(h => { const t2 = out2(turn(h, -want)); return t2.concat([t2[0]]); })));
+                } else {
+                    stats.clipped++;
+                    r.rings.forEach(rr0 => {
+                        const rr = turn(rr0, want);
+                        const keep = pp.slice(1).filter(h => ghPointIn(unwrap(h[0]), rr));
+                        const w = out2(rr);
+                        next.push([w.concat([w[0]])].concat(keep));
+                    });
+                }
+            });
+            parts = next;
+        });
+        if (!touched || !parts.length) return f;
+        return { ...f, geometry: { type: 'MultiPolygon', coordinates: parts } };
+    });
+    lakeCutStats = stats;
+    lakeCutCache.set(features, out);
+    return out;
+}
+
+// The lakes arrive over the network (or out of the bundled file), so the first world drawn may
+// have none. Rather than blocking the map on them, the cut is applied when they land and the map
+// redrawn once — the same shape as the coastline model's own readiness gate.
+let lakeCutPending = false;
+function ensureLakeCut() {
+    if (lakeCutRings || lakeCutPending) return;
+    lakeCutPending = true;
+    const done = feats => {
+        lakeCutRings = lakeCutPrepare(feats);
+        lakeCutPending = false;
+        if (gameState && gameState.countries && gameState.countries.length && typeof reloadWorldDetail === 'function') {
+            const mc = QUIZ_MODES[gameState.mode];
+            if (mc && mc.mapObject === 'countries') reloadWorldDetail();
+        }
+    };
+    if (lakesCache['110m']) { done(lakesCache['110m']); return; }
+    d3.json('data/lakes.geo.json')
+        .then(d => { lakesCache['110m'] = (d && d.features) || []; done(lakesCache['110m']); })
+        .catch(() => { lakeCutRings = []; lakeCutPending = false; });
+}
+
 function worldFeaturesFromTopology(data) {
     const topo = worldTopoForDetail(data);
-    return topojson.feature(topo, topo.objects.countries).features;
+    ensureLakeCut();
+    return cutLakesFromFeatures(topojson.feature(topo, topo.objects.countries).features);
 }
 
 // The topology the current detail level actually draws — simplified where that applies.
@@ -8503,12 +8760,51 @@ function ensureCountryFacts() {
     });
 
     // ---- adjacency ----
+    //
+    // A shared border that runs through a LAKE is not a land border: the DRC and Tanzania are on
+    // opposite shores of Tanganyika and share nothing but a horizon. Natural Earth draws the
+    // countries meeting in the middle of the water, so the arc table says they touch — and every
+    // consequence of that (the neighbour lists, the border graph, who may bite whom in Who's
+    // Missing) inherited the mistake. A pair is dropped when EVERY arc they share lies in water.
+    const arcsRaw = topo.arcs && topo.transform ? null : topo.arcs;
+    const inAnyLake = q => (lakeCutRings || []).some(lk =>
+        !(lk.bb[0] > q[0] || lk.bb[2] < q[0] || lk.bb[1] > q[1] || lk.bb[3] < q[1]) && ghPointIn(q, lk.ring));
+    const arcPts = sbDecodeArcs(topo);
+    const sharedArcs = new Map();
+    const noteArc = (a, nm) => {
+        const k = a < 0 ? ~a : a;
+        if (!sharedArcs.has(k)) sharedArcs.set(k, new Set());
+        sharedArcs.get(k).add(nm);
+    };
+    const walkA = (arcs, depth, fn) => { if (depth === 0) { fn(arcs); return; } arcs.forEach(a => walkA(a, depth - 1, fn)); };
+    const dOf = g => g.type === 'Polygon' ? 2 : (g.type === 'MultiPolygon' ? 3 : -1);
+    geoms.forEach((g, i) => { const d = dOf(g); if (d > 0 && names[i]) walkA(g.arcs, d, a => noteArc(a, names[i])); });
+    const wetPair = new Map();
+    sharedArcs.forEach((who, k) => {
+        if (who.size !== 2) return;
+        const pts = arcPts[k];
+        if (!pts || pts.length < 2) return;
+        const mid = pts[pts.length >> 1];
+        const key = [...who].sort().join(' ');
+        const wet = inAnyLake(mid);
+        const cur = wetPair.get(key);
+        wetPair.set(key, { wet: (cur ? cur.wet : 0) + (wet ? 1 : 0), dry: (cur ? cur.dry : 0) + (wet ? 0 : 1) });
+    });
+    const throughWater = (a, b) => {
+        const v = wetPair.get([a, b].sort().join(' '));
+        return !!(v && v.wet && !v.dry);
+    };
+
     const neighbours = new Map();
     const nb = topojson.neighbors(geoms);
     geoms.forEach((g, i) => {
         if (!names[i]) return;
         const set = new Set();
-        (nb[i] || []).forEach(j => { if (names[j] && names[j] !== names[i]) set.add(names[j]); });
+        (nb[i] || []).forEach(j => {
+            if (!names[j] || names[j] === names[i]) return;
+            if (throughWater(names[i], names[j])) return;
+            set.add(names[j]);
+        });
         // A name can appear twice in the atlas (mainland + a stray micro-polygon); union them.
         if (neighbours.has(names[i])) set.forEach(v => neighbours.get(names[i]).add(v));
         else neighbours.set(names[i], set);
@@ -14917,6 +15213,17 @@ function sbEatCountry(rawTopo, goneName) {
                 const a = live[i].p, b = live[j].p;
                 return Math.abs((S[j] - S[i] + (b[0] * a[1] - a[0] * b[1])) / 2);
             };
+            // Point-in-region for this round's ring, by ray casting. Rebuilt per round because
+            // the ring is: every cut leaves a different region behind.
+            const inLive = q => {
+                let hit = false;
+                for (let k = 0, m = L - 1; k < L; m = k++) {
+                    const a2 = live[k].p, b2 = live[m].p;
+                    if ((a2[1] > q[1]) !== (b2[1] > q[1]) &&
+                        q[0] < (b2[0] - a2[0]) * (q[1] - a2[1]) / (b2[1] - a2[1]) + a2[0]) hit = !hit;
+                }
+                return hit;
+            };
             const cand = [];
             const lo = area0 * 0.02;
             const hi = Math.min(areaLeft * SB_BITE_MAX_FRAC, area0 * Math.max(0.02, sbChordMax / 100));
@@ -14969,10 +15276,15 @@ function sbEatCountry(rawTopo, goneName) {
                         if (!borrowed) continue;
                         const curve = borrowed.pts;
                         if (!curve.length) continue;
-                        // It may not cross the boundary anywhere: a curve that wanders out of the
-                        // country and back is not one cut but several.
+                        // Every point of it has to be INSIDE, and that is a different test from
+                        // "it does not cross". A borrowed stretch laid down from a point on the
+                        // boundary can start outside and come in, and a curve that begins outside
+                        // never re-enters in the sense a crossing count understands — it was
+                        // simply outside all along, and slipped through as if it were fine.
                         let bad = false;
                         const path2 = [P].concat(curve, [Q]);
+                        for (let a3 = 0; a3 < curve.length && !bad; a3++) if (!inLive(curve[a3])) bad = true;
+                        if (bad) continue;
                         for (let a3 = 0; a3 + 1 < path2.length && !bad; a3++)
                             for (let k = 0; k < L; k++) {
                                 if (k === i || k === j || (k + 1) % L === i || (k + 1) % L === j) continue;
@@ -17353,8 +17665,13 @@ function wsParts(code, doc) {
                                     if (up.hasAttribute(k2)) { inherit[k2] = up.getAttribute(k2); return; }
                                 }
                             });
+                        // `seq` is the order the flag DRAWS them in, which is not the order the
+                        // menu shows them in: the tiles are ranked by size so the charge is easy
+                        // to find. Order matters the moment several are taken together — an
+                        // outline drawn after the shape it outlines covers it — so the composite
+                        // is assembled by `seq` and the ranking is only ever a way of looking.
                         out.push({ xml: new XMLSerializer().serializeToString(c), defs, ctm: pctm, inherit, box,
-                                   tag: c.tagName.toLowerCase(), frac });
+                                   tag: c.tagName.toLowerCase(), frac, seq: out.length });
                     }
                 }
                 if (depth < 3) walk(c, depth + 1);
@@ -17605,9 +17922,10 @@ const wsCodeOf = n => ((window.countryData || {})[effectiveDataName(n)] || {}).c
 // asks somebody to reassemble by eye what the flag had already assembled. Each part keeps its own
 // matrix and its own inherited paint on a wrapper of its own, so the composite is the pieces
 // exactly where they stood relative to each other, and its box is their union.
-function wsCombine(parts) {
-    if (!parts.length) return null;
-    if (parts.length === 1) return parts[0];
+function wsCombine(parts0) {
+    if (!parts0.length) return null;
+    if (parts0.length === 1) return parts0[0];
+    const parts = parts0.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
     const x0 = Math.min(...parts.map(q => q.box.x)), y0 = Math.min(...parts.map(q => q.box.y));
     const x1 = Math.max(...parts.map(q => q.box.x + q.box.w)), y1 = Math.max(...parts.map(q => q.box.y + q.box.h));
     return {

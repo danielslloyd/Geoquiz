@@ -17,6 +17,56 @@ Interactive geography quiz game built with vanilla JS and D3.js.
   - **NASA live fallback (for deploys without the gitignored cap tiles, e.g. Netlify).** `probeLocalTiles()` HEAD-checks `earth-cap-c0-r0.jpg` on entry; a 404 (or non-image 200) flips `orbitalNasaFallback` and, instead of the local tiles, each round **crops just the visible cap** straight out of a NASA equirectangular source and drapes it on a partial-sphere mesh (`nasaCapRect`→`capDestSize`→`setNasaCapMesh`/`makeRectMesh`), so the texture is always ≤ the GPU ceiling (never the whole oversized globe). Default source is the single **21600×10800** globe (`loadNasaGlobe`, prefers 21600, falls back to 5400×2700 if it won't decode; cropped via `cropGlobeToCanvas`, a 3-copy draw that handles antimeridian wrap). The **"500 m tiles"** checkbox (`#tune-hires-500m` → `orbitalUse500m`) opts into fetching NASA's full 21600² **500m** tiles live and stitching the cap from them (`build500mCap`/`tilePieces500m`/`fetch500mTile`, `createImageBitmap` crop+resize so a 466 MP tile is never held as a canvas); this works even when local tiles are present and falls back to the globe crop on any failure. `orbitalRefreshCap` picks the source (local tiles / globe crop / 500m); `orbitalCapToken` voids stale async builds. Crop canvases are capped at `CAP_TEX_MAX` (12000 px) for memory.
 - `data/lakes.geo.json` — Natural Earth **110m** major lakes (Great Lakes, Victoria, Baikal, …), drawn as an overlay on world maps (`drawLakes`). Lakes track the map's detail level (`lakesResForDetail`): `low`/`medium` both use the bundled local 110m file, `high` fetches 50m from jsdelivr (`martynafford/natural-earth-geojson`), cached in `lakesCache` with the local file as fallback. `medium` maps to 110m (not 50m) deliberately — country coastlines at `medium` are the 50m source simplified down to `MEDIUM_SIMPLIFY_RETAIN` (20%, locked) client-side, but raw 50m lakes have no equivalent simplification pass, so they used to render sharper than the coastline they sit inside; 110m lakes are close in coarseness to a 20%-simplified 50m coastline and need no network fetch. They share the globe's `userSpaceOnUse` `#ocean-gradient` (kept in sync by `syncOceanGradient`) so they read as ocean; on flat maps they fill `var(--surface)` (the flat-map ocean colour) and carry a `var(--land-stroke)` coastline border. `MIN_LAKE_DIAM_KM` (32 km, locked) filters out lakes below Great Salt Lake size via `lakeInscribedDiamKm`.
 
+## Lakes are cut out of the countries
+
+Natural Earth draws the countries round a lake as meeting in the middle of the water: the DRC's
+polygon and Tanzania's share a border down Lake Tanganyika. Every consequence of "which polygon
+is this point in" inherited that — a click in the middle of the lake landed in a country, areas
+counted the water as land, centroids were pulled out into it, and the border graph had neighbours
+that share nothing but a horizon.
+
+So the lakes are **stamped out of the polygons**, in `worldFeaturesFromTopology`, before anything
+downstream sees them. That is a polygon difference and there is no clipping library here, so
+`ghDifference` is one: Greiner–Hormann, difference only. Measured on the 110m world: **58
+country/lake pairs clipped, 0 failures**; 12 of 12 probe points in big lakes now read as water and
+12 of 12 land points still read as their own country. Areas land on the published LAND figures
+rather than the totals — Uganda 216,709 km² against a total of 241,550, Malawi 99,611 against
+118,484.
+
+Four things it has to get right, and three of them produced a plausible-looking map while being
+completely wrong:
+
+* **The two rings are labelled OPPOSITELY.** On the country a crossing is an entry when what
+  follows is outside the lake; on the lake, when what follows is inside the country. With both the
+  same way round the identical code returns the INTERSECTION — a corner clip of 1 rather than the
+  99 that is left — which is a plausible enough picture to go unnoticed on a coastline. It was
+  caught by clipping squares with known answers before it was ever pointed at a map.
+* **Winding.** d3 reads a GeoJSON ring spherically: counter-clockwise is the inside, clockwise is
+  the whole earth except it. The clipper emits rings in whatever order the traversal walked them,
+  so a backwards ring is not a country but everything that is not that country — Tanzania, Canada,
+  the USA and Russia all vanished at once, which is to say every country with a big lake in it.
+  Each output ring is turned to match the ring it came from and each hole to the opposite.
+* **The antimeridian.** A ring crossing ±180° has no meaningful planar signed area, and the
+  winding fix depends on one; a mis-wound Russia swallows the Canadian Arctic. Those rings are
+  unwrapped (every negative longitude shifted east by 360), clipped, and wrapped back. Skipping
+  them instead left Baikal and Ladoga as land.
+* **Degeneracies.** Natural Earth derives some borders FROM the lake outline, so a crossing landing
+  exactly on a vertex is the ordinary case rather than an exotic one. Greiner–Hormann cannot
+  classify those, so the attempt is abandoned and retried with the lake nudged a ten-millionth of
+  a degree, up to five times; a pair that still will not clip is left alone, which is exactly the
+  old behaviour and never worse than it.
+
+**Adjacency is fixed separately**, because it is derived from the ARC TABLE rather than from the
+polygons: a pair of countries is dropped when every arc they share has its midpoint in a lake.
+That is what makes `playableNeighbours`, the border graph and Who's Missing agree with the map —
+the DRC's neighbour list no longer contains Tanzania, and Tanzania's no longer contains the DRC.
+The rule is deliberately conservative (EVERY shared arc must be wet), so a pair meeting on land at
+one end of a lake keeps its border.
+
+The lakes arrive over the network, so the first world drawn may have none; the cut is applied when
+they land and the map redrawn once, the same shape as the coastline model's own readiness gate.
+The cutting set is the bundled 110m file at every detail level.
+
 ## Country dots (dynamic)
 
 `drawIslandMarkers`/`updateIslandMarkers` decide per-redraw whether each small feature shows as a clickable dot or its polygon outline, based on the size of the feature's **largest individual polygon part** vs `DOT_PIXEL_THRESHOLD` — not the bounding box of every part combined. A feature whose parts are scattered across a wide area (e.g. a 10-island nation spanning many degrees) would otherwise register as "big" from its combined bbox alone even if no single island is more than a pixel; measuring per-part fixes that. On **flat maps** this is `featureMaxPartPixelDim` (splits the feature into its polygon parts via `featureParts`, takes `path.bounds` of each part individually, keeps the max). On the **globe** it's `featureAngularDim` (same per-part split, `angularDimOfPart` computes each part's angular size directly from its own points rather than via `d3.geoBounds`, then the max across parts is multiplied by projection scale) — cached per candidate as `d.angDim` — so the dot/outline choice depends only on zoom, **not** on how far the country has rotated toward the limb. Per-part angular sizing bypasses `d3.geoBounds` deliberately: on an *isolated* small ring that happens to sit right at ±180° (e.g. a sliver of Fiji), `d3.geoBounds` can't tell which side is "outside" without more surrounding context and reports the full 360° — `lonSpanDeg` (360° minus the largest gap between sorted longitudes) resolves this correctly from the ring's own points. Every quiz item is therefore always shown as *either* geometry or a dot at every detail level. `drawIslandMarkers` keeps the **largest** feature per name (some atlas resolutions split a country into a real polygon plus a stray micro-polygon — e.g. Australia at 50m — which would otherwise be mistaken for a dot; this is a *different* mechanism from the per-part sizing above — it dedups across multiple array entries sharing a name, not across parts within one entry's geometry). Big features (`geoArea > DOT_CANDIDATE_AREA`, a sum-of-areas check unaffected by part scatter) are always outlines and skip the check. World micro-states with no polygon always dot (anchored at `capitalCoords`). Visible dots are spread apart by `relaxDots` (min centre-to-centre `DOT_SPACING` px; also nudged off small outline polygons) so dense clusters (Caribbean/Pacific) stay legible. The spaceship view shows neither dots nor highlights.
