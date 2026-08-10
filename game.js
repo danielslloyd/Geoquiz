@@ -13574,6 +13574,15 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // first cut regularly took 60% and everything after it was a trimming.
 const SB_CHORD_MAX_DEFAULT = 30;
 let sbChordMax = SB_CHORD_MAX_DEFAULT;
+// Area over length is what finds a waist. Area over length to a POWER finds a narrower one: at 1
+// a cut twice as long is worth taking if it breaks off twice the land, and at 2 it has to break
+// off four times. Raising it pushes the construction toward small bites at genuinely narrow
+// places and away from long sweeps across the middle.
+// 1 is area over length, which is what a waist IS. Above it the construction prefers a shorter
+// line even at the cost of the land behind it, which is how a knob for "smaller bites" has to
+// work; much above 1.2 and it stops finding waists at all and starts nibbling corners.
+const SB_CHORD_POW_DEFAULT = 1.15;
+let sbChordPow = SB_CHORD_POW_DEFAULT;
 
 const SB_BITE_ALGOS = {
     'slide': { label: 'Slide the border in',
@@ -13648,6 +13657,137 @@ let sbBiteOrder = 'border';
 // slightly sheared by the latitude it came from. That is invisible and beside the point: what
 // is being borrowed is the CHARACTER of a border, not a particular border.
 let sbBorderShapeCache = { src: null, list: null };
+// Borrow a stretch of a real border and lay it between two points, by TRANSLATION AND ROTATION
+// only. Nothing is stretched, nothing is squashed, and nothing is resampled: what lands on the
+// map is a piece of a real border at its real size, in its real shape.
+//
+// That is a bigger claim than it sounds, because the thing it replaces was a normalised height
+// profile -- offsets from the chord, sampled at even fractions along it -- and a height profile
+// can only ever describe a border that is a FUNCTION of its own chord. Real borders are not: a
+// river doubles back, a frontier hooks round a hill and returns. Every one of those was being
+// flattened into the nearest single-valued curve, which is why the borrowed borders all had the
+// same well-behaved character however wild the border they came from.
+//
+// The trick is to choose WHICH stretch. A rigid move cannot make a border of one length span a
+// gap of another, so the gap is what picks the stretch: walk the border for a pair of points
+// exactly |PQ| apart and take what lies between them, trimming off the rest. A border is a long
+// thing and there are many such pairs; the one taken is whichever wanders the most for its own
+// span without doubling back so far it reads as a hook.
+const SB_BORROW_STARTS = 26;
+const SB_BORROW_MIN_WANDER = 1.004;  // straighter than this is a ruler and lends nothing
+const SB_BORROW_MAX_WANDER = 2.6;    // wigglier than this is a hook, not a border
+// ...and the one taken is the stretch closest to THIS, not the wiggliest available. Taking the
+// most contorted stretch on offer produced cuts two and a half times longer than the gap they
+// spanned, which fail the no-crossing test almost every time and leave only the tiniest bites
+// standing. Real land borders run about a third longer than the line between their ends.
+const SB_BORROW_WANT_WANDER = 1.3;
+function sbBorrowRigid(pts, P, Q, flip, seed) {
+    if (!pts || pts.length < 4) return null;
+    const dx = Q[0] - P[0], dy = Q[1] - P[1], L = Math.hypot(dx, dy);
+    if (!(L > 0)) return null;
+    const n = pts.length;
+    // Cumulative arc length, so "how far did it wander to get there" is a subtraction.
+    const cum = new Array(n);
+    cum[0] = 0;
+    for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    if (cum[n - 1] < L * SB_BORROW_MIN_WANDER) return null;      // the whole border is too short
+    let best = null;
+    const step = Math.max(1, Math.floor(n / SB_BORROW_STARTS));
+    for (let i = (seed % step); i < n - 2; i += step) {
+        // The first point at least L away in a straight line, then the exact crossing on that
+        // segment: the pair has to be EXACTLY |PQ| apart or the rigid move misses one end.
+        let j = -1;
+        for (let k = i + 1; k < n; k++) {
+            if (Math.hypot(pts[k][0] - pts[i][0], pts[k][1] - pts[i][1]) >= L) { j = k; break; }
+        }
+        if (j < 0) continue;
+        const a = pts[j - 1], b = pts[j];
+        const ex = a[0] - pts[i][0], ey = a[1] - pts[i][1];
+        const fx = b[0] - a[0], fy = b[1] - a[1];
+        // |a + t(b-a) - pts[i]| = L, solved for t in [0,1].
+        const A = fx * fx + fy * fy, B = 2 * (ex * fx + ey * fy), C = ex * ex + ey * ey - L * L;
+        const disc = B * B - 4 * A * C;
+        if (!(A > 0) || disc < 0) continue;
+        const t = (-B + Math.sqrt(disc)) / (2 * A);
+        if (!(t >= 0 && t <= 1)) continue;
+        const end = [a[0] + fx * t, a[1] + fy * t];
+        const arc = cum[j - 1] - cum[i] + Math.hypot(fx * t, fy * t);
+        const wander = arc / L;
+        if (wander < SB_BORROW_MIN_WANDER || wander > SB_BORROW_MAX_WANDER) continue;
+        const off = Math.abs(Math.log(wander / SB_BORROW_WANT_WANDER));
+        if (!best || off < best.off) best = { i, j, end, wander, off };
+    }
+    if (!best) return null;
+    // Rigid: translate the chosen start onto P, rotate its chord onto PQ, and mirror across it if
+    // asked. A mirror is still an isometry -- the border keeps its length and its every angle,
+    // it is simply seen from the other side.
+    const S = pts[best.i], E = best.end;
+    const sx = (E[0] - S[0]) / L, sy = (E[1] - S[1]) / L;   // unit chord of the borrowed stretch
+    const ux = dx / L, uy = dy / L;                          // unit chord it must land on
+    const ca = ux * sx + uy * sy, sa = uy * sx - ux * sy;    // rotation taking one to the other
+    const out = [];
+    const put = q => {
+        const vx = q[0] - S[0], vy = q[1] - S[1];
+        const rx = ca * vx - sa * vy, ry = sa * vx + ca * vy;
+        const my = flip < 0 ? -1 : 1;
+        // The mirror is about the LANDED chord, so it is applied after the rotation, in the
+        // frame where the chord is the x axis.
+        const px2 = ux * rx + uy * ry, py2 = (-uy * rx + ux * ry) * my;
+        out.push([P[0] + ux * px2 - uy * py2, P[1] + uy * px2 + ux * py2]);
+    };
+    for (let k = best.i + 1; k < best.j; k++) put(pts[k]);
+    return { pts: out, wander: best.wander, from: best.i, to: best.j };
+}
+
+// The borrowable borders. Two kinds, and the second exists because of a hard limit on the first:
+// a rigid borrow needs a stretch EXACTLY as long as the gap it has to span, and at 110m the arc
+// table cuts every border at every tripoint, so the longest single arc in the world is 64 units
+// against chords of 350 to 770. Nothing could ever have been borrowed for a chord.
+//
+// So a country's whole BOUNDARY is offered as well: not one border but the continuous line round
+// it, which is as real a boundary as any single arc of it and long enough to lend a stretch of
+// any length. Some of that line is coast, and coast is a boundary too -- the story says which it
+// was, since "traced from Peru's boundary" and "traced from the Peru-Brazil border" are different
+// claims and only one of them is true of a given cut.
+function sbBoundaryShapes(topo, arcs) {
+    const out = [];
+    const geoms = (topo.objects.countries && topo.objects.countries.geometries) || [];
+    geoms.forEach(gm => {
+        const rings = gm.type === 'Polygon' ? gm.arcs : (gm.arcs || []).flatMap(pp => pp);
+        let best = null;
+        rings.forEach(refs => {
+            const pts = [];
+            refs.forEach(ref => {
+                const a2 = arcs[ref < 0 ? ~ref : ref];
+                if (!a2) return;
+                const seq = ref < 0 ? a2.slice().reverse() : a2;
+                seq.forEach((q, k) => { if (k || !pts.length) pts.push(q); });
+            });
+            if (pts.length < 24) return;
+            let len = 0;
+            const seg = [];
+            for (let k = 1; k < pts.length; k++) {
+                const d = Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+                len += d; seg.push(d);
+            }
+            // A ring that straddles the antimeridian has one enormous phantom segment where the
+            // coordinates jump, and its length is mostly that: Russia's boundary was the longest
+            // in the world by a wide margin, and every borrowed cut came from it — from a
+            // rendering artefact, drawn as if it were a border. The test is against the ring's own
+            // MEDIAN segment rather than against its length, because at 110m a real segment can
+            // legitimately be a large fraction of a short ring while a jump is orders of magnitude
+            // longer than anything real.
+            const med = seg.slice().sort((x, y) => x - y)[seg.length >> 1] || 0;
+            if (med > 0 && Math.max(...seg) > med * 40) return;
+            if (!best || len > best.len) best = { pts, len };
+        });
+        const nm = sbGeomName(gm);
+        if (best && nm) out.push({ pts: best.pts, len: best.len, id: -1,
+                                   owners: [nm], boundary: true, ys: null });
+    });
+    return out;
+}
+
 function sbBorderShapes(topo, owners, arcs) {
     if (sbBorderShapeCache.src === topo && sbBorderShapeCache.list) return sbBorderShapeCache.list;
     const out = [];
@@ -13670,13 +13810,21 @@ function sbBorderShapes(topo, owners, arcs) {
             ys.push(y);
             big = Math.max(big, Math.abs(y));
         }
-        // A ruler has nothing to lend, and a hook mapped onto a chord folds back over itself.
-        if (big < 0.02 || big > 0.28) return;
+        // A ruler has nothing to lend. The upper bound is gone: a border that doubles back is
+        // exactly what a rigid borrow can now carry, and rejecting it was a limit of the height
+        // profile rather than of the border.
+        if (big < 0.02) return;
         ys[0] = 0; ys[SB_BITE_SAMPLES - 1] = 0;
         // The identity rides along so the sandbox can say — and draw — where a bitemark came
         // from. It costs nothing: these are references into the arc table, not copies.
-        out.push({ ys, id, owners: gs.map(sbGeomName), pts });
+        // Its total length, so a caller needing to span a given gap can ask for a border long
+        // enough to do it rigidly before trying: a chord across a country is longer than most
+        // single arcs, and there is no point walking one that could never reach.
+        let len = 0;
+        for (let k = 1; k < n; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+        out.push({ ys, id, owners: gs.map(sbGeomName), pts, len });
     });
+    sbBoundaryShapes(topo, arcs).forEach(sh => out.push(sh));
     sbBorderShapeCache = { src: topo, list: out };
     return out;
 }
@@ -13994,7 +14142,20 @@ function sbEatCountry(rawTopo, goneName) {
     const area0 = Math.abs(areaOf(closed(ring)));
     if (!(area0 > 0)) return sbNo('tiny');
 
-    const shapes = sbBorderShapes(topo, owners, arcs);
+    // The borrowable borders, in the SAME local kilometre frame as the region's own ring. They
+    // are read out of the arc table in degrees, and a rigid borrow — unlike the normalised height
+    // profile it replaces — is a claim about lengths: a border measured in degrees can never be
+    // the length of a chord measured in kilometres, and every borrow simply failed to find a
+    // stretch that fitted. (Zambia's chords ran 354 to 767 while its own boundary measured 46.)
+    const shapes = sbBorderShapes(topo, owners, arcs).map(sh => ({
+        ...sh, pts: sh.pts.map(toM), len: null
+    }));
+    shapes.forEach(sh => {
+        let L = 0;
+        for (let k = 1; k < sh.pts.length; k++)
+            L += Math.hypot(sh.pts[k][0] - sh.pts[k - 1][0], sh.pts[k][1] - sh.pts[k - 1][1]);
+        sh.len = L;
+    });
     if (!shapes.length) return sbNo('topology');
 
     const cross = (p, q, r, t) => {
@@ -14068,6 +14229,8 @@ function sbEatCountry(rawTopo, goneName) {
             if (!(span > total * 0.05)) return null;      // nearly closed: no chord to measure from
             const ux = (Q[0] - P[0]) / span, uy = (Q[1] - P[1]) / span;
             const ys = [];
+            // `pts` is what the borrow actually uses; `ys` survives only as the little picture
+            // the story draws of the border a cut was taken from.
             for (let i = 0; i < SB_BITE_SAMPLES; i++) {
                 const k = Math.round(i * (run.length - 1) / (SB_BITE_SAMPLES - 1));
                 const dx = run[k][0] - P[0], dy = run[k][1] - P[1];
@@ -14156,8 +14319,15 @@ function sbEatCountry(rawTopo, goneName) {
         // What the continuations are currently drawn with: the trace's offsets, which mirroring
         // of them, and which of the three targets to aim at. Set by the search loop and read by
         // `attempt`, which is called from three places and would otherwise have to thread them.
-        let extYs = null, extFlip = 1, extAim = 0;
-        const SB_AIM_MINS = [0, 0.5, 1.2];
+        let extShape = null, extFlip = 1, extAim = 0;
+        // How far away a continuation may be made to aim, as a multiple of the frontier's own
+        // span. The nearest boundary is the shortest new border, which is what the yield
+        // criterion wants; the others exist because a cut that closes the instant it can takes
+        // almost nothing. They used to run to 1.2 spans, which on a long frontier is most of a
+        // country away -- Egypt's cut into Sudan reached past Libya's corner and the Red Sea and
+        // came down on Chad and Ethiopia. Half that is still room to reach and no longer room to
+        // cross the country by accident.
+        const SB_AIM_MINS = [0, 0.25, 0.6];
         const nearestOut = (e, aim) => {
             const floor2 = Math.pow(span * SB_AIM_MINS[aim || 0], 2);
             let best = null, bd = Infinity;
@@ -14169,7 +14339,7 @@ function sbEatCountry(rawTopo, goneName) {
             }
             return best;
         };
-        const continueOut = (e, t, ys, flip) => {
+        const continueOut = (e, t, shape, flip) => {
             const tgt = nearestOut(e, extAim) || nearestOut(e, 0);
             if (!tgt) return null;
             // A little past it, so the last point is outside the country and the crossing sweep
@@ -14177,12 +14347,15 @@ function sbEatCountry(rawTopo, goneName) {
             const dx = tgt[0] - e[0], dy = tgt[1] - e[1];
             const L = Math.hypot(dx, dy);
             if (!(L > 0)) return null;
-            const ux = dx / L, uy = dy / L, px2 = -uy, py2 = ux;
-            const reach = L * 1.06;
+            const T2 = [e[0] + dx * 1.06, e[1] + dy * 1.06];
+            const borrowed = shape && shape.pts && sbBorrowRigid(shape.pts, e, T2, flip, seed);
+            if (borrowed) return borrowed.pts.concat([T2]);
+            // Nothing of that border is the right length to reach: a straight run, which is what
+            // a continuation with nothing to borrow honestly is.
             const out = [];
             for (let j = 1; j <= SB_BITE_EXT; j++) {
-                const a = j / SB_BITE_EXT, off = yAt(ys, a) * flip * L;
-                out.push([e[0] + ux * reach * a + px2 * off, e[1] + uy * reach * a + py2 * off]);
+                const a = j / SB_BITE_EXT;
+                out.push([e[0] + (T2[0] - e[0]) * a, e[1] + (T2[1] - e[1]) * a]);
             }
             return out;
         };
@@ -14209,8 +14382,8 @@ function sbEatCountry(rawTopo, goneName) {
         const attempt = st => {
             const tPn = tanOut(st[0], st[Math.min(2, st.length - 1)]);
             const tQn = tanOut(st[st.length - 1], st[Math.max(0, st.length - 3)]);
-            const head = continueOut(st[0], tPn, extYs, extFlip);
-            const tail = continueOut(st[st.length - 1], tQn, extYs, -extFlip);
+            const head = continueOut(st[0], tPn, extShape, extFlip);
+            const tail = continueOut(st[st.length - 1], tQn, extShape, -extFlip);
             if (!head || !tail) return null;
             const S = head.slice().reverse().concat(st, tail);
             const xs = [];
@@ -14547,14 +14720,20 @@ function sbEatCountry(rawTopo, goneName) {
         // closed to have a chord has no trace of its own to normalise, and falls back to one
         // sampled from the topology.)
         const own1 = ownTrace();
-        const srcs = own1 ? [own1] : [shapes[seed % shapes.length]];
+        const withYs = shapes.filter(sh => sh.ys);
+        const srcs = own1 ? [own1] : [withYs.length ? withYs[seed % withYs.length] : shapes[seed % shapes.length]];
         extAim = 0;
 
         let best = null;
         const score = got => {
             // Symmetric fit: as bad to take three times the ask as a third of it.
             const reach = got.at.area <= want ? got.at.area / want : want / got.at.area;
-            return { reach, score: reach * 3 + compactness(closed(got.at.rest)) };
+            // ...and a cut that spends far more border than the boundary it swallowed is being
+            // paid for by its two continuations, which means they went a long way. Without this
+            // term the deepest cut that lands wins on `reach` alone however extravagantly it got
+            // there, which is what sent Egypt's cut across Sudan to Chad.
+            const over = got.at.hostLen > 0 ? Math.max(0, got.at.cutLen / got.at.hostLen - 1) : 0;
+            return { reach, score: reach * 3 + compactness(closed(got.at.rest)) - over };
         };
         const take = (got, src, flip) => {
             if (!got || got.at.area < want * 0.05) return;        // barely a scratch
@@ -14562,22 +14741,27 @@ function sbEatCountry(rawTopo, goneName) {
             if (!best || sc.score > best.score) best = { ...sc, got, src, flip };
         };
         const searchWith = () => {
-            // Which rotations are worth a full look, judged on one flip only -- a rotation
-            // decides the cut's middle and the mirroring decides its ends, so one settles the
-            // other perfectly well and the full cross-product costs twice as much for the same
-            // answer.
-            const ranked = [];
-            for (const ang of SB_BITE_SPINS) {
-                extYs = srcs[0].ys; extFlip = 1; extAim = 0;
-                const got = efficient(ang);
-                if (got) ranked.push({ ang, k: got.yield2 || 1e-9 });
+            // A rotation is a last resort, not a first one. Turning the stencil is the one thing
+            // in this construction that stops the new border being a copy of the old one in
+            // ORIENTATION as well as in shape, so it is tried only when the frontier moved
+            // straight in cannot get near what it is owed.
+            extShape = srcs[0]; extFlip = 1; extAim = 0;
+            const straight = efficient(0);
+            const keep = [0];
+            if (!straight || (straight.at && straight.at.area < want * 0.75)) {
+                const ranked = [];
+                for (const ang of SB_BITE_SPINS) {
+                    if (!ang) continue;
+                    extShape = srcs[0]; extFlip = 1; extAim = 0;
+                    const got = efficient(ang);
+                    if (got) ranked.push({ ang, k: got.yield2 || 1e-9 });
+                }
+                ranked.sort((a, b) => b.k - a.k);
+                ranked.slice(0, 2).forEach(x => keep.push(x.ang));
             }
-            ranked.sort((a, b) => b.k - a.k);
-            const keep = ranked.slice(0, 2).map(x => x.ang);
-            if (!keep.length) keep.push(0);
             srcs.forEach(src => {
                 for (const aim of [0, 1, 2]) for (const flip of [1, -1]) for (const ang of keep) {
-                    extYs = src.ys; extFlip = flip; extAim = aim;
+                    extShape = src; extFlip = flip; extAim = aim;
                     take(efficient(ang), src, flip);
                 }
             });
@@ -14752,7 +14936,7 @@ function sbEatCountry(rawTopo, goneName) {
                     const dx = live[j].p[0] - live[i].p[0], dy = live[j].p[1] - live[i].p[1];
                     const len = Math.hypot(dx, dy);
                     if (!(len > 0)) continue;
-                    cand.push({ i, j, ar, k: ar / len });
+                    cand.push({ i, j, ar, k: ar / Math.pow(len, Math.max(0.5, sbChordPow)) });
                 }
             }
             if (!cand.length) break;
@@ -14767,19 +14951,23 @@ function sbEatCountry(rawTopo, goneName) {
                 const span = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
                 const ux = (Q[0] - P[0]) / span, uy = (Q[1] - P[1]) / span;
                 const px2 = -uy, py2 = ux;
+                // Only borders long enough to span this chord RIGIDLY are worth walking: a
+                // stretch has to be exactly |PQ| across, and a border shorter than that end to
+                // end has no such stretch anywhere in it. A chord across a country is longer
+                // than most single arcs, so without this filter almost every candidate was
+                // failing on a border that could never have reached.
+                const fit = shapes.filter(sh => sh.len >= span * 1.02);
+                if (!fit.length) continue;
                 for (let sIdx = 0; sIdx < SB_BITE_CURVES && !got; sIdx++) {
-                    const src = shapes[(i * 31 + sIdx * 37) % shapes.length];
+                    const src = fit[(i * 31 + sIdx * 37) % fit.length];
                     for (const flip of [1, -1]) {
-                        // The traced border, spanning the chord: its own offsets, at the chord's
-                        // own length, so it is a real border at true amplitude rather than a
-                        // scaled impression of one.
-                        const curve = [];
-                        for (let t = 1; t < SB_BITE_SAMPLES - 1; t++) {
-                            const a2 = t / (SB_BITE_SAMPLES - 1);
-                            const off = src.ys[t] * flip * span;
-                            curve.push([P[0] + ux * span * a2 + px2 * off,
-                                        P[1] + uy * span * a2 + py2 * off]);
-                        }
+                        // A stretch of that border, exactly this chord's length, moved here by
+                        // translation and rotation alone: what lands is a piece of a real border
+                        // at its real size and in its real shape, doubling back where it doubles
+                        // back rather than flattened into a curve that never could.
+                        const borrowed = sbBorrowRigid(src.pts, P, Q, flip, i + sIdx);
+                        if (!borrowed) continue;
+                        const curve = borrowed.pts;
                         if (!curve.length) continue;
                         // It may not cross the boundary anywhere: a curve that wanders out of the
                         // country and back is not one cut but several.
@@ -14841,7 +15029,7 @@ function sbEatCountry(rawTopo, goneName) {
                         const edges = [...held.entries()].map(e2 => ({ name: e2[0], km: e2[1] }))
                             .sort((x, y) => y.km - x.km);
                         got = { i, j, piece, rest: rest, whole: merged, again: pieces.has(who),
-                                cut: path2, who, ar: aP, src, flip, areaLeft, edges,
+                                cut: path2, who, ar: aP, src, flip, areaLeft, edges, borrowed,
                                 chord: [P, Q], chordKm: span, rank: c, ratio: cand[c].k, bestRatio: cand[0].k,
                                 tried: Math.min(cand.length, chordCandidates), pairs: cand.length };
                         break;
@@ -14873,7 +15061,8 @@ function sbEatCountry(rawTopo, goneName) {
                 tried: got.tried, pairs: got.pairs, edges: got.edges,
                 regionBefore: closed(live).map(toDeg),
                 cut: got.cut.map(toDeg), piece: closed(got.piece).map(toDeg),
-                source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys, own: false }
+                source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys, own: false,
+                          pts: got.borrowed.pts.map(toDeg), wander: got.borrowed.wander }
             });
             live = got.rest;
         }
@@ -16021,7 +16210,14 @@ function msBuildPanel() {
         `<span class="ms-unit">%</span></label>` +
         `<div class="ms-order-hint">The most any one cut may take, as a share of the whole country ` +
         `— not of what is left, which is a different and much weaker limit. At 60% the first cut ` +
-        `took most of the country and every later one was a trimming.</div></div>` +
+        `took most of the country and every later one was a trimming.</div>` +
+        `<label class="ms-order"><span>Length penalty</span>` +
+        `<input type="number" id="ms-chord-pow" min="0.6" max="2.5" step="0.05" value="${sbChordPow}">` +
+        `</label>` +
+        `<div class="ms-order-hint">The power the chord's own length is raised to when ranking ` +
+        `cuts. At 1 this is area over length, which is what a waist IS; above it a shorter line is ` +
+        `preferred even at the cost of the land behind it, which is how a knob for smaller bites ` +
+        `has to work. Much past 1.2 it stops finding waists and starts nibbling corners.</div></div>` +
         `<div id="ms-slide-only">` +
         `<label class="ms-order"><span>Turn order</span>` +
         `<select id="ms-order-sel">` +
@@ -16069,6 +16265,13 @@ function msBuildPanel() {
         const hint = document.getElementById('ms-order-hint');
         if (hint) hint.textContent = SB_BITE_ORDERS[sbBiteOrder].hint;
         redo('Order changed. Pick a country off the map.');
+    });
+    const cpow = document.getElementById('ms-chord-pow');
+    if (cpow) cpow.addEventListener('change', () => {
+        const v = Math.max(0.6, Math.min(2.5, +cpow.value));
+        cpow.value = isFinite(v) ? v : SB_CHORD_POW_DEFAULT;
+        sbChordPow = +cpow.value;
+        redo('Length penalty changed. Pick a country off the map.');
     });
     const cmax = document.getElementById('ms-chord-max');
     if (cmax) cmax.addEventListener('change', () => {
@@ -16167,6 +16370,13 @@ function msBeginStory(nm, eaten, topo) {
               [{ phase: 'done' }])
         : null;
     msState.story = { nm, eaten, colours, shares, steps, i: 0, applied: false };
+    // A click SHOWS THE ANSWER. Walking through the construction is the more interesting half of
+    // this tool and it is still one button away, but it is not what somebody clicking a country
+    // is asking for — they are asking what happens to it, and making them press Next six times
+    // to find out turns every parameter change into a six-press chore.
+    msState.story.i = msStorySteps(msState.story) - 1;
+    msState.story.applied = true;
+    gameState.countries = eaten.features;
     // Frame the neighbourhood — this is the sandbox, so there is no answer to give away.
     if (sbFitToFeatures([nm, ...eaten.absorbers], 0.1)) drawCountries();
     msPaint();
@@ -16296,7 +16506,8 @@ function msRenderChordStory() {
                    `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(sv.pct))}%;` +
                    `background:${st.colours.get(sv.a) || '#888'}"></i></span>` +
                    `<span class="ms-pct">${sv.pct < 1 ? '<1' : Math.round(sv.pct)}%</span></div>`).join('') + `</div>` +
-               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button>`;
+               `<div class="ws-row"><button class="control-btn" id="ms-walk">Step through it</button>` +
+               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button></div>`;
     }
     msSay(
         `<div class="ms-story-head"><strong>${head}</strong></div>` +
@@ -16304,12 +16515,14 @@ function msRenderChordStory() {
         `<div class="ms-story-nav">` +
         `<button class="control-btn" id="ms-prev"${st.i ? '' : ' disabled'}>‹ Back</button>` +
         `<span class="ms-story-count">${st.i + 1} / ${total}</span>` +
-        `<button class="control-btn" id="ms-next"${st.i === total - 1 ? '' : ''}${st.i === total - 1 ? ' disabled' : ''}>Next ›</button>` +
+        `<button class="control-btn" id="ms-next"${st.i === total - 1 ? ' disabled' : ''}>Next ›</button>` +
         `</div>`);
     const prev = document.getElementById('ms-prev');
     const next = document.getElementById('ms-next');
     if (prev) prev.addEventListener('click', () => msGoStory(-1));
     if (next) next.addEventListener('click', () => msGoStory(1));
+    const walk = document.getElementById('ms-walk');
+    if (walk) walk.addEventListener('click', () => msGoStory(-(total - 1)));
     const rest = document.getElementById('ms-restore');
     if (rest) rest.addEventListener('click', () => msRestore());
     msDrawStory();
@@ -16354,7 +16567,8 @@ function msRenderStory() {
                    `<div class="ms-share"><span><i class="ms-dot" style="background:${st.colours.get(sv.a) || '#888'}"></i>${displayLabelForName(sv.a)}</span>` +
                    `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(sv.pct))}%;background:${st.colours.get(sv.a) || '#888'}"></i></span>` +
                    `<span class="ms-pct">${pct(sv.pct)}</span></div>`).join('') + `</div>` +
-               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button>`;
+               `<div class="ws-row"><button class="control-btn" id="ms-walk">Step through it</button>` +
+               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button></div>`;
     } else {
         const s = st.eaten.story[st.i - 1];
         const c = st.colours.get(s.name);
@@ -16466,6 +16680,8 @@ function msRenderStory() {
     const next = document.getElementById('ms-next');
     if (prev) prev.addEventListener('click', () => msGoStory(-1));
     if (next) next.addEventListener('click', () => msGoStory(1));
+    const walk = document.getElementById('ms-walk');
+    if (walk) walk.addEventListener('click', () => msGoStory(-(total - 1)));
     const back = document.getElementById('ms-restore');
     if (back) back.addEventListener('click', () => msRestore());
     msDrawStory();

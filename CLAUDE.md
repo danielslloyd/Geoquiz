@@ -434,6 +434,47 @@ failure modes were opposites: it left 98 neighbours with nothing because it coul
 anywhere, where the rigid slides reach much further and instead swallow small neighbours on the
 way past.
 
+### A borrowed border is MOVED, not redrawn
+
+Every borrowed border in this surgery — the ends of a slid cut, the whole of a chord cut — is now
+laid down by **translation and rotation only** (`sbBorrowRigid`). Nothing is stretched, nothing is
+squashed, nothing is resampled: what lands on the map is a piece of a real border at its real size
+in its real shape.
+
+That is a bigger claim than it sounds, because what it replaces was a normalised **height
+profile** — offsets from the chord, sampled at even fractions along it — and a height profile can
+only ever describe a border that is a FUNCTION of its own chord. Real borders are not: a river
+doubles back, a frontier hooks round a hill and returns. Every one of those was being flattened
+into the nearest single-valued curve, which is why the borrowed borders all had the same
+well-behaved character however wild the border they came from.
+
+The trick is choosing WHICH stretch. A rigid move cannot make a border of one length span a gap
+of another, so the gap picks the stretch: walk the border for a pair of points exactly |PQ| apart
+and take what lies between them, trimming off the rest. Among the many such pairs the one taken is
+whichever **wanders about a third further than the straight line** (`SB_BORROW_WANT_WANDER` 1.3),
+which is what a real land border does. Taking the wiggliest stretch on offer instead produced cuts
+two and a half times longer than the gap they spanned, which fail the no-crossing test almost
+every time and leave only the tiniest bites standing.
+
+Three things it needs that the height profile did not:
+
+* **A source long enough.** At 110m the arc table cuts every border at every tripoint, so the
+  longest single arc in the world is 64 km against chords of 350 to 770. Nothing could ever have
+  been borrowed for a chord. So a country's whole **boundary** is offered as well — not one border
+  but the continuous line round it, which is as real a boundary as any single arc of it. The story
+  says which it was, since "traced from Peru's boundary" and "traced from the Peru–Brazil border"
+  are different claims and only one is true of a given cut.
+* **The same units as the ring.** The borders are read out of the arc table in DEGREES and the
+  region's ring is in a local kilometre frame. A normalised profile never noticed; a rigid borrow
+  is a claim about lengths, and every one of them failed to find a stretch that fitted. (Zambia's
+  chords ran 354 to 767 while its own boundary measured 46.)
+* **No antimeridian rings.** A ring that straddles ±180° has one enormous phantom segment where
+  the coordinates jump, and its length is mostly that: Russia's was the longest boundary in the
+  world by a wide margin, and every borrowed cut came from it — from a rendering artefact, drawn
+  as if it were a border. The test is against the ring's own MEDIAN segment rather than against
+  its length, because at 110m a real segment can legitimately be a large fraction of a short ring
+  while a jump is orders of magnitude longer than anything real.
+
 ### Where the ends of a cut get their shape
 
 The middle of a new border is the frontier being moved; its two ENDS are inside the country by
@@ -453,6 +494,18 @@ criterion wants, but a cut that closes the instant it can takes almost nothing. 
 offered the nearest point half a frontier away and the nearest a whole frontier away. That is what
 the five borrowed traces used to provide and no longer do — variety in where a cut can END, which
 is where every refused bite is refused.
+
+**A rotation is a last resort, not a first one.** Turning the stencil is the one thing in this
+construction that stops the new border being a copy of the old one in ORIENTATION as well as in
+shape, so it is tried only when the frontier moved straight in cannot reach three quarters of what
+it is owed.
+
+**And the aim is kept short.** A continuation may be sent at the nearest boundary that is not its
+own frontier, or at the nearest a quarter or six tenths of a frontier-span away. It used to run to
+1.2 spans, which on a long frontier is most of a country: Egypt's cut into Sudan reached past
+Libya's corner and the Red Sea and came down on Chad and Ethiopia. A cut that spends far more
+border than the boundary it swallowed is also penalised outright now, since without that term the
+deepest cut that lands wins on reach alone however extravagantly it got there.
 
 ### A frontier that is stuck at one end hops on the rest of itself
 
@@ -488,6 +541,12 @@ straight line that found it — a trace sampled from the topology, at the chord'
 is a real border at true amplitude. Then give the piece to **whoever holds the longest stretch of
 its edge**: the land goes to whoever the land is already up against. Repeat on what is left.
 
+**Length is raised to a tunable power** (`sbChordPow`, default 1.15) when ranking cuts. At 1 this
+is area over length, which is what a waist IS; above it a shorter line is preferred even at the
+cost of the land behind it, which is how a knob for "smaller bites" has to work. Much past 1.2 it
+stops finding waists and starts nibbling corners — at 1.5 the cuts came out at 3–12% of the
+country and the leftover held 90%.
+
 **No cut may take more than `sbChordMax` (default 30%) of the ORIGINAL country** — not of what
 is left, which is a much weaker limit and what `SB_BITE_MAX_FRAC` already bounds. Against the
 original it means the same thing on the first cut as on the fourth; without it the first cut
@@ -503,9 +562,10 @@ two rings traverse it in opposite directions, both being wound the same way) and
 outside of both. It returns null when there is no such run, and that is what keeps the
 one-arc-one-outline invariant: two pieces that meet nowhere cannot be one outline.
 
-Measured over 197 countries with the cap at 30%: **106 divide** (up from 99), 2.74 cuts each, 46
-repeat bites, no cut over 30.0%, **zero split absorbers**, area conserved everywhere, 25 s for the
-world.
+Measured over 197 countries with the cap at 30% and borders borrowed rigidly: **88 divide**, 2.53
+absorbers each, leftover 37%, **zero split absorbers**, 4.7 s for the world. Rigid borrowing costs
+coverage — 106 countries divided when the borrowed border could still be stretched to fit — and
+that is the price of the cuts being real borders rather than impressions of them.
 
 Three more things it has to get right:
 
@@ -537,6 +597,14 @@ conserved on all 99 that divide, and the rule holds wherever it fires; the seven
 countries where the cutting stopped for the OTHER reason (no pair left gives a cut that can be
 drawn as a real border and handed to somebody who has not already taken), and the story says so
 rather than claiming a rule that did not fire.
+
+### A click shows the answer; the walk-through is a button
+
+Clicking a country performs the surgery and **shows the finished map**. Walking through the
+construction is the more interesting half of this tool and it is one button away ("Step through
+it"), but it is not what somebody clicking a country is asking for — they are asking what happens
+to it, and making them press Next six times to find out turns every parameter change into a
+six-press chore. Changing any parameter re-runs the country in hand immediately.
 
 ### The chord's story is its own
 
