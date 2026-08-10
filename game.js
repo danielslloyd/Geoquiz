@@ -335,10 +335,16 @@ function ensureLakeCut() {
     const done = feats => {
         lakeCutRings = lakeCutPrepare(feats);
         lakeCutPending = false;
-        if (gameState && gameState.countries && gameState.countries.length && typeof reloadWorldDetail === 'function') {
-            const mc = QUIZ_MODES[gameState.mode];
-            if (mc && mc.mapObject === 'countries') reloadWorldDetail();
-        }
+        // Redrawing is a convenience, not a requirement: any later redraw picks the cut up from
+        // the memo anyway. So it is skipped whenever the map is not plainly idle — a reload
+        // fired into a mode that is still building its board replaces the features under it, and
+        // the mode has no way to know that happened.
+        try {
+            const mc = QUIZ_MODES[gameState && gameState.mode];
+            const idle = mc && mc.mapObject === 'countries' && !mc.sbQuizMode &&
+                         gameState.countries && gameState.countries.length && countriesGroup;
+            if (idle && typeof reloadWorldDetail === 'function') reloadWorldDetail();
+        } catch (_) { /* the next redraw will do it */ }
     };
     if (lakesCache['110m']) { done(lakesCache['110m']); return; }
     d3.json('data/lakes.geo.json')
@@ -13824,7 +13830,7 @@ const SB_GATE_WORDS = {
     pairs:      'pairs of boundary points considered',
     sameOwner:  'both ends on the same neighbour\u2019s frontier \u2014 a line between them separates nothing',
     tooSmall:   'would break off less than 2% of the country',
-    tooBig:     'would break off more than the cap allows',
+    tooShort:   'shorter than a border can be at this resolution',
     noSource:   'no real border in the world is long enough to span that gap rigidly',
     noBorrow:   'no stretch of the borrowed border is the right length with a plausible wander',
     outside:    'the borrowed border leaves the country',
@@ -13834,6 +13840,7 @@ const SB_GATE_WORDS = {
     frontier:   'the piece meets its owner in two places, or along a thread',
     noTaker:    'nobody left holds any of that piece\u2019s edge',
     noLeftover: 'nobody would be left to hold what remains'
+
 };
 
 // A neighbour holding less of the land border than this is crowded out rather than handed a
@@ -13889,27 +13896,56 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // Measured, its cuts turned 52 degrees per 100 km against 74 for the real frontiers they
 // replaced -- 30% SMOOTHER than a real border, which is exactly the complaint it existed to
 // answer and never could.
-// The biggest bite a chord may take, as a share of the ORIGINAL country -- not of what is left,
-// which is what `SB_BITE_MAX_FRAC` bounds. Measured against the original it means the same thing
-// on the first cut as on the fourth: no country walks off with a third of another. Without it the
-// first cut regularly took 60% and everything after it was a trimming.
-const SB_CHORD_MAX_DEFAULT = 30;
-let sbChordMax = SB_CHORD_MAX_DEFAULT;
-// Area over length is what finds a waist. Area over length to a POWER finds a narrower one: at 1
-// a cut twice as long is worth taking if it breaks off twice the land, and at 2 it has to break
-// off four times. Raising it pushes the construction toward small bites at genuinely narrow
-// places and away from long sweeps across the middle.
-// 1 is area over length, which is what a waist IS. Above it the construction prefers a shorter
-// line even at the cost of the land behind it, which is how a knob for "smaller bites" has to
-// work; much above 1.2 and it stops finding waists at all and starts nibbling corners.
-const SB_CHORD_POW_DEFAULT = 1.15;
-let sbChordPow = SB_CHORD_POW_DEFAULT;
+// The BITE is whichever of the two pieces a chord makes is smaller, always. That is what a bite
+// is: you do not cut a country in half and call the larger half the mouthful. It also disposes of
+// the cap that used to be needed -- no cut can take more than half of what is left, by definition
+// of which side is the bite, so there is nothing left for a percentage to bound.
+//
+// And the ratio maximised is area over length SQUARED, which is the dimensionless one: how many
+// squares of the chord's own length fit in the piece it breaks off. Area over length has units of
+// length, so it grows with the country and a big country's every cut outscores a small one's best
+// -- which is why it needed a tunable exponent propping it up. It does not any more.
+//
+// The floor on chord length is in units of the map's own resolution: at 110m a "chord" of two
+// vertices is a notch in the coastline, and notches have superb ratios.
+const SB_CHORD_MIN_DEFAULT = 6;      // x the median border segment
+let sbChordMinX = SB_CHORD_MIN_DEFAULT;
 
-const SB_BITE_ALGOS = {
+// The blended construction's two thresholds. Above the first, a chord is good enough to be worth
+// cutting on its own merits; above the second, one neighbour holds enough of what is left that
+// pushing ITS border in is the more honest answer than cutting across the middle.
+const SB_BLEND_RATIO_DEFAULT = 0.35;
+let sbBlendRatio = SB_BLEND_RATIO_DEFAULT;
+const SB_BLEND_SHARE_DEFAULT = 45;   // per cent of the remaining boundary
+let sbBlendShare = SB_BLEND_SHARE_DEFAULT;
+
+// The median length of a border segment at this detail level, in km, over the whole world. The
+// chord floor is a multiple of it, so "long enough to be a border rather than a notch" means the
+// same thing at 110m and at 50m without anybody restating it. Memoised against the topology.
+let sbMedSegCache = { src: null, km: 0 };
+function sbMedianSegKm(topo) {
+    if (sbMedSegCache.src === topo) return sbMedSegCache.km;
+    let km = 0;
+    try {
+        const arcs = sbDecodeArcs(topo);
+        const lens = [];
+        for (let i = 0; i < arcs.length; i += Math.max(1, Math.floor(arcs.length / 400))) {
+            const a = arcs[i];
+            if (!a || a.length < 2) continue;
+            for (let k = 1; k < a.length; k++) lens.push(d3.geoDistance(a[k - 1], a[k]) * SB_EARTH_R_KM);
+        }
+        lens.sort((x, y) => x - y);
+        km = lens.length ? lens[lens.length >> 1] : 0;
+    } catch (_) { km = 0; }
+    sbMedSegCache = { src: topo, km };
+    return km;
+}const SB_BITE_ALGOS = {
     'slide': { label: 'Slide the border in',
                hint: 'The frontier itself, moved straight in and slightly turned - whichever depth takes the most land per kilometre of new border' },
     'chord': { label: 'Cut where it is nearly two countries',
-               hint: 'Finds the two points on the boundary a line between which would break off the most land for its length, draws it as a real border, and gives the piece to whoever holds most of its edge' }
+               hint: 'Finds the two points on the boundary a line between which breaks off the most land for the square of its length, draws it as a real border, and gives the piece to whoever holds most of its edge' },
+    'blend': { label: 'Cut if there is a waist, push if there is not',
+               hint: 'Takes a chord when the country offers a good one, and otherwise pushes in the border of whichever neighbour holds most of what is left - which is the choice the other two never get to make' }
 };
 let sbBiteAlgo = 'slide';
 
@@ -15188,6 +15224,9 @@ function sbEatCountry(rawTopo, goneName) {
 // are scarcer, and at 44 every round was ending with hundreds of pairs untried and half the
 // country going to the leftover.
     const chordCandidates = 160;
+    // How many borrowed stretches a single chord is allowed to work through before it gives up
+    // and draws itself straight. It used to be five, and five failures lost the cut.
+    const SB_CHORD_TRACES = 24;
     // The same two guards a slid bite is held to, in standalone form: `bite` owns its own copies
     // as closures over one region's ring. A piece pinched into two lobes, or an absorber joined
     // to its piece by a thread, draws exactly as badly here as it does there.
@@ -15263,6 +15302,48 @@ function sbEatCountry(rawTopo, goneName) {
         for (let k2 = (b0 + 1) % nB; k2 !== b1; k2 = (k2 + 1) % nB) { out.push(B[k2]); if (out.length > nA + nB) return null; }
         return out.length >= 3 ? out : null;
     };
+    // One SLIDE bite, taken on the region as it currently stands, for the blended construction.
+    // It is the same `bite` the slide construction uses \u2014 the same rigid stencil, the same
+    // continuations, the same guards \u2014 offered the whole of what is left rather than a share of
+    // it, since the blend has no shares to divide.
+    const blendPush = (live, who, pieces, used) => {
+        const L = live.length;
+        const own2 = new Set(mainGroup.get(who) || []);
+        if (!own2.size) return null;
+        // The longest contiguous run of that neighbour's frontier on the ring as it stands.
+        let st2 = -1, en2 = -1, bl = 0;
+        for (let i = 0; i < L; i++) {
+            if (!own2.has(live[i].leg) || own2.has(live[(i - 1 + L) % L].leg)) continue;
+            let j = i, len = 0;
+            while (own2.has(live[j].leg) && len <= L) { j = (j + 1) % L; len++; }
+            if (len > bl) { bl = len; st2 = i; en2 = j; }
+        }
+        if (st2 < 0) return null;
+        const areaLeft = Math.abs(areaOf(closed(live)));
+        const avoid = new Set();
+        legs.forEach((l, li) => { if (l.name && namesMatch(l.name, who) && !own2.has(li)) avoid.add(li); });
+        const noSpl = new Set();
+        queue.forEach(other => { if (other !== who && !pieces.has(other))
+            (mainGroup.get(other) || []).forEach(li => noSpl.add(li)); });
+        const fpts = [];
+        for (let k = st2; ; k = (k + 1) % L) { fpts.push(toDeg(live[k].p)); if (k === en2) break; }
+        // Half of what is left is the most a push may take, for the same reason the chord's bite
+        // is the smaller side: the point of a bite is that something is left to bite next.
+        const got = bite(live, st2, en2, areaLeft * 0.5, seedOf(who), null, avoid, own2, noSpl, 1);
+        if (!got) return null;
+        const area = Math.abs(areaOf(closed(got.piece)));
+        if (!(area > 0) || !chordOneLobe(got.piece) || !chordOneLobe(got.rest)) return null;
+        if (!chordOneRun(got.piece, own2)) return null;
+        let whole = got.piece;
+        if (pieces.has(who)) {
+            whole = chordMerge(pieces.get(who), got.piece);
+            if (!whole || !chordOneLobe(whole)) return null;
+        }
+        return { piece: got.piece, rest: got.rest, whole, area, cut: got.cut,
+                 depthKm: got.depthKm, frontier: fpts,
+                 source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys, own: !!got.src.own } };
+    };
+
     const chordDivide = () => {
         const pieces = new Map();
         const story = [];
@@ -15273,6 +15354,7 @@ function sbEatCountry(rawTopo, goneName) {
         let live = ring;
         let leftover = null;
         let minBite = Infinity;
+        const hist = [];
         for (let round = 0; round < 16; round++) {
             const L = live.length;
             if (L < 12) break;
@@ -15308,7 +15390,7 @@ function sbEatCountry(rawTopo, goneName) {
             };
             const cand = [];
             const lo = area0 * 0.02;
-            const hi = Math.min(areaLeft * SB_BITE_MAX_FRAC, area0 * Math.max(0.02, sbChordMax / 100));
+            const minChord = Math.max(1, sbMedianSegKm(topo) * Math.max(1, sbChordMinX));
             for (let i = 0; i < L; i++) {
                 const oi = ownerOfLeg(live[i].leg);
                 for (let j = i + 4; j < L; j++) {
@@ -15320,25 +15402,74 @@ function sbEatCountry(rawTopo, goneName) {
                     // to landlocked countries, and a peninsula's neck is exactly the kind of
                     // place this construction exists to find.
                     if (oi && oj && oi === oj) { sbDx('sameOwner'); continue; }
-                    const ar = areaOfSpan(i, j);
+                    // The BITE is the smaller side. Which of the two walks that is depends on the
+                    // pair, and it is the only thing that makes "how much does this cut break off"
+                    // a well-posed question at all.
+                    const one = areaOfSpan(i, j);
+                    const ar = Math.min(one, areaLeft - one);
                     if (ar < lo) { sbDx('tooSmall'); continue; }
-                    if (ar > hi) { sbDx('tooBig'); continue; }
                     const dx = live[j].p[0] - live[i].p[0], dy = live[j].p[1] - live[i].p[1];
                     const len = Math.hypot(dx, dy);
-                    if (!(len > 0)) continue;
-                    cand.push({ i, j, ar, k: ar / Math.pow(len, Math.max(0.5, sbChordPow)) });
+                    if (len < minChord) { sbDx('tooShort'); continue; }
+                    cand.push({ i, j, ar, small: one <= areaLeft - one, k: ar / (len * len) });
                 }
             }
             sbDx('pairs', cand.length);
             if (sbDiag) sbDiag.rounds++;
-            if (!cand.length) break;
             cand.sort((a, b) => b.k - a.k);
+
+            // ---- the blend ----
+            //
+            // Two constructions answer two different questions and a country asks one or the
+            // other, not always the same one. Where there is a WAIST, the chord is obviously
+            // right: cut it and hand the piece over. Where there is not \u2014 a round country, a long
+            // one with nothing pinched about it \u2014 the chord has to invent a line across the
+            // middle, and the honest answer there is the slide's: push in the border of whoever
+            // holds most of what is left, because that is a line the map already has.
+            //
+            // So: cut a chord if the best one clears the ratio; otherwise push if one neighbour
+            // holds enough of the remaining boundary; otherwise cut the chord anyway, because
+            // something has to give and a mediocre waist beats nothing.
+            if (sbBiteAlgo === 'blend' && (!cand.length || cand[0].k < sbBlendRatio)) {
+                // Who holds what, of the boundary as it stands now.
+                const hold = new Map();
+                let tot = 0;
+                for (let k = 0; k < L; k++) {
+                    const nm2 = ownerOfLeg(live[k].leg);
+                    const d = Math.hypot(live[(k + 1) % L].p[0] - live[k].p[0], live[(k + 1) % L].p[1] - live[k].p[1]);
+                    tot += d;
+                    if (nm2) hold.set(nm2, (hold.get(nm2) || 0) + d);
+                }
+                let top = null, topLen = 0;
+                hold.forEach((v, nm2) => { if (v > topLen) { topLen = v; top = nm2; } });
+                if (top && tot > 0 && topLen / tot >= sbBlendShare / 100) {
+                    const pushed = blendPush(live, top, pieces, used);
+                    if (pushed) {
+                        if (sbDiag) sbDiag.pushes = (sbDiag.pushes || 0) + 1;
+                        pieces.set(top, pushed.whole);
+                        used.add(top);
+                        minBite = Math.min(minBite, pushed.area);
+                        story.push({
+                            kind: 'push', name: top, algo: 'blend',
+                            took: pushed.area, leftBefore: areaLeft,
+                            share: topLen / tot, depthKm: pushed.depthKm,
+                            frontier: pushed.frontier, regionBefore: closed(live).map(toDeg),
+                            cut: pushed.cut.map(toDeg), piece: closed(pushed.piece).map(toDeg),
+                            source: pushed.source
+                        });
+                        live = pushed.rest;
+                        continue;
+                    }
+                    if (sbDiag) sbDiag.pushFail = (sbDiag.pushFail || 0) + 1;
+                }
+            }
+            if (!cand.length) break;
 
             // The best few are tried in earnest: a real border traced across the chord, checked
             // for crossings, and the piece checked by every guard a slid bite is checked by.
             let got = null;
             for (let c = 0; c < cand.length && c < chordCandidates && !got; c++) {
-                const { i, j } = cand[c];
+                const { i, j, small } = cand[c];
                 const P = live[i].p, Q = live[j].p;
                 const span = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
                 const ux = (Q[0] - P[0]) / span, uy = (Q[1] - P[1]) / span;
@@ -15348,16 +15479,29 @@ function sbEatCountry(rawTopo, goneName) {
                 // end has no such stretch anywhere in it. A chord across a country is longer
                 // than most single arcs, so without this filter almost every candidate was
                 // failing on a border that could never have reached.
+                // Which border a cut is TRACED from is a matter of taste; whether the cut is made
+                // at all is not. A borrowed stretch that wanders out of the country is the wrong
+                // stretch, not a wrong cut \u2014 so the search keeps looking, through many more
+                // sources than it used to, and ends on a STRAIGHT line rather than on nothing.
+                // A straight border is a real thing (a good deal of Africa is drawn with one) and
+                // it is always inside a convex neighbourhood of its own chord; losing the cut
+                // because the twentieth trace also failed is the outcome that has no defence.
                 const fit = shapes.filter(sh => sh.len >= span * 1.02);
-                if (!fit.length) { sbDx('noSource'); continue; }
-                for (let sIdx = 0; sIdx < SB_BITE_CURVES && !got; sIdx++) {
-                    const src = fit[(i * 31 + sIdx * 37) % fit.length];
+                if (!fit.length) sbDx('noSource');
+                const tries = Math.min(SB_CHORD_TRACES, fit.length);
+                for (let sIdx = 0; sIdx <= tries && !got; sIdx++) {
+                    const straight = sIdx === tries;         // the last resort, and it always fits
+                    const src = straight ? null : fit[(i * 31 + sIdx * 37) % fit.length];
                     for (const flip of [1, -1]) {
+                        if (straight && flip < 0) continue;
                         // A stretch of that border, exactly this chord's length, moved here by
                         // translation and rotation alone: what lands is a piece of a real border
                         // at its real size and in its real shape, doubling back where it doubles
                         // back rather than flattened into a curve that never could.
-                        const borrowed = sbBorrowRigid(src.pts, P, Q, flip, i + sIdx);
+                        const borrowed = straight
+                            ? { pts: [0.25, 0.5, 0.75].map(t => [P[0] + ux * span * t, P[1] + uy * span * t]),
+                                wander: 1, straight: true }
+                            : sbBorrowRigid(src.pts, P, Q, flip, i + sIdx);
                         if (!borrowed) { sbDx('noBorrow'); continue; }
                         const curve = borrowed.pts;
                         if (!curve.length) continue;
@@ -15381,15 +15525,14 @@ function sbEatCountry(rawTopo, goneName) {
                         for (let k = i; ; k = (k + 1) % L) { fwd.push(live[k]); if (k === j) break; }
                         const bwd = [];
                         for (let k = j; ; k = (k + 1) % L) { bwd.push(live[k]); if (k === i) break; }
-                        const piece = fwd.concat(inner.slice().reverse());
-                        const rest = bwd.concat(inner);
+                        // Smaller side is the bite; the larger is what carries on being divided.
+                        const walkA = fwd.concat(inner.slice().reverse());
+                        const walkB = bwd.concat(inner);
+                        const piece = small ? walkA : walkB;
+                        const rest = small ? walkB : walkA;
                         if (piece.length < 3 || rest.length < 3) continue;
                         const aP = Math.abs(areaOf(closed(piece))), aR = Math.abs(areaOf(closed(rest)));
                         if (Math.abs((aP + aR) / areaLeft - 1) > 0.005) { sbDx('area'); continue; }
-                        // The cap again, on what the piece ACTUALLY came to. The candidate filter
-                        // measures the straight chord's area and the drawn border bulges either
-                        // side of it, so a 30% cap was letting through pieces of 37%.
-                        if (aP > hi) { sbDx('tooBig'); continue; }
                         // Who gets it: whoever holds the longest run of border inside the piece,
                         // among those who have not already taken one.
                         const held = new Map();
@@ -15426,11 +15569,48 @@ function sbEatCountry(rawTopo, goneName) {
                         const edges = [...held.entries()].map(e2 => ({ name: e2[0], km: e2[1] }))
                             .sort((x, y) => y.km - x.km);
                         got = { i, j, piece, rest: rest, whole: merged, again: pieces.has(who),
-                                cut: path2, who, ar: aP, src, flip, areaLeft, edges, borrowed,
+                                cut: path2, who, ar: aP,
+                                src: src || { owners: [], ys: null, straight: true },
+                                flip, areaLeft, edges, borrowed,
                                 chord: [P, Q], chordKm: span, rank: c, ratio: cand[c].k, bestRatio: cand[0].k,
                                 tried: Math.min(cand.length, chordCandidates), pairs: cand.length };
                         break;
                     }
+                }
+            }
+            // ...and a push is also what happens when no chord can be made at all, not only when
+            // the best one is poor. "Else chord chop" has nothing to chop with here.
+            if (!got && sbBiteAlgo === 'blend') {
+                const hold2 = new Map();
+                let tot2 = 0;
+                for (let k = 0; k < L; k++) {
+                    const nm2 = ownerOfLeg(live[k].leg);
+                    const d = Math.hypot(live[(k + 1) % L].p[0] - live[k].p[0], live[(k + 1) % L].p[1] - live[k].p[1]);
+                    tot2 += d;
+                    if (nm2) hold2.set(nm2, (hold2.get(nm2) || 0) + d);
+                }
+                let pushed = null, top2 = null;
+                [...hold2.entries()].sort((a2, b2) => b2[1] - a2[1]).forEach(([nm2]) => {
+                    if (pushed) return;
+                    const r2 = blendPush(live, nm2, pieces, used);
+                    if (r2) { pushed = r2; top2 = nm2; }
+                });
+                if (pushed) {
+                    if (sbDiag) sbDiag.pushes = (sbDiag.pushes || 0) + 1;
+                    pieces.set(top2, pushed.whole);
+                    used.add(top2);
+                    minBite = Math.min(minBite, pushed.area);
+                    hist.push({ pieces: new Map(pieces), used: new Set(used), live, minBite, storyLen: story.length });
+                    story.push({
+                        kind: 'push', name: top2, algo: 'blend',
+                        took: pushed.area, leftBefore: areaLeft,
+                        share: (hold2.get(top2) || 0) / (tot2 || 1),
+                        depthKm: pushed.depthKm, frontier: pushed.frontier,
+                        regionBefore: closed(live).map(toDeg), cut: pushed.cut.map(toDeg),
+                        piece: closed(pushed.piece).map(toDeg), source: pushed.source
+                    });
+                    live = pushed.rest;
+                    continue;
                 }
             }
             if (!got) break;
@@ -15448,6 +15628,12 @@ function sbEatCountry(rawTopo, goneName) {
             }
             if (!stillFree.size) { sbDx('noLeftover'); break; }
             if (sbDiag) sbDiag.cuts++;
+            // A snapshot before every cut, so a division that cuts happily for five rounds and
+            // then finds nobody able to hold what is left can step BACK rather than throw the
+            // whole thing away. Cutting is greedy and the last cut is the one that made the
+            // remainder unassignable, so undoing it is both the cheapest and the right answer.
+            hist.push({ pieces: new Map(pieces), used: new Set(used), live, minBite,
+                        storyLen: story.length });
             pieces.set(got.who, got.whole);
             used.add(got.who);
             minBite = Math.min(minBite, got.ar);
@@ -15465,24 +15651,37 @@ function sbEatCountry(rawTopo, goneName) {
             live = got.rest;
         }
         if (!pieces.size) return null;
-        // Whatever is left goes to whoever holds most of its edge and has not taken already.
-        const held = new Map();
-        for (let k = 0; k + 1 < live.length; k++) {
-            const nm2 = ownerOfLeg(live[k].leg);
-            if (!nm2) continue;
-            held.set(nm2, (held.get(nm2) || 0) +
-                Math.hypot(live[k + 1].p[0] - live[k].p[0], live[k + 1].p[1] - live[k].p[1]));
+        // Whatever is left goes to whoever holds most of its edge. If nobody can hold it, the last
+        // cut is undone and the question asked again of the bigger remainder — up the whole
+        // history if need be, since a division of four cuts that cannot be finished is worth less
+        // than one of three that can.
+        let restWhole = null, held = new Map();
+        for (;;) {
+            held = new Map();
+            for (let k = 0; k + 1 < live.length; k++) {
+                const nm2 = ownerOfLeg(live[k].leg);
+                if (!nm2) continue;
+                held.set(nm2, (held.get(nm2) || 0) +
+                    Math.hypot(live[k + 1].p[0] - live[k].p[0], live[k + 1].p[1] - live[k].p[1]));
+            }
+            if (chordOneLobe(live)) {
+                [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).forEach(([nm2]) => {
+                    if (leftover) return;
+                    if (!chordOneRun(live, new Set(mainGroup.get(nm2)))) return;
+                    if (!pieces.has(nm2)) { leftover = nm2; restWhole = live; return; }
+                    const m2 = chordMerge(pieces.get(nm2), live);
+                    if (m2 && chordOneLobe(m2) && chordOneRun(m2, new Set(mainGroup.get(nm2)))) { leftover = nm2; restWhole = m2; }
+                });
+            }
+            if (leftover) break;
+            const back = hist.pop();
+            if (!back) { sbDx('noLeftover'); return null; }
+            if (sbDiag) sbDiag.undone = (sbDiag.undone || 0) + 1;
+            pieces.clear(); back.pieces.forEach((v, k2) => pieces.set(k2, v));
+            used.clear(); back.used.forEach(v => used.add(v));
+            live = back.live; minBite = back.minBite;
+            story.length = back.storyLen;
         }
-        if (!chordOneLobe(live)) return null;
-        let restWhole = null;
-        [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).forEach(([nm2]) => {
-            if (leftover) return;
-            if (!chordOneRun(live, new Set(mainGroup.get(nm2)))) return;
-            if (!pieces.has(nm2)) { leftover = nm2; restWhole = live; return; }
-            const m2 = chordMerge(pieces.get(nm2), live);
-            if (m2 && chordOneLobe(m2) && chordOneRun(m2, new Set(mainGroup.get(nm2)))) { leftover = nm2; restWhole = m2; }
-        });
-        if (!leftover) return null;
         pieces.set(leftover, restWhole);
         story.push({
             kind: 'chord-rest', name: leftover, algo: 'chord',
@@ -15709,7 +15908,7 @@ function sbEatCountry(rawTopo, goneName) {
     // land nobody could reach, and a small neighbour handed it comes out as a country with a
     // balloon attached whatever else is true of it.
     let leftover = queue[queue.length - 1];
-    if (sbBiteAlgo !== 'chord' && singles.length > 1) {
+    if (sbBiteAlgo === 'slide' && singles.length > 1) {
         const cands = singles.slice().sort((a, b) => borderKm.get(b) - borderKm.get(a)).slice(0, 3);
         let pick = null;
         cands.forEach(c => {
@@ -15726,11 +15925,11 @@ function sbEatCountry(rawTopo, goneName) {
     // The chord construction has no shares to correct and no turns to iterate: it finds the cuts
     // the country's own shape offers, in the order it offers them, and stops when there is
     // nothing left to cut. One pass is the whole of it.
-    if (sbBiteAlgo === 'chord') {
+    if (sbBiteAlgo === 'chord' || sbBiteAlgo === 'blend') {
         bestRun = chordDivide();
         if (!bestRun) return sbNo('divides');
     }
-    for (let pass = 0; pass < SB_BITE_PASSES && sbBiteAlgo !== 'chord'; pass++) {
+    for (let pass = 0; pass < SB_BITE_PASSES && sbBiteAlgo !== 'chord' && sbBiteAlgo !== 'blend'; pass++) {
         const run = runOnce(scale, allow, leftover);
         if (!run) break;
         if (!bestRun || run.err < bestRun.err) bestRun = run;
@@ -16655,19 +16854,25 @@ function msBuildPanel() {
         `</select></label>` +
         `<div class="ms-order-hint" id="ms-algo-hint">${SB_BITE_ALGOS[sbBiteAlgo].hint}</div>` +
         `<div id="ms-chord-only">` +
-        `<label class="ms-order"><span>Biggest bite</span>` +
-        `<input type="number" id="ms-chord-max" min="5" max="80" step="5" value="${sbChordMax}">` +
-        `<span class="ms-unit">%</span></label>` +
-        `<div class="ms-order-hint">The most any one cut may take, as a share of the whole country ` +
-        `— not of what is left, which is a different and much weaker limit. At 60% the first cut ` +
-        `took most of the country and every later one was a trimming.</div>` +
-        `<label class="ms-order"><span>Length penalty</span>` +
-        `<input type="number" id="ms-chord-pow" min="0.6" max="2.5" step="0.05" value="${sbChordPow}">` +
+        `<label class="ms-order"><span>Shortest chord</span>` +
+        `<input type="number" id="ms-chord-min" min="1" max="40" step="1" value="${sbChordMinX}">` +
+        `<span class="ms-unit">×</span></label>` +
+        `<div class="ms-order-hint">The shortest line worth calling a cut, in multiples of the ` +
+        `median border segment at this detail level. A chord of two vertices is a notch in the ` +
+        `coastline, and notches have superb ratios — stated this way the floor means the same ` +
+        `thing at 110m as at 50m.</div>` +
+        `<div id="ms-blend-only">` +
+        `<label class="ms-order"><span>Cut if the ratio beats</span>` +
+        `<input type="number" id="ms-blend-ratio" min="0.05" max="2" step="0.05" value="${sbBlendRatio}">` +
         `</label>` +
-        `<div class="ms-order-hint">The power the chord's own length is raised to when ranking ` +
-        `cuts. At 1 this is area over length, which is what a waist IS; above it a shorter line is ` +
-        `preferred even at the cost of the land behind it, which is how a knob for smaller bites ` +
-        `has to work. Much past 1.2 it stops finding waists and starts nibbling corners.</div></div>` +
+        `<div class="ms-order-hint">How many squares of the chord\u2019s own length have to fit in the ` +
+        `piece it breaks off before the cut is worth making on its own merits.</div>` +
+        `<label class="ms-order"><span>Otherwise push at</span>` +
+        `<input type="number" id="ms-blend-share" min="10" max="90" step="5" value="${sbBlendShare}">` +
+        `<span class="ms-unit">%</span></label>` +
+        `<div class="ms-order-hint">If no chord is good enough, the border of a neighbour holding ` +
+        `at least this much of what is left is pushed in instead — a line the map already has, ` +
+        `rather than one invented across the middle.</div></div></div>` +
         `<div id="ms-slide-only">` +
         `<label class="ms-order"><span>Turn order</span>` +
         `<select id="ms-order-sel">` +
@@ -16696,9 +16901,11 @@ function msBuildPanel() {
     // budget because it draws no border longer than the chord that found it.
     const slideOnly = () => {
         const box2 = document.getElementById('ms-slide-only');
-        if (box2) box2.style.display = sbBiteAlgo === 'chord' ? 'none' : '';
+        if (box2) box2.style.display = sbBiteAlgo === 'slide' ? '' : 'none';
         const box3 = document.getElementById('ms-chord-only');
-        if (box3) box3.style.display = sbBiteAlgo === 'chord' ? '' : 'none';
+        if (box3) box3.style.display = sbBiteAlgo === 'slide' ? 'none' : '';
+        const box4 = document.getElementById('ms-blend-only');
+        if (box4) box4.style.display = sbBiteAlgo === 'blend' ? '' : 'none';
     };
     slideOnly();
     const algo = document.getElementById('ms-algo-sel');
@@ -16716,20 +16923,19 @@ function msBuildPanel() {
         if (hint) hint.textContent = SB_BITE_ORDERS[sbBiteOrder].hint;
         redo('Order changed. Pick a country off the map.');
     });
-    const cpow = document.getElementById('ms-chord-pow');
-    if (cpow) cpow.addEventListener('change', () => {
-        const v = Math.max(0.6, Math.min(2.5, +cpow.value));
-        cpow.value = isFinite(v) ? v : SB_CHORD_POW_DEFAULT;
-        sbChordPow = +cpow.value;
-        redo('Length penalty changed. Pick a country off the map.');
-    });
-    const cmax = document.getElementById('ms-chord-max');
-    if (cmax) cmax.addEventListener('change', () => {
-        const v = Math.max(5, Math.min(80, +cmax.value));
-        cmax.value = isFinite(v) ? v : SB_CHORD_MAX_DEFAULT;
-        sbChordMax = +cmax.value;
-        redo('Bite size changed. Pick a country off the map.');
-    });
+    const num = (id, lo, hi, dflt, set, note) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', () => {
+            const v = Math.max(lo, Math.min(hi, +el.value));
+            el.value = isFinite(v) ? v : dflt;
+            set(+el.value);
+            redo(note + ' Pick a country off the map.');
+        });
+    };
+    num('ms-chord-min', 1, 40, SB_CHORD_MIN_DEFAULT, v => { sbChordMinX = v; }, 'Chord floor changed.');
+    num('ms-blend-ratio', 0.05, 2, SB_BLEND_RATIO_DEFAULT, v => { sbBlendRatio = v; }, 'Ratio changed.');
+    num('ms-blend-share', 10, 90, SB_BLEND_SHARE_DEFAULT, v => { sbBlendShare = v; }, 'Share changed.');
     const grow = document.getElementById('ms-growth');
     if (grow) grow.addEventListener('change', () => {
         const v = Math.max(0, Math.min(200, +grow.value));
@@ -16810,11 +17016,12 @@ function msBeginStory(nm, eaten, topo) {
     // turns to narrate and no share anybody is owed: each cut is a self-contained operation, and
     // the three things that happen in it -- a pair of points is found, a border is drawn between
     // them, the piece is given to somebody -- are three things to look at rather than one.
-    const steps = eaten.story.some(x => x.kind === 'chord')
+    const steps = eaten.story.some(x => x.kind === 'chord' || x.kind === 'push')
         ? [{ phase: 'intro' }].concat(
               eaten.story.filter(x => x.kind === 'exclave').map(x => ({ phase: 'exclave', s: x })),
-              ...eaten.story.filter(x => x.kind === 'chord').map(x =>
-                  [{ phase: 'find', s: x }, { phase: 'draw', s: x }, { phase: 'give', s: x }]),
+              ...eaten.story.filter(x => x.kind === 'chord' || x.kind === 'push').map(x =>
+                  x.kind === 'push' ? [{ phase: 'push', s: x }]
+                                    : [{ phase: 'find', s: x }, { phase: 'draw', s: x }, { phase: 'give', s: x }]),
               eaten.story.filter(x => x.kind === 'chord-rest').map(x => ({ phase: 'rest', s: x })),
               [{ phase: 'done' }])
         : null;
@@ -16863,8 +17070,8 @@ function msRenderChordStory() {
     const km = v => Math.round(v).toLocaleString() + ' km\u00b2';
     const kmL = v => Math.round(v).toLocaleString() + ' km';
     const dot = nm2 => `<i class="ms-dot" style="background:${st.colours.get(nm2) || '#888'}"></i>`;
-    const n = st.steps.filter(x => x.phase === 'find').length;
-    const which = () => st.steps.slice(0, st.i + 1).filter(x => x.phase === 'find').length;
+    const n = st.steps.filter(x => x.phase === 'find' || x.phase === 'push').length;
+    const which = () => st.steps.slice(0, st.i + 1).filter(x => x.phase === 'find' || x.phase === 'push').length;
     let head = '', body = '';
 
     if (step.phase === 'intro') {
@@ -16888,6 +17095,18 @@ function msRenderChordStory() {
                `<p>This one goes to ${displayLabelForName(s2.name)}, whose nearest land is ` +
                `<strong>${Math.round(s2.km).toLocaleString()} km</strong> away — closer than anybody ` +
                `else's.</p>`;
+    } else if (step.phase === 'push') {
+        const s2 = step.s;
+        head = `${dot(s2.name)}${displayLabelForName(s2.name)} pushes its border in`;
+        body = `<p>No cut on offer was worth making: the best of them broke off too little land ` +
+               `for its own length, which is what a country with no waist in it looks like from ` +
+               `here.</p>` +
+               `<p>So rather than invent a line across the middle, the map\u2019s own line is moved. ` +
+               `${displayLabelForName(s2.name)} holds <strong>${Math.round(s2.share * 100)}%</strong> ` +
+               `of what is left of ${gone}\u2019s boundary, and its frontier is slid straight in ` +
+               `<strong>${Math.round(s2.depthKm)} km</strong> \u2014 one rigid move, so every corner of ` +
+               `the new border is a corner the old one had. It takes <strong>${km(s2.took)}</strong> ` +
+               `of the ${km(s2.leftBefore)} standing.</p>`;
     } else if (step.phase === 'find') {
         const s2 = step.s;
         head = `Cut ${which()} — finding it`;
@@ -16905,15 +17124,19 @@ function msRenderChordStory() {
     } else if (step.phase === 'draw') {
         const s2 = step.s;
         head = `Cut ${which()} — drawing it`;
-        body = `<p>The straight line found the place; it is not the border. A border is drawn instead, ` +
-               `traced from a real one elsewhere in the world — the ` +
-               `<strong>${(s2.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
-               `${s2.source.flip < 0 ? ', mirrored' : ''} — at this chord's own length, so it is a real ` +
-               `border at true amplitude rather than a scaled impression of one.</p>` +
-               `<p>It has to stay inside the country the whole way. A trace that wanders out and back ` +
-               `is not one cut but several, so each candidate is checked against every edge of the ` +
-               `boundary before it is accepted.</p>` +
-               msSourceSvg(s2.source);
+        body = (s2.source && s2.source.straight)
+            ? `<p>Every borrowed border tried for this one wandered out of the country, so it is ` +
+              `drawn STRAIGHT. Which border a cut is traced from is a matter of taste; whether the ` +
+              `cut is made at all is not, and a straight border is a real thing — a good deal of ` +
+              `Africa is drawn with one.</p>`
+            : `<p>The straight line found the place; it is not the border. A border is drawn instead, ` +
+              `traced from a real one elsewhere in the world — the ` +
+              `<strong>${(s2.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+              `${s2.source.flip < 0 ? ', mirrored' : ''} — at this chord’s own length, so it is a ` +
+              `real border at true amplitude rather than a scaled impression of one.</p>` +
+              `<p>It has to stay inside the country the whole way, and up to ${SB_CHORD_TRACES} ` +
+              `stretches are tried until one does.</p>` +
+              msSourceSvg(s2.source);
     } else if (step.phase === 'give') {
         const s2 = step.s;
         const win = s2.edges[0];
@@ -16934,7 +17157,7 @@ function msRenderChordStory() {
         head = `${dot(s2.name)}${displayLabelForName(s2.name)} keeps the rest`;
         // Read off the steps rather than carried out of the loop, so the number in this sentence
         // is the smallest of the numbers the story has actually shown.
-        const small = Math.min(...st.steps.filter(x => x.phase === 'find').map(x => x.s.took));
+        const small = Math.min(...st.steps.filter(x => x.phase === 'find' || x.phase === 'push').map(x => x.s.took));
         // Two ways for the cutting to end, and only one of them is the rule. Saying "smaller than
         // the smallest piece" about a remainder that is nothing of the kind would be describing a
         // stopping rule that did not fire.
@@ -17215,7 +17438,7 @@ function msDrawStory() {
         const done = [];
         for (let k = 0; k < st.i; k++) {
             const x = st.steps[k];
-            if (x.phase === 'give' || x.phase === 'rest') done.push(x.s);
+            if (x.phase === 'give' || x.phase === 'rest' || x.phase === 'push' || x.phase === 'exclave') done.push(x.s);
         }
         done.forEach(s2 => {
             if (!s2.piece) return;
@@ -17225,6 +17448,12 @@ function msDrawStory() {
         const s3 = step2 && step2.s;
         if (!s3) return;
         const c2 = st.colours.get(s3.name);
+        if (step2.phase === 'push') {
+            if (s3.frontier) layer.append('path').attr('class', 'ms-frontier live').attr('d', D(s3.frontier)).style('stroke', c2);
+            if (s3.cut) layer.append('path').attr('class', 'ms-cut').attr('d', D(s3.cut)).style('stroke', c2);
+            if (s3.piece) layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.piece) + 'Z').style('fill', c2);
+            return;
+        }
         if (step2.phase === 'exclave') {
             layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.outline) + 'Z').style('fill', c2);
             return;
@@ -19916,7 +20145,20 @@ function sbRevealDistanceMap(q) {
     const c0 = getCountryCentroid(q.anchor) || d3.geoCentroid(sbFeature(q.anchor) || {});
     const proj = sbDistProjection(sbDistView, c0 && isFinite(c0[0]) ? c0 : null);
     if (proj) { projection = proj; path = d3.geoPath().projection(projection); }
-    if (!sbFitToFeatures(names, 0.09)) return;
+    if (sbDistView === 'azimuthal') {
+        // The WHOLE world, not the six countries. On this projection every spoke from the centre
+        // is a straight line whose length is proportional to the real distance, and the point of
+        // looking at it is to compare the five against each other AND against the rest of the
+        // earth — which a frame cropped to the five throws away. It is also the one view where
+        // showing everything costs nothing: the anchor is at the centre by construction, so the
+        // countries being ranked are never small or off to one side.
+        const box = document.getElementById('map-container');
+        const W = (svg && svg.attr('viewBox') || '0 0 1000 600').split(/\s+/).map(Number);
+        const m = 8;
+        try { projection.fitExtent([[m, m], [W[2] - m, W[3] - m]], { type: 'Sphere' }); }
+        catch (_) { if (!sbFitToFeatures(names, 0.09)) return; }
+        if (box) { /* nothing else to do: the fit is the frame */ }
+    } else if (!sbFitToFeatures(names, 0.09)) return;
     drawCountries();
     sbDistViewControl(q);
 
