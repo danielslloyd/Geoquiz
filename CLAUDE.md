@@ -877,6 +877,39 @@ Austria, Czechia and the Netherlands, three neighbours of six, with Poland, Fran
 Switzerland swallowed; under the chord it is the Netherlands, Austria and France, with the
 leftover holding 5%. That is the choice the picker exists to offer.
 
+## Who's Missing: what went wrong
+
+"Divides badly" names an outcome and not one of the reasons, and the reasons are the interesting
+half: a construction that refuses ninety-nine cuts out of a hundred is telling you something about
+the country, and it should be able to say what. So every gate a candidate can fail is counted by
+name (`sbDiag`, `sbDx`, `SB_GATE_WORDS`), and a country that will not divide gets a step-through
+of its own — what it is, what was tried, where it stopped.
+
+The counts are the point. Kenya under the chord: 691 pairs of boundary points over 3 rounds, 2
+cuts made, and then the tally — 566 pairs would have broken off more than the cap allows, 225 less
+than 2% of the country, 39 had both ends on the same neighbour's frontier, and the remainder fell
+on the borrowed border leaving the country or crossing the boundary. The panel says plainly that
+the largest number is not necessarily the culprit, because the cheap tests run first and reject
+the most; what is worth looking at is a gate near the BOTTOM of the list with a big number.
+
+Nothing about the surgery changed to make this possible. The counters are written where the
+refusals already happened; they only stop it being silent about them.
+
+## Who's Missing: the detached parts go first
+
+A country's islands and exclaves are bites like any other — land that has to go to somebody — and
+they are settled BEFORE a single cut is made, as their own steps at the head of the story. Doing
+it afterwards made the answer depend on who had happened to end up absorbing what: the owner was
+chosen from the list of countries that had taken a piece, which is not what decides who Cabinda is
+next to.
+
+**Nearest LAND, not nearest centroid.** Cabinda sits on the Congo river between the DRC and the
+Republic of the Congo and touches both; by centroid it went to Gabon, a different country 500 km
+away. A centroid answers "which country is that one most like the middle of", and nobody asked
+that. Measured against the countries' own outlines instead: Cabinda → DRC at 0 km, Nakhchivan →
+Turkey at 0 km, Musandam → the UAE at 0 km. Bounding boxes rule out almost every candidate before
+any distance is computed, so 171 exclaves across the world cost nothing measurable.
+
 ## Who's Missing: the step-by-step story
 
 Performing the surgery and showing the finished map is the least interesting thing the sandbox can

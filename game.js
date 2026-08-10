@@ -8785,13 +8785,13 @@ function ensureCountryFacts() {
         const pts = arcPts[k];
         if (!pts || pts.length < 2) return;
         const mid = pts[pts.length >> 1];
-        const key = [...who].sort().join(' ');
+        const key = [...who].sort().join(String.fromCharCode(0));
         const wet = inAnyLake(mid);
         const cur = wetPair.get(key);
         wetPair.set(key, { wet: (cur ? cur.wet : 0) + (wet ? 1 : 0), dry: (cur ? cur.dry : 0) + (wet ? 0 : 1) });
     });
     const throughWater = (a, b) => {
-        const v = wetPair.get([a, b].sort().join(' '));
+        const v = wetPair.get([a, b].sort().join(String.fromCharCode(0)));
         return !!(v && v.wet && !v.dry);
     };
 
@@ -13811,6 +13811,31 @@ const SB_NEIGHBOUR_OPTIONS = 12;
 let sbEatWhy = '';
 const sbNo = w => { sbEatWhy = w; return null; };
 
+// WHY a country would not divide, in enough detail to answer the question honestly. "Divides
+// badly" is a shrug: it names the outcome and not one of the reasons, and the reasons are the
+// interesting part — a construction that refuses ninety-nine cuts out of a hundred is telling you
+// something about the country, and it should be able to say what.
+//
+// Every gate a candidate can fail is counted by name. Nothing here changes what the surgery does;
+// it only stops it being silent about it.
+let sbDiag = null;
+const sbDx = (why, n) => { if (sbDiag) sbDiag.gate[why] = (sbDiag.gate[why] || 0) + (n || 1); };
+const SB_GATE_WORDS = {
+    pairs:      'pairs of boundary points considered',
+    sameOwner:  'both ends on the same neighbour\u2019s frontier \u2014 a line between them separates nothing',
+    tooSmall:   'would break off less than 2% of the country',
+    tooBig:     'would break off more than the cap allows',
+    noSource:   'no real border in the world is long enough to span that gap rigidly',
+    noBorrow:   'no stretch of the borrowed border is the right length with a plausible wander',
+    outside:    'the borrowed border leaves the country',
+    crosses:    'the borrowed border crosses the boundary',
+    area:       'the two halves do not add up to the region',
+    pinched:    'the piece or the remainder comes out in two lobes',
+    frontier:   'the piece meets its owner in two places, or along a thread',
+    noTaker:    'nobody left holds any of that piece\u2019s edge',
+    noLeftover: 'nobody would be left to hold what remains'
+};
+
 // A neighbour holding less of the land border than this is crowded out rather than handed a
 // splinter, and its share goes to the others.
 // Mercator Lies will not deal a country smaller than this: the reveal carries both silhouettes
@@ -14165,6 +14190,7 @@ function sbBorderShapes(topo, owners, arcs) {
 // same country always divides the same way.
 function sbEatCountry(rawTopo, goneName) {
     sbEatWhy = '';
+    sbDiag = { gate: {}, algo: sbBiteAlgo, rounds: 0, cuts: 0, neighbours: 0, name: goneName };
     // Simplify FIRST, then cut. The other order shifts the global simplification quantile and
     // nudges vertices in countries nowhere near the surgery.
     const topo = worldTopoForDetail(rawTopo);
@@ -14406,6 +14432,62 @@ function sbEatCountry(rawTopo, goneName) {
     // The leftover is picked on frontier length whatever the biting order, so switching order
     // changes who bites when and not who holds the surplus — otherwise the five orders would be
     // five different questions.
+    if (sbDiag) sbDiag.neighbours = eligible.length;
+
+    // ---- the detached parts, handed out first ----
+    //
+    // A country's islands and exclaves are bites like any other: they are land that has to go to
+    // somebody, and who gets them is a question about geography rather than about the division.
+    // Deciding them AFTER the main body meant the answer depended on who had happened to end up
+    // absorbing what \u2014 Cabinda's owner was chosen from the list of countries that had taken a
+    // piece of Angola, which is not what decides who Cabinda is next to. Now each goes to the
+    // nearest country outright, before a single cut is made, and the story says so.
+    const exclaves = [];
+    if (allRings.length > 1) {
+        // NEAREST LAND, not nearest centroid. Cabinda sits on the Congo river between the DRC and
+        // the Republic of the Congo and touches both; by centroid it went to Gabon, which is a
+        // different country entirely and 500 km away. A centroid answers "which country is that
+        // one most like the middle of", and nobody asked that.
+        const stride = pts => { const k = Math.max(1, Math.floor(pts.length / 60)); const o = [];
+                                for (let i = 0; i < pts.length; i += k) o.push(pts[i]); return o; };
+        const others = [];
+        geoms.forEach(gm => {
+            const nm2 = gm !== goneGeom && sbGeomName(gm);
+            if (!nm2) return;
+            const f2 = topojson.feature(topo, gm);
+            const parts = f2.geometry.type === 'Polygon' ? [f2.geometry.coordinates] : (f2.geometry.coordinates || []);
+            const pts = [];
+            parts.forEach(pp => stride(pp[0] || []).forEach(q => pts.push(q)));
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            pts.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]);
+                               x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+            if (pts.length) others.push({ nm: nm2, pts, bb: [x0, y0, x1, y1] });
+        });
+        allRings.slice(1).forEach(r => {
+            const mine = stride(r.pts.map(toDeg));
+            const c = toDeg(r.pts.reduce((acc, q) => [acc[0] + q[0] / r.pts.length, acc[1] + q[1] / r.pts.length], [0, 0]));
+            let best = null, bestD = Infinity;
+            others.forEach(o => {
+                // A cheap floor from the boxes first: almost every country is ruled out by one.
+                const dx = Math.max(o.bb[0] - c[0], 0, c[0] - o.bb[2]);
+                const dy = Math.max(o.bb[1] - c[1], 0, c[1] - o.bb[3]);
+                if (Math.hypot(dx, dy) * Math.PI / 180 > bestD) return;
+                let d = Infinity;
+                for (const a2 of mine) for (const b2 of o.pts) {
+                    const dd = d3.geoDistance(a2, b2);
+                    if (dd < d) d = dd;
+                }
+                if (d < bestD) { bestD = d; best = o.nm; }
+            });
+            if (!best) return;
+            exclaves.push({ ring: r, to: best, at: c, km: bestD * SB_EARTH_R_KM });
+        });
+    }
+    const exclaveStory = exclaves.map(x => ({
+        kind: 'exclave', name: x.to, at: x.at, km: x.km,
+        outline: x.ring.pts.map(toDeg).concat([toDeg(x.ring.pts[0])])
+    }));
+
     const singles = eligible.filter(n => groupsOf(n).length === 1);
     if (!singles.length) return sbNo('twoplaces');
     const chosenLeftover = singles.reduce((a, b) => borderKm.get(b) > borderKm.get(a) ? b : a);
@@ -15237,15 +15319,18 @@ function sbEatCountry(rawTopo, goneName) {
                     // either end — requiring a named neighbour at both ends is what limited this
                     // to landlocked countries, and a peninsula's neck is exactly the kind of
                     // place this construction exists to find.
-                    if (oi && oj && oi === oj) continue;
+                    if (oi && oj && oi === oj) { sbDx('sameOwner'); continue; }
                     const ar = areaOfSpan(i, j);
-                    if (ar < lo || ar > hi) continue;
+                    if (ar < lo) { sbDx('tooSmall'); continue; }
+                    if (ar > hi) { sbDx('tooBig'); continue; }
                     const dx = live[j].p[0] - live[i].p[0], dy = live[j].p[1] - live[i].p[1];
                     const len = Math.hypot(dx, dy);
                     if (!(len > 0)) continue;
                     cand.push({ i, j, ar, k: ar / Math.pow(len, Math.max(0.5, sbChordPow)) });
                 }
             }
+            sbDx('pairs', cand.length);
+            if (sbDiag) sbDiag.rounds++;
             if (!cand.length) break;
             cand.sort((a, b) => b.k - a.k);
 
@@ -15264,7 +15349,7 @@ function sbEatCountry(rawTopo, goneName) {
                 // than most single arcs, so without this filter almost every candidate was
                 // failing on a border that could never have reached.
                 const fit = shapes.filter(sh => sh.len >= span * 1.02);
-                if (!fit.length) continue;
+                if (!fit.length) { sbDx('noSource'); continue; }
                 for (let sIdx = 0; sIdx < SB_BITE_CURVES && !got; sIdx++) {
                     const src = fit[(i * 31 + sIdx * 37) % fit.length];
                     for (const flip of [1, -1]) {
@@ -15273,7 +15358,7 @@ function sbEatCountry(rawTopo, goneName) {
                         // at its real size and in its real shape, doubling back where it doubles
                         // back rather than flattened into a curve that never could.
                         const borrowed = sbBorrowRigid(src.pts, P, Q, flip, i + sIdx);
-                        if (!borrowed) continue;
+                        if (!borrowed) { sbDx('noBorrow'); continue; }
                         const curve = borrowed.pts;
                         if (!curve.length) continue;
                         // Every point of it has to be INSIDE, and that is a different test from
@@ -15284,13 +15369,13 @@ function sbEatCountry(rawTopo, goneName) {
                         let bad = false;
                         const path2 = [P].concat(curve, [Q]);
                         for (let a3 = 0; a3 < curve.length && !bad; a3++) if (!inLive(curve[a3])) bad = true;
-                        if (bad) continue;
+                        if (bad) { sbDx('outside'); continue; }
                         for (let a3 = 0; a3 + 1 < path2.length && !bad; a3++)
                             for (let k = 0; k < L; k++) {
                                 if (k === i || k === j || (k + 1) % L === i || (k + 1) % L === j) continue;
                                 if (cross(path2[a3], path2[a3 + 1], live[k].p, live[(k + 1) % L].p)) { bad = true; break; }
                             }
-                        if (bad) continue;
+                        if (bad) { sbDx('crosses'); continue; }
                         const inner = curve.map(pt => ({ p: pt, leg: -1 }));
                         const fwd = [];
                         for (let k = i; ; k = (k + 1) % L) { fwd.push(live[k]); if (k === j) break; }
@@ -15300,11 +15385,11 @@ function sbEatCountry(rawTopo, goneName) {
                         const rest = bwd.concat(inner);
                         if (piece.length < 3 || rest.length < 3) continue;
                         const aP = Math.abs(areaOf(closed(piece))), aR = Math.abs(areaOf(closed(rest)));
-                        if (Math.abs((aP + aR) / areaLeft - 1) > 0.005) continue;
+                        if (Math.abs((aP + aR) / areaLeft - 1) > 0.005) { sbDx('area'); continue; }
                         // The cap again, on what the piece ACTUALLY came to. The candidate filter
                         // measures the straight chord's area and the drawn border bulges either
                         // side of it, so a 30% cap was letting through pieces of 37%.
-                        if (aP > hi) continue;
+                        if (aP > hi) { sbDx('tooBig'); continue; }
                         // Who gets it: whoever holds the longest run of border inside the piece,
                         // among those who have not already taken one.
                         const held = new Map();
@@ -15314,8 +15399,8 @@ function sbEatCountry(rawTopo, goneName) {
                             held.set(nm2, (held.get(nm2) || 0) +
                                 Math.hypot(piece[k + 1].p[0] - piece[k].p[0], piece[k + 1].p[1] - piece[k].p[1]));
                         }
-                        if (!held.size) continue;
-                        if (!chordOneLobe(piece) || !chordOneLobe(rest)) continue;
+                        if (!held.size) { sbDx('noTaker'); continue; }
+                        if (!chordOneLobe(piece) || !chordOneLobe(rest)) { sbDx('pinched'); continue; }
                         // Everyone who holds any of this piece's edge, in order, so a candidate
                         // that cannot be given the piece for a structural reason falls through to
                         // the next rather than losing the cut altogether.
@@ -15334,7 +15419,7 @@ function sbEatCountry(rawTopo, goneName) {
                             if (!chordOneRun(m2, new Set(mainGroup.get(nm2)))) continue;
                             who = nm2; merged = m2; break;
                         }
-                        if (!who) continue;
+                        if (!who) { sbDx('frontier'); continue; }
                         // The whole tally, not just the winner: the assignment is the second half
                         // of this construction and the story cannot show it being made without
                         // the numbers it was made on.
@@ -15361,7 +15446,8 @@ function sbEatCountry(rawTopo, goneName) {
                 const nm2 = ownerOfLeg(got.rest[k].leg);
                 if (nm2) stillFree.add(nm2);
             }
-            if (!stillFree.size) break;
+            if (!stillFree.size) { sbDx('noLeftover'); break; }
+            if (sbDiag) sbDiag.cuts++;
             pieces.set(got.who, got.whole);
             used.add(got.who);
             minBite = Math.min(minBite, got.ar);
@@ -15677,7 +15763,10 @@ function sbEatCountry(rawTopo, goneName) {
         scale = next; allow = nextAllow;
     }
     if (!bestRun) return sbNo('divides');
-    const pieces = bestRun.pieces, story = bestRun.story;
+    const pieces = bestRun.pieces;
+    // The exclaves are steps of the story too, and they come FIRST because that is when they were
+    // decided \u2014 the map has not been cut at all yet when they are handed over.
+    const story = exclaveStory.concat(bestRun.story);
 
     // ---------------- rewrite the arcs ----------------
     // Each absorber's own arc becomes the whole outline of what it has taken: its piece, walked
@@ -15747,32 +15836,17 @@ function sbEatCountry(rawTopo, goneName) {
         writeArc(legs[mg[mg.length - 1]], path);
     }
 
-    // Islands of the vanished country go whole to the nearest absorber — there is nothing to
-    // divide, and a rock left ownerless is a hole in the map exactly like the country was.
+    // The detached parts, applied where they were assigned before any of this began. A rock left
+    // ownerless is a hole in the map exactly like the country was.
     const geomsOut = geoms.filter(gm => gm !== goneGeom);
     const absorbers = [...pieces.keys()];
-    if (allRings.length > 1) {
-        const centre = new Map(absorbers.map(a2 => {
-            const gm = geomsOut.find(x => namesMatch(sbGeomName(x), a2));
-            return [a2, gm ? d3.geoCentroid(topojson.feature(topo, gm)) : null];
-        }));
-        allRings.slice(1).forEach(r => {
-            const c = toDeg(r.pts.reduce((acc, p) => [acc[0] + p[0] / r.pts.length, acc[1] + p[1] / r.pts.length], [0, 0]));
-            let best = null, bestD = Infinity;
-            absorbers.forEach(a2 => {
-                const cc = centre.get(a2);
-                if (!cc) return;
-                const d = d3.geoDistance(c, cc);
-                if (d < bestD) { bestD = d; best = a2; }
-            });
-            if (!best) return;
-            const i = geomsOut.findIndex(x => namesMatch(sbGeomName(x), best));
-            if (i < 0) return;
-            const src = geomsOut[i];
-            const polys = src.type === 'Polygon' ? [src.arcs] : src.arcs.map(p => p);
-            geomsOut[i] = Object.assign({}, src, { type: 'MultiPolygon', arcs: polys.concat([[r.refs]]) });
-        });
-    }
+    exclaves.forEach(x => {
+        const i = geomsOut.findIndex(g2 => namesMatch(sbGeomName(g2), x.to));
+        if (i < 0) return;
+        const src = geomsOut[i];
+        const polys = src.type === 'Polygon' ? [src.arcs] : src.arcs.map(q => q);
+        geomsOut[i] = Object.assign({}, src, { type: 'MultiPolygon', arcs: polys.concat([[x.ring.refs]]) });
+    });
 
     // A topology with absolute arcs carries no transform — leaving the old one in place would
     // have topojson re-apply the quantization scale to coordinates that are already degrees.
@@ -16473,9 +16547,73 @@ function msVerdictFor(nm) {
                       : (sbEatWhy === 'tiny' || sbEatWhy === 'enclave' || sbEatWhy === 'twoplaces') ? 'few' : 'fails';
         v = eaten ? (inBand ? 'ok' : 'okBig') : stopped;
         msState.lastEaten = eaten;
+        // Kept whatever the verdict: a country that DID divide has no failure story, but one that
+        // did not is about to want every number the attempt produced.
+        msState.lastWhy = sbEatWhy || 'divides';
+        msState.lastDiag = sbDiag;
     }
     msState.verdicts.set(nm, v);
     return v;
+}
+
+// A country that will NOT divide gets a step-through of its own, because "divides badly" names
+// the outcome and not one of the reasons, and the reasons are the interesting half: a
+// construction that refuses ninety-nine cuts out of a hundred is telling you something about the
+// country, and it should be able to say what. Three steps \u2014 what it is, what was tried, what
+// stopped it \u2014 built from the same counters the successful runs fill in and ignore.
+const MS_WHY_WORDS = {
+    island:    ['No land neighbours', 'Every border it has is coastline. There is nobody to give the land to, which is the one structural bar left \u2014 nothing about the construction could get round it.'],
+    tiny:      ['Too small to cut', 'Its share of the world\u2019s land border is under the floor this tool works to. A boundary that short cannot be moved anywhere useful without producing slivers.'],
+    enclave:   ['It contains an enclave', 'One of its rings is wound against the others, which means a country sits inside it. Handing out land with a hole in it needs a rule for the hole, and there is not one.'],
+    twoplaces: ['Nobody touches it once', 'Every neighbour meets it in two or more separate places. Somebody has to hold the surplus without biting, and the outline of a two-place neighbour cannot be written into one arc.'],
+    nogeom:    ['No geometry', 'The atlas has no polygon under that name at this detail level.'],
+    topology:  ['No borders to borrow', 'The topology yielded no usable border to trace a cut from.'],
+    divides:   ['No division holds up', 'The cuts were found and then refused, one gate at a time. The counts below say which gate.']
+};
+function msFailSteps(nm, why, diag) {
+    const w = MS_WHY_WORDS[why] || MS_WHY_WORDS.divides;
+    const gate = (diag && diag.gate) || {};
+    const total = Object.keys(gate).filter(k => k !== 'pairs').reduce((t, k) => t + gate[k], 0);
+    const rows = Object.keys(gate).filter(k => k !== 'pairs' && gate[k])
+        .sort((a, b) => gate[b] - gate[a])
+        .map(k => `<div class="ms-share"><span>${SB_GATE_WORDS[k] || k}</span>` +
+                  `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(100 * gate[k] / (total || 1)))}%"></i></span>` +
+                  `<span class="ms-pct">${gate[k].toLocaleString()}</span></div>`).join('');
+    return [
+        { head: `${displayLabelForName(nm)} will not divide`,
+          body: `<p><strong>${w[0]}.</strong> ${w[1]}</p>` +
+                `<p class="ms-hint">This is the same surgery every other country goes through; ` +
+                `nothing here is special-cased. The next two steps are what it tried and where it stopped.</p>` },
+        { head: 'What was tried',
+          body: diag && diag.algo === 'chord'
+            ? `<p>The chord construction looked at <strong>${(gate.pairs || 0).toLocaleString()}</strong> ` +
+              `pairs of boundary points over <strong>${diag.rounds || 0}</strong> round${diag.rounds === 1 ? '' : 's'}, ` +
+              `and made <strong>${diag.cuts || 0}</strong> cut${diag.cuts === 1 ? '' : 's'}. ` +
+              `${diag.neighbours || 0} neighbour${diag.neighbours === 1 ? '' : 's'} held enough of the ` +
+              `border to be worth giving land to.</p>` +
+              `<p class="ms-hint">Every pair is scored on how much land it breaks off for its own ` +
+              `length. The ones that scored well were then tried in earnest \u2014 a real border traced ` +
+              `across them, checked against every edge of the boundary \u2014 and that is where they fell.</p>`
+            : `<p>The slide construction offered the cut to each of ` +
+              `<strong>${diag ? diag.neighbours : 0}</strong> neighbours in turn, moving each one\u2019s ` +
+              `frontier straight in as far as the growth budget and the shape of the country allowed.</p>` +
+              `<p class="ms-hint">A neighbour whose frontier will not go anywhere is crowded out and ` +
+              `its share falls to the others; when enough of them are, there is nothing left to divide.</p>` },
+        { head: 'Where it stopped',
+          body: rows
+            ? `<p>Every gate a candidate can fail, counted:</p><div class="ms-shares">${rows}</div>` +
+              `<p class="ms-hint">A cut has to pass all of them. The largest number is not necessarily ` +
+              `the culprit \u2014 the cheap tests run first and reject the most \u2014 but a gate near the bottom ` +
+              `of the list with a big number is where the interesting refusals are.</p>`
+            : `<p>It never got as far as testing a cut: ${w[1].charAt(0).toLowerCase() + w[1].slice(1)}</p>` }
+    ];
+}
+
+function msBeginFailStory(nm, why, diag) {
+    msState.shown = nm;
+    msState.story = { nm, fail: msFailSteps(nm, why, diag), i: 0, applied: false,
+                      eaten: null, colours: new Map(), shares: [] };
+    msRenderStory();
 }
 
 function msPaint() {
@@ -16621,8 +16759,7 @@ function msHandleClick(name) {
     msPaint();
     if (!verdict) { msSay(`<strong>${displayLabelForName(nm)}</strong> — the map is still loading.`); return; }
     if (verdict === 'coastal' || verdict === 'few') {
-        msSay(`<strong>${displayLabelForName(nm)}</strong><br><span class="ms-verdict ${MS_STATES[verdict].cls}">` +
-              `${MS_STATES[verdict].label}</span><br><span class="ms-hint">${MS_STATES[verdict].hint}</span>`);
+        msBeginFailStory(nm, msState.lastWhy || 'divides', msState.lastDiag);
         return;
     }
     const topo = worldTopoCache[worldCountriesUrl()];
@@ -16633,8 +16770,7 @@ function msHandleClick(name) {
     if (!eaten) {
         msState.verdicts.set(nm, 'fails');
         msPaint();
-        msSay(`<strong>${displayLabelForName(nm)}</strong><br><span class="ms-verdict ms-fails">` +
-              `${MS_STATES.fails.label}</span><br><span class="ms-hint">${MS_STATES.fails.hint}.</span>`);
+        msBeginFailStory(nm, msState.lastWhy || 'divides', msState.lastDiag);
         return;
     }
     msBeginStory(nm, eaten, topo);
@@ -16674,8 +16810,9 @@ function msBeginStory(nm, eaten, topo) {
     // turns to narrate and no share anybody is owed: each cut is a self-contained operation, and
     // the three things that happen in it -- a pair of points is found, a border is drawn between
     // them, the piece is given to somebody -- are three things to look at rather than one.
-    const steps = eaten.story[0] && eaten.story[0].kind === 'chord'
+    const steps = eaten.story.some(x => x.kind === 'chord')
         ? [{ phase: 'intro' }].concat(
+              eaten.story.filter(x => x.kind === 'exclave').map(x => ({ phase: 'exclave', s: x })),
               ...eaten.story.filter(x => x.kind === 'chord').map(x =>
                   [{ phase: 'find', s: x }, { phase: 'draw', s: x }, { phase: 'give', s: x }]),
               eaten.story.filter(x => x.kind === 'chord-rest').map(x => ({ phase: 'rest', s: x })),
@@ -16695,7 +16832,8 @@ function msBeginStory(nm, eaten, topo) {
     msRenderStory();
 }
 
-const msStorySteps = st => st.steps ? st.steps.length : st.eaten.story.length + 2;
+const msStorySteps = st => st.fail ? st.fail.length
+                          : (st.steps ? st.steps.length : st.eaten.story.length + 2);
 
 function msGoStory(d) {
     const st = msState && msState.story;
@@ -16704,7 +16842,7 @@ function msGoStory(d) {
     if (i === st.i) return;
     st.i = i;
     // The world is only really replaced on the last step, and put back on the way out of it.
-    const wantApplied = (i === msStorySteps(st) - 1);
+    const wantApplied = !st.fail && (i === msStorySteps(st) - 1);
     if (wantApplied !== st.applied) {
         st.applied = wantApplied;
         gameState.countries = wantApplied ? st.eaten.features : msState.world;
@@ -16740,6 +16878,16 @@ function msRenderChordStory() {
                `same question again of what is left.</p>` +
                `<p class="ms-hint">${gone} came apart in <strong>${n}</strong> cut${n === 1 ? '' : 's'}, ` +
                `and then what remained was smaller than the smallest of them.</p>`;
+    } else if (step.phase === 'exclave') {
+        const s2 = step.s;
+        head = `${dot(s2.name)}${displayLabelForName(s2.name)} takes the detached part`;
+        body = `<p>${gone} is not all in one piece, and the parts that are somewhere else are ` +
+               `settled BEFORE anything is cut. Who a detached piece goes to is a question about ` +
+               `geography rather than about the division — deciding it afterwards made the answer ` +
+               `depend on who happened to end up absorbing what.</p>` +
+               `<p>This one goes to ${displayLabelForName(s2.name)}, whose nearest land is ` +
+               `<strong>${Math.round(s2.km).toLocaleString()} km</strong> away — closer than anybody ` +
+               `else's.</p>`;
     } else if (step.phase === 'find') {
         const s2 = step.s;
         head = `Cut ${which()} — finding it`;
@@ -16843,6 +16991,21 @@ function msRenderChordStory() {
 function msRenderStory() {
     const st = msState && msState.story;
     if (!st) return;
+    if (st.fail) {
+        const total0 = st.fail.length, step0 = st.fail[st.i];
+        msSay(
+            `<div class="ms-story-head"><strong>${step0.head}</strong></div>` +
+            `<div class="ms-story-body">${step0.body}</div>` +
+            `<div class="ms-story-nav">` +
+            `<button class="control-btn" id="ms-prev"${st.i ? '' : ' disabled'}>\u2039 Back</button>` +
+            `<span class="ms-story-count">${st.i + 1} / ${total0}</span>` +
+            `<button class="control-btn" id="ms-next"${st.i === total0 - 1 ? ' disabled' : ''}>Next \u203a</button>` +
+            `</div>`);
+        const p0 = document.getElementById('ms-prev'), n0 = document.getElementById('ms-next');
+        if (p0) p0.addEventListener('click', () => msGoStory(-1));
+        if (n0) n0.addEventListener('click', () => msGoStory(1));
+        return;
+    }
     if (st.steps) { msRenderChordStory(); return; }
     const total = msStorySteps(st);
     const gone = displayLabelForName(st.nm);
@@ -16886,7 +17049,13 @@ function msRenderStory() {
         const c = st.colours.get(s.name);
         const who = displayLabelForName(s.name);
         head = `<i class="ms-dot" style="background:${c}"></i>${who} — ${pct(s.share * 100)} of the frontier`;
-        if (s.kind === 'swallowed') {
+        if (s.kind === 'exclave') {
+            body = `<p>${gone} is not all in one piece. Its detached parts are settled BEFORE ` +
+                   `anything is cut, because who a piece of land somewhere else belongs to is a ` +
+                   `question about geography rather than about the division. This one goes to ` +
+                   `${who}, whose nearest land is <strong>${Math.round(s.km).toLocaleString()} km</strong> ` +
+                   `away — closer than anybody else's.</p>`;
+        } else if (s.kind === 'swallowed') {
             body = `<p>${who} was owed <strong>${km(s.want || s.share * st.eaten.goneArea)}</strong> — and by the time its turn came, ` +
                    `an earlier, deeper bite had slid clean past its stretch of the boundary and taken it. ` +
                    `There is nothing left for ${who} to bite from, so its share falls to the others.</p>`;
@@ -17022,7 +17191,7 @@ function msDrawStory() {
     if (typeof svg === 'undefined' || !svg) return;
     let layer = svg.select('g.ms-story');
     const st = msState && msState.story;
-    if (!st || st.applied) { layer.remove(); return; }
+    if (!st || st.applied || st.fail) { layer.remove(); return; }
     if (layer.empty()) layer = svg.append('g').attr('class', 'ms-story');
     layer.raise().selectAll('*').remove();
     const D = pts => {
@@ -17056,6 +17225,10 @@ function msDrawStory() {
         const s3 = step2 && step2.s;
         if (!s3) return;
         const c2 = st.colours.get(s3.name);
+        if (step2.phase === 'exclave') {
+            layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.outline) + 'Z').style('fill', c2);
+            return;
+        }
         if (step2.phase === 'rest') {
             layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.piece) + 'Z').style('fill', c2);
             return;
@@ -17072,6 +17245,11 @@ function msDrawStory() {
     const step = st.i === 0 ? null : st.eaten.story[st.i - 1];
     // Everything already eaten, faint and named, so a step is read against what came before it.
     st.eaten.story.slice(0, Math.max(0, st.i - 1)).forEach(s => {
+        if (s.kind === 'exclave' && s.outline) {
+            layer.append('path').attr('class', 'ms-piece-done').attr('d', D(s.outline) + 'Z')
+                .style('fill', st.colours.get(s.name));
+            return;
+        }
         if (!s.piece) return;
         layer.append('path').attr('class', 'ms-piece-done').attr('d', D(s.piece) + 'Z')
             .style('fill', st.colours.get(s.name));
@@ -17085,6 +17263,10 @@ function msDrawStory() {
         });
     } else {
         const c = st.colours.get(step.name);
+        if (step.kind === 'exclave' && step.outline) {
+            layer.append('path').attr('class', 'ms-piece').attr('d', D(step.outline) + 'Z').style('fill', c);
+            return;
+        }
         if (step.frontier)
             layer.append('path').attr('class', 'ms-frontier live').attr('d', D(step.frontier)).style('stroke', c);
         if (step.piece)
