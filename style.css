@@ -4258,3 +4258,8 @@ g.ms-story { pointer-events: none; }
   .ws { grid-template-columns: 1fr; }
   .ws-stage { position: static; }
 }
+
+/* The straight line that FOUND a chord cut, as against the border drawn in its place. Dashed
+   and unfilled: it is a measurement, not a boundary, and it is gone by the next step. */
+.ms-story .ms-chord { fill: none; stroke: var(--text, #3a3226); stroke-width: 1.6;
+                      stroke-dasharray: 7 5; opacity: 0.75; vector-effect: non-scaling-stroke; }

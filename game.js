@@ -14669,11 +14669,17 @@ function sbEatCountry(rawTopo, goneName) {
         const ownerOfLeg = li => (legs[li] && legs[li].name) || null;
         let live = ring;
         let leftover = null;
-        for (let round = 0; round < 12; round++) {
+        let minBite = Infinity;
+        for (let round = 0; round < 16; round++) {
             const L = live.length;
             if (L < 12) break;
             const areaLeft = Math.abs(areaOf(closed(live)));
-            if (areaLeft < area0 * SB_BITE_STOP_FRAC) break;
+            // Stop when what is left is smaller than the smallest bite already taken. There is no
+            // share to satisfy and no turn to run out of, so the honest end of an iterative cut is
+            // that the remainder has stopped being one of the pieces and become a remainder: one
+            // more cut would be dividing something already smaller than everything else on the
+            // map. Until the first bite there is no such measure, and the floor stands in.
+            if (areaLeft < Math.min(minBite, area0 * SB_BITE_STOP_FRAC)) break;
             // Shoelace prefix sums, so the area a chord cuts off is O(1) rather than O(n) and all
             // 60,000-odd pairs can simply be tried.
             const S = new Array(L + 1);
@@ -14767,7 +14773,14 @@ function sbEatCountry(rawTopo, goneName) {
                         if (!who) continue;
                         if (!chordOneRun(piece, new Set(mainGroup.get(who)))) continue;
                         if (!chordOneLobe(piece) || !chordOneLobe(rest)) continue;
-                        got = { i, j, piece, rest, cut: path2, who, ar: aP, src, flip, areaLeft };
+                        // The whole tally, not just the winner: the assignment is the second half
+                        // of this construction and the story cannot show it being made without
+                        // the numbers it was made on.
+                        const edges = [...held.entries()].map(e2 => ({ name: e2[0], km: e2[1] }))
+                            .sort((x, y) => y.km - x.km);
+                        got = { i, j, piece, rest, cut: path2, who, ar: aP, src, flip, areaLeft, edges,
+                                chord: [P, Q], chordKm: span, rank: c, ratio: cand[c].k, bestRatio: cand[0].k,
+                                tried: Math.min(cand.length, chordCandidates), pairs: cand.length };
                         break;
                     }
                 }
@@ -14784,12 +14797,14 @@ function sbEatCountry(rawTopo, goneName) {
             if (!stillFree.size) break;
             pieces.set(got.who, got.piece);
             used.add(got.who);
+            minBite = Math.min(minBite, got.ar);
             story.push({
-                kind: 'bite', name: got.who, share: (borderKm.get(got.who) || 0) / (totalLand || 1),
-                borderKm: borderKm.get(got.who), want: got.ar, asked: 1, turns: 1,
-                took: got.ar, leftBefore: got.areaLeft, backed: false, depthKm: 0,
-                growth: 0, spliced: false, algo: 'chord', spin: 0,
-                frontier: [], regionBefore: closed(live).map(toDeg),
+                kind: 'chord', name: got.who, algo: 'chord',
+                took: got.ar, leftBefore: got.areaLeft,
+                chord: got.chord.map(toDeg), chordKm: got.chordKm,
+                ratio: got.ratio, bestRatio: got.bestRatio, rank: got.rank,
+                tried: got.tried, pairs: got.pairs, edges: got.edges,
+                regionBefore: closed(live).map(toDeg),
                 cut: got.cut.map(toDeg), piece: closed(got.piece).map(toDeg),
                 source: { owners: got.src.owners, flip: got.flip, ys: got.src.ys, own: false }
             });
@@ -14812,15 +14827,11 @@ function sbEatCountry(rawTopo, goneName) {
         if (!leftover || !chordOneLobe(live)) return null;
         pieces.set(leftover, live);
         story.push({
-            kind: 'leftover', name: leftover, share: (borderKm.get(leftover) || 0) / (totalLand || 1),
-            borderKm: borderKm.get(leftover), took: Math.abs(areaOf(closed(live))),
+            kind: 'chord-rest', name: leftover, algo: 'chord',
+            took: Math.abs(areaOf(closed(live))), minBite: isFinite(minBite) ? minBite : 0,
+            edges: [...held.entries()].map(e2 => ({ name: e2[0], km: e2[1] })).sort((x, y) => y.km - x.km),
+            missed: queue.filter(nm2 => !pieces.has(nm2)),
             piece: closed(live).map(toDeg)
-        });
-        // Everyone who never got a look in, so the story can say so.
-        queue.forEach(nm2 => {
-            if (pieces.has(nm2)) return;
-            story.push({ kind: 'crowded', name: nm2, share: (borderKm.get(nm2) || 0) / (totalLand || 1),
-                         borderKm: borderKm.get(nm2), want: 0, asked: 1, turns: 1, frontier: [] });
         });
         let sum2 = 0;
         for (const [, pv] of pieces) sum2 += Math.abs(areaOf(closed(pv)));
@@ -16057,14 +16068,25 @@ function msBeginStory(nm, eaten, topo) {
         const gain = (after && was) ? d3.geoArea(after) * R2 - d3.geoArea(topojson.feature(before, was)) * R2 : 0;
         return { a, pct: eaten.goneArea ? gain / eaten.goneArea * 100 : 0 };
     }).sort((x, y) => y.pct - x.pct);
-    msState.story = { nm, eaten, colours, shares, i: 0, applied: false };
+    // The chord gets a story of its own SHAPE, not just of its own words. There is no round of
+    // turns to narrate and no share anybody is owed: each cut is a self-contained operation, and
+    // the three things that happen in it -- a pair of points is found, a border is drawn between
+    // them, the piece is given to somebody -- are three things to look at rather than one.
+    const steps = eaten.story[0] && eaten.story[0].kind === 'chord'
+        ? [{ phase: 'intro' }].concat(
+              ...eaten.story.filter(x => x.kind === 'chord').map(x =>
+                  [{ phase: 'find', s: x }, { phase: 'draw', s: x }, { phase: 'give', s: x }]),
+              eaten.story.filter(x => x.kind === 'chord-rest').map(x => ({ phase: 'rest', s: x })),
+              [{ phase: 'done' }])
+        : null;
+    msState.story = { nm, eaten, colours, shares, steps, i: 0, applied: false };
     // Frame the neighbourhood — this is the sandbox, so there is no answer to give away.
     if (sbFitToFeatures([nm, ...eaten.absorbers], 0.1)) drawCountries();
     msPaint();
     msRenderStory();
 }
 
-const msStorySteps = st => st.eaten.story.length + 2;   // the shares, each bite, the result
+const msStorySteps = st => st.steps ? st.steps.length : st.eaten.story.length + 2;
 
 function msGoStory(d) {
     const st = msState && msState.story;
@@ -16083,9 +16105,133 @@ function msGoStory(d) {
     msRenderStory();
 }
 
+// The chord's story. Nothing here is about shares or turns, because the construction is about
+// neither: it looks at the country's own outline, finds the narrowest place to cut it, cuts, and
+// then asks who the piece was up against.
+function msRenderChordStory() {
+    const st = msState.story;
+    const total = st.steps.length;
+    const step = st.steps[st.i];
+    const gone = displayLabelForName(st.nm);
+    const km = v => Math.round(v).toLocaleString() + ' km\u00b2';
+    const kmL = v => Math.round(v).toLocaleString() + ' km';
+    const dot = nm2 => `<i class="ms-dot" style="background:${st.colours.get(nm2) || '#888'}"></i>`;
+    const n = st.steps.filter(x => x.phase === 'find').length;
+    const which = () => st.steps.slice(0, st.i + 1).filter(x => x.phase === 'find').length;
+    let head = '', body = '';
+
+    if (step.phase === 'intro') {
+        head = `Where is ${gone} most nearly two countries?`;
+        body = `<p>This construction never asks what anybody is owed. It asks the country: of every ` +
+               `pair of points on your boundary, which two could be joined by the SHORTEST line that ` +
+               `breaks off the MOST land?</p>` +
+               `<p>That ratio — area over length — is what a waist is. Maximising it finds the isthmus, ` +
+               `the base of the panhandle, the neck of a salient, without any of them ever having to ` +
+               `be named. Cut there, give the piece to whoever it is already up against, and ask the ` +
+               `same question again of what is left.</p>` +
+               `<p class="ms-hint">${gone} came apart in <strong>${n}</strong> cut${n === 1 ? '' : 's'}, ` +
+               `and then what remained was smaller than the smallest of them.</p>`;
+    } else if (step.phase === 'find') {
+        const s2 = step.s;
+        head = `Cut ${which()} — finding it`;
+        body = `<p>Every pair of boundary points is tried — <strong>${s2.pairs.toLocaleString()}</strong> ` +
+               `of them here — excluding only pairs on the SAME neighbour's frontier, which cut a bite ` +
+               `out of that country's own border and separate nothing.</p>` +
+               `<p>The winner is the dashed line on the map: <strong>${kmL(s2.chordKm)}</strong> long, ` +
+               `breaking off <strong>${km(s2.took)}</strong> of the ${km(s2.leftBefore)} still standing. ` +
+               `That is <strong>${Math.round(s2.ratio)} km² of land per kilometre of line</strong>` +
+               (s2.rank > 0
+                 ? `, and it is not quite the best straight-line ratio there was (${Math.round(s2.bestRatio)}) — ` +
+                   `${s2.rank} better pair${s2.rank === 1 ? '' : 's'} could not be drawn as a real border ` +
+                   `without crossing the coast, or left a piece nobody could be given.`
+                 : `, the best of them all.`) + `</p>`;
+    } else if (step.phase === 'draw') {
+        const s2 = step.s;
+        head = `Cut ${which()} — drawing it`;
+        body = `<p>The straight line found the place; it is not the border. A border is drawn instead, ` +
+               `traced from a real one elsewhere in the world — the ` +
+               `<strong>${(s2.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+               `${s2.source.flip < 0 ? ', mirrored' : ''} — at this chord's own length, so it is a real ` +
+               `border at true amplitude rather than a scaled impression of one.</p>` +
+               `<p>It has to stay inside the country the whole way. A trace that wanders out and back ` +
+               `is not one cut but several, so each candidate is checked against every edge of the ` +
+               `boundary before it is accepted.</p>` +
+               msSourceSvg(s2.source);
+    } else if (step.phase === 'give') {
+        const s2 = step.s;
+        const win = s2.edges[0];
+        head = `Cut ${which()} — ${dot(s2.name)}${displayLabelForName(s2.name)} takes it`;
+        const tot = s2.edges.reduce((t, e) => t + e.km, 0) || 1;
+        body = `<p>The land goes to whoever the land is already up against: of the edge of this piece ` +
+               `that is somebody's border, ${displayLabelForName(win.name)} holds the most.</p>` +
+               `<div class="ms-shares">` + s2.edges.slice(0, 6).map(e =>
+                   `<div class="ms-share"><span>${dot(e.name)}${displayLabelForName(e.name)}</span>` +
+                   `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(100 * e.km / tot))}%;` +
+                   `background:${st.colours.get(e.name) || '#888'}"></i></span>` +
+                   `<span class="ms-pct">${kmL(e.km)}</span></div>`).join('') + `</div>` +
+               `<p class="ms-hint">And ${displayLabelForName(s2.name)} is now out of the running. The ` +
+               `rewrite gives each country one arc and one outline, so a second piece would have to be ` +
+               `merged with the first — a polygon union, the one machine this surgery refuses to build.</p>`;
+    } else if (step.phase === 'rest') {
+        const s2 = step.s;
+        head = `${dot(s2.name)}${displayLabelForName(s2.name)} keeps the rest`;
+        // Read off the steps rather than carried out of the loop, so the number in this sentence
+        // is the smallest of the numbers the story has actually shown.
+        const small = Math.min(...st.steps.filter(x => x.phase === 'find').map(x => x.s.took));
+        // Two ways for the cutting to end, and only one of them is the rule. Saying "smaller than
+        // the smallest piece" about a remainder that is nothing of the kind would be describing a
+        // stopping rule that did not fire.
+        body = (s2.took < small
+                 ? `<p>What is left is <strong>${km(s2.took)}</strong>, which is less than the ` +
+                   `smallest piece already cut (<strong>${km(small)}</strong>). One more cut would be ` +
+                   `dividing something already smaller than everything else on the map, so the cutting ` +
+                   `stops and the remainder goes, by the same rule, to whoever holds most of its edge.</p>`
+                 : `<p>What is left is <strong>${km(s2.took)}</strong>, and the cutting stops here for ` +
+                   `the other reason: no pair of points left on this boundary gives a cut that can be ` +
+                   `drawn as a real border and handed to somebody who has not already taken. So the ` +
+                   `remainder goes, by the same rule as every piece, to whoever holds most of its ` +
+                   `edge — even though it is larger than the smallest piece cut ` +
+                   `(<strong>${km(small)}</strong>), which is where this construction would ordinarily ` +
+                   `have stopped.</p>`) +
+               (s2.missed && s2.missed.length
+                 ? `<p class="ms-hint">${s2.missed.map(displayLabelForName).join(', ')} got nothing: ` +
+                   `every piece that came off ${gone} was up against somebody else more. Under this ` +
+                   `construction that is an ordinary outcome rather than a failure — the cuts are ` +
+                   `decided by the shape of the country, not by who is owed what.</p>`
+                 : '');
+    } else {
+        head = `${gone} is gone`;
+        body = `<p><strong>${km(st.eaten.goneArea)}</strong> shared out in ${n} cut${n === 1 ? '' : 's'}, ` +
+               `and the seam is invisible by construction: only the arcs that moved were rewritten, so ` +
+               `every other vertex of every other country is bit-identical.</p>` +
+               `<div class="ms-shares">` + st.shares.map(sv =>
+                   `<div class="ms-share"><span>${dot(sv.a)}${displayLabelForName(sv.a)}</span>` +
+                   `<span class="ms-bar"><i style="width:${Math.max(2, Math.round(sv.pct))}%;` +
+                   `background:${st.colours.get(sv.a) || '#888'}"></i></span>` +
+                   `<span class="ms-pct">${sv.pct < 1 ? '<1' : Math.round(sv.pct)}%</span></div>`).join('') + `</div>` +
+               `<button class="control-btn ms-restore" id="ms-restore">Put it back</button>`;
+    }
+    msSay(
+        `<div class="ms-story-head"><strong>${head}</strong></div>` +
+        `<div class="ms-story-body">${body}</div>` +
+        `<div class="ms-story-nav">` +
+        `<button class="control-btn" id="ms-prev"${st.i ? '' : ' disabled'}>‹ Back</button>` +
+        `<span class="ms-story-count">${st.i + 1} / ${total}</span>` +
+        `<button class="control-btn" id="ms-next"${st.i === total - 1 ? '' : ''}${st.i === total - 1 ? ' disabled' : ''}>Next ›</button>` +
+        `</div>`);
+    const prev = document.getElementById('ms-prev');
+    const next = document.getElementById('ms-next');
+    if (prev) prev.addEventListener('click', () => msGoStory(-1));
+    if (next) next.addEventListener('click', () => msGoStory(1));
+    const rest = document.getElementById('ms-restore');
+    if (rest) rest.addEventListener('click', () => msRestore());
+    msDrawStory();
+}
+
 function msRenderStory() {
     const st = msState && msState.story;
     if (!st) return;
+    if (st.steps) { msRenderChordStory(); return; }
     const total = msStorySteps(st);
     const gone = displayLabelForName(st.nm);
     const km = v => Math.round(v).toLocaleString() + ' km²';
@@ -16276,6 +16422,37 @@ function msDrawStory() {
     };
     // The country that is going, always — every step is a step of taking it apart.
     layer.append('path').attr('class', 'ms-ghost').attr('d', D(st.eaten.outline) + 'Z');
+
+    // The chord's map is drawn in three layers as its three phases arrive: the straight line that
+    // found the cut, the real border drawn in its place, and then the piece filled in whoever's
+    // colour got it. Showing all three at once would be showing the answer with the question.
+    if (st.steps) {
+        const step2 = st.steps[st.i];
+        const done = [];
+        for (let k = 0; k < st.i; k++) {
+            const x = st.steps[k];
+            if (x.phase === 'give' || x.phase === 'rest') done.push(x.s);
+        }
+        done.forEach(s2 => {
+            if (!s2.piece) return;
+            layer.append('path').attr('class', 'ms-piece-done').attr('d', D(s2.piece) + 'Z')
+                .style('fill', st.colours.get(s2.name));
+        });
+        const s3 = step2 && step2.s;
+        if (!s3) return;
+        const c2 = st.colours.get(s3.name);
+        if (step2.phase === 'rest') {
+            layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.piece) + 'Z').style('fill', c2);
+            return;
+        }
+        if (step2.phase === 'find' && s3.chord)
+            layer.append('path').attr('class', 'ms-chord').attr('d', D(s3.chord));
+        if (step2.phase !== 'find' && s3.cut)
+            layer.append('path').attr('class', 'ms-cut').attr('d', D(s3.cut)).style('stroke', c2);
+        if (step2.phase === 'give' && s3.piece)
+            layer.append('path').attr('class', 'ms-piece').attr('d', D(s3.piece) + 'Z').style('fill', c2);
+        return;
+    }
 
     const step = st.i === 0 ? null : st.eaten.story[st.i - 1];
     // Everything already eaten, faint and named, so a step is read against what came before it.

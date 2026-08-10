@@ -509,7 +509,30 @@ since `bite` owns its copies as closures over one region's ring.
 Neither the **turn order** nor the **growth budget** means anything here, so the sandbox hides
 both when the chord is selected: it takes the cuts the country's shape offers, in the order the
 shape offers them, and draws no border longer than the chord that found it.
-### The growth budget, and what it is measured against
+
+**It stops when what is left is smaller than the smallest piece already cut.** There is no share
+to satisfy and no turn to run out of, so the honest end of an iterative cut is that the remainder
+has stopped being one of the pieces and become a remainder: one more cut would be dividing
+something already smaller than everything else on the map. Verified over the world — area
+conserved on all 99 that divide, and the rule holds wherever it fires; the seven exceptions are
+countries where the cutting stopped for the OTHER reason (no pair left gives a cut that can be
+drawn as a real border and handed to somebody who has not already taken), and the story says so
+rather than claiming a rule that did not fire.
+
+### The chord's story is its own
+
+The slide's story is a round of turns and the chord has none, so it gets a story of its own SHAPE
+rather than its own words. Each cut is a self-contained operation and the three things that
+happen in it are three things to look at: **a pair of points is found** (every pair tried, the
+winner drawn as a dashed line — a measurement, not a boundary), **a border is drawn between them**
+(traced from a real border elsewhere, checked against every edge of the boundary), and **the piece
+is given to somebody** (the whole edge tally, not just the winner, because the assignment is the
+second half of this construction). Then the remainder, then the result. Zambia is nine steps.
+
+`msState.story.steps` is a flat list of `{phase, s}` built at story-begin time when the first
+entry is a `chord` record, and its presence is what switches `msStorySteps`, `msRenderStory` and
+`msDrawStory` over. Nothing about shares or turns survives into it — there is no shares step,
+because nobody is owed anything.
 
 `sbBiteGrowth` (**default 10**, editable in the sandbox panel) caps how much longer the new
 border may be than **the old boundary the bite swallowed** -- the frontier plus whatever coast
