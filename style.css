@@ -4215,3 +4215,46 @@ g.ms-story { pointer-events: none; }
     vertical-align: middle; }
 .shape-step-wrap .control-btn { font-size: 0.78rem; padding: 4px 12px; }
 .shape-step-read { opacity: 0.75; font-size: 0.85em; font-variant-numeric: tabular-nums; }
+
+/* ---- Flag workshop ------------------------------------------------------------------- */
+/* Two columns: the flag being made, and everything that makes it. The stage is sticky
+   because every control below it changes what is on it, and a preview you have to scroll
+   back to is a preview you stop reading. */
+.ws { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(300px, 420px);
+      gap: 18px; align-items: start; }
+.ws-stage { position: sticky; top: 8px; }
+.ws-stage img { display: block; width: 100%; max-height: 52vh; object-fit: contain;
+                border: 1px solid var(--border, #b9ac93); border-radius: 6px;
+                background: var(--surface, #efe7d7); }
+.ws-caption { margin-top: 6px; font-size: 0.86rem; opacity: 0.8; text-align: center; }
+.ws-controls { display: flex; flex-direction: column; gap: 14px; }
+.ws-sec h4 { margin: 0 0 3px; font-size: 0.95rem; }
+.ws-hint { font-size: 0.8rem; opacity: 0.72; line-height: 1.35; margin-bottom: 5px; }
+.ws-filter { width: 100%; padding: 5px 8px; font: inherit; font-size: 0.86rem;
+             border: 1px solid var(--border, #b9ac93); border-radius: 5px;
+             background: var(--surface, #efe7d7); color: inherit; }
+.ws-list { max-height: 132px; margin-top: 5px; }
+.ws-extra { font-style: italic; }
+.ws-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 7px; }
+.ws-row label { display: flex; align-items: center; gap: 5px; font-size: 0.84rem; }
+.ws-row .ws-filter { flex: 1 1 130px; width: auto; }
+/* The swatches are the charges, drawn as themselves — a caption would be a guess and the
+   picture is not. Sized to be recognisable rather than to fill the strip. */
+.ws-swatches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.ws-swatch { width: 46px; height: 46px; padding: 4px; cursor: pointer;
+             border: 1px solid var(--border, #b9ac93); border-radius: 5px;
+             background: var(--surface, #efe7d7); }
+.ws-swatch:hover { border-color: var(--accent, #d08a2c); }
+.ws-swatch svg { width: 100%; height: 100%; display: block; }
+.ws-added, .ws-saved { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.ws-chip, .ws-saved-item { display: inline-flex; align-items: center; gap: 5px;
+             padding: 3px 5px 3px 8px; font-size: 0.8rem;
+             border: 1px solid var(--border, #b9ac93); border-radius: 11px; }
+.ws-saved-item img { height: 17px; width: auto; border-radius: 2px; }
+.ws-x { border: none; background: none; cursor: pointer; font-size: 1rem; line-height: 1;
+        padding: 0 3px; color: inherit; opacity: 0.6; }
+.ws-x:hover { opacity: 1; color: var(--incorrect, #b4453c); }
+@media (max-width: 900px) {
+  .ws { grid-template-columns: 1fr; }
+  .ws-stage { position: static; }
+}

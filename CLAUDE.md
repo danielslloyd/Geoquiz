@@ -170,7 +170,7 @@ moved further, out of the drawer entirely and onto the **landing page**: **Who's
 two places (static markup in `index.html` and `resetModeSelector`'s template) and both were
 updated.
 
-Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, Quick Quizzes (twelve of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
+Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, the **Flag Workshop**, Quick Quizzes (twelve of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
 
 Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds twenty-four tiles of its own.
 
@@ -336,6 +336,50 @@ honest but timid — the moment the far coast came near, it backed off to a nibb
   side — it shows up as leaked area, and that candidate reads as too deep rather than
   corrupting the country.
 
+## Who's Missing: four routes to a zero-width join
+
+The surgery's own arithmetic can be perfect and the map still show a country in two pieces joined
+by a thread — the area conserves, the rings close, nothing leaks, and Austria is drawn as two
+near-equal halves of Germany with 85 km of somebody else's land between them. Every one of these
+was found by measuring the FINISHED territory rather than the arithmetic: rasterising each
+absorber and counting connected components, and sweeping a line across each ring to find the
+latitudes it crosses twice at one longitude.
+
+* **The REMAINDER was never checked for pinching, only the piece.** A cut that reaches the far
+  side and grazes it splits what is left into two lobes joined at a point — and what is left is
+  the next region to be bitten and, in the end, the leftover's own territory. Checking the piece
+  alone could never catch it: the piece was fine and the hole it left behind was pinched.
+* **The leftover's frontier had to survive a bite, but only as a VERTEX.** A bite could eat all
+  but the last point of it, and the remainder then met the leftover at exactly 0.00 km of border.
+  It is measured now, against the same width as everything else here.
+* **It also has to survive as ONE run**, for the biter as much as for the leftover. The rewrite
+  writes the whole outline into one arc, so a frontier met in two places is walked twice and
+  closes as a corridor.
+* **A splice copies the old boundary into the cut verbatim, and those copied points carry no
+  leg.** So a stretch of somebody else's frontier could be written into this piece's outline while
+  that somebody kept it too — a defect no count of anyone's remaining legs can see, because the
+  second copy is not labelled as a border at all. A splice may no longer run along the border of
+  anyone still to write an outline of their own. (Someone already bitten, or crowded out, is no
+  hazard: their border simply ends up drawn twice in the same place by two countries, which every
+  other copied border here does and is invisible by the same argument.)
+
+Two tolerances go with them. **`SB_BITE_NECK_FRAC`** (1.2% of the region's diagonal, about 12 km
+across Germany) is how wide a strip has to be before it counts as joining two places rather than
+as a thread between them, and it bounds all three of: the narrowest neck a piece may have, the
+narrowest the remainder may have, and the shortest stretch of the leftover's frontier a bite may
+leave. Raising it from a decimetre is paid for by a second condition — the two vertices must also
+be a twentieth of the ring apart — since every wiggle in a coastline has non-consecutive vertices
+within a few kilometres of each other, while a pinch separating two substantial lobes must have
+substantial perimeter on both sides of it. And **`SB_BITE_LOBE_TOL`** drops from 1% to a
+thousandth: it exists to forgive the zero-AREA keyhole corridors the splices leave behind, and at
+1% it also forgave a real lobe, 1% of Germany being 3,570 km².
+
+Measured over the world afterwards: **145 of 197 still divide, unchanged**, and 4 absorbers of
+about 420 still come out in two pieces (India–Pakistan, Greece–Bulgaria, Poland–Czechia,
+Ukraine–Belarus). Note the sweep-line test flags harmless spurs too — a zero-width corridor that
+is not the only connection between two lobes is, by construction, invisible — so components are
+the metric that matters and corridors are only a pointer to where to look.
+
 **Every bite must be ONE lobe, touching the biter.** A spliced cut can touch itself, and where
 it does the piece is pinched into lobes joined by nothing but a zero-width corridor — which
 draws as a country acquiring a detached blob somewhere across the map, connected to it on paper
@@ -400,6 +444,21 @@ on the spot: it is given another **turn**, with another turn's worth of budget, 
 -- and because the slide is rigid, two turns of a translation are exactly one deeper translation,
 so iterating the turns costs the shape nothing at all. That is only true of a rigid move, and it
 is precisely what the front cannot say.
+
+**A frontier that will not go is SHORTENED and hopped again.** It is usually not stuck along its
+whole length: it is one END that is caught, on a protrusion or in a pocket its continuation cannot
+get out of, and the rest of it would go forward perfectly well. So a fifth is dropped, then two
+fifths, then more, from one end or the other or from the middle (`spans`), and every sub-run is
+still a rigid copy of a real border — simply less of one. The whole run is always tried first and
+kept whenever it lands, so this costs nothing in the ordinary case. Germany could not bite Poland
+at any depth without it; with it Poland's leftover falls from taking everything to 36%, and
+Germany's from about half to 18%. The front has no use for it and does not run it: it deforms to
+fit already.
+
+That is also what makes the ITERATION visible. The turns were always being taken, but on a first
+pass where nearly everyone was crowded out the winning run was the one where nobody moved. Bites
+now routinely run to turn 2–5, the step-through says so, and a step that still cannot bite says
+how many turns it has had.
 
 **The ladder is walked to the top, not walked until something fails.** "Invalid means too deep"
 is true of a front, which deforms continuously, and false of a rigid slide: a translation can
@@ -740,42 +799,50 @@ Two things gave the old canvas generator away: it was a 320×213 **raster** besi
 SVGs (every flag in the app is fetched as `.svg`), so sharpness alone decided the round; and its
 eight-layout vocabulary put a plain disc on screen constantly when exactly one country has one.
 
+**Nothing is added and nothing is taken away.** The fake is the seed's design throughout — every
+shape it had, in the same place, verified by element count over every draw. A flag's design is the
+half of it people actually know, so an invented flag is convincing precisely when it is a real one
+repainted; an emblem borrowed from a third country is a giveaway of its own kind, because nobody's
+flag carries somebody else's arms. (Borrowing charges deliberately is what the **workshop** is
+for, below.)
+
 **The palette is taken WHOLE from another real flag**, not assembled colour by colour. A colour
 scheme is a thing a country has rather than a set of independent choices — red-white-black is the
 pan-Arab vocabulary, gold-green-red the pan-African one — and picking three colours one at a time
-by regional frequency produces combinations no flag has ever worn. `sbDonorPalette` reads a donor
-flag's chromatic buckets with the **exact shade it actually uses** (the point of borrowing a
-scheme is that country's particular green, not a generic one), ranked by how much of the design
-carries them; `sbBuildFakeFlag` maps the seed's buckets onto that list **rank for rank**, so the
-seed's dominant colour takes the donor's dominant colour and its emblem colour takes the donor's
-emblem colour. The old per-colour picker survives as the fallback for when no donor can be read.
+by regional frequency produces combinations no flag has ever worn. `sbDonorPalette` returns at
+most the donor's **three largest chromatic colours** with the **exact shade it actually uses** (the
+point of borrowing a scheme is that country's particular green, not a generic one), and `sbRepaint`
+lays the seed's own three against them **rank for rank**. A donor with fewer colours than the seed
+leaves the seed's remaining ones alone rather than topping the scheme up from the regional picker:
+half a borrowed scheme and half an invented one is neither. That picker survives only for when no
+donor can be read at all.
 
-**And with `sbFlagMixMatch` on — the "Mix & match" button in the controls bar, default ON — the
-donor lends its EMBLEM too.** `sbFindMotif` measures a flag: a flag is a field with something on
-it, and the something is whatever is between `SB_MOTIF_MIN_FRAC` and `SB_MOTIF_MAX_FRAC` of the
-area and no more than 3:1 elongated (a sliver is a stripe or a border, and transplanting one
-reads as damage). Measuring needs `getBBox`, so the candidate is laid out inside a hidden SVG
-attached to the document — the only way to ask an arbitrary SVG how big a part of it is without
-reimplementing path parsing. About half the world's flags yield one (13 of 24 sampled), which is
-roughly the share that carry a charge.
+**"Largest" is by AREA, measured by rasterising** (`sbFlagAreas`) — not by node count, which is
+wrong by orders of magnitude in the one direction that matters. A flag's field is a single rect
+and its emblem is forty paths, so by node count Portugal's principal colour is the black of its
+coat of arms rather than the red of its field, and the donor's dominant colour then gets hung on
+something nobody can see at tile size. Area is a question about overlap — a stripe covers the
+field, a disc punched out of a crescent removes what it sits on — and no sum of bounding boxes
+knows either of those things. Every pixel is attributed to the nearest of the flag's OWN source
+colours, and only when it is within 40 RGB units of one, so an antialiased blend of two counts as
+neither. Portugal reads red 60% / green 37%; Brazil green 71%; India orange 35% / green 35%.
 
-Two things that finder has to get right. It prefers the **GROUP** a shape belongs to wherever one
-still fits the band: a charge is usually several elements — a crescent is a disc with a disc
-punched out of it, Saint Kitts' two stars are two paths — and taking the single biggest element
-transplanted a bare white disc, which reads as a hole in the flag rather than as an emblem. And
-the transplant **replaces** the seed's own emblem (`sbSeedMotif`, matched back by serialisation
-so the node can be removed) rather than adding to it, because two emblems on one flag is not a
-design any country has.
-
-The motif goes in **before** the recolour, so it is repainted into the new palette along with
-everything else and does not read as pasted on.
+**The swap is measured against the seed's own dominant shade**, not against the bucket's nominal
+colour, and that is the whole of what was wrong with the colours before: a seed whose red is
+#ce1126 was being shifted by (donor − pure red), which lands nowhere near the donor's colour.
+Measured now, the donor's exact hexes appear on the finished cloth verbatim — Azerbaijan wearing
+Ethiopia's #078930 / #da121a / #fcdd09 at 33% / 33% / 29%. Other shades in the same bucket move by
+the same delta, so an emblem's light and dark greens stay light and dark relative to each other.
 
 **Four flags are never forged** (`SB_NO_FORGE`): those carrying the shahada or the takbir, where
 the words themselves are the flag. They still appear as real options.
 
 Colours are classified into perceptual **buckets** (near-identical hexes are the same colour for
 this purpose). Three constraints, all of which were wrong first time and all visible in a sample
-of draws:
+of draws — and note the injectivity set is seeded with the colours that are STAYING, not with
+every colour the flag has: a colour on its way out cannot collide with anything, and blocking the
+donor's red because the seed has a red it is about to lose left most flags with a single band
+recoloured:
 * the mapping must be **injective** — two colours landing on the same one merges the shapes they
   distinguished, and Ethiopia's star dissolves into its field;
 * **never map into white or black** — they are what emblems and outlines are drawn in;
@@ -793,6 +860,60 @@ the recoloured version — plain bi/tricolours are exactly that hazard (Ireland/
 Indonesia/Monaco, Chad/Romania) — so a seed needs either an emblem's worth of elements or a
 palette no plain tricolour has. ~35% of seeds are accepted; `sbPrepareFakeFlag` tries several per
 preparation and always has the next one in flight, so no round waits on the network.
+
+### The fake flag workshop
+
+`flag-workshop`, a sandbox tile. The quiz forges by rule and never adds an emblem, because a
+machine choosing which charge to hang on which flag has no way of being right. A **person** does,
+so the workshop hands over every piece of every flag and gets out of the way: pick a design, pick
+whose colours it wears, and borrow as many charges as you like from anywhere in the world.
+Everything is composed from the real SVGs, so a hand-made fake is a vector at exactly the
+crispness of the three real flags beside it — which is the property the whole round rests on.
+
+Saved flags go to `localStorage` (`geoquiz.fakeFlags`) and `sbClaimFakeFlag` deals one **half the
+time** when any exist. Not always: a workshop with three flags in it would be the whole quiz
+within two rounds, and the generated ones are what keep it from becoming a memory test on your own
+inventions. Not never either — the point of saving one is that it gets dealt.
+
+**`wsParts` is the whole of the hard part**: what counts as a piece of a flag, and where it is.
+Four things it has to get right, and each of them made the transplant invisible or absurd:
+
+* **`getCTM` is measured to the nearest VIEWPORT, so it folds in the viewBox-to-pixels scale.**
+  In a 0×0 hidden host that scale is zero, and Turkey — authored on a 90000-unit viewBox —
+  reported every piece of itself as 0.0002 of the flag and offered nothing at all. The host is
+  given a real size, and every matrix is taken **relative to the root** by cancelling the root's
+  own, so the answer is in the flag's own coordinates whatever size the host happens to be.
+* **`getBBox` is measured BEFORE the element's own transform and `getCTM` AFTER it.** The box
+  therefore wants the full matrix and the transplanted copy wants only its parent's — the copy
+  carries its own transform attribute along with it, and using one matrix for both draws the
+  piece twice as turned as it should be.
+* **The whole source flag rides along inside `<defs>`.** A charge is very often a `<use>` of
+  something defined elsewhere in the file — the US stars, India's chakra spokes, Nepal's rays —
+  and a `<use>` serialised on its own is an empty element that draws nothing. Harvesting only
+  `<defs>` is not enough either, because these files routinely `<use>` an ordinary `<g>` that is
+  drawn in place and given an id. Taking everything is the only rule with no exceptions; inside
+  `<defs>` none of it draws. Ids are renamed per borrowed charge (two flags will both call their
+  gradient "a"), and the DRAWN copy has its ids stripped while keeping its renamed references,
+  since it is also inside the definitions and one document cannot carry an id twice.
+* **A piece lifted out of a file inherits nothing**, so `fill`, `stroke` and friends set on an
+  ancestor are captured where the piece stood and re-applied on the wrapper. Without it a charge
+  whose fill was two groups up arrives as flat black.
+
+Both a group and its children are offered: which of them is "the emblem" is exactly the judgement
+the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
+pieces, and transplanting the largest changes 8–46% of the target flag — except where the charge
+and the band it lands on are the same colour, which is a rendering success rather than a failure.
+
+Charges go into one of four named slots (centre, canton, hoist, fly) rather than being positioned
+freely: those are the places a flag ever puts one, and a free x/y turns a two-click job into a
+fiddle. The palette is applied **last**, and measured on the COMPOSED document — a charge covering
+a fifth of the flag changes which colour is the flag's principal one, and the whole point of
+ranking by area is that the answer follows what is actually on the cloth.
+
+**The panel is APPENDED to `#question-container`, not written over it.** That container holds
+`#feedback` and `#question-text`, which every other mode's setup writes to unconditionally, so
+replacing its innerHTML takes those with it and the next mode entered dies on a null. (The framing
+and Who's Missing panels append for the same reason.)
 
 ### Read the Daylight
 
@@ -1132,16 +1253,23 @@ re-applied at the end of every `drawCountries`, which is the one place every red
 
   **Three ways of looking at it** (`SB_DIST_VIEWS`, `sbDistView`, the switch floating over the
   map's top-left corner), because the answer being explained is a set of GREAT-CIRCLE distances
-  and no flat map shows those honestly. Plain **Mercator** bends every spoke and stretches the
-  far ones by latitude; **Centred** at least puts the anchor in the middle of its own map; and
-  **Gnomonic** centred on the anchor is the one projection on which every great circle through
-  the centre is a straight line, so each spoke is drawn as the shortest path it actually is and
-  the five can be compared by eye. Measured as the sagitta of each spoke against its own chord,
-  over one round's five spokes: Mercator 1.4 / 0.5 / 18.4 / 29.5 / **41.5%**, and gnomonic
-  **0.00% on all five**. It is wildly distorted at the edges, which is why it is a choice rather
-  than the default; `clipAngle(75)` keeps it short of the horizon, where a gnomonic runs to
-  infinity. Switching re-runs the whole reveal, which is idempotent — the marks and the spokes
-  are rebuilt from the round rather than accumulated.
+  and no flat map shows those honestly.
+
+  Plain **Mercator** bends every spoke and stretches the far ones by latitude. **Centred** is a
+  genuinely OBLIQUE Mercator, `rotate([-lon, -lat])`, re-founded on the anchor rather than a
+  standard one panned across: rotating by longitude alone leaves the cylinder tangent at the
+  equator, so the anchor arrives in the middle of the frame still carrying whatever stretch its
+  own latitude imposes — the picture moves and the distortion does not. And **Equidistant** is
+  azimuthal equidistant centred on the anchor, which is the projection this round is actually
+  about: every great circle through the centre is a straight line AND its length on screen is
+  proportional to the real distance, so the five spokes can be compared with a ruler.
+
+  Measured: the anchor lands on the projection's own origin for both (0.0000 offset), px-per-km
+  from it is identical to five significant figures over five wildly different targets, and the
+  sagitta of a spoke against its own chord is **0.00%** against Centred's 12.4% and Mercator's
+  28.6%. `clipAngle(170)` keeps it short of the antipode, where every meridian meets and the
+  projection degenerates into a smear round the rim. Switching re-runs the whole reveal, which is
+  idempotent — the marks and the spokes are rebuilt from the round rather than accumulated.
 
   **Where the flag goes is the whole of `sbFlagOffsets`.** Centred on the centroid it covers the
   shape it is naming, and here it also lands on the spoke arriving from the anchor. So each flag
@@ -1712,6 +1840,7 @@ Exactly one view rotates its Mercator projection as you interact with it: **`isF
 | `draw-border` | The target is **cut out** of the map and you trace its outline with the pointer (`drawBorderMode`). Runs over **any geography** (world, US, India, Germany, England, Mexico) via `showDrawBorderSelector`. Scored by the symmetric mean distance between the drawn loop and the real one. See Draw the Border below |
 | `sun-moon` | View-only: where the sun and moon are directly overhead, the sunrise line, and the night side shaded, at any date and time (`sunMoonMode`). Optional nautical time-zone overlay and satellite imagery. See Sun & Moon below |
 | `sun-path` | **3D**: why sunrise and sunset move through the year, shown three ways at once for one latitude and date — a horizon POV, the tilted earth in space, and the celestial dome (`sunPathMode`). No map. See Sun Path below |
+| `flag-workshop` | Build a flag out of other flags — a real design, another country's colours, and charges borrowed from anywhere — and save it into Spot the Fake Flag (`flagWorkshopMode`). No map, no score. See The fake flag workshop below |
 | `spaceship-sandbox` | A flat world plotting every sub-point the orbital view could pick (400 live samples of `pickCoastalTarget`) with each chosen spot's heading spoke, plus a seed editor that freezes 10 spots into a shareable hash (`sandboxMode`). See Spaceship sandbox below |
 | `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`, 1–60×), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed.
 

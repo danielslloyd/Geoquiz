@@ -703,6 +703,19 @@ const QUIZ_MODES = {
         autoRotate: false,
         flagPlaceMode: true
     },
+    'flag-workshop': {
+        name: 'Flag Workshop',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: false,
+        mapObject: null,
+        hasFlags: true,
+        itemLabel: 'flag',
+        itemLabelPlural: 'flags',
+        flagWorkshopMode: true   // build a flag out of other flags; no map, no score
+    },
+
     'framing-sandbox': {
         name: 'Shape Framing',
         quizList: quizCountries,
@@ -1420,6 +1433,8 @@ function startGameWithMode(mode) {
     if (nameAllInputContainer) nameAllInputContainer.remove();
     const capitalsRaceInputContainer = document.getElementById('capitals-race-input-container');
     if (capitalsRaceInputContainer) capitalsRaceInputContainer.remove();
+    const wsPanel = document.getElementById('ws-panel');
+    if (wsPanel) wsPanel.remove();
 
     // Clear world quiz feedback
     const flagFeedback = document.getElementById('flag-feedback');
@@ -1523,7 +1538,8 @@ function startGameWithMode(mode) {
 
     // Setup visualization based on mode
     // Skip map loading for the map-less modes (ordering, skyline photos, Sun Path's canvases)
-    if (modeConfig.orderingMode || modeConfig.skylineIdMode || modeConfig.sunPathMode) {
+    if (modeConfig.orderingMode || modeConfig.skylineIdMode || modeConfig.sunPathMode ||
+        modeConfig.flagWorkshopMode) {
         startNewQuestion();
     } else {
         if (modeConfig.spaceshipMode) flatGlobeView = false; // always orthographic for the LEO view
@@ -3912,6 +3928,12 @@ function startNewQuestion() {
 
     if (modeConfig.framingSandboxMode) {
         renderFramingSandbox();
+        return;
+    }
+
+    // The flag workshop — no map, no target, no score.
+    if (modeConfig.flagWorkshopMode) {
+        renderFlagWorkshop();
         return;
     }
 
@@ -12947,6 +12969,8 @@ const SANDBOX_SUBMODES = [
       desc: 'Dissolve any country into its neighbours; see which ones can go' },
     { key: 'framing-sandbox', icon: 'crop_free', label: 'Shape Framing',
       desc: 'Which polygons a country is framed by — switch its outliers in and out' },
+    { key: 'flag-workshop', icon: 'palette', label: 'Flag Workshop',
+      desc: 'Build a flag out of other flags, and save it into Spot the Fake Flag' },
     { key: 'spaceship-sandbox', icon: 'tune', label: 'Spaceship Sandbox',
       desc: 'Every spot the orbital quiz can pick; build and share a seed' }
 ];
@@ -16461,23 +16485,39 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
         new XMLSerializer().serializeToString(src), 'image/svg+xml');
     if (!doc || doc.querySelector('parsererror') || !doc.documentElement) return null;
 
-    const nodes = sbSvgColourNodes(doc);
-    if (!nodes.length) return null;
-    const buckets = sbBucketNodes(nodes);
     const areas = await sbFlagAreas(code, src);
     if (!areas) return null;
-
-    // White and black are structural — outlines, emblem detail, the field a charge sits on —
-    // and recolouring them reads as a broken image rather than as another country's flag.
-    const chromatic = [...buckets.keys()].filter(k => k !== 'white' && k !== 'black');
-    if (!chromatic.length) return null;
 
     // Reject designs simple enough that another real country might already own the recoloured
     // version. Plain bi/tricolours are exactly that hazard — Ireland and Ivory Coast, Indonesia
     // and Monaco, Chad and Romania — so require either an emblem's worth of elements or a
     // palette no plain tricolour has.
-    const drawable = doc.querySelectorAll('path, circle, rect, polygon, ellipse, g > *').length;
-    if (drawable < 8 && buckets.size < 4) return null;
+    const drawable0 = doc.querySelectorAll('path, circle, rect, polygon, ellipse, g > *').length;
+    const buckets0 = sbBucketNodes(sbSvgColourNodes(doc));
+    if (drawable0 < 8 && buckets0.size < 4) return null;
+
+    const changes = sbRepaint(doc, areas, donor, region);
+    if (!changes || !changes.length) return null;
+
+    const out = new XMLSerializer().serializeToString(doc);
+    return {
+        url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out),
+        seed: seedName, changes,
+        donor: (donor && donor.palette && donor.palette.length) ? donor.name : null
+    };
+}
+
+// Repaint a parsed flag in a donor's colours, IN PLACE, returning what it changed. Shared with
+// the workshop, which composes a document of its own and wants exactly this done to it.
+function sbRepaint(doc, areas, donor, region) {
+    const nodes = sbSvgColourNodes(doc);
+    if (!nodes.length) return null;
+    const buckets = sbBucketNodes(nodes);
+
+    // White and black are structural — outlines, emblem detail, the field a charge sits on —
+    // and recolouring them reads as a broken image rather than as another country's flag.
+    const chromatic = [...buckets.keys()].filter(k => k !== 'white' && k !== 'black');
+    if (!chromatic.length) return null;
 
     // The seed's own colours ranked by AREA and cut to three, exactly as the donor's were, so the
     // two lists can be laid against each other rank for rank: the colour covering most of the
@@ -16553,14 +16593,224 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
             }
         });
     });
-    if (!changes.length) return null;
+    return changes;
+}
 
-    const out = new XMLSerializer().serializeToString(doc);
-    return {
-        url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out),
-        seed: seedName, changes,
-        donor: (donor && donor.palette && donor.palette.length) ? donor.name : null
-    };
+// ---------------------------------------------------------------------------------------
+// The fake flag workshop
+// ---------------------------------------------------------------------------------------
+//
+// The quiz forges by rule and never adds an emblem, because a machine choosing which emblem to
+// hang on which flag has no way of being right. A PERSON does, so the workshop hands over every
+// piece of every flag and gets out of the way: pick a design, pick whose colours it wears, and
+// borrow as many charges as you like from anywhere in the world. What comes out is saved back to
+// the same list Spot the Fake Flag deals from, so a fake anybody makes here is one somebody else
+// has to catch.
+//
+// Everything is composed from the real SVGs, so a hand-made fake is a vector at exactly the
+// crispness of the three real flags beside it — which is the property the whole round rests on.
+
+// A flag's parts, all of them, measured. `getBBox` needs layout, so the candidate is laid out
+// inside a hidden SVG attached to the document — the only way to ask an arbitrary SVG how big a
+// piece of it is without reimplementing path parsing. Both a group and its children are offered:
+// which of them is "the emblem" is exactly the judgement the workshop exists to hand over. (The
+// quiz used to guess it, and guessed a bare white disc for every crescent.)
+const WS_PART_MIN = 0.0006;   // smaller than this is a seam, not a piece
+const WS_PART_MAX = 0.7;      // bigger than this is the whole flag
+const wsPartsCache = new Map();
+function wsParts(code, doc) {
+    if (wsPartsCache.has(code)) return wsPartsCache.get(code);
+    const root = doc.documentElement;
+    const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
+    const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    if (!(W > 0 && H > 0)) { wsPartsCache.set(code, []); return []; }
+    const host = document.createElement('div');
+    // A real size, not zero. `getCTM` is measured to the nearest VIEWPORT, so it folds in the
+    // viewBox-to-pixels scale — and in a 0×0 host that scale is zero or nearly so. Turkey's flag
+    // is authored on a 90000-unit viewBox and every piece of it measured as 0.0002 of the flag,
+    // which put the whole country outside the size band and offered nothing at all.
+    host.setAttribute('style', 'position:absolute;left:-9999px;top:0;width:300px;height:200px;overflow:hidden;opacity:0;pointer-events:none');
+    const live = document.importNode(root, true);
+    host.appendChild(live);
+    document.body.appendChild(host);
+    const out = [];
+    let rootInv = null;
+    try { rootInv = live.getScreenCTM() ? live.getScreenCTM().inverse() : null; } catch (_) { rootInv = null; }
+    // The WHOLE source flag, carried along with every piece as hidden definitions. A charge is
+    // very often a <use> of something defined elsewhere in the file — the US stars, India's
+    // chakra spokes, Nepal's rays — and a <use> serialised on its own is an empty element that
+    // draws nothing at all. Harvesting only <defs> is not enough either, because these files
+    // routinely <use> an ordinary <g> that is drawn in place and given an id. Taking everything
+    // is the only rule with no exceptions; inside <defs> none of it draws, so the cost is a few
+    // kilobytes of markup and no risk of a stray shape.
+    let defs = '';
+    try {
+        defs = '<defs>' + [...root.children]
+            .map(c => new XMLSerializer().serializeToString(c)).join('') + '</defs>';
+    } catch (_) { defs = ''; }
+    try {
+        const skip = /^(defs|metadata|title|desc|style|clipPath|mask|linearGradient|radialGradient|pattern|filter)$/i;
+        const walk = (el, depth) => {
+            for (const c of el.children) {
+                if (skip.test(c.tagName)) continue;
+                let b = null;
+                try { b = c.getBBox(); } catch (_) { b = null; }
+                if (b && b.width > 0 && b.height > 0) {
+                    // getBBox is in the element's OWN user space and knows nothing about the
+                    // transforms of its ancestors — and these files nest charges inside groups
+                    // that translate and scale them into place. Measured raw, India's chakra
+                    // reports a box of 16 units in a 900-unit flag, so it was placed at a
+                    // fortieth of its size and read as a speck. The matrix to the root is
+                    // therefore carried along with the box, and goes back on when the piece is
+                    // transplanted, so what moves is the piece as it was actually drawn.
+                    //
+                    // Two different matrices, and using one for both draws the piece twice as
+                    // turned as it should be. `getBBox` is measured BEFORE the element's own
+                    // transform and `getCTM` is measured AFTER it, so the box wants the full
+                    // matrix — while the transplanted copy carries its own transform attribute
+                    // along with it and wants only its parent's.
+                    // ...and measured RELATIVE TO THE ROOT rather than to the viewport, by
+                    // cancelling the root's own matrix, so the answer is in the flag's own
+                    // coordinates whatever size the host happens to be.
+                    let m = null, mp = null;
+                    try { m = rootInv && c.getScreenCTM() ? rootInv.multiply(c.getScreenCTM()) : null; } catch (_) { m = null; }
+                    try {
+                        mp = rootInv && c.parentElement && c.parentElement.getScreenCTM
+                            ? rootInv.multiply(c.parentElement.getScreenCTM()) : null;
+                    } catch (_) { mp = null; }
+                    const ctm = m ? [m.a, m.b, m.c, m.d, m.e, m.f] : [1, 0, 0, 1, 0, 0];
+                    const pctm = mp ? [mp.a, mp.b, mp.c, mp.d, mp.e, mp.f] : [1, 0, 0, 1, 0, 0];
+                    const corner = (x, y) => [ctm[0] * x + ctm[2] * y + ctm[4],
+                                              ctm[1] * x + ctm[3] * y + ctm[5]];
+                    const pts = [corner(b.x, b.y), corner(b.x + b.width, b.y),
+                                 corner(b.x, b.y + b.height), corner(b.x + b.width, b.y + b.height)];
+                    const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+                    const box = { x: Math.min(...xs), y: Math.min(...ys),
+                                  w: Math.max(...xs) - Math.min(...xs),
+                                  h: Math.max(...ys) - Math.min(...ys) };
+                    const frac = (box.w * box.h) / (W * H);
+                    // A full-bleed rect is the field; there is nothing to borrow in a colour.
+                    const bleeds = box.w > W * 0.97 && box.h > H * 0.97;
+                    if (frac >= WS_PART_MIN && frac <= WS_PART_MAX && !bleeds) {
+                        // What the piece was inheriting where it stood. Lifted out of the file it
+                        // inherits nothing, and a charge whose fill was set two groups up arrives
+                        // as flat black.
+                        const inherit = {};
+                        ['fill', 'stroke', 'stroke-width', 'fill-rule', 'fill-opacity', 'opacity']
+                            .forEach(k2 => {
+                                if (c.hasAttribute(k2)) return;
+                                for (let up = c.parentElement; up && up !== live.parentElement; up = up.parentElement) {
+                                    if (up.hasAttribute(k2)) { inherit[k2] = up.getAttribute(k2); return; }
+                                }
+                            });
+                        out.push({ xml: new XMLSerializer().serializeToString(c), defs, ctm: pctm, inherit, box,
+                                   tag: c.tagName.toLowerCase(), frac });
+                    }
+                }
+                if (depth < 3) walk(c, depth + 1);
+            }
+        };
+        walk(live, 0);
+    } catch (_) { /* an unmeasurable flag simply offers nothing */ }
+    host.remove();
+    // Biggest first, deduped by serialisation (a group wrapping a single child serialises
+    // differently but draws the same, so identical XML is the only safe test), and capped:
+    // twenty swatches is a menu, two hundred is a haystack.
+    const seen = new Set();
+    const kept = out.sort((a, b) => b.frac - a.frac)
+        .filter(p => { if (seen.has(p.xml)) return false; seen.add(p.xml); return true; })
+        .slice(0, 24);
+    wsPartsCache.set(code, kept);
+    return kept;
+}
+
+// Where a borrowed charge goes. Named rather than freely positioned: these are the four places a
+// flag ever puts one, and a free x/y turns a two-click job into a fiddle.
+const WS_SLOTS = [
+    { key: 'centre', label: 'Centre', at: [0.5, 0.5] },
+    { key: 'canton', label: 'Canton', at: [0.25, 0.27] },
+    { key: 'hoist',  label: 'Hoist',  at: [0.17, 0.5] },
+    { key: 'fly',    label: 'Fly',    at: [0.75, 0.5] }
+];
+
+let wsState = null;
+
+// Compose the flag as it currently stands: the base design, the borrowed charges laid into it,
+// and then — last, so the charges are painted into the scheme along with everything else rather
+// than reading as pasted on — the palette.
+async function wsCompose() {
+    const st = wsState;
+    if (!st || !st.base) return null;
+    const src = await sbFlagDoc(st.base.code);
+    if (!src) return null;
+    const doc = new DOMParser().parseFromString(
+        new XMLSerializer().serializeToString(src), 'image/svg+xml');
+    if (!doc || doc.querySelector('parsererror')) return null;
+    const root = doc.documentElement;
+    const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
+    const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    if (!(W > 0 && H > 0)) return null;
+    st.added.forEach((a, i) => {
+        const slot = WS_SLOTS.find(s => s.key === a.slot) || WS_SLOTS[0];
+        const h = H * a.size, w = h * (a.part.box.w / a.part.box.h);
+        // Uniform, so a borrowed charge is never stretched into a different shape on the way over.
+        const k = Math.min(w / a.part.box.w, h / a.part.box.h);
+        const cx = W * slot.at[0] - a.part.box.w * k / 2 - a.part.box.x * k;
+        const cy = H * slot.at[1] - a.part.box.h * k / 2 - a.part.box.y * k;
+        // Every id in the borrowed fragment is renamed, because two charges from two flags will
+        // both call their gradient "a" and the second would quietly take over the first. The
+        // rename covers the definition and every reference to it in one pass, so the fragment
+        // stays internally consistent and cannot reach anything outside itself.
+        const tag = 'ws' + i + '_';
+        const refs = xml => xml
+            .replace(/(href=")#([^"]+)"/g, (m2, pre, id) => `${pre}#${tag}${id}"`)
+            .replace(/url\(#([^)]+)\)/g, (m2, id) => `url(#${tag}${id})`);
+        const keepIds = xml => refs(xml).replace(/id="([^"]+)"/g, (m2, id) => `id="${tag}${id}"`);
+        // The drawn copy loses its ids — it is also inside the definitions, and one document
+        // cannot carry the same id twice. Its REFERENCES are renamed all the same, so it still
+        // reaches the definitions rather than anything belonging to another borrowed charge.
+        const dropIds = xml => refs(xml).replace(/id="[^"]+"/g, '');
+        const m = a.part.ctm || [1, 0, 0, 1, 0, 0];
+        const inh = Object.keys(a.part.inherit || {})
+            .map(k2 => ` ${k2}="${a.part.inherit[k2]}"`).join('');
+        const frag = new DOMParser().parseFromString(
+            `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` +
+            `<g transform="translate(${cx},${cy}) scale(${k})">` +
+            keepIds(a.part.defs || '') +
+            `<g transform="matrix(${m.join(',')})"${inh}>` + dropIds(a.part.xml) + `</g>` +
+            `</g></svg>`, 'image/svg+xml');
+        if (!frag || frag.querySelector('parsererror')) return;
+        const g = frag.documentElement.firstElementChild;
+        if (g) root.appendChild(doc.importNode(g, true));
+    });
+    let changes = null;
+    if (st.donor) {
+        // Measured on the COMPOSED document, not on the base: a charge covering a fifth of the
+        // flag changes which colour is the flag's principal one, and the whole point of ranking
+        // by area is that the answer follows what is actually on the cloth.
+        const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length + a.slot + a.size).join('|');
+        const areas = await sbFlagAreas(key, doc);
+        if (areas) changes = sbRepaint(doc, areas, st.donor, sbContinentOf(st.base.name));
+    }
+    const xml = new XMLSerializer().serializeToString(doc);
+    return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml), changes };
+}
+
+// Saved fakes. localStorage rather than a file, for the same reason the framing overrides are
+// saved there: it is in force on the next reload without asking anyone to commit anything.
+const WS_STORE = 'geoquiz.fakeFlags';
+const WS_MAX_SAVED = 40;
+function wsLoadSaved() {
+    try {
+        const raw = localStorage.getItem(WS_STORE);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr.filter(f => f && f.url) : [];
+    } catch (_) { return []; }
+}
+function wsSaveAll(list) {
+    try { localStorage.setItem(WS_STORE, JSON.stringify(list.slice(-WS_MAX_SAVED))); } catch (_) { /* full */ }
 }
 
 // build() is synchronous and the fetch is not, so a fake is prepared in the background and
@@ -16617,11 +16867,251 @@ function sbPrepareFakeFlag() {
     })().finally(() => { sbFakeFlagPending = false; });
 }
 
+// ---- the workshop's screen ----------------------------------------------------------------
+
+function wsFlagCountries() {
+    return quizCountries.filter(n => {
+        const d = (window.countryData || {})[effectiveDataName(n)];
+        return d && d.code;
+    }).sort((a, b) => displayLabelForName(a).localeCompare(displayLabelForName(b)));
+}
+const wsCodeOf = n => ((window.countryData || {})[effectiveDataName(n)] || {}).code || null;
+
+function renderFlagWorkshop() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    const map = document.getElementById('map-container');
+    if (map) map.style.display = 'none';
+    document.querySelector('.container').classList.remove('globe-side-layout');
+    document.body.classList.add('sb-tall-active');
+    const mc = document.getElementById('multiple-choice-container');
+    if (mc) mc.innerHTML = '';
+    if (!wsState) wsState = { base: null, donor: null, added: [], partsOf: null, name: '' };
+
+    // APPENDED, not written over the container. `#question-container` holds `#feedback` and
+    // `#question-text`, which every other mode's setup writes to unconditionally — replacing its
+    // innerHTML takes those with it, and the next mode entered dies on a null. (The framing and
+    // Who's Missing panels append for the same reason.)
+    let panel = document.getElementById('ws-panel');
+    if (panel) panel.remove();
+    panel = document.createElement('div');
+    panel.id = 'ws-panel';
+    const qt = document.getElementById('question-text');
+    if (qt) qt.innerHTML = '<strong>Flag Workshop</strong> — build one out of the others, and save it into Spot the Fake Flag.';
+    panel.innerHTML =
+        `<div class="ws">` +
+        `<div class="ws-stage"><img id="ws-preview" alt="the flag as it stands">` +
+        `<div class="ws-caption" id="ws-caption">Pick a design to start from.</div></div>` +
+        `<div class="ws-controls">` +
+        `<section class="ws-sec"><h4>Design</h4>` +
+        `<div class="ws-hint">The flag this one is built out of. Everything it has, yours has.</div>` +
+        `<input type="text" class="ws-filter" id="ws-base-filter" placeholder="Type a country…">` +
+        `<div class="sb-picker-list ws-list" id="ws-base-list"></div></section>` +
+        `<section class="ws-sec"><h4>Colours</h4>` +
+        `<div class="ws-hint">Another country's scheme, taken whole and laid on rank for rank: ` +
+        `its biggest colour onto your biggest colour.</div>` +
+        `<input type="text" class="ws-filter" id="ws-donor-filter" placeholder="Type a country…">` +
+        `<div class="sb-picker-list ws-list" id="ws-donor-list"></div></section>` +
+        `<section class="ws-sec"><h4>Charges</h4>` +
+        `<div class="ws-hint">Every piece of every flag. Pick whose, then pick which.</div>` +
+        `<input type="text" class="ws-filter" id="ws-part-filter" placeholder="Type a country…">` +
+        `<div class="sb-picker-list ws-list" id="ws-part-list"></div>` +
+        `<div class="ws-swatches" id="ws-swatches"></div>` +
+        `<div class="ws-row"><label>Where <select id="ws-slot">` +
+        WS_SLOTS.map(s => `<option value="${s.key}">${s.label}</option>`).join('') +
+        `</select></label>` +
+        `<label>Size <input type="range" id="ws-size" min="8" max="70" value="34"></label></div>` +
+        `<div class="ws-added" id="ws-added"></div></section>` +
+        `<section class="ws-sec"><h4>Save</h4>` +
+        `<div class="ws-hint">Saved flags are dealt into Spot the Fake Flag, alongside the ones ` +
+        `the quiz invents for itself.</div>` +
+        `<div class="ws-row"><input type="text" id="ws-name" class="ws-filter" placeholder="Name it (optional)">` +
+        `<button class="control-btn" id="ws-save">Save to the fake list</button></div>` +
+        `<div class="ws-saved" id="ws-saved"></div></section>` +
+        `</div></div>`;
+    host.appendChild(panel);
+
+    const names = wsFlagCountries();
+    // Three identical pickers over the same list. Each is a text box over a column of buttons,
+    // and each gets `attachPickerKeys` AFTER its own filter handler, so the repaint has already
+    // happened by the time the first row is marked.
+    const picker = (fid, lid, onPick, extra) => {
+        const input = document.getElementById(fid), list = document.getElementById(lid);
+        const paint = () => {
+            const q = (input.value || '').trim().toLowerCase();
+            const hits = names.filter(n => displayLabelForName(n).toLowerCase().includes(q));
+            list.innerHTML = (extra || []).map(e =>
+                `<button type="button" class="sb-pick-btn ws-extra" data-name="">${e}</button>`).join('') +
+                hits.slice(0, 260).map(n =>
+                    `<button type="button" class="sb-pick-btn" data-name="${n.replace(/"/g, '&quot;')}">` +
+                    `${displayLabelForName(n)}</button>`).join('');
+        };
+        paint();
+        input.addEventListener('input', paint);
+        list.addEventListener('click', e => {
+            const b = e.target.closest('.sb-pick-btn');
+            if (!b) return;
+            onPick(b.dataset.name || null);
+        });
+        attachPickerKeys(input, list);
+        return paint;
+    };
+
+    picker('ws-base-filter', 'ws-base-list', n => {
+        if (!n) return;
+        wsState.base = { name: n, code: wsCodeOf(n) };
+        wsState.added = [];
+        wsRefresh();
+    });
+    picker('ws-donor-filter', 'ws-donor-list', async n => {
+        if (!n) { wsState.donor = null; wsRefresh(); return; }
+        const pal = await sbDonorPalette(wsCodeOf(n));
+        wsState.donor = pal ? { name: n, palette: pal } : null;
+        wsRefresh();
+    }, ['Keep its own']);
+    picker('ws-part-filter', 'ws-part-list', async n => {
+        if (!n) return;
+        const code = wsCodeOf(n);
+        const doc = await sbFlagDoc(code);
+        wsState.partsOf = doc ? { name: n, code, parts: wsParts(code, doc) } : { name: n, parts: [] };
+        wsPaintSwatches();
+    });
+
+    document.getElementById('ws-save').addEventListener('click', wsSave);
+    wsPaintSwatches();
+    wsPaintAdded();
+    wsPaintSaved();
+    wsRefresh();
+}
+
+// The charges on offer, drawn as themselves. A swatch is the part rendered alone on a neutral
+// tile — a name for it would be a guess ("star", "crescent", "arms"), and the picture is not.
+function wsPaintSwatches() {
+    const box = document.getElementById('ws-swatches');
+    if (!box) return;
+    const src = wsState && wsState.partsOf;
+    if (!src) { box.innerHTML = `<div class="ws-hint">Pick a country to see its pieces.</div>`; return; }
+    if (!src.parts.length) {
+        box.innerHTML = `<div class="ws-hint">${displayLabelForName(src.name)}'s flag has no separable pieces — ` +
+                        `it is bands of colour and nothing else.</div>`;
+        return;
+    }
+    box.innerHTML = src.parts.map((p, i) => {
+        const pad = Math.max(p.box.w, p.box.h) * 0.06;
+        const vb = `${p.box.x - pad} ${p.box.y - pad} ${p.box.w + pad * 2} ${p.box.h + pad * 2}`;
+        // Namespaced here too: these swatches share one document, so twenty pieces of one flag
+        // would otherwise all define the same "a" and every one of them draw the first.
+        const tag = 'sw' + i + '_';
+        const refs = xml => xml
+            .replace(/(href=")#([^"]+)"/g, (m, pre, id) => `${pre}#${tag}${id}"`)
+            .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`);
+        const m = p.ctm || [1, 0, 0, 1, 0, 0];
+        const inh = Object.keys(p.inherit || {}).map(k => ` ${k}="${p.inherit[k]}"`).join('');
+        const body = refs(p.defs || '').replace(/\bid="([^"]+)"/g, (mm, id) => `id="${tag}${id}"`) +
+                     `<g transform="matrix(${m.join(',')})"${inh}>` +
+                     refs(p.xml).replace(/\bid="[^"]+"/g, '') + `</g>`;
+        return `<button type="button" class="ws-swatch" data-i="${i}" title="Add this">` +
+               `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${body}</svg></button>`;
+    }).join('');
+    box.querySelectorAll('.ws-swatch').forEach(b => b.addEventListener('click', () => {
+        const p = src.parts[+b.dataset.i];
+        if (!p) return;
+        const slot = (document.getElementById('ws-slot') || {}).value || 'centre';
+        const size = (+(document.getElementById('ws-size') || {}).value || 34) / 100;
+        wsState.added.push({ part: p, from: src.name, slot, size });
+        wsPaintAdded();
+        wsRefresh();
+    }));
+}
+
+function wsPaintAdded() {
+    const box = document.getElementById('ws-added');
+    if (!box) return;
+    if (!wsState.added.length) { box.innerHTML = ''; return; }
+    box.innerHTML = wsState.added.map((a, i) =>
+        `<span class="ws-chip">${displayLabelForName(a.from)} · ${a.slot}` +
+        `<button type="button" class="ws-x" data-i="${i}" title="Take it off">×</button></span>`).join('');
+    box.querySelectorAll('.ws-x').forEach(b => b.addEventListener('click', () => {
+        wsState.added.splice(+b.dataset.i, 1);
+        wsPaintAdded();
+        wsRefresh();
+    }));
+}
+
+function wsPaintSaved() {
+    const box = document.getElementById('ws-saved');
+    if (!box) return;
+    const saved = wsLoadSaved();
+    if (!saved.length) { box.innerHTML = `<div class="ws-hint">Nothing saved yet.</div>`; return; }
+    box.innerHTML = saved.map((f, i) =>
+        `<span class="ws-saved-item"><img src="${f.url}" alt="">` +
+        `<span>${f.name || 'untitled'}</span>` +
+        `<button type="button" class="ws-x" data-i="${i}" title="Delete">×</button></span>`).join('');
+    box.querySelectorAll('.ws-x').forEach(b => b.addEventListener('click', () => {
+        const list = wsLoadSaved();
+        list.splice(+b.dataset.i, 1);
+        wsSaveAll(list);
+        wsPaintSaved();
+    }));
+}
+
+// Recomposed from scratch on every change. A flag is a few dozen nodes and the source documents
+// are cached, so there is nothing to gain by patching in place and a whole class of stale-state
+// bug to lose.
+let wsToken = 0;
+async function wsRefresh() {
+    const img = document.getElementById('ws-preview');
+    const cap = document.getElementById('ws-caption');
+    if (!img) return;
+    const mine = ++wsToken;
+    if (!wsState.base) { img.removeAttribute('src'); return; }
+    const r = await wsCompose();
+    if (mine !== wsToken) return;                 // a later change already won
+    if (!r) { if (cap) cap.textContent = 'That flag could not be read.'; return; }
+    img.src = r.url;
+    wsState.url = r.url;
+    if (cap) {
+        cap.textContent = displayLabelForName(wsState.base.name) + "'s design" +
+            (wsState.donor ? ', in ' + displayLabelForName(wsState.donor.name) + "'s colours" : '') +
+            (wsState.added.length ? ', with ' + wsState.added.length +
+                (wsState.added.length === 1 ? ' borrowed charge' : ' borrowed charges') : '');
+    }
+}
+
+function wsSave() {
+    if (!wsState || !wsState.url) { showToast('Nothing to save yet.'); return; }
+    const nameEl = document.getElementById('ws-name');
+    const list = wsLoadSaved();
+    list.push({
+        url: wsState.url,
+        name: (nameEl && nameEl.value.trim()) || displayLabelForName(wsState.base.name) + ' variant',
+        seed: wsState.base.name,
+        donor: wsState.donor ? wsState.donor.name : null
+    });
+    wsSaveAll(list);
+    if (nameEl) nameEl.value = '';
+    wsPaintSaved();
+    showToast('Saved. It will turn up in Spot the Fake Flag.');
+}
+
+// A HAND-MADE fake, when there is one, half the time. Not always: a workshop with three flags in
+// it would otherwise be the whole quiz within two rounds, and the generated ones are what keep
+// the round from becoming a memory test on your own inventions. Not never, either — the point of
+// saving one is that it gets dealt.
+function sbClaimSavedFake() {
+    const saved = wsLoadSaved();
+    if (!saved.length) return null;
+    const f = saved[Math.floor(Math.random() * saved.length)];
+    return { url: f.url, seed: f.seed || null, donor: f.donor || null, changes: [], made: f.name || 'you' };
+}
+
 function sbClaimFakeFlag() {
+    const saved = sbClaimSavedFake();
+    if (saved && Math.random() < 0.5) return saved;
     const r = sbFakeFlagReady;
     sbFakeFlagReady = null;
     sbPrepareFakeFlag();          // start the next one now, so no round has to wait on the network
-    return r;
+    return r || saved;
 }
 
 const SB_QUIZZES = {
@@ -17108,7 +17598,7 @@ const SB_QUIZZES = {
         desc: 'Three real flags and one that never existed',
         // The fake is fetched and recoloured off the network, so the round waits for one to be
         // ready rather than generating it inline.
-        preload: () => { sbPrepareFakeFlag(); return !!sbFakeFlagReady; },
+        preload: () => { sbPrepareFakeFlag(); return !!sbFakeFlagReady || wsLoadSaved().length > 0; },
         build() {
             const pool = sbPool().filter(n => {
                 const d = (window.countryData || {})[effectiveDataName(n)];
@@ -17119,7 +17609,7 @@ const SB_QUIZZES = {
             if (!fake) return null;
             // Never show the seed flag beside its own recoloured copy — that pairing turns a
             // recall question into a spot-the-difference.
-            const real = shuffleArray(pool.filter(n => !namesMatch(n, fake.seed))).slice(0, 3);
+            const real = shuffleArray(pool.filter(n => !(fake.seed && namesMatch(n, fake.seed)))).slice(0, 3);
             if (real.length < 3) return null;
             const opts = shuffleArray([
                 { label: 'A', src: fake.url, fake: true, credit: 'invented' },
@@ -17136,8 +17626,12 @@ const SB_QUIZZES = {
                 // "which of these is not a flag" is largely "and here is what the other three
                 // are", and reading three names off a list and matching them back to three
                 // pictures is work the tiles can do for free.
-                explain: `That is ${displayLabelForName(fake.seed)}'s flag` +
-                         (fake.donor ? ` wearing ${displayLabelForName(fake.donor)}'s colours` : ' recoloured') + '.'
+                explain: (fake.made
+                    ? `That one was made in the workshop` +
+                      (fake.seed ? ` out of ${displayLabelForName(fake.seed)}'s design` : '') +
+                      (fake.donor ? ` and ${displayLabelForName(fake.donor)}'s colours` : '') + '.'
+                    : `That is ${displayLabelForName(fake.seed)}'s flag` +
+                      (fake.donor ? ` wearing ${displayLabelForName(fake.donor)}'s colours` : ' recoloured') + '.')
             };
         }
     },
