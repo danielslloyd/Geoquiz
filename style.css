@@ -4263,3 +4263,44 @@ g.ms-story { pointer-events: none; }
    and unfilled: it is a measurement, not a boundary, and it is gone by the next step. */
 .ms-story .ms-chord { fill: none; stroke: var(--text, #3a3226); stroke-width: 1.6;
                       stroke-dasharray: 7 5; opacity: 0.75; vector-effect: non-scaling-stroke; }
+
+/* ---- Flag workshop: the palette mapping and the charge menu -------------------------- */
+.ws-sub { margin: 10px 0 3px; font-size: 0.85rem; opacity: 0.85; }
+.ws-sub-lab { margin: 8px 0 4px; font-size: 0.78rem; opacity: 0.7; text-transform: uppercase;
+              letter-spacing: 0.04em; }
+.ws-strip { display: inline-flex; flex-wrap: wrap; gap: 3px; vertical-align: middle; }
+/* A donor colour, as a button. The ring rather than a fill marks the current one, so the swatch
+   still shows the colour it is: a selected swatch that changes colour to say it is selected is
+   the one thing a colour picker must never do. */
+.ws-chip-sw { width: 22px; height: 22px; padding: 0; cursor: pointer; border-radius: 4px;
+              border: 1px solid var(--border, #b9ac93); }
+.ws-chip-sw:hover { border-color: var(--accent, #d08a2c); }
+.ws-chip-sw.on { outline: 2px solid var(--accent, #d08a2c); outline-offset: 1px; }
+.ws-wheel { display: block; margin: 6px 0; border-radius: 50%; cursor: crosshair;
+            box-shadow: 0 0 0 1px var(--border, #b9ac93); }
+.ws-hex { font: inherit; font-size: 0.76rem; padding: 2px 7px; border-radius: 4px;
+          border: 1px solid var(--border, #b9ac93); color: transparent; min-width: 62px;
+          text-align: center; }
+.ws-mini { padding: 2px 8px; font-size: 0.78rem; }
+.ws-map { display: flex; flex-direction: column; gap: 4px; }
+.ws-map-row { display: flex; align-items: center; gap: 6px; }
+.ws-sw { width: 22px; height: 22px; border-radius: 4px; flex: 0 0 auto;
+         border: 1px solid var(--border, #b9ac93); }
+.ws-sw.grown { border-style: dashed; }
+.ws-arrow { opacity: 0.5; }
+.ws-swatch.on { outline: 2px solid var(--accent, #d08a2c); outline-offset: 1px; }
+.ws-menu-item { position: relative; display: inline-flex; align-items: flex-start; }
+.ws-menu-item .ws-x { position: absolute; top: -4px; right: -4px; background: var(--surface, #efe7d7);
+                      border: 1px solid var(--border, #b9ac93); border-radius: 50%;
+                      width: 16px; height: 16px; line-height: 12px; font-size: 0.8rem; padding: 0; }
+
+/* A charge is drawn alone on its tile, and half the world's charges are white while the other
+   half are black. A checkerboard shows both: a plain light tile hid every white crescent, and a
+   plain dark one would hide every black eagle. */
+.ws-swatch {
+  background-image:
+    linear-gradient(45deg, rgba(128,128,128,0.22) 25%, transparent 25%, transparent 75%, rgba(128,128,128,0.22) 75%),
+    linear-gradient(45deg, rgba(128,128,128,0.22) 25%, transparent 25%, transparent 75%, rgba(128,128,128,0.22) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+}

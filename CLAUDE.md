@@ -884,7 +884,7 @@ within two rounds, and the generated ones are what keep it from becoming a memor
 inventions. Not never either — the point of saving one is that it gets dealt.
 
 **`wsParts` is the whole of the hard part**: what counts as a piece of a flag, and where it is.
-Four things it has to get right, and each of them made the transplant invisible or absurd:
+Five things it has to get right, and each of them made the transplant invisible or absurd:
 
 * **`getCTM` is measured to the nearest VIEWPORT, so it folds in the viewBox-to-pixels scale.**
   In a 0×0 hidden host that scale is zero, and Turkey — authored on a 90000-unit viewBox —
@@ -895,6 +895,9 @@ Four things it has to get right, and each of them made the transplant invisible 
   therefore wants the full matrix and the transplanted copy wants only its parent's — the copy
   carries its own transform attribute along with it, and using one matrix for both draws the
   piece twice as turned as it should be.
+* **A viewBox may start anywhere.** Brazil's is `-1743 -1113 3486 2226`, so its centre is (0,0)
+  rather than (W/2, H/2); placing a charge at W/2 put it in the bottom-right corner, mostly off
+  the cloth, which reads as the charge simply not drawing.
 * **The whole source flag rides along inside `<defs>`.** A charge is very often a `<use>` of
   something defined elsewhere in the file — the US stars, India's chakra spokes, Nepal's rays —
   and a `<use>` serialised on its own is an empty element that draws nothing. Harvesting only
@@ -909,14 +912,39 @@ Four things it has to get right, and each of them made the transplant invisible 
 
 Both a group and its children are offered: which of them is "the emblem" is exactly the judgement
 the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
-pieces, and transplanting the largest changes 8–46% of the target flag — except where the charge
-and the band it lands on are the same colour, which is a rendering success rather than a failure.
+pieces.
 
-Charges go into one of four named slots (centre, canton, hoist, fly) rather than being positioned
-freely: those are the places a flag ever puts one, and a free x/y turns a two-click job into a
-fiddle. The palette is applied **last**, and measured on the COMPOSED document — a charge covering
-a fifth of the flag changes which colour is the flag's principal one, and the whole point of
-ranking by area is that the answer follows what is actually on the cloth.
+### The charge menu
+
+Browsing is one thing and building is another, so they are two things. A flag's pieces are
+**ticked** rather than placed — several at a time, from as many flags as you like — and go into a
+**menu** that outlives the browsing. Anything in the menu can then be placed as often as you
+like, in any of four named slots (centre, canton, hoist, fly) at any size: those are the places a
+flag ever puts a charge, and a free x/y turns a two-click job into a fiddle. Shape-by-shape
+placement made every reuse a re-hunt through a country's parts.
+
+A charge tile is drawn on a **checkerboard**, because half the world's charges are white and the
+other half black: a plain light tile hid every white crescent, and a plain dark one would hide
+every black eagle.
+
+### The palette mapping, shown and steerable
+
+The palette is measured on the **composed** document, so a borrowed charge is part of the flag by
+the time its colours are read — which is what makes a charge get recoloured ALONGSIDE the design
+rather than pasted on wearing its own country's colours. Adding Brazil's rhombus to Japan puts
+`#ffcb00` into Japan's palette, and the donor's scheme is then laid across all of it.
+
+The mapping is **shown as a mapping**: one row per colour the flag has, and beside it every
+donor colour it could take, with the current one ringed. Clicking one pins it. The wheel above
+edits the donor's colours themselves — hue round, saturation out from the middle, lightness on
+its own slider underneath, since lightness is the axis the contrast rests on and belongs where it
+can be moved without disturbing the other two.
+
+**A pinned mapping lifts the injectivity rule for exactly those entries.** Two of a flag's
+colours landing on one merges the shapes they distinguished, which is a defect when the search
+does it by accident and a decision when a person does it on purpose: a tricolour with two of its
+bands the same is a bicolour, and somebody may want one. `sbRepaint`'s `pick` argument is how
+that is expressed, and the quiz never passes one.
 
 **The panel is APPENDED to `#question-container`, not written over it.** That container holds
 `#feedback` and `#question-text`, which every other mode's setup writes to unconditionally, so

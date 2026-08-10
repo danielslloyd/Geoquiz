@@ -16898,16 +16898,23 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
 
 // Repaint a parsed flag in a donor's colours, IN PLACE, returning what it changed. Shared with
 // the workshop, which composes a document of its own and wants exactly this done to it.
-function sbRepaint(doc, palette, donor) {
+// `pick` is an optional hand-made mapping: base hex -> the rgb it should take. The quiz never
+// passes one and the workshop always may, because a person choosing where a colour goes is not
+// solving the same problem the search is. It also lifts the injectivity rule for exactly those
+// entries: two of a flag's colours landing on one MERGES the shapes they distinguished, which is
+// a defect when a machine does it by accident and a design decision when a person does it on
+// purpose — a tricolour with two of its bands the same is a bicolour, and somebody may want one.
+function sbRepaint(doc, palette, donor, pick) {
     const nodes = sbSvgColourNodes(doc);
     if (!nodes.length || !palette || !palette.length) return null;
     const pool = donor && donor.palette && donor.palette.length ? donor.palette : null;
     if (!pool) return null;
-    const map = sbMatchPalettes(palette, pool);
+    let map = sbMatchPalettes(palette, pool);
     if (!map) return null;
+    if (pick && pick.size) map = map.map(m => pick.has(m.from.hex) ? { from: m.from, to: pick.get(m.from.hex) } : m);
     // Something has to have MOVED. Below this the swap is invisible at tile size and the round
     // degenerates into "which one looks very slightly off", which is not a question about flags.
-    if (!map.some(m => sbRgbDist(m.from.rgb, m.to) >= 60)) return null;
+    if (!pick && !map.some(m => sbRgbDist(m.from.rgb, m.to) >= 60)) return null;
     const changes = map.filter(m => sbRgbDist(m.from.rgb, m.to) >= 8)
                        .map(m => ({ from: m.from.hex, to: sbHex(m.to) }));
     const apply = (n, rgb) => {
@@ -16931,6 +16938,7 @@ function sbRepaint(doc, palette, donor) {
         // relative to each other instead of flattening to one tone.
         apply(n, [0, 1, 2].map(i => Math.max(0, Math.min(255, n.rgb[i] + (hit.to[i] - hit.from.rgb[i])))));
     });
+    sbRepaint.lastMap = map;
     return changes;
 }
 
@@ -17072,7 +17080,21 @@ const WS_SLOTS = [
     { key: 'fly',    label: 'Fly',    at: [0.75, 0.5] }
 ];
 
+// base   {name, code}                the design being built on
+// donor  {name, palette}              whose colours it wears
+// tweak  Map<donorIndex, rgb>         hand-edited donor colours, off the wheel
+// pick   Map<baseHex, donorIndex>     hand-made mapping; several base colours may share one
+// menu   [{part, from}]               charges collected off other flags, ready to place
+// added  [{part, from, slot, size}]   charges actually on the flag
 let wsState = null;
+const wsFresh = () => ({ base: null, donor: null, tweak: new Map(), pick: new Map(),
+                         menu: [], added: [], browse: null, sel: new Set(), wheel: 0 });
+// The donor's palette as it currently stands, hand edits included.
+const wsDonorPal = () => {
+    const st = wsState;
+    if (!st || !st.donor) return null;
+    return st.donor.palette.map((c, i) => st.tweak.has(i) ? { ...c, rgb: st.tweak.get(i), hex: sbHex(st.tweak.get(i)) } : c);
+};
 
 // Compose the flag as it currently stands: the base design, the borrowed charges laid into it,
 // and then — last, so the charges are painted into the scheme along with everything else rather
@@ -17089,14 +17111,20 @@ async function wsCompose() {
     const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
     const W = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(root.getAttribute('width')) || 0;
     const H = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(root.getAttribute('height')) || 0;
+    // A viewBox may start anywhere, and several flags start well away from the origin: Brazil's
+    // is "-1743 -1113 3486 2226", so its centre is (0,0) rather than (W/2, H/2). Placing a charge
+    // at W/2 put it in the bottom-right corner, mostly off the cloth — which read as the charge
+    // simply not drawing.
+    const X0 = vb.length === 4 && isFinite(vb[0]) ? vb[0] : 0;
+    const Y0 = vb.length === 4 && isFinite(vb[1]) ? vb[1] : 0;
     if (!(W > 0 && H > 0)) return null;
     st.added.forEach((a, i) => {
         const slot = WS_SLOTS.find(s => s.key === a.slot) || WS_SLOTS[0];
         const h = H * a.size, w = h * (a.part.box.w / a.part.box.h);
         // Uniform, so a borrowed charge is never stretched into a different shape on the way over.
         const k = Math.min(w / a.part.box.w, h / a.part.box.h);
-        const cx = W * slot.at[0] - a.part.box.w * k / 2 - a.part.box.x * k;
-        const cy = H * slot.at[1] - a.part.box.h * k / 2 - a.part.box.y * k;
+        const cx = X0 + W * slot.at[0] - a.part.box.w * k / 2 - a.part.box.x * k;
+        const cy = Y0 + H * slot.at[1] - a.part.box.h * k / 2 - a.part.box.y * k;
         // Every id in the borrowed fragment is renamed, because two charges from two flags will
         // both call their gradient "a" and the second would quietly take over the first. The
         // rename covers the definition and every reference to it in one pass, so the fragment
@@ -17123,17 +17151,60 @@ async function wsCompose() {
         const g = frag.documentElement.firstElementChild;
         if (g) root.appendChild(doc.importNode(g, true));
     });
-    let changes = null;
-    if (st.donor) {
-        // Measured on the COMPOSED document, not on the base: a charge covering a fifth of the
-        // flag changes which colour is the flag's principal one, and the whole point of ranking
-        // by area is that the answer follows what is actually on the cloth.
-        const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length + a.slot + a.size).join('|');
-        const palette = await sbFlagPalette(key, doc);
-        if (palette) changes = sbRepaint(doc, palette, st.donor);
+    // Measured on the COMPOSED document, not on the base. A charge covering a fifth of the flag
+    // changes which colour is the flag's principal one, and the whole point of ranking by area is
+    // that the answer follows what is actually on the cloth — which is also what makes a borrowed
+    // charge get recoloured ALONGSIDE the design rather than pasted on in its own country's
+    // colours: by the time the palette is read, the charge is part of the flag.
+    const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length + a.slot + a.size).join('|');
+    const palette = await sbFlagPalette(key, doc);
+    st.palette = palette;
+    let changes = null, mapping = null;
+    if (st.donor && palette) {
+        const pal = wsDonorPal();
+        const pick = new Map();
+        st.pick.forEach((di, hex) => { if (pal[di]) pick.set(hex, pal[di].rgb); });
+        changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick);
+        mapping = sbRepaint.lastMap;
     }
+    st.mapping = mapping;
     const xml = new XMLSerializer().serializeToString(doc);
     return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml), changes };
+}
+
+// ---- the colour wheel -------------------------------------------------------------------
+//
+// A wheel rather than three sliders, because the thing being edited is a colour someone is
+// looking at rather than a number: hue round, saturation out from the middle, and lightness on
+// its own slider underneath, since lightness is the axis the CONTRAST rests on and belongs where
+// it can be moved without disturbing the other two.
+const WS_WHEEL = 132;
+function wsDrawWheel(canvas, rgb) {
+    const R = WS_WHEEL / 2, ctx = canvas.getContext('2d');
+    const [h0, s0, l0] = sbRgbToHsl(rgb || [128, 128, 128]);
+    const img = ctx.createImageData(WS_WHEEL, WS_WHEEL);
+    for (let y = 0; y < WS_WHEEL; y++) for (let x = 0; x < WS_WHEEL; x++) {
+        const dx = x - R + 0.5, dy = y - R + 0.5, d = Math.hypot(dx, dy), i = (y * WS_WHEEL + x) * 4;
+        if (d > R) { img.data[i + 3] = 0; continue; }
+        const c = sbHslToRgb(Math.atan2(dy, dx) * 180 / Math.PI + 90, Math.min(1, d / R), l0);
+        img.data[i] = c[0]; img.data[i + 1] = c[1]; img.data[i + 2] = c[2];
+        img.data[i + 3] = d > R - 1 ? Math.round(255 * (R - d)) : 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    // Where the colour being edited currently sits, so the wheel reads as an instrument rather
+    // than a palette: you can see what you are about to move.
+    const a = (h0 - 90) * Math.PI / 180, rr = s0 * R;
+    ctx.beginPath();
+    ctx.arc(R + Math.cos(a) * rr, R + Math.sin(a) * rr, 5, 0, Math.PI * 2);
+    ctx.lineWidth = 2; ctx.strokeStyle = l0 > 0.5 ? '#000' : '#fff'; ctx.stroke();
+}
+function wsWheelPick(canvas, ev, lightness) {
+    const R = WS_WHEEL / 2, b = canvas.getBoundingClientRect();
+    const dx = (ev.clientX - b.left) * (WS_WHEEL / b.width) - R;
+    const dy = (ev.clientY - b.top) * (WS_WHEEL / b.height) - R;
+    const d = Math.hypot(dx, dy);
+    if (d > R) return null;
+    return sbHslToRgb(Math.atan2(dy, dx) * 180 / Math.PI + 90, Math.min(1, d / R), lightness);
 }
 
 // Saved fakes. localStorage rather than a file, for the same reason the framing overrides are
@@ -17224,7 +17295,7 @@ function renderFlagWorkshop() {
     document.body.classList.add('sb-tall-active');
     const mc = document.getElementById('multiple-choice-container');
     if (mc) mc.innerHTML = '';
-    if (!wsState) wsState = { base: null, donor: null, added: [], partsOf: null, name: '' };
+    if (!wsState) wsState = wsFresh();
 
     // APPENDED, not written over the container. `#question-container` holds `#feedback` and
     // `#question-text`, which every other mode's setup writes to unconditionally — replacing its
@@ -17235,7 +17306,7 @@ function renderFlagWorkshop() {
     panel = document.createElement('div');
     panel.id = 'ws-panel';
     const qt = document.getElementById('question-text');
-    if (qt) qt.innerHTML = '<strong>Flag Workshop</strong> — build one out of the others, and save it into Spot the Fake Flag.';
+    if (qt) qt.innerHTML = '<strong>Flag Workshop</strong> \u2014 build one out of the others, and save it into Spot the Fake Flag.';
     panel.innerHTML =
         `<div class="ws">` +
         `<div class="ws-stage"><img id="ws-preview" alt="the flag as it stands">` +
@@ -17243,23 +17314,35 @@ function renderFlagWorkshop() {
         `<div class="ws-controls">` +
         `<section class="ws-sec"><h4>Design</h4>` +
         `<div class="ws-hint">The flag this one is built out of. Everything it has, yours has.</div>` +
-        `<input type="text" class="ws-filter" id="ws-base-filter" placeholder="Type a country…">` +
+        `<input type="text" class="ws-filter" id="ws-base-filter" placeholder="Type a country\u2026">` +
         `<div class="sb-picker-list ws-list" id="ws-base-list"></div></section>` +
+
         `<section class="ws-sec"><h4>Colours</h4>` +
-        `<div class="ws-hint">Another country's scheme, taken whole and laid on rank for rank: ` +
-        `its biggest colour onto your biggest colour.</div>` +
-        `<input type="text" class="ws-filter" id="ws-donor-filter" placeholder="Type a country…">` +
-        `<div class="sb-picker-list ws-list" id="ws-donor-list"></div></section>` +
+        `<div class="ws-hint">Another country's scheme. The mapping below is chosen to keep the ` +
+        `contrast between every pair of colours \u2014 click a swatch on a row to send that colour ` +
+        `somewhere else, and click one in the donor strip to edit it on the wheel.</div>` +
+        `<input type="text" class="ws-filter" id="ws-donor-filter" placeholder="Type a country\u2026">` +
+        `<div class="sb-picker-list ws-list" id="ws-donor-list"></div>` +
+        `<div id="ws-palette"></div></section>` +
+
         `<section class="ws-sec"><h4>Charges</h4>` +
-        `<div class="ws-hint">Every piece of every flag. Pick whose, then pick which.</div>` +
-        `<input type="text" class="ws-filter" id="ws-part-filter" placeholder="Type a country…">` +
+        `<div class="ws-hint">Browse any flag, tick the pieces worth keeping, and they join the ` +
+        `menu. Anything in the menu can be placed as often as you like, and is recoloured with ` +
+        `the rest of the flag rather than pasted on in its own country's colours.</div>` +
+        `<input type="text" class="ws-filter" id="ws-part-filter" placeholder="Browse a country's flag\u2026">` +
         `<div class="sb-picker-list ws-list" id="ws-part-list"></div>` +
         `<div class="ws-swatches" id="ws-swatches"></div>` +
+        `<div class="ws-row"><button class="control-btn" id="ws-add-menu" disabled>Add to menu</button>` +
+        `<span class="ws-hint" id="ws-sel-count"></span></div>` +
+        `<h5 class="ws-sub">Menu</h5>` +
+        `<div class="ws-swatches" id="ws-menu"></div>` +
         `<div class="ws-row"><label>Where <select id="ws-slot">` +
-        WS_SLOTS.map(s => `<option value="${s.key}">${s.label}</option>`).join('') +
+        WS_SLOTS.map(sl => `<option value="${sl.key}">${sl.label}</option>`).join('') +
         `</select></label>` +
         `<label>Size <input type="range" id="ws-size" min="8" max="70" value="34"></label></div>` +
+        `<h5 class="ws-sub">On the flag</h5>` +
         `<div class="ws-added" id="ws-added"></div></section>` +
+
         `<section class="ws-sec"><h4>Save</h4>` +
         `<div class="ws-hint">Saved flags are dealt into Spot the Fake Flag, alongside the ones ` +
         `the quiz invents for itself.</div>` +
@@ -17287,90 +17370,213 @@ function renderFlagWorkshop() {
         paint();
         input.addEventListener('input', paint);
         list.addEventListener('click', e => {
-            const b = e.target.closest('.sb-pick-btn');
-            if (!b) return;
-            onPick(b.dataset.name || null);
+            const bt = e.target.closest('.sb-pick-btn');
+            if (!bt) return;
+            onPick(bt.dataset.name || null);
         });
         attachPickerKeys(input, list);
-        return paint;
     };
 
     picker('ws-base-filter', 'ws-base-list', n => {
         if (!n) return;
         wsState.base = { name: n, code: wsCodeOf(n) };
+        // A new design has new colours, so any hand-made mapping is about colours that are no
+        // longer there. The donor and the menu survive: those are choices about what to build
+        // WITH, not about this particular flag.
+        wsState.pick = new Map();
         wsState.added = [];
+        wsPaintAdded();
         wsRefresh();
     });
     picker('ws-donor-filter', 'ws-donor-list', async n => {
-        if (!n) { wsState.donor = null; wsRefresh(); return; }
+        if (!n) { wsState.donor = null; wsState.tweak = new Map(); wsState.pick = new Map(); wsRefresh(); return; }
         const pal = await sbDonorPalette(wsCodeOf(n));
         wsState.donor = pal ? { name: n, palette: pal } : null;
+        wsState.tweak = new Map();
+        wsState.pick = new Map();
+        wsState.wheel = 0;
         wsRefresh();
     }, ['Keep its own']);
     picker('ws-part-filter', 'ws-part-list', async n => {
         if (!n) return;
         const code = wsCodeOf(n);
         const doc = await sbFlagDoc(code);
-        wsState.partsOf = doc ? { name: n, code, parts: wsParts(code, doc) } : { name: n, parts: [] };
+        wsState.browse = doc ? { name: n, code, parts: wsParts(code, doc) } : { name: n, parts: [] };
+        wsState.sel = new Set();
         wsPaintSwatches();
     });
 
+    document.getElementById('ws-add-menu').addEventListener('click', () => {
+        const br = wsState.browse;
+        if (!br) return;
+        wsState.sel.forEach(i => {
+            const part = br.parts[i];
+            if (part && !wsState.menu.some(m => m.part.xml === part.xml)) wsState.menu.push({ part, from: br.name });
+        });
+        wsState.sel = new Set();
+        wsPaintSwatches();
+        wsPaintMenu();
+    });
     document.getElementById('ws-save').addEventListener('click', wsSave);
     wsPaintSwatches();
+    wsPaintMenu();
     wsPaintAdded();
     wsPaintSaved();
     wsRefresh();
 }
 
-// The charges on offer, drawn as themselves. A swatch is the part rendered alone on a neutral
-// tile — a name for it would be a guess ("star", "crescent", "arms"), and the picture is not.
+// The base palette against the donor's, as an explicit mapping rather than a result. Each row is
+// one of the flag's own colours and the strip beside it is every donor colour it could take;
+// clicking one pins it. Several rows may point at the same swatch, which the automatic mapping
+// will never do on its own — see `sbRepaint`.
+function wsPaintPalette() {
+    const box = document.getElementById('ws-palette');
+    if (!box) return;
+    const st = wsState;
+    if (!st.donor) { box.innerHTML = `<div class="ws-hint">No donor: the flag keeps its own colours.</div>`; return; }
+    const pal = wsDonorPal();
+    const base = st.palette || [];
+    const cur = new Map();
+    (st.mapping || []).forEach(m => {
+        let bi = 0, bd = Infinity;
+        pal.forEach((c, i) => { const d = sbRgbDist(c.rgb, m.to); if (d < bd) { bd = d; bi = i; } });
+        cur.set(m.from.hex, { idx: bi, exact: bd < 2, rgb: m.to });
+    });
+    box.innerHTML =
+        `<div class="ws-sub-lab">${displayLabelForName(st.donor.name)}'s colours \u2014 click one to edit it</div>` +
+        `<div class="ws-strip" id="ws-donor-strip">` + pal.map((c, i) =>
+            `<button type="button" class="ws-chip-sw${i === st.wheel ? ' on' : ''}" data-i="${i}" ` +
+            `style="background:${c.hex}" title="${c.hex}"></button>`).join('') + `</div>` +
+        `<canvas id="ws-wheel" width="${WS_WHEEL}" height="${WS_WHEEL}" class="ws-wheel"></canvas>` +
+        `<div class="ws-row"><label>Light <input type="range" id="ws-light" min="2" max="98" value="50"></label>` +
+        `<span class="ws-hex" id="ws-hex"></span>` +
+        `<button class="control-btn ws-mini" id="ws-reset-col">Reset</button></div>` +
+        `<div class="ws-sub-lab">Mapping</div>` +
+        (base.length
+          ? `<div class="ws-map">` + base.map(bc => {
+                const c = cur.get(bc.hex);
+                return `<div class="ws-map-row"><i class="ws-sw" style="background:${bc.hex}"></i>` +
+                       `<span class="ws-arrow">\u2192</span>` +
+                       `<span class="ws-strip">` + pal.map((d, i) =>
+                           `<button type="button" class="ws-chip-sw${c && c.idx === i ? ' on' : ''}" ` +
+                           `data-hex="${bc.hex}" data-i="${i}" style="background:${d.hex}" title="${d.hex}"></button>`).join('') +
+                       (c && !c.exact
+                         ? `<i class="ws-sw grown" style="background:${sbHex(c.to || c.rgb)}" title="grown from the donor's own wheel"></i>`
+                         : '') +
+                       `</span></div>`;
+            }).join('') + `</div>`
+          : `<div class="ws-hint">Pick a design to see its colours.</div>`);
+
+    const strip = document.getElementById('ws-donor-strip');
+    strip.querySelectorAll('.ws-chip-sw').forEach(bt => bt.addEventListener('click', () => {
+        wsState.wheel = +bt.dataset.i;
+        wsPaintPalette();
+    }));
+    box.querySelectorAll('.ws-map .ws-chip-sw').forEach(bt => bt.addEventListener('click', () => {
+        wsState.pick.set(bt.dataset.hex, +bt.dataset.i);
+        wsRefresh();
+    }));
+
+    const canvas = document.getElementById('ws-wheel');
+    const light = document.getElementById('ws-light');
+    const hex = document.getElementById('ws-hex');
+    const rgb = () => (wsDonorPal()[wsState.wheel] || { rgb: [128, 128, 128] }).rgb;
+    const show = () => {
+        wsDrawWheel(canvas, rgb());
+        hex.textContent = sbHex(rgb());
+        hex.style.background = sbHex(rgb());
+    };
+    light.value = Math.round(sbRgbToHsl(rgb())[2] * 100);
+    show();
+    const setCol = c => { if (c) { wsState.tweak.set(wsState.wheel, c); wsRefresh(); } };
+    canvas.addEventListener('click', e => setCol(wsWheelPick(canvas, e, +light.value / 100)));
+    light.addEventListener('input', () => {
+        const h = sbRgbToHsl(rgb());
+        setCol(sbHslToRgb(h[0], h[1], +light.value / 100));
+    });
+    document.getElementById('ws-reset-col').addEventListener('click', () => {
+        wsState.tweak.delete(wsState.wheel);
+        wsRefresh();
+    });
+}
+
+// The pieces of the flag being BROWSED, drawn as themselves, with a tick each. A name for one
+// would be a guess ("star", "crescent", "arms"); the picture is not.
 function wsPaintSwatches() {
     const box = document.getElementById('ws-swatches');
+    const btn = document.getElementById('ws-add-menu');
+    const cnt = document.getElementById('ws-sel-count');
     if (!box) return;
-    const src = wsState && wsState.partsOf;
+    const src = wsState && wsState.browse;
+    if (btn) btn.disabled = !(wsState && wsState.sel.size);
+    if (cnt) cnt.textContent = wsState && wsState.sel.size ? `${wsState.sel.size} selected` : '';
     if (!src) { box.innerHTML = `<div class="ws-hint">Pick a country to see its pieces.</div>`; return; }
     if (!src.parts.length) {
-        box.innerHTML = `<div class="ws-hint">${displayLabelForName(src.name)}'s flag has no separable pieces — ` +
+        box.innerHTML = `<div class="ws-hint">${displayLabelForName(src.name)}'s flag has no separable pieces \u2014 ` +
                         `it is bands of colour and nothing else.</div>`;
         return;
     }
-    box.innerHTML = src.parts.map((p, i) => {
-        const pad = Math.max(p.box.w, p.box.h) * 0.06;
-        const vb = `${p.box.x - pad} ${p.box.y - pad} ${p.box.w + pad * 2} ${p.box.h + pad * 2}`;
-        // Namespaced here too: these swatches share one document, so twenty pieces of one flag
-        // would otherwise all define the same "a" and every one of them draw the first.
-        const tag = 'sw' + i + '_';
-        const refs = xml => xml
-            .replace(/(href=")#([^"]+)"/g, (m, pre, id) => `${pre}#${tag}${id}"`)
-            .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`);
-        const m = p.ctm || [1, 0, 0, 1, 0, 0];
-        const inh = Object.keys(p.inherit || {}).map(k => ` ${k}="${p.inherit[k]}"`).join('');
-        const body = refs(p.defs || '').replace(/\bid="([^"]+)"/g, (mm, id) => `id="${tag}${id}"`) +
-                     `<g transform="matrix(${m.join(',')})"${inh}>` +
-                     refs(p.xml).replace(/\bid="[^"]+"/g, '') + `</g>`;
-        return `<button type="button" class="ws-swatch" data-i="${i}" title="Add this">` +
-               `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${body}</svg></button>`;
-    }).join('');
-    box.querySelectorAll('.ws-swatch').forEach(b => b.addEventListener('click', () => {
-        const p = src.parts[+b.dataset.i];
-        if (!p) return;
+    box.innerHTML = src.parts.map((pt, i) =>
+        `<button type="button" class="ws-swatch${wsState.sel.has(i) ? ' on' : ''}" data-i="${i}" ` +
+        `title="Select">${wsPartSvg(pt, 'br' + i)}</button>`).join('');
+    box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
+        const i = +bt.dataset.i;
+        if (wsState.sel.has(i)) wsState.sel.delete(i); else wsState.sel.add(i);
+        wsPaintSwatches();
+    }));
+}
+
+// The MENU: everything collected, from anywhere, ready to place as often as you like.
+function wsPaintMenu() {
+    const box = document.getElementById('ws-menu');
+    if (!box) return;
+    if (!wsState.menu.length) { box.innerHTML = `<div class="ws-hint">Nothing in the menu yet.</div>`; return; }
+    box.innerHTML = wsState.menu.map((m, i) =>
+        `<span class="ws-menu-item"><button type="button" class="ws-swatch" data-i="${i}" ` +
+        `title="Place ${displayLabelForName(m.from)}'s piece">${wsPartSvg(m.part, 'mn' + i)}</button>` +
+        `<button type="button" class="ws-x" data-drop="${i}" title="Remove from the menu">\u00d7</button></span>`).join('');
+    box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
+        const m = wsState.menu[+bt.dataset.i];
+        if (!m) return;
         const slot = (document.getElementById('ws-slot') || {}).value || 'centre';
         const size = (+(document.getElementById('ws-size') || {}).value || 34) / 100;
-        wsState.added.push({ part: p, from: src.name, slot, size });
+        wsState.added.push({ part: m.part, from: m.from, slot, size });
         wsPaintAdded();
         wsRefresh();
     }));
+    box.querySelectorAll('.ws-x').forEach(bt => bt.addEventListener('click', () => {
+        wsState.menu.splice(+bt.dataset.drop, 1);
+        wsPaintMenu();
+    }));
+}
+
+// One piece, drawn alone on a tile. Ids are namespaced per tile: twenty pieces of one flag share
+// a document, so they would otherwise all define the same "a" and every one of them draw the
+// first.
+function wsPartSvg(pt, tag0) {
+    const tag = 'sw' + tag0 + '_';
+    const pad = Math.max(pt.box.w, pt.box.h) * 0.06;
+    const vb = `${pt.box.x - pad} ${pt.box.y - pad} ${pt.box.w + pad * 2} ${pt.box.h + pad * 2}`;
+    const refs = xml => xml
+        .replace(/(href=")#([^"]+)"/g, (m, pre, id) => `${pre}#${tag}${id}"`)
+        .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`);
+    const m = pt.ctm || [1, 0, 0, 1, 0, 0];
+    const inh = Object.keys(pt.inherit || {}).map(k => ` ${k}="${pt.inherit[k]}"`).join('');
+    const body = refs(pt.defs || '').replace(/\bid="([^"]+)"/g, (mm, id) => `id="${tag}${id}"`) +
+                 `<g transform="matrix(${m.join(',')})"${inh}>` +
+                 refs(pt.xml).replace(/\bid="[^"]+"/g, '') + `</g>`;
+    return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${body}</svg>`;
 }
 
 function wsPaintAdded() {
     const box = document.getElementById('ws-added');
     if (!box) return;
-    if (!wsState.added.length) { box.innerHTML = ''; return; }
+    if (!wsState.added.length) { box.innerHTML = `<div class="ws-hint">Nothing placed yet.</div>`; return; }
     box.innerHTML = wsState.added.map((a, i) =>
-        `<span class="ws-chip">${displayLabelForName(a.from)} · ${a.slot}` +
-        `<button type="button" class="ws-x" data-i="${i}" title="Take it off">×</button></span>`).join('');
-    box.querySelectorAll('.ws-x').forEach(b => b.addEventListener('click', () => {
-        wsState.added.splice(+b.dataset.i, 1);
+        `<span class="ws-chip">${displayLabelForName(a.from)} \u00b7 ${a.slot}` +
+        `<button type="button" class="ws-x" data-i="${i}" title="Take it off">\u00d7</button></span>`).join('');
+    box.querySelectorAll('.ws-x').forEach(bt => bt.addEventListener('click', () => {
+        wsState.added.splice(+bt.dataset.i, 1);
         wsPaintAdded();
         wsRefresh();
     }));
@@ -17384,10 +17590,10 @@ function wsPaintSaved() {
     box.innerHTML = saved.map((f, i) =>
         `<span class="ws-saved-item"><img src="${f.url}" alt="">` +
         `<span>${f.name || 'untitled'}</span>` +
-        `<button type="button" class="ws-x" data-i="${i}" title="Delete">×</button></span>`).join('');
-    box.querySelectorAll('.ws-x').forEach(b => b.addEventListener('click', () => {
+        `<button type="button" class="ws-x" data-i="${i}" title="Delete">\u00d7</button></span>`).join('');
+    box.querySelectorAll('.ws-x').forEach(bt => bt.addEventListener('click', () => {
         const list = wsLoadSaved();
-        list.splice(+b.dataset.i, 1);
+        list.splice(+bt.dataset.i, 1);
         wsSaveAll(list);
         wsPaintSaved();
     }));
@@ -17402,7 +17608,7 @@ async function wsRefresh() {
     const cap = document.getElementById('ws-caption');
     if (!img) return;
     const mine = ++wsToken;
-    if (!wsState.base) { img.removeAttribute('src'); return; }
+    if (!wsState.base) { img.removeAttribute('src'); wsPaintPalette(); return; }
     const r = await wsCompose();
     if (mine !== wsToken) return;                 // a later change already won
     if (!r) { if (cap) cap.textContent = 'That flag could not be read.'; return; }
@@ -17414,6 +17620,7 @@ async function wsRefresh() {
             (wsState.added.length ? ', with ' + wsState.added.length +
                 (wsState.added.length === 1 ? ' borrowed charge' : ' borrowed charges') : '');
     }
+    wsPaintPalette();
 }
 
 function wsSave() {
