@@ -13582,7 +13582,17 @@ const SB_BITE_END_SPAN = 0.12;
 const SB_BITE_PASSES = 6;
 const SB_BITE_DAMP = 0.7;
 // A stray lobe smaller than this share of the bite is a rounding spur, not a detached territory.
-const SB_BITE_LOBE_TOL = 0.01;
+// What a lobe split off by a pinch may carry before the cut is refused. This exists to forgive
+// the zero-area keyhole corridors the splices leave behind, which is all it should ever forgive:
+// at 1% it also forgave a real one, and 1% of Germany is 3,570 km². That lobe was the strip along
+// Austria's border, joined to the rest of what Austria was given by nothing but the corridor —
+// so the guard that was meant to catch exactly this waved it through by a thousandth.
+const SB_BITE_LOBE_TOL = 0.001;
+// How wide a strip of land has to be before it counts as joining two places rather than as a
+// thread between them, as a fraction of the region's own diagonal — about 12 km across Germany.
+// It bounds three things at once: the narrowest neck a bite's piece may have, the narrowest the
+// remainder may have, and the shortest stretch of the leftover's frontier a bite may leave it.
+const SB_BITE_NECK_FRAC = 0.012;
 
 // Who bites first. The order changes the map completely — the first bite cuts an untouched
 // country and every later one works around it — and there is no single right answer, so it is
@@ -13979,7 +13989,7 @@ function sbEatCountry(rawTopo, goneName) {
 
     // One bite: slide the frontier that runs from ring vertex i0 to i1 into the country until
     // `want` km² sits behind it, and cut there. Returns {piece, rest, cut, ...} or null.
-    const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs, turns) => {
+    const bite = (r, i0, i1, want, seed, keepLegs, avoidLegs, ownLegs, noSplice, turns) => {
         const n = r.length;
         const areaHere = Math.abs(areaOf(closed(r)));
         if (!(areaHere > 0)) return null;
@@ -14066,6 +14076,15 @@ function sbEatCountry(rawTopo, goneName) {
         }
         const diam = Math.hypot(bx1 - bx0, by1 - by0);
         if (!(diam > 0)) return null;
+        // A neighbour whose remaining frontier is narrower than a thread does not bite. Its piece
+        // would join it along that thread and no other way — the same zero-width join the
+        // leftover was getting, arriving from the other side: an earlier, deeper cut had run
+        // past all but the last few metres of this frontier, and what was left still counted as
+        // "a frontier" because it was still a stretch of border with a name on it. Switzerland
+        // came away with a slab of Germany attached to it at 0.05 km. Crowded out is the honest
+        // answer; the land falls to a later biter or to the leftover, as it does for every other
+        // neighbour that cannot reach.
+        if (total < diam * SB_BITE_NECK_FRAC) return null;
         // A uniform grid over the ring's edges. The crossing sweep is the hot loop of the whole
         // surgery — a hundred cut segments against every ring edge, several hundred times a bite,
         // four times over — and testing only the cells a segment actually passes through takes
@@ -14188,8 +14207,16 @@ function sbEatCountry(rawTopo, goneName) {
                 for (let k = (xo.k + 1) % n; ; k = (k + 1) % n) { fwd.push(k); if (k === xi.k) break; if (fwd.length > n) { fwd.length = 0; break; } }
                 const bwd = [];
                 for (let k = xo.k; ; k = (k - 1 + n) % n) { bwd.push(k); if (k === (xi.k + 1) % n) break; if (bwd.length > n) { bwd.length = 0; break; } }
+                // ...nor the frontier of anyone still to write an outline of their own. A splice
+                // copies the old boundary into the cut verbatim, and those copied vertices carry
+                // no leg — so a stretch of another absorber's border can be written into this
+                // piece's outline while that absorber keeps it as well. Its ring then walks the
+                // same line out and back and closes as a zero-width corridor: the defect arriving
+                // by a route no count of anyone's remaining legs can see, because the second copy
+                // is not labelled as a border at all.
                 const okW = w => w.length > 0 && w.length <= lim &&
                     !w.some(k => runSet.has(k) || (avoidLegs && avoidLegs.size && avoidLegs.has(r[k].leg)) ||
+                                 (noSplice && noSplice.size && noSplice.has(r[k].leg)) ||
                                  (hostEdges.has(k) && k !== xo.k && k !== xi.k));
                 const cf = okW(fwd), cb = okW(bwd);
                 if (cf && cb) return fwd.length <= bwd.length ? fwd : bwd;
@@ -14253,8 +14280,41 @@ function sbEatCountry(rawTopo, goneName) {
             const rest = fwd ? mk(B, wBA, A, inner)
                              : mk(A, wAB, B, inner.slice().reverse());
             if (piece.length < 3 || rest.length < 3) return null;
-            // The rewrite needs the leftover's frontier to survive to the end.
-            if (keepLegs && keepLegs.size && !rest.some(v => keepLegs.has(v.leg))) return null;
+            // The rewrite needs the leftover's frontier to survive to the end — and to survive
+            // with LENGTH, not merely with a vertex. Testing for presence let a bite consume all
+            // but the last point of it, and the remainder then met the leftover's own territory
+            // at that single point: one ring, two lobes, joined by nothing. Austria came away
+            // with the middle of Germany attached to it at exactly 0.00 km of frontier, which is
+            // the "zero width" the eye picks out immediately and no area or winding check can
+            // see, because on paper the ring is perfectly well formed.
+            //
+            // And it must survive in ONE run. The rewrite gives the leftover's arc the whole
+            // outline of what it holds, starting from its own frontier — so if the remainder
+            // meets that frontier in two separate places, the outline walks a stretch of the
+            // leftover's own border that the leftover's ring already references, traverses it
+            // twice, and closes as a zero-width corridor. That is what joined Austria's two
+            // halves: the finished ring crossed 49.3°N exactly twice, both times at longitude
+            // 10.092 — the same line out and back, with 85 km of another country's land between
+            // the halves it appeared to connect.
+            //
+            // The same is required of the BITER and its own piece, for the same reason and by the
+            // same code: the rewrite treats every absorber alike. Zambia's Mozambique was the
+            // mirror of Austria's case, a biter rather than a leftover.
+            const oneFrontier = (ring2, own2) => {
+                if (!own2 || !own2.size) return true;
+                const RL = ring2.length;
+                let runs = 0, longest = 0, cur = 0;
+                for (let i2 = 0; i2 < RL; i2++) {
+                    if (!own2.has(ring2[i2].leg)) { cur = 0; continue; }
+                    if (!own2.has(ring2[(i2 - 1 + RL) % RL].leg)) runs++;
+                    cur += Math.hypot(ring2[(i2 + 1) % RL].p[0] - ring2[i2].p[0],
+                                      ring2[(i2 + 1) % RL].p[1] - ring2[i2].p[1]);
+                    if (cur > longest) longest = cur;
+                }
+                return runs === 1 && longest >= neckTol;
+            };
+            if (!oneFrontier(rest, keepLegs)) return null;
+            if (!oneFrontier(piece, ownLegs)) return null;
             // ...and the piece may not reach the biter's OWN secondary frontier (a two-lobe
             // country like Brunei): that arc stays referenced by the biter's ring, so a copy of
             // it inside the outline traverses the same border twice in the same direction and
@@ -14278,6 +14338,15 @@ function sbEatCountry(rawTopo, goneName) {
             // so it stays with the donor and falls to a later biter or to the leftover, and no
             // reconciliation is needed anywhere.
             if (!oneLobe(piece)) return null;
+            // ...and so must the REMAINDER, for exactly the same reason and with exactly the same
+            // consequence. A cut that reaches the far side and grazes it splits what is left into
+            // two lobes joined at a point, and what is left is the next region to be bitten and,
+            // in the end, the leftover's own territory — so the country holding the surplus came
+            // away with a detached blob across the map. Austria, holding the remainder of
+            // Germany, was drawn as two near-equal halves (510 grid cells against 504) with
+            // nothing between them. Checking the piece alone could never catch it: the piece was
+            // fine, and it was the hole it left behind that was pinched.
+            if (!oneLobe(rest)) return null;
             // And no bite takes the region whole, however convex or however deep the only cut
             // that lands happens to be. Namibia's Caprivi Strip is the case: it is so thin that
             // the shallowest slide of Zambia's frontier that still lands cleanly is one that has
@@ -14308,16 +14377,32 @@ function sbEatCountry(rawTopo, goneName) {
         //
         // A spatial hash rather than all-pairs: the piece can be 300 vertices and this runs
         // inside the depth bisection, several hundred times a bite.
-        const pinchTol = Math.max(1e-3, diam * 1e-6);
+        // A pinch is not always EXACT. The construction produces two kinds and only one of them
+        // is a computed intersection landing back on a vertex; the other is a genuine isthmus a
+        // kilometre or two wide, which draws as two countries joined by a thread and reads as a
+        // detached blob just the same. Austria, holding the remainder of Germany, was joined to
+        // its northern half by 1.1 km of land near Nuremberg — well outside a decimetre tolerance
+        // and well inside anything anyone would call connected.
+        //
+        // So the tolerance is a WIDTH, a fraction of the region's own diagonal (about 4 km across
+        // Germany), and the price of raising it is paid by the second condition: the two vertices
+        // must also be far apart ALONG THE RING. Every wiggle in a coastline has non-consecutive
+        // vertices within a few kilometres of each other, and at the old tolerance that never
+        // mattered; a pinch separating two substantial lobes must have substantial perimeter on
+        // both sides of it, so requiring the pair to be a twentieth of the ring apart keeps every
+        // real pinch and discards every wiggle.
+        const neckTol = Math.max(diam * SB_BITE_NECK_FRAC, 1e-3);
         const oneLobe = pv => {
             const cell = new Map();
             const stack = [pv.map(v => v.p)];
+            const pinchTol = neckTol;
             let biggest = 0, total = 0, guard = 0;
             while (stack.length) {
                 if (guard++ > 4000) return false;            // pathological: refuse rather than guess
                 const rr = stack.pop();
                 cell.clear();
                 let cutAt = null;
+                const apart = Math.max(3, Math.floor(rr.length * 0.05));
                 for (let i2 = 0; i2 < rr.length; i2++) {
                     const cx2 = Math.floor(rr[i2][0] / pinchTol), cy2 = Math.floor(rr[i2][1] / pinchTol);
                     for (let dx2 = -1; dx2 <= 1 && !cutAt; dx2++) for (let dy2 = -1; dy2 <= 1 && !cutAt; dy2++) {
@@ -14329,7 +14414,7 @@ function sbEatCountry(rawTopo, goneName) {
                         const bucket = cell.get((cx2 + dx2) + ':' + (cy2 + dy2));
                         if (!bucket) continue;
                         for (const j2 of bucket) {
-                            if (i2 - j2 <= 2) continue;
+                            if (i2 - j2 < apart || rr.length - (i2 - j2) < apart) continue;
                             if (Math.hypot(rr[i2][0] - rr[j2][0], rr[i2][1] - rr[j2][1]) <= pinchTol) { cutAt = [j2, i2]; break; }
                         }
                     }
@@ -14413,17 +14498,35 @@ function sbEatCountry(rawTopo, goneName) {
         // The frontier moved RIGIDLY: straight in by `d`, and turned by `ang` about its own
         // midpoint. Nothing here can change the stencil's length or any angle in it, which is
         // what "the border keeps its shape" means and what the propagating front cannot promise.
-        const pivot = st0[(M - 1) >> 1];
+        // The stencil is whatever run of the frontier is currently being moved — the whole of it
+        // to begin with, and a sub-run of it when the whole will not go (see `spans`). Rigid
+        // either way: the same points, translated and at most slightly turned.
+        let stencil = st0;
+        let pivot = st0[(M - 1) >> 1];
+        const useStencil = st => { stencil = st; pivot = st[(st.length - 1) >> 1]; };
         const rigid = (d, ang) => {
             const ca = Math.cos(ang || 0), sa = Math.sin(ang || 0);
-            const out = new Array(M);
-            for (let i = 0; i < M; i++) {
-                const ux = st0[i][0] - pivot[0], uy = st0[i][1] - pivot[1];
+            const m2 = stencil.length;
+            const out = new Array(m2);
+            for (let i = 0; i < m2; i++) {
+                const ux = stencil[i][0] - pivot[0], uy = stencil[i][1] - pivot[1];
                 out[i] = [pivot[0] + ux * ca - uy * sa + nx * d,
                           pivot[1] + ux * sa + uy * ca + ny * d];
             }
             return out;
         };
+        // A frontier that will not move is usually not stuck along its whole length: it is one END
+        // that is stuck, on a protrusion or in a pocket the continuation cannot get out of, and
+        // the rest of it would go forward perfectly well. So when nothing lands, the frontier is
+        // shortened and hopped again — dropping a fifth, then two fifths, then more, from one end
+        // or the other or from both. Every sub-run is still a rigid copy of a real border; it is
+        // simply less of one. The whole run is always tried first and kept if it lands, so this
+        // costs nothing in the ordinary case, and Germany could not bite Poland at all without it.
+        const spans = [[0, M - 1]];
+        [0.8, 0.6, 0.45].forEach(f => {
+            const w = Math.max(6, Math.round((M - 1) * f));
+            spans.push([0, w], [M - 1 - w, M - 1], [Math.round((M - 1 - w) / 2), Math.round((M - 1 - w) / 2) + w]);
+        });
 
         // COMPOUNDED, not accumulated. A turn's budget is a percentage of the border as it
         // stands at the start of that turn, so three turns of 10% is 1.10³ = 1.331 rather than
@@ -14550,39 +14653,50 @@ function sbEatCountry(rawTopo, goneName) {
             const sc = score(got);
             if (!best || sc.score > best.score) best = { ...sc, got, src, flip };
         };
-        if (sbBiteAlgo === 'efficient') {
-            // Which rotations are worth a full look, judged on one borrowed continuation only —
-            // the continuations decide the cut's ENDS and the rotation decides its middle, so a
-            // single curve separates the rotations perfectly well and a full cross-product of the
-            // two costs four times as much for the same answer.
-            const src0 = srcs[0];
-            const ranked = [];
-            for (const ang of SB_BITE_SPINS) {
-                let bestHere = null;
-                for (const flip of [1, -1]) {
-                    extYs = src0.ys; extFlip = flip;
-                    const got = efficient(ang);
-                    if (got && (!bestHere || (got.yield2 || 0) > bestHere)) bestHere = got.yield2 || 1e-9;
+        const searchWith = () => {
+            if (sbBiteAlgo === 'efficient') {
+                // Which rotations are worth a full look, judged on one borrowed continuation only
+                // — the continuations decide the cut's ENDS and the rotation decides its middle,
+                // so a single curve separates the rotations perfectly well and a full
+                // cross-product of the two costs four times as much for the same answer.
+                const src0 = srcs[0];
+                const ranked = [];
+                for (const ang of SB_BITE_SPINS) {
+                    let bestHere = null;
+                    for (const flip of [1, -1]) {
+                        extYs = src0.ys; extFlip = flip;
+                        const got = efficient(ang);
+                        if (got && (!bestHere || (got.yield2 || 0) > bestHere)) bestHere = got.yield2 || 1e-9;
+                    }
+                    if (bestHere) ranked.push({ ang, k: bestHere });
                 }
-                if (bestHere) ranked.push({ ang, k: bestHere });
+                ranked.sort((a, b) => b.k - a.k);
+                const keep = ranked.slice(0, 2).map(x => x.ang);
+                if (!keep.length) keep.push(0);
+                srcs.forEach(src => {
+                    for (const flip of [1, -1]) for (const ang of keep) {
+                        extYs = src.ys; extFlip = flip;
+                        take(efficient(ang), src, flip);
+                    }
+                });
+            } else {
+                const move = sbBiteAlgo === 'front' ? propagate : () => slide(0);
+                srcs.forEach(src => {
+                    for (const flip of [1, -1]) {
+                        extYs = src.ys; extFlip = flip;
+                        take(move(), src, flip);
+                    }
+                });
             }
-            ranked.sort((a, b) => b.k - a.k);
-            const keep = ranked.slice(0, 2).map(x => x.ang);
-            if (!keep.length) keep.push(0);
-            srcs.forEach(src => {
-                for (const flip of [1, -1]) for (const ang of keep) {
-                    extYs = src.ys; extFlip = flip;
-                    take(efficient(ang), src, flip);
-                }
-            });
-        } else {
-            const move = sbBiteAlgo === 'front' ? propagate : () => slide(0);
-            srcs.forEach(src => {
-                for (const flip of [1, -1]) {
-                    extYs = src.ys; extFlip = flip;
-                    take(move(), src, flip);
-                }
-            });
+        };
+        // The front deforms to fit and has no use for a shorter stencil; the two rigid
+        // constructions do. Shorter runs are tried only while nothing has landed that reaches a
+        // reasonable share of the ask, so a frontier that goes forward whole is never shortened.
+        for (const [a2, b2] of (sbBiteAlgo === 'front' ? [spans[0]] : spans)) {
+            if (best && best.reach > 0.6) break;
+            if (b2 - a2 < 5) continue;
+            useStencil(st0.slice(a2, b2 + 1));
+            searchWith();
         }
         if (!best) return null;
         const at = best.got.at;
@@ -14687,7 +14801,16 @@ function sbEatCountry(rawTopo, goneName) {
             // The biter's own legs OUTSIDE its main frontier: a bite may not swallow those.
             const avoidLegs = new Set();
             legs.forEach((l, li) => { if (l.name && namesMatch(l.name, nm) && !ownOf.get(nm).has(li)) avoidLegs.add(li); });
-            const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs, allow.get(nm) || 1);
+            // Borders a splice may not run along: the leftover's frontier, and the frontier of every
+            // neighbour that has still to bite. Whoever writes an outline through a border later
+            // would be writing a border its own ring already carries, and a ring that walks the
+            // same line out and back closes as a zero-width corridor. A neighbour already bitten,
+            // or one crowded out, is no such hazard: its border simply ends up drawn twice in the
+            // same place by two different countries, which is what every other copied border here
+            // does and is invisible by the same argument.
+            const noSplice = new Set(keepLegs);
+            remaining.forEach(other => (mainGroup.get(other) || []).forEach(li => noSplice.add(li)));
+            const got = bite(liveRing, start, end, want, seedOf(nm), keepLegs, avoidLegs, ownOf.get(nm), noSplice, allow.get(nm) || 1);
             const base = { ...base0, frontier: fpts };
             if (!got) { story.push({ kind: 'crowded', ...base }); continue; }
             const before = liveRing;
@@ -15886,6 +16009,9 @@ function msRenderStory() {
                    (first
                      ? `No slide of ${who}'s frontier lands cleanly at any depth — the shape of that stretch is such that its slid copy cannot cut the country in two.`
                      : `The region has been bitten into by now, and no slide of ${who}'s frontier lands cleanly in what is left.`) +
+                   (s.turns > 1
+                     ? ` It has had <strong>${s.turns} turns</strong> to find one, each with another ${sbBiteGrowth}% of border to spend.`
+                     : '') +
                    ` Its share falls to the others.</p>`;
         } else if (s.kind === 'leftover') {
             body = `<p>${who} never bites. Whatever is still standing when everyone else has finished is its — ` +
