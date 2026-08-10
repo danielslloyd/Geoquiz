@@ -16201,40 +16201,8 @@ function removeMissingSandbox() {
 // invented — and is wrong only in its palette. It is returned as an SVG data URL, so it is a
 // vector exactly like the three real ones and no sharpness difference exists to notice.
 //
-// The replacement colours are drawn from the seed's own REGION, weighted by how common each is
-// there, so a fake built from an African flag stays in the pan-African vocabulary rather than
-// turning up in a colourway no flag on that continent uses.
-
-// Perceptual buckets. Flags do not use a continuum of colour, they use about a dozen — and
-// near-identical hexes (#CE1126 vs #CD202A) are the same colour for this purpose, so the
-// classifier must group them rather than treat every hex as its own thing.
-const SB_FLAG_BUCKETS = [
-    { key: 'red',    rgb: [206, 17, 38] },
-    { key: 'maroon', rgb: [123, 31, 43] },
-    { key: 'orange', rgb: [239, 125, 0] },
-    { key: 'yellow', rgb: [252, 209, 22] },
-    { key: 'green',  rgb: [0, 122, 61] },
-    { key: 'teal',   rgb: [0, 150, 150] },
-    { key: 'sky',    rgb: [0, 147, 221] },
-    { key: 'blue',   rgb: [0, 56, 147] },
-    { key: 'navy',   rgb: [16, 32, 80] },
-    { key: 'purple', rgb: [100, 45, 130] },
-    { key: 'white',  rgb: [255, 255, 255] },
-    { key: 'black',  rgb: [17, 17, 17] }
-];
-
-// How often each colour turns up in that region's flags. Not a continuum either: these are the
-// regional design languages — pan-African red/green/gold/black, pan-Arab red/white/black/green,
-// the blue-white-red of Europe and the Americas.
-const SB_REGION_PALETTE = {
-    'Africa':        { red: 9, green: 10, yellow: 8, black: 6, white: 5, blue: 4, orange: 1, sky: 1, teal: 1 },
-    'Asia':          { red: 10, white: 7, green: 7, blue: 5, yellow: 5, black: 3, sky: 2, orange: 1, maroon: 2 },
-    'Europe':        { blue: 9, red: 10, white: 9, yellow: 6, black: 4, green: 4, sky: 1, navy: 2 },
-    'North America': { blue: 8, red: 9, white: 9, green: 4, yellow: 3, black: 2, sky: 2 },
-    'South America': { blue: 8, yellow: 7, red: 7, white: 8, green: 5, sky: 3 },
-    'Oceania':       { blue: 9, white: 6, red: 6, green: 3, yellow: 3, black: 3, sky: 2, navy: 3 }
-};
-const SB_REGION_PALETTE_DEFAULT = { red: 8, white: 8, blue: 7, green: 6, yellow: 5, black: 4, sky: 2, orange: 1 };
+// The replacement colours are another real country's, laid on so that the CONTRAST between every
+// pair of them survives — see "palettes, and matching one to another" below.
 
 // The handful of CSS colour names flagcdn actually emits, plus #rgb / #rrggbb.
 const SB_CSS_COLOURS = {
@@ -16267,53 +16235,6 @@ function sbRgbDist(a, b) {
 
 function sbHex(rgb) {
     return '#' + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
-}
-
-function sbColourBucket(rgb) {
-    let best = null, bd = Infinity;
-    for (const b of SB_FLAG_BUCKETS) {
-        const d = sbRgbDist(rgb, b.rgb);
-        if (d < bd) { bd = d; best = b; }
-    }
-    return best;
-}
-
-// Choose a stand-in for one bucket: common in this region, and CLOSE to what it replaces.
-// Distance is a penalty rather than a bonus deliberately — a near-miss recolour (a slightly
-// wrong green) is far harder to catch than a garish one, and the round is meant to be hard.
-//
-// Kept as the FALLBACK. The palette a fake wears is now taken whole from another real flag (see
-// `sbDonorPalette`), because a colour scheme is a thing a country has rather than a set of
-// independent choices: red-white-black is the pan-Arab vocabulary, gold-green-red the
-// pan-African one, and picking three colours one at a time by regional frequency produces
-// combinations no flag has ever worn. This is what runs when no donor could be read.
-function sbPickReplacement(bucketKey, region, taken) {
-    const weights = SB_REGION_PALETTE[region] || SB_REGION_PALETTE_DEFAULT;
-    const from = SB_FLAG_BUCKETS.find(b => b.key === bucketKey);
-    if (!from) return null;
-    const cands = [];
-    for (const b of SB_FLAG_BUCKETS) {
-        if (b.key === bucketKey) continue;
-        // The mapping must stay INJECTIVE. Two of a flag's colours landing on the same one
-        // merges the shapes they distinguished — Ethiopia's star dissolving into its field —
-        // and the result reads as a rendering fault rather than as another country's flag.
-        if (taken && taken.has(b.key)) continue;
-        // ...and never map INTO white or black. They are what emblems and outlines are drawn
-        // in, so a band recoloured white swallows whatever sits on it.
-        if (b.key === 'white' || b.key === 'black') continue;
-        const freq = weights[b.key];
-        if (!freq) continue;                      // not part of this region's vocabulary
-        const d = sbRgbDist(from.rgb, b.rgb);
-        // Below this the swap is invisible at tile size — navy for blue, maroon for red — and
-        // the round degenerates into "which one looks very slightly off", which is not a
-        // question about flags at all.
-        if (d < 90) continue;
-        cands.push({ b, w: freq * Math.exp(-d / 190) });
-    }
-    if (!cands.length) return null;
-    let r = Math.random() * cands.reduce((s, c) => s + c.w, 0);
-    for (const c of cands) { r -= c.w; if (r <= 0) return c.b; }
-    return cands[cands.length - 1].b;
 }
 
 // Every place a colour can hide in one of these files.
@@ -16360,16 +16281,6 @@ async function sbFlagDoc(code) {
     return out;
 }
 
-function sbBucketNodes(nodes) {
-    const buckets = new Map();
-    nodes.forEach(n => {
-        const b = sbColourBucket(n.rgb);
-        if (!buckets.has(b.key)) buckets.set(b.key, []);
-        buckets.get(b.key).push(n);
-    });
-    return buckets;
-}
-
 // How much of the CLOTH each colour covers, which is the only ranking that means anything here.
 // Counting nodes instead is off by whole orders of magnitude in the one direction that matters:
 // a flag's field is a single rect and its emblem is forty paths, so by node count the emblem is
@@ -16410,8 +16321,8 @@ async function sbFlagAreas(code, doc) {
         // the two merge.
         const srcs = [];
         sbSvgColourNodes(doc).forEach(n => {
-            if (!srcs.some(s => sbRgbDist(s.rgb, n.rgb) < 1)) {
-                srcs.push({ rgb: n.rgb, key: sbColourBucket(n.rgb).key });
+            if (!srcs.some(s => sbRgbDist(s.rgb, n.rgb) < SB_SAME_COLOUR)) {
+                srcs.push({ rgb: n.rgb, key: sbHex(n.rgb) });
             }
         });
         if (!srcs.length) throw new Error('no colours');
@@ -16438,35 +16349,202 @@ async function sbFlagAreas(code, doc) {
     return out;
 }
 
-// A donor's palette: at most its THREE largest chromatic colours, biggest first, carrying the
-// exact RGB the flag actually uses rather than the bucket's nominal one — the point of borrowing
-// a scheme is to get that country's particular green, not a generic one. Three because that is
-// what a flag's colour scheme is; a fourth is piping on a coat of arms.
-const SB_PALETTE_MAX = 3;
-async function sbDonorPalette(code) {
-    const doc = await sbFlagDoc(code);
-    if (!doc) return null;
+// ---- palettes, and matching one to another --------------------------------------------
+//
+// A flag's palette is EVERY colour on it, black and white included. Excluding those was right
+// while the mapping was three chromatic colours laid rank for rank -- recolouring a white outline
+// to a mid-tone loses the outline -- but it is the wrong fix for the right worry, and it left
+// Japan with one colour to work with and Poland with none at all. What actually has to be
+// preserved is CONTRAST, and once the mapping is chosen to preserve contrast, white maps to
+// whatever the donor uses as its light and the outline survives on purpose rather than by being
+// left alone.
+const SB_SAME_COLOUR = 12;      // nearer than this and it is the same colour for our purposes
+const SB_PALETTE_MAX = 6;
+
+// Relative luminance, and a signed contrast between two colours on the log scale WCAG works in.
+// Signed, because "which of these two is the lighter" is half of what a design is: a dark charge
+// on a light field and a light charge on a dark one are different flags.
+function sbLuminance(rgb) {
+    const f = v => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+}
+const sbContrast = (a, b) => Math.log((sbLuminance(a) + 0.05) / (sbLuminance(b) + 0.05));
+
+function sbRgbToHsl(rgb) {
+    const r = rgb[0] / 255, g = rgb[1] / 255, b2 = rgb[2] / 255;
+    const mx = Math.max(r, g, b2), mn = Math.min(r, g, b2), l = (mx + mn) / 2;
+    if (mx === mn) return [0, 0, l];
+    const dd = mx - mn;
+    const sat = l > 0.5 ? dd / (2 - mx - mn) : dd / (mx + mn);
+    let h;
+    if (mx === r) h = ((g - b2) / dd + (g < b2 ? 6 : 0));
+    else if (mx === g) h = (b2 - r) / dd + 2;
+    else h = (r - g) / dd + 4;
+    return [h * 60, sat, l];
+}
+function sbHslToRgb(h, sat, l) {
+    h = ((h % 360) + 360) % 360;
+    const c2 = (1 - Math.abs(2 * l - 1)) * sat, x = c2 * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c2 / 2;
+    let r, g, b2;
+    if (h < 60) { r = c2; g = x; b2 = 0; }
+    else if (h < 120) { r = x; g = c2; b2 = 0; }
+    else if (h < 180) { r = 0; g = c2; b2 = x; }
+    else if (h < 240) { r = 0; g = x; b2 = c2; }
+    else if (h < 300) { r = x; g = 0; b2 = c2; }
+    else { r = c2; g = 0; b2 = x; }
+    return [(r + m) * 255, (g + m) * 255, (b2 + m) * 255].map(v => Math.max(0, Math.min(255, v)));
+}
+
+// Every distinct colour a flag actually shows, biggest first. Distinct by eye rather than by
+// hex: two greens a couple of units apart are one colour to anybody looking at a flag, and
+// splitting them hands the mapping a spurious pair to preserve the contrast between.
+async function sbFlagPalette(code, doc) {
+    if (!doc || !doc.documentElement) return null;
     const nodes = sbSvgColourNodes(doc);
     if (!nodes.length) return null;
     const areas = await sbFlagAreas(code, doc);
     if (!areas) return null;
-    const buckets = sbBucketNodes(nodes);
     const out = [];
-    buckets.forEach((list, key) => {
-        if (key === 'white' || key === 'black') return;
-        const share = areas.get(key) || 0;
-        if (share <= 0) return;
-        // The shade covering most of that bucket's own area, so a flag with a light and a dark
-        // green contributes the one it is mostly made of.
-        const tally = new Map();
-        list.forEach(n => { const h = sbHex(n.rgb); tally.set(h, (tally.get(h) || 0) + 1); });
-        let bestHex = null, bestN = -1;
-        tally.forEach((c, h) => { if (c > bestN) { bestN = c; bestHex = h; } });
-        out.push({ key, share, rgb: sbParseColour(bestHex) || SB_FLAG_BUCKETS.find(b => b.key === key).rgb });
+    areas.forEach((share, hex) => {
+        const rgb = sbParseColour(hex);
+        if (rgb && share > 0.002) out.push({ hex, rgb, share });   // under 0.2% is a hairline
     });
     if (!out.length) return null;
-    out.sort((a, b) => b.share - a.share);
+    out.sort((a2, b2) => b2.share - a2.share);
     return out.slice(0, SB_PALETTE_MAX);
+}
+
+async function sbDonorPalette(code) {
+    const doc = await sbFlagDoc(code);
+    if (!doc) return null;
+    return sbFlagPalette(code, doc);
+}
+
+// A donor with fewer colours than the seed is topped up by COLOUR THEORY rather than by
+// borrowing from somewhere else: the complement of its dominant hue, then the two triads, then
+// the split-complements. A scheme extended along its own colour wheel still reads as one scheme,
+// which is the entire claim being made by borrowing a palette in the first place; a colour
+// fetched in from outside is what produced combinations no flag has ever worn.
+//
+// Hue comes from the wheel and LIGHTNESS comes from the contrast that has to be matched, which
+// is the division of labour that makes this work: the added colour belongs to the donor's family
+// and sits where the design needs something to sit.
+const SB_HUE_STEPS = [180, 120, -120, 150, -150, 90, -90, 60, -60];
+function sbHarmonic(donor, i, wantL) {
+    const base = sbRgbToHsl(donor[0].rgb);
+    const sat = donor.reduce((t, c2) => t + sbRgbToHsl(c2.rgb)[1], 0) / donor.length;
+    const h = base[0] + SB_HUE_STEPS[i % SB_HUE_STEPS.length];
+    // Solve lightness for the luminance the mapping is asking for, by bisection: luminance is
+    // monotone in HSL lightness at fixed hue and saturation, but not in closed form.
+    const S = Math.max(0.25, Math.min(0.95, sat));
+    let lo = 0.02, hi = 0.98;
+    for (let k = 0; k < 20; k++) {
+        const mid = (lo + hi) / 2;
+        if (sbLuminance(sbHslToRgb(h, S, mid)) < wantL) lo = mid; else hi = mid;
+    }
+    return sbHslToRgb(h, S, (lo + hi) / 2);
+}
+
+// Lay one palette on another so the PAIRWISE CONTRASTS survive. A flag is not a list of colours,
+// it is a set of relationships between them: this band against that one, this charge against the
+// field it sits on. Preserve those and the design still reads; scramble them and it does not,
+// however handsome each colour is on its own.
+//
+// Two things are searched together, because doing them in sequence is what made the results
+// wrong. WHICH of the seed's colours the donor covers is as much a choice as which donor colour
+// each of them gets: with two colours to give and four to cover, spending them on the seed's two
+// biggest is only right if those are the two carrying the design's contrast. India's white was
+// being handed a synthesised teal while its navy got a near-white, because the donor was spent
+// before the question was asked.
+//
+// Every arrangement is tried and scored on total pairwise contrast error. A palette is at most
+// six colours, so that is at most C(6,5) x 5! = 720 arrangements, which is nothing.
+const SB_MIN_APART = 60;      // two colours nearer than this merge the shapes they distinguish
+function sbMatchPalettes(base, donor) {
+    if (!base || !base.length || !donor || !donor.length) return null;
+    const n = base.length;
+    // The WHOLE donor palette is on offer, not its first few. A two-colour seed against a
+    // four-colour donor was being shown only the donor's two biggest, so Japan's white had to
+    // become Brazil's yellow when Brazil owns a white of its own — the one colour in the room
+    // that was obviously right, ruled out before the search began.
+    const pool = donor.slice(0, 6);
+    const k = Math.min(n, pool.length, 6);
+    // The contrast every pair has to end up with, and the luminance axis it lives on.
+    const C = base.map(x => base.map(y => sbContrast(x.rgb, y.rgb)));
+    const U = rgb => Math.log(sbLuminance(rgb) + 0.05);
+
+    // Fill the slots the donor did not cover. Contrast is carried almost entirely by lightness,
+    // and on the log-luminance axis "preserve the contrast to everything already placed" has a
+    // closed form: u_i is the mean of (c_ij + u_j) over the placed j. So the hue comes from the
+    // donor's own colour wheel and the lightness is SOLVED, which is the division of labour that
+    // makes an invented colour belong to the borrowed scheme and still sit where the design
+    // needs something to sit.
+    const fill = (slots, placed) => {
+        const out = placed.slice();
+        slots.forEach((i, t) => {
+            let u = 0, m = 0;
+            for (let j = 0; j < n; j++) {
+                if (out[j] === null || out[j] === undefined) continue;
+                u += C[i][j] + U(out[j]); m++;
+            }
+            const wantL = m ? Math.max(0, Math.min(1, Math.exp(u / m) - 0.05)) : 0.4;
+            let rgb = sbHarmonic(donor, t, wantL);
+            for (let g = 0; g < 8 && out.some(c2 => c2 && sbRgbDist(c2, rgb) < SB_MIN_APART); g++) {
+                const hsl = sbRgbToHsl(rgb);
+                rgb = sbHslToRgb(hsl[0] + 31, Math.min(0.95, hsl[1] + 0.05), hsl[2]);
+            }
+            out[i] = rgb;
+        });
+        return out;
+    };
+
+    let best = null;
+    const score = acc => {
+        let err = 0;
+        for (let i = 0; i < n; i++)
+            for (let j = i + 1; j < n; j++)
+                err += Math.abs(C[i][j] - sbContrast(acc[i], acc[j]));
+        // Two colours landing on top of each other merges the shapes they distinguished, and no
+        // amount of contrast fidelity is worth that.
+        for (let i = 0; i < n; i++)
+            for (let j = i + 1; j < n; j++) {
+                const d2 = sbRgbDist(acc[i], acc[j]);
+                if (d2 < SB_MIN_APART) err += (SB_MIN_APART - d2) / 8;
+            }
+        return err;
+    };
+    // Every way of choosing k of the n slots, and every order of the donor's colours within them.
+    const combos = [];
+    const choose = (from, left, acc) => {
+        if (!left) { combos.push(acc.slice()); return; }
+        for (let i = from; i <= n - left; i++) choose(i + 1, left - 1, acc.concat([i]));
+    };
+    choose(0, k, []);
+    // Ordered selections of k donor colours, not permutations of exactly k: which of the donor's
+    // colours get used is part of the question.
+    const perms = [];
+    const permute = (left, acc) => {
+        if (acc.length === k) { perms.push(acc.slice()); return; }
+        for (let i = 0; i < left.length; i++)
+            permute(left.slice(0, i).concat(left.slice(i + 1)), acc.concat([left[i]]));
+    };
+    permute(pool.map((_, i) => i), []);
+    combos.forEach(slots => {
+        const rest = [];
+        for (let i = 0; i < n; i++) if (slots.indexOf(i) < 0) rest.push(i);
+        perms.forEach(order => {
+            const placed = new Array(n).fill(null);
+            slots.forEach((sl, i) => { placed[sl] = pool[order[i]].rgb; });
+            const acc = fill(rest, placed);
+            const e = score(acc);
+            // Ties broken toward rank for rank, so the dominant colour takes the dominant colour
+            // wherever the contrasts do not care.
+            const tie = slots.reduce((t, sl, i) => t + Math.abs(sl - order[i]), 0) * 1e-3;
+            if (!best || e + tie < best.e) best = { e: e + tie, acc: acc };
+        });
+    });
+    if (!best) return null;
+    return base.map((c2, i) => ({ from: c2, to: best.acc[i] }));
 }
 
 // Build a recoloured copy of one real flag: the SAME DESIGN, wearing another country's colours.
@@ -16485,18 +16563,17 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
         new XMLSerializer().serializeToString(src), 'image/svg+xml');
     if (!doc || doc.querySelector('parsererror') || !doc.documentElement) return null;
 
-    const areas = await sbFlagAreas(code, src);
-    if (!areas) return null;
+    const palette = await sbFlagPalette(code, src);
+    if (!palette) return null;
 
     // Reject designs simple enough that another real country might already own the recoloured
     // version. Plain bi/tricolours are exactly that hazard — Ireland and Ivory Coast, Indonesia
     // and Monaco, Chad and Romania — so require either an emblem's worth of elements or a
     // palette no plain tricolour has.
     const drawable0 = doc.querySelectorAll('path, circle, rect, polygon, ellipse, g > *').length;
-    const buckets0 = sbBucketNodes(sbSvgColourNodes(doc));
-    if (drawable0 < 8 && buckets0.size < 4) return null;
+    if (drawable0 < 8 && palette.length < 4) return null;
 
-    const changes = sbRepaint(doc, areas, donor, region);
+    const changes = sbRepaint(doc, palette, donor);
     if (!changes || !changes.length) return null;
 
     const out = new XMLSerializer().serializeToString(doc);
@@ -16509,89 +16586,38 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
 
 // Repaint a parsed flag in a donor's colours, IN PLACE, returning what it changed. Shared with
 // the workshop, which composes a document of its own and wants exactly this done to it.
-function sbRepaint(doc, areas, donor, region) {
+function sbRepaint(doc, palette, donor) {
     const nodes = sbSvgColourNodes(doc);
-    if (!nodes.length) return null;
-    const buckets = sbBucketNodes(nodes);
-
-    // White and black are structural — outlines, emblem detail, the field a charge sits on —
-    // and recolouring them reads as a broken image rather than as another country's flag.
-    const chromatic = [...buckets.keys()].filter(k => k !== 'white' && k !== 'black');
-    if (!chromatic.length) return null;
-
-    // The seed's own colours ranked by AREA and cut to three, exactly as the donor's were, so the
-    // two lists can be laid against each other rank for rank: the colour covering most of the
-    // seed takes the colour covering most of the donor. That is what makes the result read as a
-    // colour SCHEME rather than as three unrelated substitutions — and ranking by area is what
-    // makes "most of the seed" mean the field rather than whichever colour happens to be spread
-    // over the most separate elements.
-    const ranked = chromatic
-        .filter(k => (areas.get(k) || 0) > 0)
-        .sort((a, b) => (areas.get(b) || 0) - (areas.get(a) || 0))
-        .slice(0, SB_PALETTE_MAX);
-    if (!ranked.length) return null;
-
-    const changes = [];
-    // Seeded with the colours that are STAYING — the ones outside the top three, plus white and
-    // black — so a replacement can never collide with one of the flag's own untouched colours.
-    // Deliberately NOT every colour the flag has: a colour that is itself being replaced is on
-    // its way out, and blocking the donor's red because the seed happens to have a red it is
-    // about to lose left most flags with a single band recoloured.
-    const taken = new Set([...buckets.keys()].filter(k => ranked.indexOf(k) < 0));
-    const pool = (donor && donor.palette ? donor.palette : []).slice();
-    // The dominant exact shade of a bucket — the one the flag is mostly made of, and the one the
-    // donor's colour is applied to DIRECTLY. Measuring the swap against this rather than against
-    // the bucket's nominal colour is the whole of it: a seed whose red is #ce1126 was being
-    // shifted by (donor − pure red), which lands nowhere near the donor's colour and is why the
-    // recoloured flags came out wearing shades no country chose.
-    const mainShade = key => {
-        const tally = new Map();
-        buckets.get(key).forEach(n => { const h = sbHex(n.rgb); tally.set(h, (tally.get(h) || 0) + 1); });
-        let bestHex = null, bestN = -1;
-        tally.forEach((c, h) => { if (c > bestN) { bestN = c; bestHex = h; } });
-        return sbParseColour(bestHex) || SB_FLAG_BUCKETS.find(b => b.key === key).rgb;
-    };
-    const hasDonor = !!(donor && donor.palette && donor.palette.length);
-    const repFor = (key, from) => {
-        // The donor's next unused colour, skipping any that is already in this flag (the
-        // mapping must stay INJECTIVE: two of a flag's colours landing on the same one merges
-        // the shapes they distinguished, and Ethiopia's star dissolves into its field) or too
-        // near what it replaces to be seen at tile size.
-        for (let i = 0; i < pool.length; i++) {
-            const c = pool[i];
-            if (taken.has(c.key)) continue;
-            if (sbRgbDist(from, c.rgb) < 90) continue;
-            pool.splice(i, 1);
-            return c;
+    if (!nodes.length || !palette || !palette.length) return null;
+    const pool = donor && donor.palette && donor.palette.length ? donor.palette : null;
+    if (!pool) return null;
+    const map = sbMatchPalettes(palette, pool);
+    if (!map) return null;
+    // Something has to have MOVED. Below this the swap is invisible at tile size and the round
+    // degenerates into "which one looks very slightly off", which is not a question about flags.
+    if (!map.some(m => sbRgbDist(m.from.rgb, m.to) >= 60)) return null;
+    const changes = map.filter(m => sbRgbDist(m.from.rgb, m.to) >= 8)
+                       .map(m => ({ from: m.from.hex, to: sbHex(m.to) }));
+    const apply = (n, rgb) => {
+        const hex = sbHex(rgb);
+        if (n.inStyle) {
+            const style = n.el.getAttribute('style') || '';
+            n.el.setAttribute('style', style.replace(
+                new RegExp('((?:^|;)\\s*' + n.attr + '\\s*:\\s*)([^;]+)', 'i'), '$1' + hex));
+        } else {
+            n.el.setAttribute(n.attr, hex);
         }
-        // A donor with fewer colours than the seed leaves the seed's remaining ones ALONE
-        // rather than topping the scheme up from the regional picker. Half a borrowed scheme
-        // and half an invented one is neither, and the invented half is exactly the part that
-        // produces combinations no flag has ever worn. The picker survives only for the case
-        // where no donor could be read at all.
-        return hasDonor ? null : sbPickReplacement(key, region, taken);
     };
-    ranked.forEach(key => {
-        const from = mainShade(key);
-        const rep = repFor(key, from);
-        if (!rep) return;
-        taken.add(rep.key);
-        changes.push({ from: key, to: rep.key });
-        // The dominant shade becomes the donor's colour exactly; anything else in the bucket
-        // moves by the same delta, so an emblem's light and dark greens stay light and dark
+    nodes.forEach(n => {
+        // Every node goes to the palette entry it is NEAREST, so a shade a few units off the one
+        // that was measured still travels with its own colour rather than being left behind.
+        let hit = null, bd = Infinity;
+        map.forEach(m => { const d2 = sbRgbDist(n.rgb, m.from.rgb); if (d2 < bd) { bd = d2; hit = m; } });
+        if (!hit) return;
+        // The measured shade becomes the donor's colour exactly; anything else that files under
+        // it moves by the same delta, so an emblem's light and dark greens stay light and dark
         // relative to each other instead of flattening to one tone.
-        buckets.get(key).forEach(n => {
-            const shifted = [0, 1, 2].map(i =>
-                Math.max(0, Math.min(255, n.rgb[i] + (rep.rgb[i] - from[i]))));
-            const hex = sbHex(shifted);
-            if (n.inStyle) {
-                const style = n.el.getAttribute('style') || '';
-                n.el.setAttribute('style', style.replace(
-                    new RegExp('((?:^|;)\\s*' + n.attr + '\\s*:\\s*)([^;]+)', 'i'), '$1' + hex));
-            } else {
-                n.el.setAttribute(n.attr, hex);
-            }
-        });
+        apply(n, [0, 1, 2].map(i => Math.max(0, Math.min(255, n.rgb[i] + (hit.to[i] - hit.from.rgb[i])))));
     });
     return changes;
 }
@@ -16791,8 +16817,8 @@ async function wsCompose() {
         // flag changes which colour is the flag's principal one, and the whole point of ranking
         // by area is that the answer follows what is actually on the cloth.
         const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length + a.slot + a.size).join('|');
-        const areas = await sbFlagAreas(key, doc);
-        if (areas) changes = sbRepaint(doc, areas, st.donor, sbContinentOf(st.base.name));
+        const palette = await sbFlagPalette(key, doc);
+        if (palette) changes = sbRepaint(doc, palette, st.donor);
     }
     const xml = new XMLSerializer().serializeToString(doc);
     return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml), changes };
