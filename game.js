@@ -18008,9 +18008,9 @@ function sbRepaint(doc, palette, donor, pick) {
 
 // A flag's parts, all of them, measured. `getBBox` needs layout, so the candidate is laid out
 // inside a hidden SVG attached to the document — the only way to ask an arbitrary SVG how big a
-// piece of it is without reimplementing path parsing. Both a group and its children are offered:
-// which of them is "the emblem" is exactly the judgement the workshop exists to hand over. (The
-// quiz used to guess it, and guessed a bare white disc for every crescent.)
+// piece of it is without reimplementing path parsing. What is offered is the WHOLE pieces: a
+// group, never also the shapes inside it. (The quiz used to guess which was "the emblem", and
+// guessed a bare white disc for every crescent — hence a menu rather than a guess.)
 const WS_PART_MIN = 0.0006;   // smaller than this is a seam, not a piece
 const WS_PART_MAX = 0.7;      // bigger than this is the whole flag
 const wsPartsCache = new Map();
@@ -18121,9 +18121,16 @@ function wsParts(code, doc) {
     // Biggest first, deduped by serialisation (a group wrapping a single child serialises
     // differently but draws the same, so identical XML is the only safe test), and capped:
     // twenty swatches is a menu, two hundred is a haystack.
+    // WHOLES ONLY. A group and its children were both on offer, on the grounds that which of them
+    // is "the charge" is a judgement worth handing over — but in practice it hands over a menu
+    // where the same shape appears four times at four depths, and ticking two of them draws the
+    // inner one twice. If a piece is already inside another piece that is being offered, it is
+    // not a separate charge; it is part of one. (A child whose GROUP fell outside the size band is
+    // still offered on its own: nothing contains it here.)
     const seen = new Set();
-    const kept = out.sort((a, b) => b.frac - a.frac)
-        .filter(p => { if (seen.has(p.xml)) return false; seen.add(p.xml); return true; })
+    const uniq = out.filter(p => { if (seen.has(p.xml)) return false; seen.add(p.xml); return true; });
+    const kept = uniq.filter(p => !uniq.some(q => q !== p && q.xml.indexOf(p.xml) >= 0))
+        .sort((a, b) => b.frac - a.frac)
         .slice(0, 24);
     wsPartsCache.set(code, kept);
     return kept;
