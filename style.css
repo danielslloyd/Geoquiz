@@ -4537,12 +4537,15 @@ g.ms-story { pointer-events: none; }
 
 /* The moon in the first-person panes: a disc, its lit fraction as an ellipse, and the lit half
    picked out. Same construction as the map's moon marker, so the two read as one object. */
-.sp-moon-disc { fill: #e8e6df; stroke: #8d8a80; stroke-width: 0.8; }
-.sp-moon-lit  { fill: #e8e6df; }
-.sp-moon-dark { fill: #3a3f4a; }
-.sp-moon-half { fill: #e8e6df; opacity: 0.9; }
-.sp-moon.below .sp-moon-disc { opacity: 0.45; }
-.sp-moon.below .sp-moon-half { opacity: 0.4; }
+/* The moon glyph: a dark disc with the lit part laid over it, so the shape is continuous in the
+   illuminated fraction rather than one of a handful of named phases. */
+.sp-moon-dark { fill: #363c48; }
+.sp-moon-lit  { fill: #eeece4; }
+.sp-moon-rim  { fill: none; stroke: #8d8a80; stroke-width: 0.6; }
+.sp-moon.below .sp-moon-glyph { opacity: 0.45; }
+/* The moon's own track across the sky, white against the sun's amber. */
+.sp-moontrack { fill: none; stroke: #f2f4f8; stroke-width: 1.2; stroke-opacity: 0.85; }
+.sp-moontrack.below { stroke-dasharray: 3 4; stroke-opacity: 0.4; }
 .sp-ground-night { pointer-events: none; }
 
 
@@ -4568,3 +4571,7 @@ g.ms-story { pointer-events: none; }
     flex: 0 0 auto; width: 84px; height: 84px; display: block;
     position: static; background: none; border: none; padding: 0;
 }
+
+/* The observer's mark on the sunrise-line map, in whichever figure the panel is set to. */
+.sp-map-me-pin { fill: #d05c4a; stroke: #fff; stroke-width: 0.7; }
+.sp-map-me-pinhole { fill: #fff; }

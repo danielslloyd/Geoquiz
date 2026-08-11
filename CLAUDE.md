@@ -2064,6 +2064,21 @@ and lives there empty, so `.sp-map-sat + g` matched whether or not any imagery w
 map, satellite or not, drew unfilled white outlines on blue. The class goes on the svg now, and
 only when an image is actually under the land.
 
+### The moon, drawn as it looks
+
+The terminator on a sphere seen from here is a circle seen edge on, which is an ELLIPSE: half-width
+`r|1−2k|` for an illuminated fraction k. At k = 0.5 it collapses to a straight line and the moon is
+exactly half lit; at k = 1 it bulges back to the full circle. One path therefore covers every phase
+continuously, and the eight named phases are only names for places along it — which is why the
+shape is built from k rather than from a bucket. Verified against the fraction across a month: the
+drawn ellipse matches `7|1−2k|` to the digit. Which limb is lit is measured ON SCREEN, from the
+moon toward the sun in whichever projection is drawing them, so it turns as the pair move round
+each other.
+
+**The moon gets its own track** in the two first-person panes — white against the sun's amber, same
+construction. Two arcs at different tilts is the whole story of why the moon rises later each
+night, which the percentage caption it replaces was never going to tell.
+
 ### The type
 
 **Every label in this mode is unbolded serif.** These panes are diagrams, and a bold sans label
@@ -2080,6 +2095,34 @@ itself to make room for it.
 
 ### Three switches that cross every pane
 
+**Double-click the earth-in-space globe to stand there.** The map can already be clicked, but the
+globe is the pane somebody is looking at when they think "what about here", and it is the only one
+showing the far side of the world. A DOUBLE click, because the single one is the end of a drag and
+this pane's whole interaction is pivoting it. The ray is cast by hand — one sphere at the origin is
+a quadratic — and the hit un-rotated back through the holder's tilt and the earth's spin.
+
+**The sunrise line zooms and pans**, as a transform on one containing group rather than by
+re-projecting: every layer there is drawn in the projection's own units and redrawn constantly, so
+one transform is the single place a zoom can live and be respected by all of them at once. The
+click that moves the observer un-transforms the pointer first, and is told from a pan by the same
+8 px slop the rest of the app uses. It also takes the figure the panel is set to, defaulting to a
+PIN — a stick figure five pixels high on a world map is a smudge whatever it is meant to be.
+
+**The dome's ground is a real map of where you are standing**, projected AZIMUTHAL EQUIDISTANT
+about the observer. Not a free choice: the disc is looked at from its own centre, so what a viewer
+reads off it is direction and distance from that centre — exactly the pair this projection keeps
+true. Every bearing from the middle is a straight line at its true compass angle and distance along
+it is to scale, so the compass rose drawn over the disc means what it says at every radius. The
+vector world always; the imagery when Satellite is on, re-projected pixel by pixel.
+
+**The horizon is flat.** What was there was a sum of four sine waves standing in for hills — the
+one invented thing in a pane full of measured ones. It implied a landscape this mode knows nothing
+about, and every reading taken against it was taken against fiction.
+
+**The altitude scale runs up the middle**, where it is exact: the vertical axis is only truly
+altitude on the camera's own vertical circle, and a gauge pinned to the left edge read a column
+where it is merely close while sitting as far as it could get from the arc it measures.
+
 **Track sun** is on by default and means something different in each pane, which is the point.
 
 The dome swings round the ground's normal to face the sun's bearing — by MINUS the azimuth, since
@@ -2093,7 +2136,17 @@ axis upright, the sun runs its daily circle at the declination's own latitude ab
 which is what a diurnal circle IS. Physically the same picture; the difference is only which of the
 two is held still, and that is the whole of what somebody switching this off is asking to see.
 Verified: tracking, the earth turns ±45° across six hours and the sun sits at +X throughout; held,
-the earth does not move and the sun swings through 90°.
+the earth does not move and the sun swings through 90° — toward −Z in the morning, which is east at
+the observer's meridian. The sign of that z term is the whole of which way round the sky the sun
+goes: the sub-solar longitude is `lon − H`, so relative to the observer it is at −H, and everything
+else in the pane maps a relative longitude L to `z = −cos(lat)·sin(L)`. Writing the minus by analogy
+with the OBSERVER's position (which is at +H) sent it round backwards — and the moon, built from its
+own sub-point and needing no such reasoning, was right all along.
+
+One bug worth keeping: **`a || b` is the wrong test between two arrays**, since an empty array is
+truthy. `gameState.countries || sunPathState.landFeatures` returns the empty one and never looks at
+the full one — and in this mode the first is often empty while the second holds the world, which is
+what silently left the dome's ground a flat colour.
 
 The dome and the ground pane become pannable by hand. Turning tracking off hands the camera over
 WHERE IT IS rather than snapping, so the switch reads as "stop following".
