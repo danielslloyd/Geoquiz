@@ -6402,6 +6402,12 @@ function showShapeIdSelector() {
                 <span class="mode-name">Draw the Border</span>
                 <span class="mode-desc">The country is cut out of the map — trace where it goes</span>
             </button>
+            ${SB_IN_SHAPES.map(k => `
+            <button class="mode-btn" data-shapeplain="${k}">
+                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
+                <span class="mode-name">${SB_QUIZZES[k].label}</span>
+                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
+            </button>`).join('')}
         </div>
         <p class="selector-sub">Or one silhouette, no map around it — how much of it do you want?</p>
         <div class="scope-toggle" role="group" aria-label="Geography">
@@ -6438,6 +6444,10 @@ function showShapeIdSelector() {
     });
     sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
         btn.addEventListener('click', () => startShapeQuizMode(btn.dataset.shapequiz, shapeIdRegion));
+    });
+    // These take the world and nothing else, so they start straight away.
+    sel.querySelectorAll('[data-shapeplain]').forEach(btn => {
+        btn.addEventListener('click', () => startGameWithMode(btn.dataset.shapeplain));
     });
     // The two that ask for a region of their own rather than taking this screen's.
     sel.querySelectorAll('[data-shapemode]').forEach(btn => {
@@ -8994,6 +9004,34 @@ const ODD_TRAITS = [
             const facts = ensureCountryFacts();
             return facts ? [{ tag: 'island', names: [...facts.island] }] : [];
         }
+    },
+    {
+        // "Three of these border Bolivia; one does not." The only trait here whose group is
+        // defined by a country rather than by a category, and the only one that needs to choose
+        // its own outsider: a random one is dismissed by continent without anybody thinking about
+        // a border, so the odd one out has to be a country that comes CLOSE and does not touch.
+        key: 'neighbour',
+        label: tag => `all border ${displayLabelForName(tag)}`,
+        groups: () => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            const out = [];
+            facts.neighbours.forEach((_, n) => {
+                const nb = playableNeighbours(n);
+                if (nb.length >= 3) out.push({ tag: n, names: nb });
+            });
+            return out;
+        },
+        outsiders: (grp, list) => {
+            const nbSet = new Set((grp.names || []).map(normalizeName));
+            nbSet.add(normalizeName(grp.tag));
+            const c0 = getCountryCentroid(grp.tag);
+            if (!c0) return null;
+            return list.filter(n => !nbSet.has(normalizeName(n)))
+                .map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(c0, getCountryCentroid(n)) : Infinity }))
+                .filter(x => isFinite(x.d)).sort((a, b) => a.d - b.d)
+                .slice(0, 6).map(x => x.n);
+        }
     }
 ];
 
@@ -9069,7 +9107,11 @@ function buildOddOneOut() {
             const members = shuffleArray(grp.names.filter(n => inList.has(normalizeName(n))));
             if (members.length < 3) continue;
             const memberSet = new Set(members.map(normalizeName));
-            const outsiders = list.filter(n => !memberSet.has(normalizeName(n)));
+            // A trait may pick its own distractors — see the `neighbour` trait, where a random
+            // country from the far side of the world is not a wrong answer anybody would consider.
+            const outsiders = trait.outsiders
+                ? (trait.outsiders(grp, list.filter(n => !memberSet.has(normalizeName(n)))) || [])
+                : list.filter(n => !memberSet.has(normalizeName(n)));
             if (!outsiders.length) continue;
             const odd = outsiders[Math.floor(Math.random() * outsiders.length)];
             return {
@@ -13420,10 +13462,17 @@ const SB_IN_SHAPE_ID = ['sb-upside-down', 'sb-out-of-scale'];
 // And False Flag is offered in the Flags bin, which is where somebody looking for a question
 // about flags will go.
 const SB_IN_FLAGS = ['sb-fake-flag'];
+// Two more are offered under Shapes, and one under Capitals. Name the Lake and Mercator Lies are
+// both questions about an OUTLINE — one alone on the board, two compared at true size — which is
+// what that folder is; Pin the Capital is a capitals round. Unlike the pair in `SB_IN_SHAPE_ID`
+// these take no region toggle: a lake is a lake and the Mercator's lie is a lie about the world.
+const SB_IN_SHAPES = ['sb-lake', 'sb-mercator-lie'];
+const SB_IN_CAPITALS = ['sb-capital-pin'];
 
 function sandboxQuizTiles() {
     return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' &&
-            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k)).map(k => ({
+            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k) &&
+            !SB_IN_SHAPES.includes(k) && !SB_IN_CAPITALS.includes(k)).map(k => ({
         key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
     }));
 }
@@ -13730,39 +13779,10 @@ function sbLineGapDeg(name, line) {
     return Math.max(0, b[0][0] - line.lon, line.lon - b[1][0]);
 }
 
-// A lon/lat as somebody would say it out loud, with whose water or land it is if that is known.
-function sbLonLatWords(p) {
-    const lat = `${Math.abs(p[1]).toFixed(1)}° ${p[1] >= 0 ? 'N' : 'S'}`;
-    const lon = `${Math.abs(p[0]).toFixed(1)}° ${p[0] >= 0 ? 'E' : 'W'}`;
-    const here = (gameState.countries || []).find(f => {
-        try { return d3.geoContains(f, p); } catch (_) { return false; }
-    });
-    return `${lat}, ${lon}` + (here ? ` — in ${displayLabelForName(here.properties.name)}` : ' — open ocean');
-}
 
 // Walking due north from a point: the first country whose land the meridian meets. Stepping in
 // latitude and testing containment is the honest way to ask it — the question is about a LINE
 // rather than about which centroid is northward, and the two disagree constantly.
-const SB_NORTH_STEP = 0.25;
-function sbFirstAlongMeridian(from, lon, lat) {
-    const feats = (gameState.countries || []).filter(f => f.properties && f.properties.name);
-    for (let y = lat + 1; y <= 84; y += SB_NORTH_STEP) {
-        for (const f of feats) {
-            const nm = f.properties.parent || f.properties.name;
-            if (namesMatch(nm, from)) continue;
-            const b = d3.geoBounds(f);
-            if (!isFinite(b[0][0]) || y < b[0][1] || y > b[1][1] || lon < b[0][0] || lon > b[1][0]) continue;
-            let inside = false;
-            try { inside = d3.geoContains(f, [lon, y]); } catch (_) { inside = false; }
-            // Land the quiz does not deal (a territory, an unnamed id) is still LAND: you have
-            // walked onto it, so the walk is over and there is no question here. Returning null
-            // is the honest answer — skipping it and carrying on would name a country you would
-            // have to have walked straight through somebody else to reach.
-            if (inside) return (gameState.currentQuizList || []).includes(nm) ? nm : null;
-        }
-    }
-    return null;
-}
 
 function sbPool() {
     const drawn = new Set((gameState.countries || []).map(f => normalizeName(f.properties.name)));
@@ -20304,341 +20324,64 @@ const SB_QUIZZES = {
         }
     },
 
-    // ---------- straight through the middle ----------
-    'sb-antipode': {
-        engine: 'pinpoint', flat: true, icon: 'swap_vert', label: 'Antipodes',
-        desc: 'Dig straight down — where do you come out?',
-        build() {
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 90000 && getCountryCentroid(n));
-            const name = sbRandom(pool);
-            if (!name) return null;
-            const c = getCountryCentroid(name);
-            if (!c || !isFinite(c[0])) return null;
-            const anti = [((c[0] + 360) % 360) - 180, -c[1]];
-            return {
-                highlight: [name], target: anti, scaleKm: 2500,
-                prompt: `Dig straight down through the middle of <strong>${displayLabelForName(name)}</strong> ` +
-                        `and out the other side. <strong>Click where you surface.</strong>`,
-                explain: `The antipode of ${name} is ${sbLonLatWords(anti)} — almost always ocean, ` +
-                         `since only about 4% of the earth's land has land opposite it.`
-            };
-        }
-    },
-
-    // ---------- two capitals, and which is further north ----------
-    // Only pairs the map argues with: the one people would guess is further north has to be the
-    // southern one, or there is nothing here but reading two numbers off a table.
-    'sb-further-north': {
-        engine: 'fact', flat: true, icon: 'north', label: 'Further North',
-        desc: 'Two capitals — which one is nearer the pole?',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbPop(n) > 3000000);
-            for (let t = 0; t < 60; t++) {
-                const a = sbRandom(pool), b = sbRandom(pool);
-                if (!a || !b || namesMatch(a, b)) continue;
-                const ca = sbCapitalLonLat(a), cb = sbCapitalLonLat(b);
-                const gap = Math.abs(ca[1] - cb[1]);
-                // Close enough that nobody can be sure, far enough apart in LONGITUDE that the
-                // two are not simply neighbours on the same meridian.
-                if (gap < 1.5 || gap > 9) continue;
-                if (Math.abs(ca[0] - cb[0]) < 40) continue;
-                const north = ca[1] > cb[1] ? a : b;
-                return {
-                    highlight: [a, b],
-                    options: shuffleArray([a, b].map(n =>
-                        `${getCapital(effectiveDataName(n))}, ${displayLabelForName(n)}`)),
-                    correct: `${getCapital(effectiveDataName(north))}, ${displayLabelForName(north)}`,
-                    prompt: 'Which of these two capitals is <strong>further north</strong>?',
-                    explain: `${getCapital(effectiveDataName(a))} is at ${ca[1].toFixed(1)}° and ` +
-                             `${getCapital(effectiveDataName(b))} at ${cb[1].toFixed(1)}° — ` +
-                             `${Math.round(gap * 111)} km apart in latitude.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- the two facts the arc table gives away ----------
-    'sb-landlocked': {
-        engine: 'multi', flat: true, icon: 'terrain', label: 'Landlocked',
-        desc: 'Pick the ones with no coast at all',
-        build() {
-            const facts = ensureCountryFacts();
-            if (!facts) return null;
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 20000);
-            const inland = pool.filter(n => !facts.coastal.has(n));
-            const coastal = pool.filter(n => facts.coastal.has(n));
-            if (inland.length < 4 || coastal.length < 6) return null;
-            // Drawn from ONE neighbourhood, so the round is answered by picturing that part of
-            // the map rather than by recognising a famous landlocked name in a global shuffle.
-            const seed = sbRandom(inland);
-            const near = n => { const a = getCountryCentroid(seed), b = getCountryCentroid(n);
-                                return a && b ? sbKmBetween(a, b) : Infinity; };
-            const hits = inland.filter(n => near(n) < 3500).slice(0, 6);
-            const miss = coastal.map(n => ({ n, d: near(n) })).filter(x => isFinite(x.d))
-                .sort((a, b) => a.d - b.d).slice(0, 7).map(x => x.n);
-            if (hits.length < 3 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: 'Pick <strong>every</strong> one of these that is <strong>landlocked</strong> — ' +
-                        'no coast anywhere, not even on a lake.',
-                explain: `${hits.slice().sort().join(', ')} have no coastline. ` +
-                         `It is read off the map rather than a list: an edge no two countries share is a shore.`
-            };
-        }
-    },
-
-    'sb-islands': {
-        engine: 'multi', flat: true, icon: 'water', label: 'Island Nations',
-        desc: 'Pick the ones with no land neighbour at all',
-        build() {
-            const facts = ensureCountryFacts();
-            if (!facts) return null;
-            const pool = sbPool();
-            const hits = shuffleArray(pool.filter(n => facts.island.has(n))).slice(0, 6);
-            const miss = shuffleArray(pool.filter(n => !facts.island.has(n) && facts.coastal.has(n))).slice(0, 7);
-            if (hits.length < 3 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: 'Pick <strong>every</strong> one of these that shares <strong>no land border with anybody</strong>.',
-                explain: `${hits.slice().sort().join(', ')} have coast and no land neighbour. ` +
-                         `The others all touch somebody, however short the border.`
-            };
-        }
-    },
-
-    // ---------- one of these is not like the others ----------
-    'sb-not-neighbour': {
-        engine: 'fact', flat: true, icon: 'block', label: 'Not a Neighbour',
-        desc: 'Three of these border it. One does not.',
-        build() {
-            const pool = sbPool();
-            for (let t = 0; t < 50; t++) {
-                const name = sbRandom(pool);
-                const nb = playableNeighbours(name);
-                if (nb.length < 3) continue;
-                const nbSet = new Set(nb.map(normalizeName));
-                const c0 = getCountryCentroid(name);
-                if (!c0) continue;
-                // The impostor is a country that comes CLOSE and does not touch. Anything else
-                // and the round is answered by continent rather than by border.
-                const near = pool.filter(n => !namesMatch(n, name) && !nbSet.has(normalizeName(n)))
-                    .map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(c0, getCountryCentroid(n)) : Infinity }))
-                    .filter(x => isFinite(x.d)).sort((a, b) => a.d - b.d).slice(0, 6);
-                if (!near.length) continue;
-                const odd = sbRandom(near).n;
-                const three = shuffleArray(nb).slice(0, 3);
-                return {
-                    highlight: [name],
-                    options: shuffleArray([...three, odd].map(displayLabelForName)),
-                    correct: displayLabelForName(odd),
-                    prompt: `Three of these border <strong>${displayLabelForName(name)}</strong>. ` +
-                            `Which one <strong>does not</strong>?`,
-                    explain: `${odd} does not touch ${name}; ${three.sort().join(', ')} do.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- people per square kilometre ----------
-    'sb-crowded': {
-        engine: 'fact', flat: true, icon: 'groups_2', label: 'Room to Move',
-        desc: 'Four countries — which is the most crowded?',
-        build() {
-            const dens = n => { const p = sbPop(n), a = sbAreaKm2(n); return p && a ? p / a : null; };
-            const pool = sbPool().filter(n => dens(n) && sbAreaKm2(n) > 10000);
-            if (pool.length < 8) return null;
-            for (let t = 0; t < 40; t++) {
-                const picks = shuffleArray(pool).slice(0, 4);
-                const ds = picks.map(dens);
-                const hi = Math.max(...ds), lo = Math.min(...ds);
-                // A clear winner but not a walkover: at ten times the runner-up it is a question
-                // about which one is Bangladesh, and at 1.2x it is a coin toss.
-                const sorted = [...ds].sort((a, b) => b - a);
-                if (sorted[0] / sorted[1] < 1.5 || sorted[0] / sorted[1] > 6) continue;
-                if (hi / lo < 3) continue;
-                const win = picks[ds.indexOf(hi)];
-                return {
-                    highlight: picks,
-                    options: shuffleArray(picks.map(displayLabelForName)),
-                    correct: displayLabelForName(win),
-                    prompt: 'Which of these has the <strong>most people per square kilometre</strong>?',
-                    explain: picks.map(n => `${displayLabelForName(n)} ${Math.round(dens(n)).toLocaleString()}`)
-                        .join(' · ') + ' people per km².'
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- walk due north ----------
-    // Not "which country is north of this one" — which one you MEET, walking up the meridian
-    // from where you started. It is the question a straight line asks, and the answer is
-    // regularly not the country anybody names.
-    'sb-due-north': {
-        engine: 'fact', flat: true, icon: 'explore', label: 'Straight Up',
-        desc: 'Leave going due north — where do you make landfall?',
-        build() {
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 60000 && getCountryCentroid(n));
-            for (let t = 0; t < 40; t++) {
-                const name = sbRandom(pool);
-                const c = getCountryCentroid(name);
-                if (!c) continue;
-                const hit = sbFirstAlongMeridian(name, c[0], c[1]);
-                if (!hit) continue;
-                // The distractors are the plausible ones: countries at a similar longitude,
-                // further north, that the meridian happens to miss.
-                const others = pool.filter(n => !namesMatch(n, name) && !namesMatch(n, hit))
-                    .map(n => ({ n, c2: getCountryCentroid(n) })).filter(x => x.c2 && x.c2[1] > c[1])
-                    .map(x => ({ n: x.n, d: Math.abs(((x.c2[0] - c[0] + 540) % 360) - 180) }))
-                    .sort((a, b) => a.d - b.d).slice(0, 8);
-                if (others.length < 3) continue;
-                const three = shuffleArray(others).slice(0, 3).map(x => x.n);
-                return {
-                    highlight: [name],
-                    options: shuffleArray([hit, ...three].map(displayLabelForName)),
-                    correct: displayLabelForName(hit),
-                    prompt: `Set out from the middle of <strong>${displayLabelForName(name)}</strong> and walk ` +
-                            `<strong>due north</strong>, swimming where you must. Whose land do you set foot on first?`,
-                    explain: `Straight up the ${Math.abs(c[0]).toFixed(0)}° ` +
-                             `${c[0] < 0 ? 'W' : 'E'} meridian, the next land is ${hit}.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- the far side of the clock ----------
-    'sb-noon': {
-        engine: 'fact', flat: true, icon: 'schedule', label: 'Noon and Midnight',
-        desc: 'The sun is overhead here — where is it midnight?',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbPop(n) > 2000000);
-            for (let t = 0; t < 40; t++) {
-                const name = sbRandom(pool);
-                const c = sbCapitalLonLat(name);
-                if (!c) continue;
-                // How far round the world each candidate is, as an angle: 180 is midnight.
-                const away = n => { const q = sbCapitalLonLat(n);
-                    return q ? Math.abs(((q[0] - c[0] + 540) % 360) - 180) : null; };
-                const ranked = pool.filter(n => !namesMatch(n, name) && away(n) != null)
-                    .sort((a, b) => away(b) - away(a));
-                const win = ranked[0];
-                if (!win || away(win) < 150) continue;
-                const three = shuffleArray(ranked.slice(Math.floor(ranked.length / 3))).slice(0, 3);
-                if (three.length < 3) continue;
-                return {
-                    highlight: [name, win],
-                    options: shuffleArray([win, ...three].map(displayLabelForName)),
-                    correct: displayLabelForName(win),
-                    prompt: `It is <strong>solar noon in ${getCapital(effectiveDataName(name))}</strong>. ` +
-                            `In which of these is it <strong>closest to midnight</strong>?`,
-                    explain: `${getCapital(effectiveDataName(win))} is ${away(win).toFixed(0)}° round the ` +
-                             `world from ${getCapital(effectiveDataName(name))} — ` +
-                             `${(away(win) / 15).toFixed(1)} hours out of twelve.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- which continent ----------
-    'sb-continent-pick': {
-        engine: 'multi', flat: true, icon: 'public', label: 'Which Continent',
-        desc: 'Pick every one of these from the named continent',
-        build() {
-            const cd = window.continentData;
-            if (!cd) return null;
-            const names = Object.keys(cd).filter(k => (cd[k] || []).length >= 8);
-            const cont = sbRandom(names);
-            if (!cont) return null;
-            const pool = sbPool();
-            const inSet = new Set((cd[cont] || []).map(normalizeName));
-            const hits = shuffleArray(pool.filter(n => inSet.has(normalizeName(n)))).slice(0, 6);
-            const miss = shuffleArray(pool.filter(n => !inSet.has(normalizeName(n)))).slice(0, 7);
-            if (hits.length < 4 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: `Pick <strong>every</strong> one of these that is in <strong>${cont}</strong>.`,
-                explain: `${hits.slice().sort().join(', ')} are in ${cont}.`
-            };
-        }
-    },
-
-    // ---------- five, north to south ----------
-    'sb-lat-order': {
-        engine: 'order', flat: true, icon: 'swap_vert', label: 'North to South',
-        desc: 'Order five countries by how far north they sit',
-        build() {
-            const pool = sbPool().filter(n => getCountryCentroid(n) && sbAreaKm2(n) > 40000);
-            const picks = shuffleArray(pool).slice(0, 5);
-            if (picks.length < 5) return null;
-            const lat = n => getCountryCentroid(n)[1];
-            const vals = picks.map(lat).sort((a, b) => b - a);
-            // Far enough apart to be decidable without a ruler, close enough to be a question.
-            for (let i = 1; i < vals.length; i++) if (vals[i - 1] - vals[i] < 4) return null;
-            if (vals[0] - vals[vals.length - 1] > 110) return null;
-            return {
-                items: picks, anchor: null,
-                correct: [...picks].sort((a, b) => lat(b) - lat(a)),
-                prompt: 'Drag these into order <strong>north to south</strong> — the northernmost at the top. ' +
-                        'Measured at the middle of each country.',
-                format: n => `${Math.abs(lat(n)).toFixed(1)}° ${lat(n) >= 0 ? 'N' : 'S'}`,
-                explain: 'Measured at each country’s own centre, which is not where its capital is.'
-            };
-        }
-    },
-
-    // ---------- the extremes ----------
-    'sb-reaches': {
-        engine: 'fact', flat: true, icon: 'open_in_full', label: 'Reaches Furthest',
-        desc: 'Four countries — which one gets furthest that way?',
+    // ---------- five, by an extreme point ----------
+    // Two rounds became one, and the merge is what made either of them a real question. Ordering
+    // by CENTRES is a question about where the middle of a country is, which is not a thing anybody
+    // pictures; ordering by the point that reaches furthest one way is a question about the shape
+    // itself, and it has four different versions of itself for free. Chile's southernmost point and
+    // Chile's middle are two thousand kilometres apart, and only one of them is on the map you
+    // remember.
+    'sb-extreme-order': {
+        engine: 'order', flat: true, icon: 'straighten', label: 'Furthest That Way',
+        desc: 'Order five countries by the point that reaches furthest one way',
         build() {
             const DIRS = [
-                { key: 'n', word: 'north', pick: b => b[1][1], best: Math.max },
-                { key: 's', word: 'south', pick: b => b[0][1], best: Math.min },
-                { key: 'e', word: 'east',  pick: b => b[1][0], best: Math.max },
-                { key: 'w', word: 'west',  pick: b => b[0][0], best: Math.min }
+                { key: 'n', word: 'north', pick: b => b[1][1], desc: 'northernmost', sign: -1, ns: true },
+                { key: 's', word: 'south', pick: b => b[0][1], desc: 'southernmost', sign: 1,  ns: true },
+                { key: 'e', word: 'east',  pick: b => b[1][0], desc: 'easternmost',  sign: -1, ns: false },
+                { key: 'w', word: 'west',  pick: b => b[0][0], desc: 'westernmost',  sign: 1,  ns: false }
             ];
             const dir = sbRandom(DIRS);
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 50000);
-            for (let t = 0; t < 40; t++) {
-                const picks = shuffleArray(pool).slice(0, 4);
-                const vals = picks.map(n => {
+            const pool = sbPool().filter(n => sbAreaKm2(n) > 40000);
+            for (let t = 0; t < 30; t++) {
+                const picks = shuffleArray(pool).slice(0, 5);
+                if (picks.length < 5) return null;
+                const at = {};
+                let bad = false;
+                picks.forEach(n => {
                     const f = sbFeature(n);
-                    if (!f) return null;
-                    // On the framing core, or a remote islet answers the question for its
-                    // country and the map on screen disagrees with the answer given.
-                    const core = shapeFramingCore(f) || f;
-                    const b = d3.geoBounds(core);
-                    return isFinite(b[0][0]) ? dir.pick(b) : null;
+                    // The framing CORE, not the raw feature. "How far south does France reach" has
+                    // an answer nobody means if Kerguelen is allowed to count, and the whole round
+                    // is about the shape somebody can picture.
+                    const core = f && (shapeFramingCore(f) || f);
+                    const b = core && d3.geoBounds(core);
+                    if (!b || !isFinite(b[0][0])) { bad = true; return; }
+                    // A wrapped box has no meaningful east or west edge, so those draws skip it.
+                    if (!dir.ns && b[1][0] < b[0][0]) { bad = true; return; }
+                    at[n] = dir.pick(b);
                 });
-                if (vals.some(v => v == null)) continue;
-                // East and west are only well-posed away from the antimeridian.
-                if ((dir.key === 'e' || dir.key === 'w') && vals.some(v => Math.abs(v) > 168)) continue;
-                const win = dir.best(...vals);
-                const sorted = [...vals].sort((a, b) => Math.abs(b - win) - Math.abs(a - win));
-                if (Math.abs(sorted[sorted.length - 2] - win) < 3) continue;   // too close to call
-                const name = picks[vals.indexOf(win)];
-                const unit = (dir.key === 'n' || dir.key === 's') ? '° lat' : '° lon';
+                if (bad) continue;
+                const vals = picks.map(n => at[n]).sort((a, b) => a - b);
+                // Far enough apart to be decidable by eye, and not spread over so much of the
+                // world that the order is obvious from a glance at a globe.
+                let gap = Infinity;
+                for (let i2 = 1; i2 < vals.length; i2++) gap = Math.min(gap, vals[i2] - vals[i2 - 1]);
+                if (gap < 4) continue;
+                if (vals[vals.length - 1] - vals[0] > 130) continue;
+                const fmt = v => dir.ns
+                    ? `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'N' : 'S'}`
+                    : `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'E' : 'W'}`;
                 return {
-                    highlight: picks,
-                    options: shuffleArray(picks.map(displayLabelForName)),
-                    correct: displayLabelForName(name),
-                    prompt: `Which of these reaches <strong>furthest ${dir.word}</strong>? ` +
-                            `<span class="sb-aside">Mainland only — outlying islands do not count.</span>`,
-                    explain: picks.map((n, i) => `${displayLabelForName(n)} ${vals[i].toFixed(1)}${unit}`)
-                        .join(' · ') + `. ${name} is furthest ${dir.word}.`
+                    items: picks, anchor: null,
+                    correct: [...picks].sort((a, b) => dir.sign * (at[a] - at[b])),
+                    prompt: `Drag these into order by their <strong>${dir.desc} point</strong> \u2014 ` +
+                            `the one reaching furthest ${dir.word} at the top.` +
+                            (picks.some(n => sbCoreNote(n))
+                              ? ` <span class="sb-aside">Mainland only, where a country has outlying parts.</span>` : ''),
+                    format: n => fmt(at[n]),
+                    explain: `Measured at the ${dir.desc} point of each country's mainland, which is ` +
+                             `nowhere near its middle: Chile's southern tip and Chile's centre are ` +
+                             `2,000 km apart.`
                 };
             }
             return null;
@@ -23029,7 +22772,12 @@ const CAPITAL_SUBMODES = [
     { key: 'capitals-race',   icon: 'keyboard',       label: 'Capitals Race',
       desc: 'Type the capital of each highlighted country' },
     { key: 'find-capital',    icon: 'location_city',  label: 'Find the Capital',
-      desc: 'Pin a capital on the map — scored by distance' }
+      desc: 'Pin a capital on the map — scored by distance' },
+    // Promoted out of the quick quizzes. It is the same question as Find the Capital with the
+    // rest of the world taken away, which makes it the harder of the two rather than a different
+    // genre — and somebody looking for a capitals round looks here.
+    { key: 'sb-capital-pin',  icon: 'location_on',    label: 'Pin the Capital',
+      desc: 'Inside the country, with no other map to steer by' }
 ];
 
 function showCapitalsSelector() {
@@ -23041,7 +22789,7 @@ function showCapitalsSelector() {
     modeSelector.classList.remove('hidden');
     modeSelector.innerHTML = `
         <h2>Capitals</h2>
-        <p class="selector-sub">Three ways to test the same thing — pick one.</p>
+        <p class="selector-sub">Four ways to test the same thing — pick one.</p>
         <div class="mode-buttons">
             ${CAPITAL_SUBMODES.map(m => `
             <button class="mode-btn" data-capital-mode="${m.key}">

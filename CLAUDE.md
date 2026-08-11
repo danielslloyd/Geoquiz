@@ -338,57 +338,68 @@ Seven engines, chosen by `engine`:
 `shapeOptions` (silhouettes, each fitted to its own tile so size is never the tell) and
 `routeOptions` (A–D buttons tinted to match their own line on the map).
 
-### A dozen more
+### A dozen more, and then three
 
-All twelve read off geometry or data already in the app, and all of them are questions answered by
-picturing the map rather than by remembering a list. Draw rates over 12 attempts against a retry
-budget of 60: 11-12 for all but **North to South** (5, which insists on 4° between consecutive
-countries) and the line round.
+Twelve quizzes were written and three survive in the sandbox. That is the intended yield: a quiz is
+cheap to write against the registry, and the only way to find out whether a question is worth asking
+is to ask it. What is left, and where the rest went:
 
-| | Engine | The question |
-|---|---|---|
-| **Cross the Line** | multi | Which countries a named parallel or meridian actually crosses |
-| **Antipodes** | pinpoint | Dig through the earth from one country — click where you surface |
-| **Further North** | fact | Two capitals, and which is nearer the pole |
-| **Landlocked** | multi | Which of these has no coast at all |
-| **Island Nations** | multi | Which of these shares no land border with anybody |
-| **Not a Neighbour** | fact | Three of these border it; one does not |
-| **Room to Move** | fact | Which is the most crowded, people per km² |
-| **Straight Up** | fact | Walk due north from here — whose land do you reach first? |
-| **Noon and Midnight** | fact | It is noon here; where is it closest to midnight? |
-| **Which Continent** | multi | Pick every one of these from the named continent |
-| **North to South** | order | Five countries by latitude |
-| **Reaches Furthest** | fact | Which one gets furthest north, south, east or west |
+| Kept | | Promoted out | to |
+|---|---|---|---|
+| **Cross the Line** | which countries a parallel or meridian crosses | **Pin the Capital** | Capitals |
+| **Furthest That Way** | order five by their northernmost — or southernmost, easternmost, westernmost — point | **Name the Lake** | Shapes |
+| | | **Mercator Lies** | Shapes |
+| | | **Not a Neighbour** | a trait in Odd One Out |
+| | | **Which Continent** | already a trait in Odd One Out |
+
+Deleted outright: Antipodes, Further North, Landlocked, Island Nations, Room to Move, Straight Up,
+Noon and Midnight — with `sbFirstAlongMeridian` and `sbLonLatWords`, which nothing else used.
+Landlocked and Island Nations went because Odd One Out already asks both as traits, which is a
+better home for a one-bit fact than a round of its own.
+
+**Four lists say where a quiz is offered**: `SB_IN_SHAPE_ID` (under Name the Shape, taking that
+screen's region), `SB_IN_SHAPES` (under Shapes, world only — a lake is a lake and the Mercator's
+lie is a lie about the world), `SB_IN_FLAGS` and `SB_IN_CAPITALS`. `sandboxQuizTiles` skips all
+four, so a quiz appears in exactly one place.
+
+**Furthest That Way is a merge of two of them**, and the merge is what made either a real question.
+Ordering by CENTRES is a question about where the middle of a country is, which is not a thing
+anybody pictures; ordering by the point that reaches furthest one way is a question about the shape
+itself, and it has four versions of itself for free. Chile's southern tip and Chile's centre are
+2,000 km apart, and only one of them is on the map you remember. Measured on the framing core, since
+"how far south does France reach" has an answer nobody means if Kerguelen counts; a wrapped box has
+no meaningful east or west edge, so those draws skip it. 12 of 12 draws.
+
+**Odd One Out gained a trait whose group is a COUNTRY rather than a category** — "three of these
+border Bolivia; one does not" — and it is the only trait that needs to choose its own distractor.
+A random outsider is dismissed by continent without anybody thinking about a border, so `outsiders`
+is an optional hook on a trait and the neighbour trait uses it to take the six nearest
+non-neighbours. What it produces is the good version of the question: Nicaragua against Colombia's
+neighbours, Sierra Leone against Ivory Coast's, and Namibia against Zimbabwe's — which misses by
+the width of the Caprivi Strip.
 
 **A bounding box is not an answer to "does this line cross it".** Chile's box spans thirty-eight
-degrees of latitude it has no land at, and a country lying either side of a line without touching
-it reads as crossing by bounds alone. The box only says where to look; the line is then sampled
-inside it (400 points) and the country has to CONTAIN one of them. Verified against the atlas: the
-Equator returns Brazil, Colombia, the DRC, Ecuador, Gabon, Indonesia, Kenya, the Republic of the
-Congo, Somalia and Uganda; the Tropic of Capricorn returns exactly the ten it should.
+degrees of latitude it has no land at, and a country lying either side of a line without touching it
+reads as crossing by bounds alone. The box only says where to look; the line is then sampled inside
+it (400 points) and the country has to CONTAIN one of them. Verified against the atlas: the Equator
+returns Brazil, Colombia, the DRC, Ecuador, Gabon, Indonesia, Kenya, the Republic of the Congo,
+Somalia and Uganda; the Tropic of Capricorn returns exactly the ten it should.
 
 **And `d3.geoBounds` reports a wrapped box for anything straddling ±180** — Russia comes back as
 `[19.6…, …-169.8]`, its east edge west of its west edge, which is the antimeridian-aware answer
-and not a mistake. Subtracting one from the other gives a negative span and the country is
-dropped: that is what lost **Russia from the Arctic Circle**, the first country anybody would
-name, and the United States from it via Alaska. A wrapped box now samples the whole parallel.
-
-**Straight Up walks the meridian rather than comparing centroids**, because those disagree
-constantly: from Madagascar the answer is not "the country to the north" but whichever land the
-line actually meets. Land the quiz does not deal (a territory, an unnamed id) still ENDS the walk
-— you have set foot on it, and carrying on would name a country you would have to walk through
-somebody else to reach — so the draw is abandoned rather than answered wrongly.
+and not a mistake. Subtracting one from the other gives a negative span and the country is dropped:
+that is what lost **Russia from the Arctic Circle**, the first country anybody would name, and the
+United States from it via Alaska. A wrapped box now samples the whole parallel.
 
 **`boardMarksOnAnswer` is the plainest of the three multi reveals**: paint the set on the ordinary
-map in the same three states Flyover and Every Neighbour use. Naming a dozen countries in a
-sentence and asking somebody to find them is work the map does for free, and on these rounds the
-geography IS the argument.
+map in the same three states Flyover and Every Neighbour use. Naming a dozen countries in a sentence
+and asking somebody to find them is work the map does for free.
 
 Two stale-animation crashes were fixed on the way, both of the same shape: an interval or a tween
-outliving the mode that started it and landing on `d3.geoAlbersUsa`, which is a composite and has
-no `.rotate`. The globe's auto-spin (a 50 ms interval) and Odd One Out's 700 ms framing tween both
-now check before they turn anything, which is how the Map Puzzle came to report a rotation error
-about a board that does not rotate.
+outliving the mode that started it and landing on `d3.geoAlbersUsa`, which is a composite and has no
+`.rotate`. The globe's auto-spin (a 50 ms interval) and Odd One Out's 700 ms framing tween both now
+check before they turn anything, which is how the Map Puzzle came to report a rotation error about a
+board that does not rotate.
 
 ### Board-replacing rounds
 
