@@ -591,6 +591,33 @@ straight line that found it — a trace sampled from the topology, at the chord'
 is a real border at true amplitude. Then give the piece to **whoever holds the longest stretch of
 its edge**: the land goes to whoever the land is already up against. Repeat on what is left.
 
+**Nothing is ever lost to the borrowed border.** Which border a cut is TRACED from is a matter of
+taste; whether the cut is made at all is not. Every trace is tried in earnest — laid down, cut
+with, and put through the piece's own guards — because a border that will not fit and a border
+that fits but pinches the piece are both answered the same way, by borrowing a different one. And
+the **straight line goes last, as the floor rather than as a gate**: a pair no borrowed stretch
+will span is still cut, in the plainest border there is, and a good deal of Africa is drawn with
+one. Last and not first, because a bowed border can stay inside a concave country where the
+straight line between the same two points leaves it — straight-as-a-feasibility-test throws away
+pairs that are perfectly drawable. Only a pair that nothing at all can join is refused, and that
+is a fact about the country's shape rather than about anyone's taste in borders.
+
+**And the piece always goes to the neighbour holding the longest stretch of its edge**, then to
+the next, and the next. The pool is not only the countries on that edge: a cut across a peninsula
+can break off land whose whole boundary is coast, and "nobody holds any of that edge" is a fact
+about the piece rather than a reason to throw the cut away. So the order runs edge-holders first,
+then whoever holds the region's remaining boundary, then every eligible neighbour — and the only
+thing that can still turn one down is the rewrite's own invariant, that an absorber's frontier
+must be a single contiguous run.
+
+**A cut must break off at least `sbChordMinBite`% of the ORIGINAL country** (default 8). Against
+the remainder the same percentage means something different on the fourth cut than on the first,
+and the fourth cut is where the slivers are; against the original it means one thing throughout.
+Measured over 80 countries, the smallest bite anybody takes tracks the setting — 2.1% at 2, 6.8%
+at 8, 10.9% at 15, with the cuts per country falling 3.39 → 2.85 → 2.26. It runs slightly under
+the setting because the ranking measures the STRAIGHT chord's area and the drawn border bulges
+either side of it, which is the same effect the old size cap had.
+
 **Length is raised to a tunable power** (`sbChordPow`, default 1.15) when ranking cuts. At 1 this
 is area over length, which is what a waist IS; above it a shorter line is preferred even at the
 cost of the land behind it, which is how a knob for "smaller bites" has to work. Much past 1.2 it
@@ -611,6 +638,11 @@ vertices and a splice rather than a polygon union. `chordMerge` finds the longes
 two rings traverse it in opposite directions, both being wound the same way) and walks round the
 outside of both. It returns null when there is no such run, and that is what keeps the
 one-arc-one-outline invariant: two pieces that meet nowhere cannot be one outline.
+
+**After every push, the next round looks for a chord first.** A push is the answer when the
+country has no waist worth cutting — but having pushed, it may well have one, since the remainder
+is a different shape from the country. Two pushes in a row can still happen; they just cannot
+happen unexamined.
 
 Measured over 197 countries with the cap at 30% and borders borrowed rigidly: **88 divide**, 2.53
 absorbers each, leftover 37%, **zero split absorbers**, 4.7 s for the world. Rigid borrowing costs
@@ -1135,6 +1167,14 @@ carry an image. And the wires' SVG is absolutely positioned, so **grid auto-plac
 entirely** — the donor column landed in the middle track with the third collapsed to nothing, and
 the two columns have to be placed by hand.
 
+**And `#multiple-choice-container` is HIDDEN, not emptied.** It holds `#options-grid`, a fixed
+element of the page that every quiz mode writes into, so emptying its parent deleted it for the
+rest of the session — after which the next mode to render any options threw inside the map load's
+callback and reported **"Error loading map data"** about a file that had downloaded perfectly.
+Twelve modes died that way, Near to Far among them, and only ever after a visit to the workshop.
+`clearMultipleChoice` and `renderMultipleChoice` are now null-safe as well, so a missing element
+can never again be reported as a network failure.
+
 **The panel is APPENDED to `#question-container`, not written over it.** That container holds
 `#feedback` and `#question-text`, which every other mode's setup writes to unconditionally, so
 replacing its innerHTML takes those with it and the next mode entered dies on a null. (The framing
@@ -1446,6 +1486,17 @@ the instant it is clicked states the conclusion before the animation has made th
 Mercator Lies is the entire round. `sbMarkCorrectOption` and the shared reveal both prefer a
 button's **`data-answer`** over its text, because a tile need not wear its answer — see Upside
 Down.
+
+### A reveal frames the CORE, never the raw features
+
+`sbFitToFeatures` fits on each feature's `shapeFramingCore`, for the reason the core exists at all:
+a frame is only as tight as the most remote scrap of land in it, and these sets are whole
+neighbourhoods. Dividing Germany hands land to the Netherlands, whose feature reaches **Aruba**, so
+the frame ran from the Caribbean to Poland — at which point everything outside the fitted set
+overflows the 800×600 viewBox and is clipped by the svg, which is what "the Who's Missing sandbox
+clips the map for no apparent reason" was. The map was framed on somebody's island 6,000 km away.
+Measured: the Netherlands' span drops 80° → 9°, France's 118° → 15°, Portugal's 25° → 3°, and
+every absorber of eight divided countries lands on screen.
 
 ### Reveals that hand the board back
 

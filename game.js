@@ -1279,6 +1279,7 @@ function shuffleArray(array) {
 // Render multiple choice options
 function renderMultipleChoice(options, correctAnswer) {
     const container = document.getElementById('options-grid');
+    if (!container) return;
     container.innerHTML = '';
     container.className = 'options-grid'; // Ensure correct class for button layout
 
@@ -1553,12 +1554,20 @@ function updateFlagFills() {
 }
 
 // Clear multiple choice UI
+// Every one of these is a fixed element of the page rather than something a mode creates, so a
+// missing one is somebody else's bug — but it must not be allowed to become THIS function's
+// crash. Thrown from inside the map load's callback it surfaces as "Error loading map data", which
+// sends anybody debugging it to the network tab to look at a file that downloaded perfectly.
 function clearMultipleChoice() {
     const grid = document.getElementById('options-grid');
-    grid.innerHTML = '';
-    grid.className = 'options-grid'; // Reset to default class
-    document.getElementById('multiple-choice-container').classList.add('hidden');
-    document.getElementById('flag-display').style.display = 'none';
+    if (grid) {
+        grid.innerHTML = '';
+        grid.className = 'options-grid'; // Reset to default class
+    }
+    const mcBox = document.getElementById('multiple-choice-container');
+    if (mcBox) mcBox.classList.add('hidden');
+    const flagBox = document.getElementById('flag-display');
+    if (flagBox) flagBox.style.display = 'none';
     const skyline = document.getElementById('skyline-display');
     if (skyline) skyline.style.display = 'none';
 }
@@ -13829,17 +13838,18 @@ const sbDx = (why, n) => { if (sbDiag) sbDiag.gate[why] = (sbDiag.gate[why] || 0
 const SB_GATE_WORDS = {
     pairs:      'pairs of boundary points considered',
     sameOwner:  'both ends on the same neighbour\u2019s frontier \u2014 a line between them separates nothing',
-    tooSmall:   'would break off less than 2% of the country',
+    tooSmall:   'would break off less than the minimum bite',
+    blocked:    'the straight line between those two points leaves the country',
     tooShort:   'shorter than a border can be at this resolution',
     noSource:   'no real border in the world is long enough to span that gap rigidly',
     noBorrow:   'no stretch of the borrowed border is the right length with a plausible wander',
-    outside:    'the borrowed border leaves the country',
-    crosses:    'the borrowed border crosses the boundary',
+    traceFail:  'a borrowed border that would not fit (another was used instead)',
     area:       'the two halves do not add up to the region',
     pinched:    'the piece or the remainder comes out in two lobes',
     frontier:   'the piece meets its owner in two places, or along a thread',
-    noTaker:    'nobody left holds any of that piece\u2019s edge',
-    noLeftover: 'nobody would be left to hold what remains'
+    noLeftover: 'nobody would be left to hold what remains',
+    areaSum:    'the finished pieces did not add back up to the country',
+    rewrite:    'the pieces were cut, but one of them could not be written as a single outline'
 
 };
 
@@ -13910,6 +13920,13 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // vertices is a notch in the coastline, and notches have superb ratios.
 const SB_CHORD_MIN_DEFAULT = 6;      // x the median border segment
 let sbChordMinX = SB_CHORD_MIN_DEFAULT;
+
+// And a floor on what a cut has to BREAK OFF, as a share of the whole country rather than of
+// whatever is left of it. Against the remainder the same percentage means something different on
+// the fourth cut than on the first, and the fourth is where the slivers are; against the original
+// it means one thing throughout — "do not bother me with anything smaller than this".
+const SB_CHORD_BITE_DEFAULT = 8;     // per cent of the original country
+let sbChordMinBite = SB_CHORD_BITE_DEFAULT;
 
 // The blended construction's two thresholds. Above the first, a chord is good enough to be worth
 // cutting on its own merits; above the second, one neighbour holds enough of what is left that
@@ -15354,6 +15371,11 @@ function sbEatCountry(rawTopo, goneName) {
         let live = ring;
         let leftover = null;
         let minBite = Infinity;
+        // A push is the answer when the country has no waist worth cutting. Having pushed, it may
+        // well have one — the remainder is a different shape from the country — so the round
+        // after a push always LOOKS for a chord first, whatever share the next neighbour holds.
+        // Two pushes in a row can still happen; they just cannot happen unexamined.
+        let justPushed = false;
         const hist = [];
         for (let round = 0; round < 16; round++) {
             const L = live.length;
@@ -15389,7 +15411,7 @@ function sbEatCountry(rawTopo, goneName) {
                 return hit;
             };
             const cand = [];
-            const lo = area0 * 0.02;
+            const lo = area0 * Math.max(0.001, sbChordMinBite / 100);
             const minChord = Math.max(1, sbMedianSegKm(topo) * Math.max(1, sbChordMinX));
             for (let i = 0; i < L; i++) {
                 const oi = ownerOfLeg(live[i].leg);
@@ -15430,7 +15452,7 @@ function sbEatCountry(rawTopo, goneName) {
             // So: cut a chord if the best one clears the ratio; otherwise push if one neighbour
             // holds enough of the remaining boundary; otherwise cut the chord anyway, because
             // something has to give and a mediocre waist beats nothing.
-            if (sbBiteAlgo === 'blend' && (!cand.length || cand[0].k < sbBlendRatio)) {
+            if (sbBiteAlgo === 'blend' && !justPushed && (!cand.length || cand[0].k < sbBlendRatio)) {
                 // Who holds what, of the boundary as it stands now.
                 const hold = new Map();
                 let tot = 0;
@@ -15458,6 +15480,7 @@ function sbEatCountry(rawTopo, goneName) {
                             source: pushed.source
                         });
                         live = pushed.rest;
+                        justPushed = true;
                         continue;
                     }
                     if (sbDiag) sbDiag.pushFail = (sbDiag.pushFail || 0) + 1;
@@ -15479,19 +15502,37 @@ function sbEatCountry(rawTopo, goneName) {
                 // end has no such stretch anywhere in it. A chord across a country is longer
                 // than most single arcs, so without this filter almost every candidate was
                 // failing on a border that could never have reached.
-                // Which border a cut is TRACED from is a matter of taste; whether the cut is made
-                // at all is not. A borrowed stretch that wanders out of the country is the wrong
-                // stretch, not a wrong cut \u2014 so the search keeps looking, through many more
-                // sources than it used to, and ends on a STRAIGHT line rather than on nothing.
-                // A straight border is a real thing (a good deal of Africa is drawn with one) and
-                // it is always inside a convex neighbourhood of its own chord; losing the cut
-                // because the twentieth trace also failed is the outcome that has no defence.
                 const fit = shapes.filter(sh => sh.len >= span * 1.02);
+                // Inside, and not crossing: two different tests. The first is what a curve
+                // that STARTS outside and comes in slips through, since it never "re-enters" in
+                // the sense a crossing count understands.
+                const pathOk = curve2 => {
+                    for (let a3 = 0; a3 < curve2.length; a3++) if (!inLive(curve2[a3])) return false;
+                    const pp = [P].concat(curve2, [Q]);
+                    for (let a3 = 0; a3 + 1 < pp.length; a3++)
+                        for (let k = 0; k < L; k++) {
+                            if (k === i || k === j || (k + 1) % L === i || (k + 1) % L === j) continue;
+                            if (cross(pp[a3], pp[a3 + 1], live[k].p, live[(k + 1) % L].p)) return false;
+                        }
+                    return true;
+                };
                 if (!fit.length) sbDx('noSource');
+                // Every trace is tried in EARNEST -- laid down, cut with, and put through the
+                // piece's own guards -- because a border that will not fit and a border that fits
+                // but pinches the piece are both answered the same way: by borrowing a different
+                // one. Taking the first trace that merely LANDS inside and then abandoning the
+                // pair when its piece came out pinched throws away cuts the very next trace makes.
+                //
+                // And the straight line goes LAST, as the floor rather than as a gate. A straight
+                // border is a real thing -- a good deal of Africa is drawn with one -- so a pair
+                // that no borrowed stretch will fit is still cut, in the plainest border there is.
+                // Last and not first, because a bowed border can stay inside a concave country
+                // where the straight line between the same two points leaves it: straight-as-a-
+                // feasibility-test rejects pairs that are perfectly drawable.
                 const tries = Math.min(SB_CHORD_TRACES, fit.length);
                 for (let sIdx = 0; sIdx <= tries && !got; sIdx++) {
-                    const straight = sIdx === tries;         // the last resort, and it always fits
-                    const src = straight ? null : fit[(i * 31 + sIdx * 37) % fit.length];
+                    const straight = sIdx === tries;
+                    const cs = straight ? null : fit[(i * 31 + sIdx * 37) % fit.length];
                     for (const flip of [1, -1]) {
                         if (straight && flip < 0) continue;
                         // A stretch of that border, exactly this chord's length, moved here by
@@ -15499,27 +15540,18 @@ function sbEatCountry(rawTopo, goneName) {
                         // at its real size and in its real shape, doubling back where it doubles
                         // back rather than flattened into a curve that never could.
                         const borrowed = straight
-                            ? { pts: [0.25, 0.5, 0.75].map(t => [P[0] + ux * span * t, P[1] + uy * span * t]),
+                            ? { pts: [0.2, 0.4, 0.6, 0.8].map(t => [P[0] + ux * span * t, P[1] + uy * span * t]),
                                 wander: 1, straight: true }
-                            : sbBorrowRigid(src.pts, P, Q, flip, i + sIdx);
-                        if (!borrowed) { sbDx('noBorrow'); continue; }
+                            : sbBorrowRigid(cs.pts, P, Q, flip, i + sIdx);
+                        if (!borrowed || !borrowed.pts.length) { sbDx('traceFail'); continue; }
                         const curve = borrowed.pts;
-                        if (!curve.length) continue;
                         // Every point of it has to be INSIDE, and that is a different test from
-                        // "it does not cross". A borrowed stretch laid down from a point on the
-                        // boundary can start outside and come in, and a curve that begins outside
-                        // never re-enters in the sense a crossing count understands — it was
-                        // simply outside all along, and slipped through as if it were fine.
-                        let bad = false;
+                        // "it does not cross": a stretch laid down from a point on the boundary
+                        // can start outside and come in, and a curve that begins outside never
+                        // re-enters in the sense a crossing count understands.
+                        if (!pathOk(curve)) { sbDx(straight ? 'blocked' : 'traceFail'); continue; }
+                        const src = cs, srcFlip = flip;
                         const path2 = [P].concat(curve, [Q]);
-                        for (let a3 = 0; a3 < curve.length && !bad; a3++) if (!inLive(curve[a3])) bad = true;
-                        if (bad) { sbDx('outside'); continue; }
-                        for (let a3 = 0; a3 + 1 < path2.length && !bad; a3++)
-                            for (let k = 0; k < L; k++) {
-                                if (k === i || k === j || (k + 1) % L === i || (k + 1) % L === j) continue;
-                                if (cross(path2[a3], path2[a3 + 1], live[k].p, live[(k + 1) % L].p)) { bad = true; break; }
-                            }
-                        if (bad) { sbDx('crosses'); continue; }
                         const inner = curve.map(pt => ({ p: pt, leg: -1 }));
                         const fwd = [];
                         for (let k = i; ; k = (k + 1) % L) { fwd.push(live[k]); if (k === j) break; }
@@ -15542,14 +15574,30 @@ function sbEatCountry(rawTopo, goneName) {
                             held.set(nm2, (held.get(nm2) || 0) +
                                 Math.hypot(piece[k + 1].p[0] - piece[k].p[0], piece[k + 1].p[1] - piece[k].p[1]));
                         }
-                        if (!held.size) { sbDx('noTaker'); continue; }
                         if (!chordOneLobe(piece) || !chordOneLobe(rest)) { sbDx('pinched'); continue; }
-                        // Everyone who holds any of this piece's edge, in order, so a candidate
-                        // that cannot be given the piece for a structural reason falls through to
-                        // the next rather than losing the cut altogether.
-                        const rank2 = [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+                        // THE PIECE GOES TO THE NEIGHBOUR HOLDING THE LONGEST STRETCH OF ITS EDGE,
+                        // and if that one cannot structurally take it, to the next, and the next.
+                        // The pool is not only the countries on this piece's edge: a cut across a
+                        // peninsula can break off land whose whole boundary is coast, and "nobody
+                        // holds any of that edge" is a fact about the piece rather than a reason to
+                        // throw the cut away. So the order runs edge-holders first, then whoever
+                        // holds the region's remaining boundary, then every eligible neighbour.
+                        const order2 = [];
+                        const want2 = n3 => { if (n3 && order2.indexOf(n3) < 0) order2.push(n3); };
+                        [...held.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
+                            .forEach(e3 => want2(e3[0]));
+                        const reg2 = new Map();
+                        for (let k = 0; k < L; k++) {
+                            const n3 = ownerOfLeg(live[k].leg);
+                            if (!n3) continue;
+                            reg2.set(n3, (reg2.get(n3) || 0) +
+                                Math.hypot(live[(k + 1) % L].p[0] - live[k].p[0], live[(k + 1) % L].p[1] - live[k].p[1]));
+                        }
+                        [...reg2.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
+                            .forEach(e3 => want2(e3[0]));
+                        queue.forEach(want2);
                         let who = null, merged = null;
-                        for (const [nm2] of rank2) {
+                        for (const nm2 of order2) {
                             if (!chordOneRun(piece, new Set(mainGroup.get(nm2)))) continue;
                             if (!pieces.has(nm2)) { who = nm2; merged = piece; break; }
                             // A country that has already taken is NOT out of the running. Its two
@@ -15571,7 +15619,7 @@ function sbEatCountry(rawTopo, goneName) {
                         got = { i, j, piece, rest: rest, whole: merged, again: pieces.has(who),
                                 cut: path2, who, ar: aP,
                                 src: src || { owners: [], ys: null, straight: true },
-                                flip, areaLeft, edges, borrowed,
+                                flip: srcFlip, areaLeft, edges, borrowed,
                                 chord: [P, Q], chordKm: span, rank: c, ratio: cand[c].k, bestRatio: cand[0].k,
                                 tried: Math.min(cand.length, chordCandidates), pairs: cand.length };
                         break;
@@ -15610,6 +15658,7 @@ function sbEatCountry(rawTopo, goneName) {
                         piece: closed(pushed.piece).map(toDeg), source: pushed.source
                     });
                     live = pushed.rest;
+                    justPushed = true;
                     continue;
                 }
             }
@@ -15649,6 +15698,7 @@ function sbEatCountry(rawTopo, goneName) {
                           pts: got.borrowed.pts.map(toDeg), wander: got.borrowed.wander }
             });
             live = got.rest;
+            justPushed = false;
         }
         if (!pieces.size) return null;
         // Whatever is left goes to whoever holds most of its edge. If nobody can hold it, the last
@@ -15692,7 +15742,7 @@ function sbEatCountry(rawTopo, goneName) {
         });
         let sum2 = 0;
         for (const [, pv] of pieces) sum2 += Math.abs(areaOf(closed(pv)));
-        if (Math.abs(sum2 / area0 - 1) > 0.02) return null;
+        if (Math.abs(sum2 / area0 - 1) > 0.02) { sbDx('areaSum'); return null; }
         return { pieces, story, leftover, err: 0, share2: n2 => (borderKm.get(n2) || 0) / (totalLand || 1) };
     };
 
@@ -15841,7 +15891,7 @@ function sbEatCountry(rawTopo, goneName) {
         // — each bite splits a region in two — so a failure here means a fold.
         let sum2 = 0;
         for (const [, pv] of pieces) sum2 += Math.abs(areaOf(closed(pv)));
-        if (Math.abs(sum2 / area0 - 1) > 0.02) return null;
+        if (Math.abs(sum2 / area0 - 1) > 0.02) { sbDx('areaSum'); return null; }
         // How far the finished division is from the shares it was meant to produce — and the
         // measure has to be against the share of the land that was actually GOING SPARE, not
         // against the original one. A neighbour that gets nothing (its frontier swallowed by an
@@ -15992,11 +16042,11 @@ function sbEatCountry(rawTopo, goneName) {
             while (own.has(pv[(j + 1) % L].leg) && len <= L) { j = (j + 1) % L; len++; }
             if (len > bestLen) { bestLen = len; a = i; b = j; }
         }
-        if (a < 0) return sbNo('divides');
+        if (a < 0) { sbDx('rewrite'); return sbNo('divides'); }
         // Everything else, from the far end of the frontier round to its near end.
         const path = [];
         for (let k = (b + 1) % L; ; k = (k + 1) % L) { path.push(pv[k].p); if (k === a) break; }
-        if (path.length < 2) return sbNo('divides');
+        if (path.length < 2) { sbDx('rewrite'); return sbNo('divides'); }
         // The absorber's full ORIGINAL frontier, in ring direction, with its two true endpoints.
         // The rewritten arc must span exactly those endpoints or the absorber's ring falls open
         // — its other arcs meet it there, at shared topology nodes.
@@ -16055,7 +16105,7 @@ function sbEatCountry(rawTopo, goneName) {
     };
     let features;
     try { features = topojson.feature(eaten, eaten.objects.countries).features; }
-    catch (_) { return sbNo('divides'); }
+    catch (_) { { sbDx('rewrite'); return sbNo('divides'); } }
     features.forEach(f => { f.properties = f.properties || {}; f.properties.name = getCountryName(f.id); });
 
     // The audit, and the real guarantee: the absorbers between them must gain exactly the area
@@ -16070,10 +16120,10 @@ function sbEatCountry(rawTopo, goneName) {
     for (const n of absorbers) {
         const after = byName.get(n);
         const before = geoms.find(gm => namesMatch(sbGeomName(gm), n));
-        if (!after || !before) return sbNo('divides');
+        if (!after || !before) { sbDx('rewrite'); return sbNo('divides'); }
         gain += d3.geoArea(after) * R2 - d3.geoArea(topojson.feature(topo, before)) * R2;
     }
-    if (!(goneArea > 0) || Math.abs(gain / goneArea - 1) > 0.03) return sbNo('divides');
+    if (!(goneArea > 0) || Math.abs(gain / goneArea - 1) > 0.03) { sbDx('rewrite'); return sbNo('divides'); }
 
     // The same post-load treatment loadMapData gives the real features. Winding matters most: a
     // spherical polygon wound the wrong way makes d3.geoPath fill the whole rest of the world
@@ -16861,6 +16911,12 @@ function msBuildPanel() {
         `median border segment at this detail level. A chord of two vertices is a notch in the ` +
         `coastline, and notches have superb ratios — stated this way the floor means the same ` +
         `thing at 110m as at 50m.</div>` +
+        `<label class="ms-order"><span>Smallest bite</span>` +
+        `<input type="number" id="ms-chord-bite" min="1" max="40" step="1" value="${sbChordMinBite}">` +
+        `<span class="ms-unit">%</span></label>` +
+        `<div class="ms-order-hint">The best chord is taken only if it breaks off at least this ` +
+        `much of the ORIGINAL country — not of whatever is left, which means something different ` +
+        `on the fourth cut than on the first, and the fourth cut is where the slivers are.</div>` +
         `<div id="ms-blend-only">` +
         `<label class="ms-order"><span>Cut if the ratio beats</span>` +
         `<input type="number" id="ms-blend-ratio" min="0.05" max="2" step="0.05" value="${sbBlendRatio}">` +
@@ -16934,6 +16990,7 @@ function msBuildPanel() {
         });
     };
     num('ms-chord-min', 1, 40, SB_CHORD_MIN_DEFAULT, v => { sbChordMinX = v; }, 'Chord floor changed.');
+    num('ms-chord-bite', 1, 40, SB_CHORD_BITE_DEFAULT, v => { sbChordMinBite = v; }, 'Smallest bite changed.');
     num('ms-blend-ratio', 0.05, 2, SB_BLEND_RATIO_DEFAULT, v => { sbBlendRatio = v; }, 'Ratio changed.');
     num('ms-blend-share', 10, 90, SB_BLEND_SHARE_DEFAULT, v => { sbBlendShare = v; }, 'Share changed.');
     const grow = document.getElementById('ms-growth');
@@ -18440,8 +18497,13 @@ function renderFlagWorkshop() {
     if (map) map.style.display = 'none';
     document.querySelector('.container').classList.remove('globe-side-layout');
     document.body.classList.add('sb-tall-active');
+    // HIDDEN, not emptied. `#multiple-choice-container` holds `#options-grid`, which is a fixed
+    // element of the page that every quiz mode writes into — emptying its parent deletes it for
+    // the rest of the session, and the next mode that renders any options throws inside the map
+    // load's callback and reports "Error loading map data" about a file that downloaded perfectly.
+    // (Which is the same trap the note below warns about, sprung on the sibling container.)
     const mc = document.getElementById('multiple-choice-container');
-    if (mc) mc.innerHTML = '';
+    if (mc) mc.classList.add('hidden');
     if (!wsState) wsState = wsFresh();
 
     // APPENDED, not written over the container. `#question-container` holds `#feedback` and
@@ -20084,9 +20146,19 @@ function sbFlagOffsets(bm) {
 
 // Fit the live projection to a set of features, in PROJECTION units (the viewBox), not client
 // pixels — measuring the svg with clientWidth overshoots by the display ratio.
+// Fitted to the FRAMING CORE of each, never to the raw features. A frame is only as tight as the
+// most remote scrap of land in it, and these sets are whole neighbourhoods: dividing Germany hands
+// land to the Netherlands, whose feature reaches Aruba, so the frame ran from the Caribbean to
+// Poland. Everything outside the fitted set then overflows the viewBox and is clipped by the svg,
+// which is what "the sandbox clips the map for no apparent reason" was — the map was framed on
+// somebody's island 6,000 km away.
 function sbFitToFeatures(names, padFrac) {
     if (!projection || !projection.fitExtent) return false;
-    const feats = names.map(sbFeature).filter(Boolean);
+    const feats = names.map(sbFeature).filter(Boolean).map(f => {
+        const core = shapeFramingCore(f);
+        if (!core) return f;
+        return core.type === 'Feature' ? core : { type: 'Feature', properties: {}, geometry: core };
+    });
     if (!feats.length) return false;
     const w = width || 800, h = height || 600;
     const pad = Math.min(w, h) * (padFrac == null ? 0.08 : padFrac);
