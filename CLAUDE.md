@@ -338,6 +338,58 @@ Seven engines, chosen by `engine`:
 `shapeOptions` (silhouettes, each fitted to its own tile so size is never the tell) and
 `routeOptions` (A–D buttons tinted to match their own line on the map).
 
+### A dozen more
+
+All twelve read off geometry or data already in the app, and all of them are questions answered by
+picturing the map rather than by remembering a list. Draw rates over 12 attempts against a retry
+budget of 60: 11-12 for all but **North to South** (5, which insists on 4° between consecutive
+countries) and the line round.
+
+| | Engine | The question |
+|---|---|---|
+| **Cross the Line** | multi | Which countries a named parallel or meridian actually crosses |
+| **Antipodes** | pinpoint | Dig through the earth from one country — click where you surface |
+| **Further North** | fact | Two capitals, and which is nearer the pole |
+| **Landlocked** | multi | Which of these has no coast at all |
+| **Island Nations** | multi | Which of these shares no land border with anybody |
+| **Not a Neighbour** | fact | Three of these border it; one does not |
+| **Room to Move** | fact | Which is the most crowded, people per km² |
+| **Straight Up** | fact | Walk due north from here — whose land do you reach first? |
+| **Noon and Midnight** | fact | It is noon here; where is it closest to midnight? |
+| **Which Continent** | multi | Pick every one of these from the named continent |
+| **North to South** | order | Five countries by latitude |
+| **Reaches Furthest** | fact | Which one gets furthest north, south, east or west |
+
+**A bounding box is not an answer to "does this line cross it".** Chile's box spans thirty-eight
+degrees of latitude it has no land at, and a country lying either side of a line without touching
+it reads as crossing by bounds alone. The box only says where to look; the line is then sampled
+inside it (400 points) and the country has to CONTAIN one of them. Verified against the atlas: the
+Equator returns Brazil, Colombia, the DRC, Ecuador, Gabon, Indonesia, Kenya, the Republic of the
+Congo, Somalia and Uganda; the Tropic of Capricorn returns exactly the ten it should.
+
+**And `d3.geoBounds` reports a wrapped box for anything straddling ±180** — Russia comes back as
+`[19.6…, …-169.8]`, its east edge west of its west edge, which is the antimeridian-aware answer
+and not a mistake. Subtracting one from the other gives a negative span and the country is
+dropped: that is what lost **Russia from the Arctic Circle**, the first country anybody would
+name, and the United States from it via Alaska. A wrapped box now samples the whole parallel.
+
+**Straight Up walks the meridian rather than comparing centroids**, because those disagree
+constantly: from Madagascar the answer is not "the country to the north" but whichever land the
+line actually meets. Land the quiz does not deal (a territory, an unnamed id) still ENDS the walk
+— you have set foot on it, and carrying on would name a country you would have to walk through
+somebody else to reach — so the draw is abandoned rather than answered wrongly.
+
+**`boardMarksOnAnswer` is the plainest of the three multi reveals**: paint the set on the ordinary
+map in the same three states Flyover and Every Neighbour use. Naming a dozen countries in a
+sentence and asking somebody to find them is work the map does for free, and on these rounds the
+geography IS the argument.
+
+Two stale-animation crashes were fixed on the way, both of the same shape: an interval or a tween
+outliving the mode that started it and landing on `d3.geoAlbersUsa`, which is a composite and has
+no `.rotate`. The globe's auto-spin (a 50 ms interval) and Odd One Out's 700 ms framing tween both
+now check before they turn anything, which is how the Map Puzzle came to report a rotation error
+about a board that does not rotate.
+
 ### Board-replacing rounds
 
 Three round-spec keys let a quiz take the board over entirely. `drawCountries()` hands off to
