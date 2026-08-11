@@ -401,6 +401,32 @@ outliving the mode that started it and landing on `d3.geoAlbersUsa`, which is a 
 check before they turn anything, which is how the Map Puzzle came to report a rotation error about a
 board that does not rotate.
 
+### Connections
+
+`sb-connections`: sixteen countries, four hidden groups of four. **One puzzle is the game** — the
+only quiz with `rounds: 1`, because the shape of the thing is a single board worked out to the end
+and ten of them would be an evening.
+
+**The whole game is in the OVERLAP.** Sixteen names with four hidden categories is only a puzzle if
+a name can plausibly belong to more than one of them; otherwise the first four you notice are the
+answer and there is nothing to work out. So the generator does two opposite things at once: it
+insists the solution is UNIQUE — no country satisfies two of the four chosen categories, checked
+in both directions — while choosing categories that OFFER a false reading. Iceland is an island and
+it ends in -land; Switzerland borders Austria and ends in -land; Russia is enormous, populous, a
+permanent member and begins with R.
+
+Twelve category generators, all computed from data already here — the arc table, the continents,
+the areas and populations, the names themselves — bar one: the Security Council's permanent five,
+which is a fact about the world rather than about geometry and is written down. Two groups may not
+come from the same generator, since "beginning with C" and "beginning with M" in one puzzle is a
+spelling test rather than a geography one. 12 of 12 draws.
+
+Scoring is four points for solving it and up to six more for how few mistakes it took, out of four.
+**"One away"** is the one piece of feedback this shape of puzzle gives, and it is what makes a near
+miss useful rather than merely wrong. Solved groups rise into coloured bands and leave the grid, so
+the board shrinks as it is worked out; on a loss all four go up anyway, because the answer is the
+point.
+
 ### Board-replacing rounds
 
 Three round-spec keys let a quiz take the board over entirely. `drawCountries()` hands off to

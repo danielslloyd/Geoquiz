@@ -4575,3 +4575,32 @@ g.ms-story { pointer-events: none; }
 /* The observer's mark on the sunrise-line map, in whichever figure the panel is set to. */
 .sp-map-me-pin { fill: #d05c4a; stroke: #fff; stroke-width: 0.7; }
 .sp-map-me-pinhole { fill: #fff; }
+
+
+/* ==================== CONNECTIONS ====================
+   Sixteen tiles that become four bands as they are solved. The four colours are labels rather
+   than a scale — they say "these belong together", not "this one is better" — so they are four
+   distinct hues at one weight, and they are the same four the bands use. */
+.options-grid.sb-connect { display: flex; flex-direction: column; gap: 8px; }
+.sb-conn-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.sb-conn-tile {
+    font: inherit; font-size: 0.82rem; line-height: 1.15; padding: 0.7rem 0.3rem; cursor: pointer;
+    min-height: 3.4rem; border-radius: 6px; text-align: center;
+    background: var(--surface-2, #efe7d7); color: var(--text, #333);
+    border: 1px solid var(--border, #ccc);
+    display: flex; align-items: center; justify-content: center;
+}
+.sb-conn-tile:hover { border-color: var(--accent, #d08a2c); }
+.sb-conn-tile.picked {
+    background: var(--primary, #284b63); border-color: var(--primary, #284b63); color: #fff;
+}
+.sb-conn-band { border-radius: 6px; padding: 0.5rem 0.7rem; text-align: center; color: #21201c; }
+.sb-conn-band.c0 { background: #e3c968; }
+.sb-conn-band.c1 { background: #9fc47f; }
+.sb-conn-band.c2 { background: #8fb8db; }
+.sb-conn-band.c3 { background: #c69ac8; }
+.sb-conn-band-lab { font-weight: 700; font-size: 0.82rem; }
+.sb-conn-band-names { font-size: 0.78rem; opacity: 0.82; margin-top: 1px; }
+.sb-conn-lives { display: flex; align-items: center; gap: 4px; justify-content: center;
+                 font-size: 0.9rem; letter-spacing: 0.12em; opacity: 0.75; }
+.sb-conn-lives-lab { font-size: 0.7rem; letter-spacing: 0.06em; margin-left: 6px; opacity: 0.8; }

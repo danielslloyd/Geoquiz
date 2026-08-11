@@ -4024,6 +4024,7 @@ function giveUp() {
         if (modeConfig.sbEngine === 'multi') { sbSubmitMulti(); return; }
         if (modeConfig.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
         if (modeConfig.sbEngine === 'picker') { sbSubmitPicker(); return; }
+        if (modeConfig.sbEngine === 'connect') { sbFinishConnect(gameState.sbQuestion, false); return; }
         const q = gameState.sbQuestion;
         gameState.sbAnswered = true;
         const feedback = document.getElementById('feedback');
@@ -7606,6 +7607,7 @@ function setupEventListeners() {
             if (mc.sbEngine === 'multi') { sbSubmitMulti(); return; }
             if (mc.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
             if (mc.sbEngine === 'picker') { sbSubmitPicker(); return; }
+            if (mc.sbEngine === 'connect') { sbSubmitConnect(); return; }
         }
         // Draw the Border: the first press scores the traced loop and reveals the real one.
         if (mc && mc.drawBorderMode && drawBorderState && !drawBorderState.done) {
@@ -14569,6 +14571,194 @@ function sbLineGapDeg(name, line) {
 // latitude and testing containment is the honest way to ask it — the question is about a LINE
 // rather than about which centroid is northward, and the two disagree constantly.
 
+// ---------- CONNECTIONS: sixteen countries, four groups of four ----------
+//
+// The whole game is in the OVERLAP. Sixteen names with four hidden categories is only a puzzle if
+// a name can plausibly belong to more than one of them — otherwise the first four you notice are
+// the answer and there is nothing to work out. So the generator does two opposite things at once:
+// it insists the solution is UNIQUE (no country satisfies two of the four chosen categories, or
+// there would be no right answer to find) while choosing categories that OFFER a false reading
+// (Iceland is an island and it ends in -land; Chad is landlocked and starts with C).
+//
+// Every category is computed from data already here — the arc table, the continents, the areas
+// and populations, the names themselves — bar one: the Security Council's permanent five, which
+// is a fact about the world rather than about geometry and is written down.
+const SB_UNSC = ['China', 'France', 'Russia', 'United Kingdom', 'United States of America'];
+
+// Each returns a list of { tag, label, names }. `names` is a POOL — four are drawn from it — so a
+// category with eleven members can produce many different puzzles.
+const SB_CONNECT_CATS = [
+    {
+        key: 'letter',
+        groups: pool => {
+            const by = new Map();
+            pool.forEach(n => {
+                const c = displayLabelForName(n).trim()[0];
+                if (!/[A-Z]/i.test(c)) return;
+                const k = c.toUpperCase();
+                if (!by.has(k)) by.set(k, []);
+                by.get(k).push(n);
+            });
+            return [...by.entries()].filter(e => e[1].length >= 4)
+                .map(([k, names]) => ({ tag: 'letter:' + k, label: `Names beginning with ${k}`, names }));
+        }
+    },
+    {
+        key: 'ending',
+        groups: pool => {
+            const ends = [['stan', 'Names ending in ‑stan'],
+                          ['land', 'Names ending in ‑land'],
+                          ['ia', 'Names ending in ‑ia']];
+            return ends.map(([suf, label]) => ({
+                tag: 'end:' + suf, label,
+                names: pool.filter(n => new RegExp(suf + '$', 'i').test(displayLabelForName(n)))
+            })).filter(g => g.names.length >= 4);
+        }
+    },
+    {
+        key: 'landlocked',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            return [{ tag: 'landlocked', label: 'Landlocked — no coast at all',
+                      names: pool.filter(n => !facts.coastal.has(n)) }];
+        }
+    },
+    {
+        key: 'island',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            return [{ tag: 'island', label: 'No land border with anybody',
+                      names: pool.filter(n => facts.island.has(n)) }];
+        }
+    },
+    {
+        key: 'equator',
+        groups: pool => [{
+            tag: 'equator', label: 'The Equator passes through them',
+            names: pool.filter(n => sbLineCrosses(n, { lat: 0 }))
+        }]
+    },
+    {
+        key: 'continent',
+        groups: pool => {
+            const cd = window.continentData || {};
+            return Object.keys(cd).map(c => {
+                const set = new Set((cd[c] || []).map(normalizeName));
+                return { tag: 'cont:' + c, label: `In ${c}`,
+                         names: pool.filter(n => set.has(normalizeName(n))) };
+            }).filter(g => g.names.length >= 4);
+        }
+    },
+    {
+        key: 'neighbour',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            const out = [];
+            facts.neighbours.forEach((_, host) => {
+                const nb = playableNeighbours(host).filter(n => pool.includes(n));
+                if (nb.length >= 4) out.push({ tag: 'nb:' + host,
+                    label: `They border ${displayLabelForName(host)}`, names: nb });
+            });
+            return out;
+        }
+    },
+    {
+        key: 'unsc',
+        groups: pool => [{
+            tag: 'unsc', label: 'Permanent members of the UN Security Council',
+            names: pool.filter(n => SB_UNSC.some(u => namesMatch(u, n)))
+        }]
+    },
+    {
+        key: 'huge',
+        groups: pool => {
+            const ranked = [...pool].filter(n => sbAreaKm2(n)).sort((a, b) => sbAreaKm2(b) - sbAreaKm2(a));
+            return [{ tag: 'huge', label: 'The largest countries on earth by area',
+                      names: ranked.slice(0, 8) }];
+        }
+    },
+    {
+        key: 'populous',
+        groups: pool => {
+            const ranked = [...pool].filter(n => sbPop(n)).sort((a, b) => sbPop(b) - sbPop(a));
+            return [{ tag: 'populous', label: 'Over 100 million people',
+                      names: ranked.filter(n => sbPop(n) > 100e6) }];
+        }
+    },
+    {
+        key: 'capinitial',
+        groups: pool => [{
+            tag: 'capinitial', label: 'Capital shares the country’s first letter',
+            names: pool.filter(n => {
+                const cap = getCapital(effectiveDataName(n));
+                const nm = displayLabelForName(n);
+                return cap && nm && cap[0].toUpperCase() === nm[0].toUpperCase();
+            })
+        }]
+    },
+    {
+        key: 'twoword',
+        groups: pool => [{
+            tag: 'twoword', label: 'Names of more than one word',
+            names: pool.filter(n => /\s/.test(displayLabelForName(n).replace(/\s*\(.*$/, '')))
+        }]
+    }
+];
+
+// One puzzle: four categories, four countries each, and no country in two of them.
+function sbBuildConnections() {
+    const pool = sbPool().filter(n => sbAreaKm2(n) > 5000);
+    if (pool.length < 40) return null;
+    // Every group every category can offer, from this pool.
+    const all = [];
+    SB_CONNECT_CATS.forEach(c => {
+        let gs = [];
+        try { gs = c.groups(pool) || []; } catch (_) { gs = []; }
+        gs.forEach(g => { if (g && (g.names || []).length >= 4) all.push({ ...g, cat: c.key }); });
+    });
+    if (all.length < 6) return null;
+    const memberOf = g => new Set(g.names.map(normalizeName));
+
+    for (let attempt = 0; attempt < 200; attempt++) {
+        const bag = shuffleArray(all.slice());
+        const chosen = [];
+        const used = new Set();
+        for (const g of bag) {
+            if (chosen.length === 4) break;
+            // No two groups from the same category: "beginning with C" and "beginning with M" in
+            // one puzzle is a spelling test rather than a geography one.
+            if (chosen.some(c => c.cat === g.cat)) continue;
+            // The four have to be drawable from what is not already spoken for, AND none of them
+            // may belong to a category already chosen — that is what makes the answer unique.
+            const others = chosen.map(memberOf);
+            const free = g.names.filter(n => !used.has(normalizeName(n)) &&
+                !others.some(o => o.has(normalizeName(n))));
+            if (free.length < 4) continue;
+            const pick = shuffleArray(free).slice(0, 4);
+            // And the reverse: none of the four already chosen elsewhere may belong to THIS one.
+            const mine = new Set(pick.map(normalizeName));
+            const clash = chosen.some(c => c.pick.some(n => memberOf(g).has(normalizeName(n))));
+            if (clash) continue;
+            pick.forEach(n => used.add(normalizeName(n)));
+            chosen.push({ ...g, pick, mine });
+        }
+        if (chosen.length === 4) {
+            const items = shuffleArray(chosen.flatMap(g => g.pick));
+            return {
+                groups: chosen.map((g, i) => ({ label: g.label, tag: g.tag, order: i,
+                                                names: g.pick.slice() })),
+                items,
+                prompt: 'Find the four groups of four. <span class="sb-aside">Every country belongs ' +
+                        'to exactly one group — but several of them look like they belong to two.</span>'
+            };
+        }
+    }
+    return null;
+}
+
 function sbPool() {
     const drawn = new Set((gameState.countries || []).map(f => normalizeName(f.properties.name)));
     return (gameState.currentQuizList || []).filter(n => drawn.has(normalizeName(n)));
@@ -21173,6 +21363,16 @@ const SB_QUIZZES = {
         }
     },
 
+    // ---------- sixteen at once ----------
+    'sb-connections': {
+        engine: 'connect', icon: 'grid_view', label: 'Connections', noMap: true,
+        desc: 'Sixteen countries, four hidden groups of four',
+        // ONE puzzle is the game. Ten rounds of this would be a long evening, and the shape of the
+        // thing is a single board worked out to the end.
+        rounds: 1,
+        build() { return sbBuildConnections(); }
+    },
+
     // ---------- riffs ----------
     'sb-upside-down': {
         engine: 'fact', hiRes: true, icon: 'flip', label: 'Upside Down', noMap: true,
@@ -21238,7 +21438,9 @@ Object.keys(SB_QUIZZES).forEach(key => {
         name: q.label,
         quizList: quizCountries,
         dataObjKey: 'countryData',
-        totalQuestions: 10,
+        // Ten rounds unless the quiz says otherwise. One says otherwise: a Connections board is
+        // the whole game, and ten of them is an evening rather than a round.
+        totalQuestions: q.rounds || 10,
         // Every engine loads the map, INCLUDING the ordering one: population density is
         // people over d3.geoArea, so it needs the features even though it shows no map.
         // sbRenderOrder hides #map-container instead of skipping the load.
@@ -21359,6 +21561,123 @@ function renderSandboxQuizQuestion() {
     if (spec.engine === 'multi') return sbRenderMulti(q, head);
     if (spec.engine === 'estimate') return sbRenderEstimate(q, head);
     if (spec.engine === 'picker') return sbRenderPicker(q, head);
+    if (spec.engine === 'connect') return sbRenderConnect(q, head);
+}
+
+// ---- engine: connect (sixteen tiles, four groups) ----
+//
+// Not scored per round like the other engines: one puzzle IS the game, so the mode runs a single
+// round and the score is out of ten — four for solving it at all and up to six for how few
+// mistakes it took. Four mistakes ends it and shows the answer, which is the rule everybody
+// already knows from the game this borrows its shape from.
+const SB_CONNECT_LIVES = 4;
+
+function sbRenderConnect(q, head) {
+    gameState.questionType = 'sandbox-connect';
+    clearMultipleChoice();
+    document.getElementById('question-text').innerHTML = head + q.prompt;
+    document.getElementById('multiple-choice-container').classList.remove('hidden');
+    const grid = document.getElementById('options-grid');
+    grid.className = 'options-grid sb-connect';
+    q.solved = q.solved || [];
+    q.picked = [];
+    q.mistakes = q.mistakes || 0;
+    sbPaintConnect(q);
+    const next = document.getElementById('next-btn');
+    next.textContent = 'Submit';
+    next.disabled = true;
+    next.style.display = 'inline-block';
+    document.getElementById('give-up-btn').style.display = 'inline-block';
+    document.getElementById('give-up-btn').textContent = 'Give Up';
+}
+
+function sbPaintConnect(q) {
+    const grid = document.getElementById('options-grid');
+    if (!grid) return;
+    const solvedNames = new Set(q.solved.flatMap(g => g.names.map(normalizeName)));
+    grid.innerHTML =
+        // The solved groups rise to the top and keep their colour, so the board shrinks as it is
+        // worked out — which is the whole feedback loop of this shape of puzzle.
+        q.solved.map(g =>
+            `<div class="sb-conn-band c${g.order}">` +
+            `<div class="sb-conn-band-lab">${g.label}</div>` +
+            `<div class="sb-conn-band-names">${g.names.map(displayLabelForName).join(' · ')}</div>` +
+            `</div>`).join('') +
+        `<div class="sb-conn-grid">` +
+        q.items.filter(n => !solvedNames.has(normalizeName(n))).map(n =>
+            `<button type="button" class="sb-conn-tile${q.picked.includes(n) ? ' picked' : ''}" ` +
+            `data-name="${displayLabelForName(n).replace(/"/g, '&quot;')}">` +
+            `${displayLabelForName(n)}</button>`).join('') +
+        `</div>` +
+        `<div class="sb-conn-lives">${'●'.repeat(Math.max(0, SB_CONNECT_LIVES - q.mistakes))}` +
+        `${'○'.repeat(Math.min(SB_CONNECT_LIVES, q.mistakes))}` +
+        `<span class="sb-conn-lives-lab">mistakes left</span></div>`;
+
+    const byLabel = new Map(q.items.map(n => [displayLabelForName(n), n]));
+    grid.querySelectorAll('.sb-conn-tile').forEach(b => b.addEventListener('click', () => {
+        if (gameState.sbAnswered) return;
+        const n = byLabel.get(b.dataset.name);
+        const at = q.picked.indexOf(n);
+        if (at >= 0) q.picked.splice(at, 1);
+        else if (q.picked.length < 4) q.picked.push(n);
+        sbPaintConnect(q);
+        const next = document.getElementById('next-btn');
+        if (next) next.disabled = q.picked.length !== 4;
+    }));
+    const next = document.getElementById('next-btn');
+    if (next && !gameState.sbAnswered) next.disabled = q.picked.length !== 4;
+}
+
+function sbSubmitConnect() {
+    const q = gameState.sbQuestion;
+    if (!q || gameState.sbAnswered || q.picked.length !== 4) return;
+    const pickSet = new Set(q.picked.map(normalizeName));
+    const hit = q.groups.find(g => !q.solved.includes(g) &&
+        g.names.every(n => pickSet.has(normalizeName(n))));
+    const fb = document.getElementById('feedback');
+    if (hit) {
+        q.solved.push(hit);
+        q.picked = [];
+        if (q.solved.length === q.groups.length) { sbFinishConnect(q, true); return; }
+        fb.innerHTML = `<strong>${hit.label}.</strong> ${q.groups.length - q.solved.length} to go.`;
+        fb.className = 'feedback correct';
+        sbPaintConnect(q);
+        return;
+    }
+    q.mistakes++;
+    // "One away" is the one piece of feedback this shape of puzzle gives, and it is what makes a
+    // near miss useful rather than merely wrong.
+    const near = q.groups.filter(g => !q.solved.includes(g))
+        .some(g => g.names.filter(n => pickSet.has(normalizeName(n))).length === 3);
+    fb.innerHTML = near ? 'One away.' : 'Not a group.';
+    fb.className = 'feedback ' + (near ? 'partial' : 'incorrect');
+    if (q.mistakes >= SB_CONNECT_LIVES) { sbFinishConnect(q, false); return; }
+    q.picked = [];
+    sbPaintConnect(q);
+}
+
+function sbFinishConnect(q, solved) {
+    gameState.sbAnswered = true;
+    // Four for solving it, six spread over the mistakes: a clean solve is ten and a fourth mistake
+    // is nothing, with the two in between worth having.
+    const pts = solved ? 4 + Math.round(6 * (SB_CONNECT_LIVES - q.mistakes) / SB_CONNECT_LIVES) : 0;
+    gameState.score += pts;
+    document.getElementById('score').textContent = gameState.score;
+    syncScoreDisplay();
+    // Whatever is left goes up in its own colour, so the finished board always shows all four.
+    q.groups.forEach(g => { if (!q.solved.includes(g)) q.solved.push(g); });
+    q.picked = [];
+    sbPaintConnect(q);
+    const fb = document.getElementById('feedback');
+    fb.innerHTML = solved
+        ? `<strong>${pts}/10</strong> — solved with ${q.mistakes} mistake${q.mistakes === 1 ? '' : 's'}.`
+        : `<strong>0/10</strong> — out of mistakes. Here are the four.`;
+    fb.className = 'feedback ' + sbScoreClass(pts);
+    const next = document.getElementById('next-btn');
+    next.textContent = 'See Results';
+    next.disabled = false;
+    document.getElementById('give-up-btn').style.display = 'none';
+    clearAutoAdvance();
 }
 
 // ---- engine: picker (type to filter, choose any country) ----
