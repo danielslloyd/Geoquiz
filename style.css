@@ -3370,6 +3370,26 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     padding: 4px;
 }
 
+/* THE VISIBLE PANES FILL THE STAGE. Any of the four can be switched off, and what is left has to
+   take the whole area rather than sitting in a 2x2 with holes in it — a single pane on its own is
+   the reason to turn the others off, and it would be absurd for it to occupy a quarter of the
+   screen. Driven by a `data-shown` count on the stage rather than by measuring anything.
+
+   Three is the only awkward number: two across the top and one spanning the bottom, which gives
+   the odd one out the room its extra width is worth. */
+.sun-path-stage[data-shown="1"] { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.sun-path-stage[data-shown="2"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+.sun-path-stage[data-shown="3"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+/* The odd one out is marked by JavaScript rather than by an `nth-child(... of ...)` selector:
+   that form cannot see `[hidden]`, so a rule counting cells would count the hidden ones too. */
+.sun-path-stage[data-shown="3"] .sun-path-cell.sp-wide { grid-column: span 2; }
+.sun-path-cell[hidden] { display: none; }
+
+/* A tall, narrow stage would rather stack two panes than sit them side by side. */
+@media (max-aspect-ratio: 4/5) {
+    .sun-path-stage[data-shown="2"] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
+
 /* The four panes ARE the mode, so they get the height. Constraining the stage to
    #map-container (see .map-container position) means it now competes with everything below it,
    and the readout/sliders left it about 280px — enough to clip the globe out of its own pane.
@@ -3570,10 +3590,15 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 }
 
 @media (max-width: 1024px) {
-    .sun-path-stage {
+    .sun-path-stage,
+    .sun-path-stage[data-shown="1"],
+    .sun-path-stage[data-shown="2"],
+    .sun-path-stage[data-shown="3"] {
         grid-template-columns: 1fr;
-        grid-template-rows: repeat(4, minmax(160px, 1fr));
+        grid-template-rows: none;
+        grid-auto-rows: minmax(160px, 1fr);
     }
+    .sun-path-stage[data-shown="3"] .sun-path-cell.sp-wide { grid-column: auto; }
 }
 
 /* ==================== SANDBOX QUIZZES ====================
@@ -4483,3 +4508,38 @@ g.ms-story { pointer-events: none; }
     .ws-stage { position: static; }
     .ws-stage img { max-height: 38vh; }
 }
+
+
+/* Sun Path's two rows of switches. Grouped and labelled, because "Views" and "Show" are two
+   different kinds of decision — which panes exist, and what is drawn in all of them. */
+.sp-panes {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+    padding: 4px 0; border-top: 1px solid var(--border);
+}
+.sp-group-lab {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.55; font-weight: 700; flex: 0 0 auto;
+}
+
+
+/* The moon in the first-person panes: a disc, its lit fraction as an ellipse, and the lit half
+   picked out. Same construction as the map's moon marker, so the two read as one object. */
+.sp-moon-disc { fill: #e8e6df; stroke: #8d8a80; stroke-width: 0.8; }
+.sp-moon-lit  { fill: #e8e6df; }
+.sp-moon-dark { fill: #3a3f4a; }
+.sp-moon-half { fill: #e8e6df; opacity: 0.9; }
+.sp-moon.below .sp-moon-disc { opacity: 0.45; }
+.sp-moon.below .sp-moon-half { opacity: 0.4; }
+.sp-ground-night { pointer-events: none; }
+
+
+/* Satellite basemap in the sunrise-line pane. The land outlines stay on top of it at a low
+   opacity: at 400 units across a coastline is easier to read as a line than as a colour change,
+   and the veil keeps the imagery from shouting over the terminator, which is the subject. */
+.sp-map-sat-day { opacity: 1; }
+.sp-map-sat-veil { fill: #0a1018; opacity: 0.1; pointer-events: none; }
+.sp-map-sat-night image { opacity: 0.95; }
+.sun-path-stage .sp-map-sat + g .sp-map-land { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 0.4; }
+/* The moon's rise/set line: dotted, so it is never mistaken for the sunrise line. */
+.sp-map-moonline { fill: none; stroke: #cfd6e2; stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.75; }
+.sp-map-moon { pointer-events: none; }

@@ -2005,65 +2005,85 @@ size scores 1.1 and 0.4.
 
 GeoJSON regions (India, Germany, England, Mexico) ship no arcs to filter, so they fall back to outlining the others and painting out the target's edge along its own path (`.draw-erase`) — the same result with a blunter instrument. `gameState.mapTopology` is stashed by `loadMapData` precisely so the mesh filter has something to work with, since the state atlases are fetched with plain `d3.json` and never touched `worldTopoCache`.
 
-## Sun Path
+## Sun & Moon (four panes, one instant)
 
-**Four panes off one clock.** `sunPathState` is `{lat, lon, day, hour}` and `sunPathNow()` derives everything from it, so every pane is a view of a single instant rather than four animations that happen to look alike. `toggleSunPathPlay('day' | 'year')` moves that one clock — Day spins the hour (~6 s), Year walks the date while the hour keeps turning under it — and both call the same `updateSunPath()`.
+**Sun Path and Sun & Moon are one mode.** They were the same subject looked at from two places,
+and the sunrise-line pane was already a small copy of the other page's map — so the `sun-moon`
+key, the one with the landing tile and the top-bar slot, now opens the four-pane view and that
+pane does the whole of what the old page did. `?mode=sun-path` still works.
+
+**Four panes off one clock.** `sunPathState` is `{lat, lon, day, hour}` and `sunPathNow()` derives
+everything from it, so every pane is a view of a single instant rather than four animations that
+happen to look alike. `toggleSunPathPlay('day' | 'year')` moves that one clock — Day spins the
+hour (~6 s), Year walks the date while the hour keeps turning under it — and both call the same
+`updateSunPath()`.
+
+**Any of the four can be switched off, and what is left fills the stage.** A `data-shown` count on
+the stage drives the grid: one pane takes the whole area, two sit side by side at full height (or
+stack, on a tall narrow stage), three put the odd one across the bottom. Measured at 1280×900:
+471×386 each at four, 950×779 at one. The last pane cannot be turned off — an empty stage is not
+a view of anything, and the way back from it is a tick box you can no longer see the point of.
+The CSS cannot pick the wide one with `nth-child(... of ...)` because that form cannot see
+`[hidden]`, so JavaScript marks it.
 
 | Pane | What it adds |
 |---|---|
-| **Sky above you** | The dome, with the triangle lattice gone (it competed with the marks that matter). A compass rose on the ground with 15° ticks, N/E/S/W sprites, the sun's ring **solid above the horizon and dotted below**, the rise/set points marked with their azimuths, and the day and night arcs labelled with their lengths. |
-| **Earth in space** | A **textured globe carrying the Sunrise-line pane's own map**, so the two read as one planet. Plus the reference angles, drawn rather than asserted: the **axial tilt**, the **latitude** as an arc from the equatorial plane, the observer's **horizon as the tangent disc** at their feet, the sun's elevation arc against it — and standing on that disc, a faint **hemisphere with the sun's track arcing over it**, which is the Sky-above-you pane in miniature and in place. |
-| **From the ground** | A **wide-angle 104° camera** following the sun in **both** axes, over a **sky gradient that slides with the sun's altitude** (blue → warm band → dusk purple → night) and a **rough hill silhouette**, with altitude ticks, compass ticks and the sun continuing on a **dotted line below the horizon**. A checkbox swaps it for **From orbit**. |
-| **Sunrise line** | The terminator on an equirectangular map, built the same way as Sun & Moon's (a 90° cap around the antisolar point). **Click it to move the observer** — this is the only way to set longitude. |
+| **Sky above you** | The dome: a compass rose with 15° ticks, the sun's ring solid above the horizon and dotted below, the rise/set points with their azimuths, and the day and night arcs labelled with their lengths. |
+| **Earth in space** | A textured globe carrying the sunrise-line pane's own map, the axial tilt and the latitude drawn as arcs, the observer's horizon as the tangent disc, and a faint hemisphere with the sun's track arcing over it — the dome in miniature and in place. |
+| **From the ground** | A 150° equal-angle panorama over a sky gradient that slides with the sun's altitude, with altitude ticks, compass ticks and the sun continuing on a dotted line below the horizon. |
+| **Sunrise line** | Everything Sun & Moon drew: the terminator, the twilight bands, the sub-solar and sub-lunar points, the tropics and polar circles, the nautical zones, the day-length bars, and the satellite imagery. Click it to move the observer. |
 
-Dashes are emitted as explicit `LineSegments` pairs rather than `LineDashedMaterial`, which needs `computeLineDistances` and still renders solid on some drivers. Labels are canvas sprites with `depthTest: false`, so they stay readable wherever they land.
+### The ground pane has no edge stretch
 
-**The ground pane's camera must pitch, not just pan.** Tracking the sun's azimuth alone and pinning the horizon at a fixed y is not enough: at `400/60` units per degree a summer sun at 56° projects 373 units above a 220-unit box, so the pane rendered **completely empty** for most of the day. Pitch now rests low (horizon ~78% down, so the frame is mostly sky) and rises only far enough to keep the sun `MARGIN` inside the edge — how you would actually hold a camera on it. When the sun is high the horizon legitimately leaves the bottom, so the ground rect, the horizon line and the compass ticks are all conditional on it being in frame, and the altitude ticks are generated over the **visible** range (negatives included) rather than a fixed 0–80°. The viewBox height is also derived from the cell's own aspect each draw, since a fixed 400×220 letterboxed inside a near-square pane and threw away half the height.
+**Equal angles, equal pixels.** A degree of sky is the same number of pixels wherever it sits, which
+is the only sense in which a wide-angle view can be called undistorted and the only one that
+matters here: the pane exists to show the SHAPE of the arc, measured in degrees.
 
-**The dome's track is a closed loop in hour angle and has to be cut into runs cyclically.** Sorting each sample into a single `above`/`below` array instead concatenates two *disjoint* below-horizon stretches — pre-dawn (from `H = −180`) and post-dusk (to `H = +180`) — which drew a dashed chord straight across the sky between sunrise and sunset, and put the "N h of night" label on the seam between them, down at the horizon on top of the **W** compass sprite. Runs are now built by walking the samples and merging the first into the last when both ends share a sign; labels take the midpoint of the longest run of each kind, which puts night at solar midnight (y = −0.43, well clear of the letters at y = 0.06). Verified: every normal day yields exactly two runs and polar day/night exactly one, with the lit run's length matching `dayH` to within the 2° sampling step (London 16.41 vs 16.4 h in June, 7.6 vs 7.6 in December; equator equinox 12.13 vs 12.00).
+This replaced a rectilinear (gnomonic) camera. Gnomonic is the photographer's undistorted lens —
+straight lines stay straight — but it pays for that with a `tan()`, and across a 104° field `tan()`
+magnifies the edges more than threefold. That edge stretch is what reads as a fisheye bulge even
+though gnomonic is the exact opposite of a fisheye, and it flattened the arc toward the frame
+edges. What it costs is that the horizon is a great circle and no longer a straight line, so it is
+sampled and drawn as a shallow curve — which is what a wide panorama actually looks like. The
+field could then be opened from 104° to **150°**, because equal angles carry no edge penalty.
 
-**The map pane's sub-solar longitude is `lon − H`, not `−H − lon`.** Hour angle is the observer's longitude minus the sub-solar one, so the sign matters — and the wrong form is a *mirror about the prime meridian*, which is exactly right at longitude 0 (the default, which is why it looked synchronised) and puts local solar noon on the far side of the planet at 90°E. Now verified the only way that means anything: at hour 12 the sun marker sits **exactly on** the observer at 0°, 90°E, 60°W, 150°E and 175°W, and the sub-solar point sweeps westward through the day.
+On the centre column the vertical axis IS altitude, exactly, so the tick scale is linear and needs
+no trigonometry at all.
 
-**The ground pane is a true rectilinear (gnomonic) camera locked on the sun**, not a plot of azimuth against altitude. The old plot was fine while the sun was low and degenerate once it was not: azimuth runs away toward the zenith — at the equator on an equinox it swings the whole 180° in minutes — so the track sheared and the camera lurched. Gnomonic about the sun's own direction has none of that: great circles stay straight (so the horizon is a *level line* at `y = H/2 + focal·tan(alt)`, and the compass and altitude marks are closed-form), the arc is smooth everywhere, and at the zenith the frame simply rolls 180°, which is what a camera tracking the sun through the zenith does. The up reference is the zenith, via `right = f × zenith` — which reduces to a purely horizontal vector depending on **azimuth alone**, so it stays defined right up to the zenith where the azimuth's own flip rolls the picture over. Verified at the equator on an equinox (peak altitude 89.87°): nothing non-finite, sun dead centre throughout, azimuth flipping 85° → 275° across the crossing.
+### Three switches that cross every pane
 
-**Six parallels run through all three geographic panes** — the five fixed ones (both polar circles, both tropics, the equator) plus the observer's own, which is the only one that moves. `SUNPATH_PARALLELS` + `sunPathParallels(lat)` is the single list; the globe rings them, the map bars them.
+**Track sun** is on by default and means something different in each pane, which is the point: the
+dome swings round the ground's normal to face the sun's bearing, the ground camera locks on it, and
+the sunrise-line map re-centres on the sub-solar meridian so the terminator stands still and the
+earth slides under it. Off, the dome and the ground pane are pannable by hand and the map is the
+map. Turning it off hands the camera over WHERE IT IS rather than snapping, so the switch reads as
+"stop following".
 
-On the **map** each parallel is split into its lit and dark spans and labelled with their lengths, so the bars *are* the day-length curve read straight off the map: they slide bodily west with the sunlight while their proportions change only with the date. Two things the split has to get right, both of which were wrong first time and both caught by checking that every bar spans the map's full width:
-* the polar cases are a **whole circle**, and normalising both ends of a 360° span collapses it to zero width;
-* the longitude→x mapping must **not wrap** — a span ending at exactly +180° belongs at the right-hand edge, not back at the left one, or every night bar measures the full width.
-Verified across three dates × six parallels: all 18 span the full width and match `sunPathDayHours` to within 0.12 h, including 24 h at the Arctic Circle in June and 0 h at the Antarctic.
+**Show moon** puts the moon in every pane: on the dome with its illuminated percentage, in the
+ground panorama as a disc with its lit limb, and on the map as the sub-lunar point plus its own
+rise/set line — dotted, so it is never mistaken for the sunrise line. Sun Path keeps a
+day-of-year and an hour rather than a `Date`, because everything about the SUN comes out of two
+angles; the moon needs a calendar, so `sunPathDate()` builds one and the moon is then read off the
+same series Sun & Moon always used. A body's sub-point IS its declination and the longitude it is
+overhead, so the local hour angle is the observer's longitude minus that — which is why
+`sunAltitude` and `sunAzimuth` can be handed the moon unchanged.
 
-On the **globe**, leader lines run out to a left-hand column (`sunPathGlobeLeaders`). Everything is built in the **camera's** basis and converted back to world space, which is what lets a scene the user can pivot still produce a tidy screen-space column: leaders run level, every label starts at the same camera-x (measured: six labels, left edges identical to 3 dp), and the leaders begin clear of the longest of them. Only the near half of each ring is considered — a leader to a point round the back would cross the planet to get there.
+**Satellite** swaps the vector map for Blue Marble in three places at once: the sunrise-line pane,
+the earth-in-space globe, and the ground under the observer in the dome and the panorama. The
+ground is a patch of real surface around the observer, cut SQUARE ON THE GROUND rather than square
+in the image — longitude degrees shrink with latitude, and without the correction the ground under
+an observer at 70°N is stretched to three times its width.
 
-**Earth-in-space zoom is LOCKED**, not fitted: the earth is exactly 2 units across, so a half-height of `1/0.9` makes it 90% of the frame and keeps it there. Fitting to content meant the pane breathed whenever a label changed width or the figure's little dome swung round the limb — the planet resizing to keep a 0.075-unit stick figure in shot. The consequence is that annotations must fit the fixed frame rather than expect the camera to back off: the orbital-normal line stops just above the pole, the tilt arc sits just off the surface, and the tilt label is pushed sideways **in camera space**, which is the one direction that stays clear whichever way the globe is pivoted. Verified: no label clips at any of six date/latitude/pivot combinations.
+The night side needs no image of its own: the twilight caps drawn over the top are the night. Where
+a real Black Marble is present (`scripts/build-earth-night.py`, gitignored like the cap tiles) it is
+clipped to the 90° cap and laid under them, so the dark half shows city lights.
 
-**Earth-in-space is orthographic and free-look.** Isometric keeps the tilt, latitude and sun-arc angles true wherever they sit in frame, which perspective does not. Drag pivots (`sunPathState.view` az/el, elevation clamped to ±85° where `lookAt` degenerates); Reset view returns to az 0 / el 0 — camera in the ecliptic plane at `(0, 0, 8)`, edge-on to the sunlight, so the terminator runs straight down the middle. That default is also why the ambient light had to come up: the middle of the visible face sits exactly on the terminator, where Lambert shading is zero. Orthographic framing needs its own fit (`sunPathOrthoExtent`) — there is no dolly to solve for, so the frustum half-extents are sized instead.
+`ensureSunPathSat` calls back **only when the image arrives**. Calling back on failure sends the
+caller straight back here to try again, synchronously, forever — which blew the stack the first
+time the checkbox was ticked before the file had landed.
 
-**Year playback runs a day at a time and steps a week at each sunset**, rather than sliding the date continuously (which moved the track and the sun at once, so nothing could be read against anything). Two traps, both found by counting jumps against day-cycles rather than by watching it:
-* a sunset **and** a midnight both firing walks the calendar two weeks per day — midnight has to be a *fallback* used only when no sunset occurred, which is what keeps polar day and polar night advancing at all;
-* advancing at the instant of sunset also moves the declination, and while the days are lengthening the sun on the new date is still up at that clock time, so it sets again minutes later and re-fires. Measured before the `armed` latch: **twelve jumps in five days at 51°N**, while the southern hemisphere in a shortening season looked perfectly fine. A sunset only counts while armed; only a sunrise or midnight re-arms it. Now exactly one week per day at 51°N in both spring and autumn, at the equator, at Sydney, and under both polar day and polar night — with the jump time drifting later through spring (18.8 → 19.0 → 19.2) and earlier through autumn.
-
-**Playback speed** is `2^(v/5)` over a −20..20 slider: the midpoint is exactly 1×, the ends 1/16× and 16×. An exponent because the useful range spans two orders of magnitude (creeping through a sunset, skimming a year) and a linear slider would spend most of its travel in the fast half. Measured: 4× multiplies the rate by exactly 4 in both Day and Year, with the base rates unchanged (6 s/day, 9.1 s/year).
-
-**The same run-splitting bug lived in the ground pane too**, and it is what drew "an odd straight line cutting across the dotted arc": one `below` array concatenating the pre-dawn and post-dusk stretches, made worse by points being *skipped* whenever the track left the camera's azimuth window, which broke runs a second way. Runs now break on both a sign change and a window exit. Measured: the largest gap between consecutive points within any run is 3.3 units (the old chord spanned the pane), and midnight correctly yields two separate below-horizon runs.
-
-**The handedness of the globe pane is set by one minus sign, and it decides three things at once.** The observer sits at `(cos H·r, y, −sin H·r)`. The `−` is not cosmetic: the earth turns eastward about `+Y`, east at a point is `Ŷ × up` — which at the `+X` meridian is `−Z` — so as the hour advances the observer must move toward `−Z`. With `+sin H` the globe spins backwards, the map reads east–west backwards, and the sun runs the wrong way round the mini-dome's arc. They are one bug, not three. The texture is then drawn **unmirrored**, with `rotation.y = H − lon`, because `SphereGeometry` places an unmirrored equirectangular map's longitude L at mesh angle −L and the sub-solar longitude has to land at `+X`.
-
-An earlier version had `+sin H` *and* a mirrored texture — two reflections that cancelled. The geography sat under the observer correctly and a 10-point land/ocean pixel check passed, because that check predicted each sample's position with the **same formula the renderer used**: a consistently mirrored world is self-consistent. Testing self-consistency proves nothing about handedness. What catches it is a quantity with an outside definition — **the sun's azimuth measured in the observer's own local frame**, compared against `sunAzimuth()`. Mirrored, that returns `360 − az` (249° at 09:00 instead of 111°), which is exactly what it did in all six cases tried. After the fix: **75 cases across five latitudes, five hours and three dates, worst azimuth and altitude error 0.000°**; the 14-point pixel check re-run against *physics-derived* positions is 14/14; landmarks track left-to-right (eastward) 9–10 steps to 0–1; and the sun ball on the dome arc reads 63.9° at 05:00, 180° at noon and 296.1° at 19:00, zero error over 15 cases.
-
-**Both 3D panes frame themselves by solving per axis, not from a bounding sphere.** A sphere is badly conservative here — the widest thing in either pane is a text sprite, and a sphere large enough to contain it pushes the camera back as if the pane were that tall too, when these panes are wide and short and horizontal room is what they have spare. For a camera at `dir·d` looking at the origin, a point is inside when `|p·right| ≤ tanH·(d − p·dir)` and `|p·up| ≤ tanV·(d − p·dir)`; solving each for `d` and taking the max clips nothing at the tightest distance. Real vertices are walked for anything under 4096 of them, because the flat things (the ground disc, the parallel rings) are seen nearly edge-on and a sphere of their radius claims several times the vertical room they use — that alone was holding both cameras back. Re-framed only on a >2% change, or label text would make the camera breathe all through a playback. Verified over a 24-hour sweep: content reaches 98% of the frame height and never clips.
-
-**From orbit** reuses the spaceship mode's Blue Marble texture and its `(R+h)/R` distance convention, deliberately *not* its atmosphere shell or cap tiles — those exist to make a photographic guessing view and here would only obscure the day/night line the pane is about. It sits at 700 km, where the horizon is 64° off nadir; the lens is **74°, wider than the spaceship mode's 48°, because at 48° you can frame the observer's own spot *or* the curved limb but not both**. Aiming at the horizon put the limb dead centre with three quarters of the pane in space, and the spaceship mode's own tilt rule threw the observer's spot three frame-heights below the bottom edge; splitting the difference (`horizonAngle/2`) lands both. Lighting verified by mean luminance over a day: at 20°N it tracks the sun exactly (133.6 at noon, 4.4 at midnight), at 70°N in June it never goes dark and in December never lights up.
-
-Verified numerically: London's noon sun is **61.95° in June and 15.08° in December** (exactly 90 − 51.5 ± 23.44, and the pane's own year-range label agrees to 0.02°); the equinox sunrise azimuth is 90.4°, i.e. due east; hour angle 0 puts the equatorial sun at 89.7° and hour angle −180° at −89.7°; and 66.56°N at the June solstice reports polar day exactly at the boundary.
-
-The stage is `position: absolute; inset: 0` inside `#map-container` with `z-index: 0`, and `#mode-selector` carries `z-index: 30` — but the real fix for panes appearing over the menu is that **`resetModeSelector()` now calls `teardownActiveGame()` first**, and teardown drops the Sun Path stage and the Sun & Moon panel. Sub-selectors are reachable from inside a live mode, and these modes hang canvases off containers the old reset never touched.
-
-The original three panels were driven by the same two numbers — the observer's latitude and the sun's declination — and that remains the core: moving either slider moves everything together, and watching the panes agree *is* the mode. The whole thing is two lines of spherical astronomy with pictures wrapped round them: `sin(alt) = sin φ sin δ + cos φ cos δ cos H`, and `cos H₀ = −tan φ tan δ` for the half-day length. `halfDayAngle` returns `polar: 'day' | 'night'` rather than failing when `|cos H₀| > 1` — the midnight sun and the polar night are the interesting answers, not error cases.
-
-Checked against known values: equator at the March equinox → 12.00 h and a noon sun at 89.7°; **London at the June solstice → 16.4 h and 61.95°** (exactly 90 − 51.5 + 23.45); 70°N → midnight sun in June and polar night in December, with the December noon sun 3.4° *below* the horizon. Sydney in December → 14.3 h.
-
-Both canvases are plain `WebGLRenderer`s with `alpha: true` sized from their grid cells, disposed by `removeSunPathMode()`. Play runs a year in ~9 s; `dt` is capped at 0.1 s so a frame hitch can't jump the date.
+**From orbit is gone**, UI and code. It was a camera in a place rather than a scene framed to fit,
+and it never worked.
 
 ## Country facts (neighbours, coastline, islands)
 

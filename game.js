@@ -1148,6 +1148,8 @@ const QUIZ_MODES = {
         autoRotate: false,
         drawBorderMode: true    // trace the missing outline; scored by distance to the real one
     },
+    // The same mode under its old key, so an existing link still works. Sun & Moon's key is the
+    // one on the landing page and in the top bar.
     'sun-path': {
         name: 'Sun Path',
         quizList: quizCountries,
@@ -1173,7 +1175,12 @@ const QUIZ_MODES = {
         itemLabel: 'place',
         itemLabelPlural: 'places',
         autoRotate: false,
-        sunMoonMode: true       // view-only: day/night, terminator, sub-solar and sub-lunar points
+        // MERGED. Sun & Moon and Sun Path were one subject looked at from two places, and the
+        // sunrise-line pane was already a small copy of Sun & Moon's map. So this key — the one
+        // with the landing tile and the top-bar slot — now opens the four-pane view, with that
+        // pane doing the whole of what the old page did: terminator, twilight, the sub-solar and
+        // sub-lunar points, the tropics, the zones, and the satellite imagery.
+        sunPathMode: true
     },
     'spaceship': {
         name: 'Where Is My Spaceship?',
@@ -10111,6 +10118,82 @@ function sunPathNow() {
     };
 }
 
+// Which of the panes are on. Any of the four can go: a person watching the sunrise line move
+// through a year does not want three quarters of the screen given to the other three, and the
+// dome and the ground view are two ways of saying the same thing that are worth seeing one at a
+// time as well as together.
+const SUNPATH_PANES = [
+    { key: 'dome',   cell: 'sun-path-dome-cell',    label: 'Sky above you' },
+    { key: 'globe',  cell: 'sun-path-globe-cell',   label: 'Earth in space' },
+    { key: 'ground', cell: 'sun-path-horizon-cell', label: 'From the ground' },
+    { key: 'map',    cell: 'sun-path-map-cell',     label: 'Sunrise line' }
+];
+
+// Show or hide the cells and let what is left fill the stage. The count goes on the stage as a
+// data attribute and the CSS does the rest; the only thing that cannot be expressed in CSS is
+// which cell should span two columns when there are three, so that one is marked here.
+function syncSunPathPanes() {
+    if (!sunPathState) return;
+    const stage = document.getElementById('sun-path-stage');
+    if (!stage) return;
+    const on = SUNPATH_PANES.filter(p => sunPathState.panes[p.key] !== false);
+    SUNPATH_PANES.forEach(p => {
+        const cell = document.getElementById(p.cell);
+        if (cell) { cell.hidden = sunPathState.panes[p.key] === false; cell.classList.remove('sp-wide'); }
+    });
+    if (on.length === 3) {
+        const last = document.getElementById(on[2].cell);
+        if (last) last.classList.add('sp-wide');
+    }
+    stage.dataset.shown = String(on.length || 1);
+    SUNPATH_PANES.forEach(p => {
+        const box = document.getElementById('sp-pane-' + p.key);
+        if (box) box.checked = sunPathState.panes[p.key] !== false;
+    });
+    // The canvases are sized from their cells, so they have to be re-measured after the cells
+    // have been resized — and the SVG panes derive their viewBox from the cell aspect too.
+    requestAnimationFrame(() => {
+        if (!sunPathState) return;
+        sizeSunPathCanvases();
+        updateSunPath();
+    });
+}
+
+// ---- the moon, on Sun Path's own clock ----
+// Sun Path keeps a day-of-year and an hour rather than a Date, because everything it draws about
+// the SUN comes out of two angles and needs no calendar. The moon does need one: its position is
+// a function of the actual date, not of the declination. So the clock is turned into a UTC Date
+// on demand, and the moon is then read off the same machinery Sun & Moon uses.
+function sunPathDate(now) {
+    const year = new Date().getUTCFullYear();
+    const ms = Date.UTC(year, 0, 1) + (now.day - 1) * 86400000 + now.hour * 3600000;
+    return new Date(ms);
+}
+
+// The moon's altitude and azimuth for the observer, its illuminated fraction, and which limb is
+// lit. A body's sub-point IS its declination and the longitude it is overhead, so the local hour
+// angle is just the observer's longitude minus that — the same relation the sun's own hour angle
+// has here, which is why `sunAltitude` and `sunAzimuth` can be handed the moon unchanged.
+function sunPathMoonNow(now) {
+    if (typeof lunarPosition !== 'function') return null;
+    const date = sunPathDate(now);
+    const m = lunarPosition(date);
+    if (!m || !m.sub) return null;
+    const dec = m.sub[1];
+    const H = ((now.lon - m.sub[0] + 540) % 360) - 180;
+    const ph = moonPhase(date);
+    return {
+        alt: sunAltitude(now.lat, dec, H),
+        az: sunAzimuth(now.lat, dec, H),
+        sub: m.sub, dec, H,
+        k: ph.fraction,
+        // Waxing has the sun to its west in the sky, so the lit limb faces the other way from a
+        // waning moon. One sign is all the drawing needs.
+        limb: ph.elongation < 180 ? 1 : -1,
+        phase: phaseName(ph.elongation)
+    };
+}
+
 function renderSunPathMode() {
     gameState.questionType = 'sun-path';
     gameState.scrollLocked = true;
@@ -10123,16 +10206,22 @@ function renderSunPathMode() {
     restart.textContent = 'Exit';
     restart.onclick = goHome;
     document.getElementById('question-text').innerHTML =
-        '<strong>Sun Path</strong> — one moment, four views: the sky above you, the earth in ' +
-        'space, the view from the ground, and the sunrise line. Click the map to move.';
+        '<strong>Sun &amp; Moon</strong> — one moment, four views: the sky above you, the earth in ' +
+        'space, the view from the ground, and the sunrise line. Click the map to move; switch ' +
+        'any view off to give the rest the screen.';
 
     const today = new Date();
     const day = Math.floor((today - new Date(today.getUTCFullYear(), 0, 0)) / 86400000);
     if (!sunPathState) {
-        sunPathState = { lat: 51, lon: 0, day, hour: 12, playing: false, raf: null, mode: 'day' };
+        sunPathState = { lat: 51, lon: 0, day, hour: 12, playing: false, raf: null, mode: 'day',
+                         panes: { dome: true, globe: true, ground: true, map: true },
+                         trackSun: true, showMoon: false, satellite: false,
+                         tropics: true, dayLengths: true, zones: false };
     }
+    if (!sunPathState.panes) sunPathState.panes = { dome: true, globe: true, ground: true, map: true };
     buildSunPathStage();
     buildSunPathPanel();
+    syncSunPathPanes();
     updateSunPath();
 }
 
@@ -10174,6 +10263,7 @@ function buildSunPathStage() {
     const resetBtn = document.getElementById('sun-path-view-reset');
     if (resetBtn) resetBtn.addEventListener('click', resetSunPathView);
     buildSunPathMap();
+    wireSunPathGroundDrag();
     withThree(() => { ensureSunPathThree(); updateSunPath(); });
     if (!sunPathState.resizeBound) {
         sunPathState.resizeBound = true;
@@ -10190,6 +10280,36 @@ function buildSunPathStage() {
         });
         stage.querySelectorAll('.sun-path-cell').forEach(c => sunPathState.ro.observe(c));
     }
+}
+
+// Panning the ground view by hand, for when it is not locked on the sun. Degrees per pixel is
+// taken from the pane's own scale, so a drag moves the view by exactly the angle it moves the
+// picture — the same equal-angle contract the projection itself keeps.
+function wireSunPathGroundDrag() {
+    const el = document.getElementById('sun-path-horizon');
+    if (!el || el.dataset.dragWired) return;
+    el.dataset.dragWired = '1';
+    let from = null;
+    el.style.touchAction = 'none';
+    el.addEventListener('pointerdown', e => {
+        if (!sunPathState || sunPathState.trackSun) return;
+        const r = el.getBoundingClientRect();
+        from = { x: e.clientX, y: e.clientY, w: r.width || 1,
+                 az: sunPathState.groundAz == null ? sunPathNow().az : sunPathState.groundAz,
+                 el: sunPathState.groundEl || 0 };
+        try { el.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+    });
+    el.addEventListener('pointermove', e => {
+        if (!from || !sunPathState) return;
+        const perPx = GROUND_FOV / from.w;
+        sunPathState.groundAz = ((from.az - (e.clientX - from.x) * perPx) % 360 + 360) % 360;
+        sunPathState.groundEl = Math.max(-80, Math.min(80, from.el + (e.clientY - from.y) * perPx));
+        updateSunPath();
+    });
+    const stop = () => { from = null; };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('pointerleave', stop);
 }
 
 // ---- three.js: the dome and the globe ----
@@ -10400,7 +10520,12 @@ function applySunPathDomeCamera() {
     const th = sunPathState && sunPathState.three && sunPathState.three.dome;
     if (!th) return;
     const o = sunPathState.domeView || SUNPATH_DOME_DEFAULT;
-    const az = o.az * DEG, el = Math.max(-85, Math.min(85, o.el)) * DEG;
+    // TRACK SUN swings the camera round the ground's normal so it always looks along the sun's
+    // own compass bearing — the dome's answer to the ground pane's locked camera, and the reason
+    // the two panes agree about what "over there" means. The drag still works: it is an offset
+    // from the sun's bearing rather than from north.
+    const track = sunPathState.trackSun ? (sunPathState.sunAz || 0) : 0;
+    const az = (o.az + track) * DEG, el = Math.max(-85, Math.min(85, o.el)) * DEG;
     const d = th.frameDist || th.camera.position.length() || 4.4;
     th.camera.position.set(Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
     th.camera.up.set(0, 1, 0);
@@ -10464,19 +10589,6 @@ function sizeSunPathCanvases() {
         v.halfH = 0;
     });
     sunPathAutoFrame();
-    // The orbit pane sizes the same way but keeps its own aim (updateSunPathOrbit) — it is a
-    // camera in a place, not a scene framed to fit.
-    const o = sunPathState.orbit;
-    if (o) {
-        o.canvas.style.width = '';
-        o.canvas.style.height = '';
-        const r = o.cell.getBoundingClientRect();
-        const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
-        o.renderer.setSize(w, h, false);
-        o.camera.aspect = w / h;
-        o.camera.updateProjectionMatrix();
-        renderSunPathOrbit();
-    }
     renderSunPathThree();
 }
 
@@ -10572,9 +10684,14 @@ function buildDomeScene() {
         new T.SphereGeometry(1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2),
         new T.MeshBasicMaterial({ color: themeColor('--ocean-1', '#aebfca'), transparent: true,
                                   opacity: 0.12, side: T.DoubleSide, depthWrite: false })));
-    s.add(new T.Mesh(
+    // Kept on the state: the satellite checkbox re-textures this disc rather than rebuilding
+    // the scene, and a north-up patch of real ground has to be able to follow the observer.
+    const groundDisc = new T.Mesh(
         new T.CircleGeometry(1, 64).rotateX(-Math.PI / 2),
-        new T.MeshBasicMaterial({ color: themeColor('--land', '#cbc3a4'), transparent: true, opacity: 0.92 })));
+        new T.MeshBasicMaterial({ color: themeColor('--land', '#cbc3a4'), transparent: true, opacity: 0.92 }));
+    s.add(groundDisc);
+    sunPathState.domeGround = groundDisc;
+    refreshSunPathDomeGround();
 
     // The compass rose on the ground: the two cardinal axes plus a ring of ticks, so an
     // azimuth can actually be read off rather than guessed.
@@ -10687,6 +10804,24 @@ function updateDomeScene(now) {
         const lab = makeLabel(`${(24 - dayH).toFixed(1)} h of night`, '#b9c4d6', 0.12);
         lab.position.copy(nightRun.pts[Math.floor(nightRun.pts.length / 2)].clone().multiplyScalar(1.16));
         th.dyn.add(lab);
+    }
+
+    // The moon, on the same dome and at the same instant, when it is asked for. Pale and small:
+    // it is here to say where it is relative to the sun, which is the thing about the moon that
+    // is genuinely hard to picture, and it must not compete with the arc.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m) {
+            const mp = altAzVector(m.alt, m.az).multiplyScalar(1.004);
+            const ball = new T.Mesh(new T.SphereGeometry(0.028, 16, 12),
+                new T.MeshBasicMaterial({ color: m.alt >= 0 ? 0xe8e6df : 0x8f95a3,
+                                          transparent: true, opacity: m.alt >= 0 ? 1 : 0.5 }));
+            ball.position.copy(mp);
+            th.dyn.add(ball);
+            const lab = makeLabel(`moon ${(m.k * 100).toFixed(0)}%`, '#d6dbe6', 0.1);
+            lab.position.copy(mp.clone().multiplyScalar(1.1));
+            th.dyn.add(lab);
+        }
     }
 
     // The sun itself, at the current hour, with its ray aimed at the OBSERVER rather than
@@ -10820,6 +10955,66 @@ function buildGlobeScene() {
 // The canvas itself, with no reference to any particular pane — so a second Earth-in-space
 // (the Read the Daylight reveal) can be built from the same world without owning Sun Path's
 // state. Returns null while the land features are still loading.
+// ---- the satellite imagery ----
+// One Blue Marble, shared by every pane that can use it: the earth in space, the dome's ground
+// disc and the horizon's ground fill. It is the same 2048x1024 equirectangular the orbital view
+// keeps as its base sphere, so nothing new is downloaded and nothing new is committed.
+//
+// The night side is DERIVED rather than fetched. NASA's Black Marble is a separate 60 MB image
+// and there is nowhere to put it; darkening and cooling the day image gives the same reading at
+// the size these panes are drawn — the terminator is the thing being looked at, not the city
+// lights. `scripts/build-earth-night.py` fetches the real one for anybody who wants it, and it
+// is picked up automatically if it is there.
+const SUNPATH_DAY_TEX = 'data/textures/earth-bmng-2048.jpg';
+const SUNPATH_NIGHT_TEX = 'data/textures/earth-night-2048.jpg';
+let sunPathSat = { day: null, night: null, tried: false };
+
+// Calls back ONLY when the image arrives. A failed load calls back never, and that is the point:
+// the caller's callback re-runs the draw, so calling it on failure with nothing loaded sends it
+// straight back here, and back again — a synchronous loop that blew the stack the first time the
+// checkbox was ticked before the file had landed.
+function ensureSunPathSat(cb) {
+    if (sunPathSat.day) { if (cb) cb(); return; }
+    if (sunPathSat.tried) return;
+    sunPathSat.tried = true;
+    const load = (url, key, done) => {
+        const im = new Image();
+        im.onload = () => { sunPathSat[key] = im; done(); };
+        im.onerror = () => done();
+        im.src = url;
+    };
+    // The night image is optional; the day one is what decides whether satellite works at all.
+    load(SUNPATH_NIGHT_TEX, 'night', () => {
+        load(SUNPATH_DAY_TEX, 'day', () => {
+            // Left true on failure. Retrying on every draw would hammer a 404 sixty times a second.
+            if (cb) cb();
+        });
+    });
+}
+
+// A square patch of the world around one point, north up, at a given angular half-width. Used
+// for the ground under the observer in the two first-person panes: a few hundred kilometres of
+// real surface rather than a flat fill.
+function sunPathGroundPatch(lat, lon, spanDeg, px) {
+    const img = sunPathSat.day;
+    if (!img) return null;
+    const N = px || 512;
+    const cv = document.createElement('canvas');
+    cv.width = N; cv.height = N;
+    const ctx = cv.getContext('2d');
+    const sx = (lon + 180) / 360 * img.width;
+    const sy = (90 - lat) / 180 * img.height;
+    // Longitude degrees shrink with latitude, so the patch stays SQUARE ON THE GROUND rather
+    // than square in the image — without it the ground under an observer at 70 degrees north is
+    // stretched to three times its width.
+    const halfY = spanDeg / 180 * img.height;
+    const halfX = halfY / Math.max(0.15, Math.cos(lat * DEG));
+    // Drawn three times so a patch straddling the antimeridian wraps instead of running out.
+    for (let k = -1; k <= 1; k++)
+        ctx.drawImage(img, sx - halfX + k * img.width, sy - halfY, halfX * 2, halfY * 2, 0, 0, N, N);
+    return cv;
+}
+
 function sunPathEarthCanvas(features) {
     const feats = features || sunPathState && sunPathState.landFeatures || gameState.countries || [];
     if (!feats.length) return null;
@@ -10827,6 +11022,12 @@ function sunPathEarthCanvas(features) {
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = Hh;
     const ctx = cv.getContext('2d');
+    // Satellite, when it is on and the image is here. The vector map is not a fallback anybody
+    // should be ashamed of — it is the clearer of the two at this size — so it stays the default.
+    if (sunPathState && sunPathState.satellite && sunPathSat.day) {
+        ctx.drawImage(sunPathSat.day, 0, 0, W, Hh);
+        return cv;
+    }
     ctx.fillStyle = '#9fb8cc';                    // .sp-map-ocean
     ctx.fillRect(0, 0, W, Hh);
     ctx.save();
@@ -10855,13 +11056,48 @@ function applyEarthTexture(mesh, cv) {
     mesh.material.needsUpdate = true;
 }
 
-function refreshSunPathEarthTexture() {
+function refreshSunPathEarthTexture(force) {
     const th = sunPathState && sunPathState.three && sunPathState.three.globe;
     if (!window.THREE || !th || !th.earth) return;
+    // The image arrives over a load event, so a first call with satellite on has nothing to draw
+    // yet: ask for it and come back. `force` is the checkbox's own call, which must not be
+    // short-circuited by a texture that is already painted.
+    if (sunPathState.satellite && !sunPathSat.day) {
+        ensureSunPathSat(() => { if (sunPathState) { refreshSunPathEarthTexture(true); updateSunPath(); } });
+        return;                      // nothing to paint yet; the callback comes back here
+    }
     const cv = sunPathEarthCanvas();
     if (!cv) return;
     applyEarthTexture(th.earth, cv);
     sunPathState.earthTexCanvas = cv;
+    // The dome's ground disc is the same imagery seen from a metre up.
+    refreshSunPathDomeGround();
+}
+
+// The ground under the observer in the dome pane: a patch of real surface when satellite is on,
+// the flat land colour when it is not.
+const SUNPATH_PATCH_DEG = 2.2;      // about 250 km across, which is what a dome this size implies
+function refreshSunPathDomeGround() {
+    const T = window.THREE;
+    const disc = sunPathState && sunPathState.domeGround;
+    if (!T || !disc) return;
+    const want = !!(sunPathState.satellite && sunPathSat.day);
+    if (!want) {
+        if (disc.material.map) { disc.material.map.dispose(); disc.material.map = null; }
+        disc.material.color = new T.Color(themeColor('--land', '#cbc3a4'));
+        disc.material.opacity = 0.92;
+        disc.material.needsUpdate = true;
+        return;
+    }
+    const cv = sunPathGroundPatch(sunPathState.lat, sunPathState.lon, SUNPATH_PATCH_DEG);
+    if (!cv) return;
+    const tex = new T.CanvasTexture(cv);
+    if (T.SRGBColorSpace) tex.colorSpace = T.SRGBColorSpace;
+    if (disc.material.map) disc.material.map.dispose();
+    disc.material.map = tex;
+    disc.material.color = new T.Color(0xffffff);
+    disc.material.opacity = 1;
+    disc.material.needsUpdate = true;
 }
 
 // ---- the Earth-in-space pane, as a reusable scene ----
@@ -11157,7 +11393,10 @@ function updateGlobeScene(now) {
 // Not a fisheye and not the whole track: a 60-degree window that follows the sun round,
 // which is what a person standing there would actually see. Below the horizon the sun keeps
 // going on a dotted line, so "it is coming back up over there" stays visible.
-const GROUND_FOV = 104;         // a wide-angle lens: 60 was a keyhole, and the track left it fast
+// Wider than any real lens, and it can afford to be: with equal angles per pixel there is no
+// edge penalty for opening it up, which is exactly what a rectilinear camera could not do. 150
+// degrees puts most of a day's arc on screen at once without stretching any of it.
+const GROUND_FOV = 150;
 
 // The sky, keyed on the sun's altitude. Two colours per stop — zenith and horizon — because a
 // flat fill can't show the thing that actually makes a sunset read as a sunset: the warm band
@@ -11208,22 +11447,34 @@ function drawSunPathHorizon(now) {
     const W = 400;
     const H = box.width > 0 ? Math.round(W * Math.max(0.4, Math.min(2.2, box.height / box.width))) : 220;
     svgH.attr('viewBox', `0 0 ${W} ${H}`);
-    // A TRUE rectilinear camera locked on the sun, with the zenith as its up reference.
+    // EQUAL ANGLES, EQUAL PIXELS. A degree of sky is the same number of pixels wherever it sits
+    // in the frame, which is the only sense in which a wide-angle view can be called undistorted,
+    // and the only one that matters here: the whole point of the pane is the SHAPE of the arc,
+    // measured in degrees, and a projection that stretches the edges is drawing a different arc
+    // from the one the sky has.
     //
-    // What was here before was a local equirectangular plot: x from the azimuth difference, y
-    // from the altitude difference. That is fine while the sun is low and hopeless once it is
-    // not — azimuth runs away toward the zenith (at the equator on a solstice it swings the
-    // whole 180° in minutes), so the track sheared and the camera lurched. A gnomonic projection
-    // about the sun's own direction has none of that: great circles stay straight, the arc is
-    // smooth everywhere, and at the zenith the frame simply rolls 180°, which is exactly what a
-    // camera tracking the sun through the zenith does.
-    const focal = (W / 2) / Math.tan(GROUND_FOV / 2 * DEG);
-    const altR = now.alt * DEG, azR = now.az * DEG;
+    // This replaces a rectilinear (gnomonic) camera. Gnomonic is the photographer's undistorted
+    // lens — straight lines stay straight — but it pays for that with a tan(), and across a 104
+    // degree field tan() magnifies the edges more than threefold. That edge stretch is what reads
+    // as a fisheye bulge, even though gnomonic is the exact opposite of a fisheye; it also
+    // flattened the sun's arc toward the frame edges, which is the one thing this pane exists to
+    // show honestly.
+    //
+    // What it costs: the horizon is a great circle and no longer a straight line, so it is
+    // sampled and drawn as a shallow curve. That is what a wide panorama actually looks like.
+    const kpx = (W / 2) / (GROUND_FOV / 2);                 // pixels per degree, both axes
+    // Where the camera looks. Tracking, it is locked on the sun and the sun sits dead centre;
+    // not tracking, it is a compass bearing and an elevation the viewer sets by dragging, and the
+    // sun crosses the frame the way it crosses a window.
+    const camAlt = sunPathState.trackSun ? now.alt : (sunPathState.groundEl || 0);
+    const camAz = sunPathState.trackSun ? now.az
+        : ((sunPathState.groundAz == null ? now.az : sunPathState.groundAz) + 360) % 360;
+    const altR = camAlt * DEG, azR = camAz * DEG;
     const dirOf = (aAlt, aAz) => {                          // unit vector in (east, north, up)
         const ca = Math.cos(aAlt * DEG);
         return [ca * Math.sin(aAz * DEG), ca * Math.cos(aAz * DEG), Math.sin(aAlt * DEG)];
     };
-    const f = dirOf(now.alt, now.az);                       // where the camera looks
+    const f = dirOf(camAlt, camAz);                        // where the camera looks
     // right = normalize(f × zenith), which reduces to a purely horizontal vector depending on
     // AZIMUTH ALONE — so it stays well defined right up to the zenith, where the azimuth's own
     // 180° flip rolls the picture over of its own accord.
@@ -11232,15 +11483,15 @@ function drawSunPathHorizon(now) {
     const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     const project = (alt, az) => {
         const p = dirOf(alt, az);
-        const d = dot3(p, f);
-        if (d <= 0.02) return null;                         // behind the camera
-        return [W / 2 + focal * dot3(p, right) / d, H / 2 - focal * dot3(p, upc) / d];
+        const ax = Math.atan2(dot3(p, right), dot3(p, f)) / DEG;    // degrees left/right of centre
+        const ay = Math.asin(Math.max(-1, Math.min(1, dot3(p, upc)))) / DEG;   // degrees up/down
+        if (Math.abs(ax) > 179) return null;                        // directly behind
+        return [W / 2 + kpx * ax, H / 2 - kpx * ay];
     };
-    // The horizon is a great circle, so in this projection it is a straight line — and because
-    // `right` is horizontal, a level one, at y = H/2 + focal·tan(alt).
-    const clampAlt = a => Math.max(-89.5, Math.min(89.5, a));
-    const horizonY = H / 2 + focal * Math.tan(clampAlt(now.alt) * DEG);
-    const altToY = a => H / 2 - focal * Math.tan(clampAlt(a - now.alt) * DEG);
+    // On the centre column the vertical axis IS altitude, exactly, so the tick scale is linear
+    // and needs no trigonometry at all.
+    const altToY = a => H / 2 - kpx * (a - camAlt);
+    const horizonY = altToY(0);
 
     // Sky: the gradient is anchored to the HORIZON rather than to the frame, so the warm band
     // stays where the sun actually is however the camera is pitched or rolled.
@@ -11259,7 +11510,7 @@ function drawSunPathHorizon(now) {
     {
         const pts = [];
         for (let t = -GROUND_FOV; t <= GROUND_FOV; t += 1.5) {
-            const az = now.az + t;
+            const az = camAz + t;
             const q = project(horizonReliefDeg(az), az);
             if (q && q[0] > -W && q[0] < 2 * W) pts.push(q);
         }
@@ -11268,12 +11519,44 @@ function drawSunPathHorizon(now) {
             let d = `M${(-W).toFixed(1)},${H + 80}L${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
             for (let i = 1; i < pts.length; i++) d += `L${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)}`;
             d += `L${(2 * W).toFixed(1)},${H + 80}Z`;
-            svgH.append('path').attr('d', d).attr('fill', groundCol).attr('class', 'sp-ground-fill');
+            // The satellite ground is a PATTERN over the same polygon, not a re-projection of the
+            // imagery into perspective: this is a wide panorama of a horizon a few kilometres
+            // away, and a photograph of that ground would show almost none of what an
+            // equirectangular tile of it contains. What it is honestly saying is "this is the
+            // land you are standing on", tinted by the same day/night curve as the flat fill so
+            // it still goes dark at night.
+            const patch = sunPathState.satellite ? sunPathGroundPatch(now.lat, now.lon, 1.1, 256) : null;
+            if (patch) {
+                const pid = 'sp-ground-tex';
+                const pat = defs.append('pattern').attr('id', pid)
+                    .attr('patternUnits', 'userSpaceOnUse')
+                    .attr('width', W * 0.62).attr('height', W * 0.62)
+                    .attr('x', 0).attr('y', horizonY);
+                pat.append('image').attr('href', patch.toDataURL('image/jpeg', 0.82))
+                    .attr('width', W * 0.62).attr('height', W * 0.62)
+                    .attr('preserveAspectRatio', 'xMidYMid slice');
+                svgH.append('path').attr('d', d).attr('fill', `url(#${pid})`).attr('class', 'sp-ground-fill');
+                // Night is the same wash the flat fill uses, laid over the imagery.
+                svgH.append('path').attr('d', d).attr('fill', '#0d1017')
+                    .attr('opacity', (1 - dayness) * 0.86).attr('class', 'sp-ground-night');
+            } else {
+                svgH.append('path').attr('d', d).attr('fill', groundCol).attr('class', 'sp-ground-fill');
+            }
         }
     }
-    if (horizonY > -60 && horizonY < H + 60) {
-        svgH.append('line').attr('x1', 0).attr('x2', W).attr('y1', horizonY).attr('y2', horizonY)
-            .attr('class', 'sp-horizon');
+    // The horizon, sampled rather than ruled: it is a great circle, and in an equal-angle
+    // panorama a great circle is a shallow curve unless it runs through the centre.
+    if (horizonY > -80 && horizonY < H + 80) {
+        const hp = [];
+        for (let t = -GROUND_FOV; t <= GROUND_FOV; t += 1.5) {
+            const q = project(0, camAz + t);
+            if (q && q[0] > -W && q[0] < 2 * W) hp.push(q);
+        }
+        if (hp.length > 1) {
+            hp.sort((a, b) => a[0] - b[0]);
+            svgH.append('path').attr('class', 'sp-horizon').attr('fill', 'none')
+                .attr('d', 'M' + hp.map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join('L'));
+        }
     }
 
     // The sun's track, cut into RUNS. Sorting samples into one above/below pair concatenates
@@ -11313,22 +11596,48 @@ function drawSunPathHorizon(now) {
             const q = project(0, az);
             if (!q || q[0] < 6 || q[0] > W - 6) continue;
             const card = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[az];
+            // Hung off the horizon WHERE IT ACTUALLY IS at that bearing rather than off one ruled
+            // line: the curve means the two part company toward the edges of a wide frame.
+            const hy = q[1];
             svgH.append('line').attr('class', 'sp-tick').attr('x1', q[0]).attr('x2', q[0])
-                .attr('y1', horizonY).attr('y2', horizonY + (card ? 10 : 5));
+                .attr('y1', hy).attr('y2', hy + (card ? 10 : 5));
             if (card || az % 30 === 0) {
                 svgH.append('text').attr('class', card ? 'sp-compass' : 'sp-ticklabel')
-                    .attr('x', q[0]).attr('y', horizonY + (card ? 24 : 18)).attr('text-anchor', 'middle')
+                    .attr('x', q[0]).attr('y', hy + (card ? 24 : 18)).attr('text-anchor', 'middle')
                     .text(card || az + '°');
             }
         }
     }
 
-    // The sun itself — dead centre by construction, since the camera is pointed at it.
-    svgH.append('circle').attr('class', now.alt >= 0 ? 'sp-sun' : 'sp-sun below')
-        .attr('cx', W / 2).attr('cy', H / 2).attr('r', 9);
-    svgH.append('text').attr('class', 'sp-altlabel').attr('x', W / 2)
-        .attr('y', H / 2 - 14 < 12 ? H / 2 + 22 : H / 2 - 14)
-        .attr('text-anchor', 'middle').text(`${now.alt.toFixed(0)}°`);
+    // The moon, when it is asked for: same camera, same projection, its own altitude and azimuth
+    // for this instant. It is drawn as a disc with its lit fraction, which is the one thing about
+    // the moon that changes fast enough to be worth watching alongside the sun.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m) {
+            const q = project(m.alt, m.az);
+            if (q && q[0] > -20 && q[0] < W + 20) {
+                const g2 = svgH.append('g').attr('class', m.alt >= 0 ? 'sp-moon' : 'sp-moon below')
+                    .attr('transform', `translate(${q[0].toFixed(1)},${q[1].toFixed(1)})`);
+                g2.append('circle').attr('r', 7).attr('class', 'sp-moon-disc');
+                g2.append('ellipse').attr('rx', (7 * Math.abs(1 - 2 * m.k)).toFixed(2)).attr('ry', 7)
+                    .attr('class', m.k > 0.5 ? 'sp-moon-lit' : 'sp-moon-dark');
+                g2.append('path').attr('class', 'sp-moon-half')
+                    .attr('d', `M0,-7 A7,7 0 0,${m.limb > 0 ? 1 : 0} 0,7 Z`);
+            }
+        }
+    }
+
+    // The sun. Dead centre while the camera is tracking it, and wherever it happens to be when
+    // it is not — which is the whole difference the switch makes.
+    const sq = project(now.alt, now.az);
+    if (sq && sq[0] > -20 && sq[0] < W + 20) {
+        svgH.append('circle').attr('class', now.alt >= 0 ? 'sp-sun' : 'sp-sun below')
+            .attr('cx', sq[0]).attr('cy', sq[1]).attr('r', 9);
+        svgH.append('text').attr('class', 'sp-altlabel').attr('x', sq[0])
+            .attr('y', sq[1] - 14 < 12 ? sq[1] + 22 : sq[1] - 14)
+            .attr('text-anchor', 'middle').text(`${now.alt.toFixed(0)}°`);
+    }
 }
 
 // ---- Where in the orbit we are ----
@@ -11365,119 +11674,11 @@ function drawSunPathOrbitInset(now) {
     svg.append('circle').attr('class', 'sp-orb-earth').attr('cx', e[0]).attr('cy', e[1]).attr('r', 4.5);
 }
 
-// ---- GROUND, swapped for ORBIT ----
-// The same viewpoint moved up: still looking along the sun's azimuth from over the observer,
-// but from 700 km, where the terminator is a visible line across the planet rather than a
-// colour change in the sky. Borrows the spaceship mode's Blue Marble texture and its
-// (R+h)/R distance convention; deliberately NOT its atmosphere shell or cap-tile machinery —
-// those exist to make a photographic guessing view, and here they would only obscure the
-// day/night line this pane is about.
-const SUN_PATH_ORBIT_KM = 700;
-// Wider than the spaceship mode's 48°, and deliberately so. From 700 km the horizon sits 64°
-// off nadir, so a 48° lens can frame the observer's own spot OR the curved limb but not both —
-// and this pane needs both: the spot is where you were standing a moment ago in the ground view,
-// and the limb is where the terminator reads. 74° puts nadir and the limb inside one frame.
-const SUN_PATH_ORBIT_FOV = 74;
 
-function ensureSunPathOrbit() {
-    const T = window.THREE;
-    const cell = document.getElementById('sun-path-horizon-cell');
-    if (!T || !cell || !sunPathState || sunPathState.orbit) return;
-    const canvas = document.createElement('canvas');
-    canvas.className = 'sp-orbit-canvas';
-    cell.appendChild(canvas);
-    const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    const scene = new T.Scene();
-    const camera = new T.PerspectiveCamera(SUN_PATH_ORBIT_FOV, 1.6, 0.001, 50);
 
-    const mat = new T.MeshLambertMaterial({ color: 0xffffff });
-    new T.TextureLoader().load(EARTH_TEX_LOW, tex => {
-        if (T.SRGBColorSpace) tex.colorSpace = T.SRGBColorSpace;
-        mat.map = tex; mat.needsUpdate = true;
-        if (sunPathState && sunPathState.orbit) renderSunPathOrbit();
-    }, undefined, () => {
-        // No Blue Marble available (a deploy without the texture): fall back to the same drawn
-        // map the other two panes use, so the pane is never a blank ball.
-        const cv = sunPathState && sunPathState.earthTexCanvas;
-        if (cv) { mat.map = new T.CanvasTexture(cv); mat.needsUpdate = true; renderSunPathOrbit(); }
-    });
-    const earth = new T.Mesh(new T.SphereGeometry(1, 96, 64), mat);
-    scene.add(earth);
-    const sun = new T.DirectionalLight(0xffffff, 2.9);
-    scene.add(sun);
-    scene.add(new T.AmbientLight(0x18202e, 0.9));
-    const pin = new T.Mesh(new T.SphereGeometry(0.006, 10, 10),
-        new T.MeshBasicMaterial({ color: 0xd05c4a }));
-    scene.add(pin);
-    sunPathState.orbit = { renderer, scene, camera, canvas, cell, earth, sun, pin, mat };
-    sizeSunPathCanvases();
-}
 
-function disposeSunPathOrbit() {
-    const o = sunPathState && sunPathState.orbit;
-    if (!o) return;
-    try { o.renderer.dispose(); } catch (_) { /* best effort */ }
-    if (o.mat && o.mat.map) { try { o.mat.map.dispose(); } catch (_) { /* best effort */ } }
-    if (o.canvas && o.canvas.parentNode) o.canvas.parentNode.removeChild(o.canvas);
-    sunPathState.orbit = null;
-}
 
-// Which of the two lives in the horizon cell right now.
-function syncSunPathGroundPane() {
-    if (!sunPathState) return;
-    const on = !!sunPathState.fromOrbit;
-    const svgEl = document.getElementById('sun-path-horizon');
-    if (svgEl) svgEl.style.display = on ? 'none' : '';
-    const cap = document.getElementById('sun-path-horizon-cap');
-    if (cap) cap.firstChild.nodeValue = on ? 'From orbit' : 'From the ground';
-    if (on) ensureSunPathOrbit(); else disposeSunPathOrbit();
-}
 
-function updateSunPathOrbit(now) {
-    const T = window.THREE, o = sunPathState && sunPathState.orbit;
-    if (!T || !o) return;
-    // Same frame as the Earth-in-space pane: the light is fixed at +X and the earth spins so
-    // that the sub-solar meridian faces it, which is what keeps the two panes telling one story.
-    o.earth.rotation.set(0, 0, 0);
-    o.earth.rotation.y = (now.H - now.lon) * DEG;
-    o.sun.position.set(50, 0, 0);
-
-    // The observer, in that same frame: latitude off the equator, longitude spun by hour angle.
-    // Same handedness as the globe pane — the -sin(H) is what makes the earth turn eastward.
-    const r = Math.cos(now.lat * DEG), y = Math.sin(now.lat * DEG);
-    const spin = now.H * DEG;
-    const up = new T.Vector3(Math.cos(spin) * r, y, -Math.sin(spin) * r).normalize();
-    // Tip the whole frame by the declination, exactly as the globe pane tips its holder.
-    const tilt = new T.Vector3(0, 0, 1);
-    up.applyAxisAngle(tilt, -now.dec * DEG);
-    o.earth.rotateOnWorldAxis(tilt, -now.dec * DEG);
-    o.pin.position.copy(up.clone().multiplyScalar(1.002));
-
-    const east = new T.Vector3(0, 1, 0).applyAxisAngle(tilt, -now.dec * DEG).cross(up).normalize();
-    const north = up.clone().cross(east).normalize();
-    // Look along the sun's azimuth, so this pane faces the same way the ground pane does.
-    const azv = north.clone().multiplyScalar(Math.cos(now.az * DEG))
-        .add(east.clone().multiplyScalar(Math.sin(now.az * DEG))).normalize();
-    const dist = 1 + SUN_PATH_ORBIT_KM / EARTH_R_KM;
-    o.camera.position.copy(up.clone().multiplyScalar(dist));
-    o.camera.up.copy(up);
-    // Split the difference between nadir and the limb, so both land inside the frame. Aiming AT
-    // the horizon (a surface point one horizon-angle away) put the limb dead centre and left
-    // three quarters of this wide pane in empty space; the spaceship mode's own tilt rule threw
-    // the observer's spot 3 frame-heights below the bottom edge.
-    const horizonAng = Math.asin(1 / dist) * 180 / Math.PI;
-    const offNadir = horizonAng * 0.5;
-    const view = up.clone().multiplyScalar(-Math.cos(offNadir * DEG))
-        .add(azv.clone().multiplyScalar(Math.sin(offNadir * DEG))).normalize();
-    o.camera.lookAt(o.camera.position.clone().add(view));
-    o.camera.updateProjectionMatrix();
-}
-
-function renderSunPathOrbit() {
-    const o = sunPathState && sunPathState.orbit;
-    if (o) o.renderer.render(o.scene, o.camera);
-}
 
 // ---- MAP: the sunrise line, clickable ----
 let sunPathMap = null;
@@ -11490,6 +11691,11 @@ function buildSunPathMap() {
     const proj = d3.geoEquirectangular().scale(W / (2 * Math.PI)).translate([W / 2, H / 2]).precision(0);
     const p = d3.geoPath().projection(proj);
     svgM.append('rect').attr('width', W).attr('height', H).attr('class', 'sp-map-ocean');
+    // The satellite basemap sits UNDER the vector coastlines rather than replacing them: the
+    // twilight caps drawn on top are what make it a day/night picture, and an outline still helps
+    // at this size. Its href is set per draw, since the projection may be rotated to follow the
+    // sun and the image has to move with it.
+    const sat = svgM.append('g').attr('class', 'sp-map-sat');
     const land = svgM.append('g');
     // Whatever features this pane draws are also what the Earth-in-space globe is textured
     // with, so they are stashed rather than just drawn — the two panes must be one planet.
@@ -11519,13 +11725,60 @@ function buildSunPathMap() {
         sunPathState.lon = ll[0];
         updateSunPath();
     });
-    sunPathMap = { svg: svgM, proj, path: p, dyn };
+    sunPathMap = { svg: svgM, proj, path: p, dyn, sat, land, W, H };
+}
+
+// The satellite basemap for the sunrise-line pane. The image is equirectangular and so is the
+// pane, so this is a straight blit — rolled sideways when the map is centred on the sun, which is
+// two draws of the same picture rather than a re-projection.
+//
+// The night side needs no image of its own: the twilight caps drawn over the top ARE the night.
+// Where a real Black Marble is present it is clipped to the 90 degree cap and laid under them, so
+// the dark half shows city lights instead of only being dark.
+function sunPathDrawSatellite(c0) {
+    const m = sunPathMap;
+    if (!m) return;
+    const on = !!(sunPathState.satellite);
+    if (!on) { m.sat.selectAll('*').remove(); m.satShown = false; m.satAt = null; return; }
+    if (!sunPathSat.day) {
+        ensureSunPathSat(() => { if (sunPathState) updateSunPath(); });
+        return;
+    }
+    if (m.satShown && m.satAt === c0 && !m.satDirty) return;
+    m.satDirty = false;
+    m.satShown = true;
+    m.satAt = c0;
+    m.sat.selectAll('*').remove();
+    const W = m.W, H = m.H;
+    // A rotation of c0 degrees east shifts the image left by that fraction of its width; two
+    // copies side by side cover whatever wraps round the edge.
+    const dx = -c0 / 360 * W;
+    const put = (href, cls) => {
+        [-1, 0, 1].forEach(k => {
+            m.sat.append('image').attr('class', cls)
+                .attr('href', href).attr('x', dx + k * W).attr('y', 0)
+                .attr('width', W).attr('height', H)
+                .attr('preserveAspectRatio', 'none');
+        });
+    };
+    put(sunPathSat.day.src, 'sp-map-sat-day');
+    m.sat.append('rect').attr('width', W).attr('height', H).attr('class', 'sp-map-sat-veil');
 }
 
 function drawSunPathMap(now) {
     if (!sunPathMap) return;
-    const { proj, path: p, dyn } = sunPathMap;
+    const { proj, path: p, dyn, sat, land } = sunPathMap;
     dyn.selectAll('*').remove();
+    // TRACK SUN centres the map on the sub-solar meridian, so the sunrise line stands still and
+    // the earth slides underneath it. Off, the map is the map and the line sweeps across it.
+    // Everything downstream measures longitude relative to `c0`, which is the centre either way.
+    const c0 = sunPathState.trackSun ? (((now.lon - now.H) + 540) % 360) - 180 : 0;
+    if ((sunPathMap.rot || 0) !== c0) {
+        sunPathMap.rot = c0;
+        proj.rotate([-c0, 0]);
+        land.selectAll('path').attr('d', f => p(f) || '');
+        sunPathMap.satDirty = true;
+    }
 
     // The sub-solar point for this day and hour, then the night cap around its antipode.
     // Hour angle is the observer's longitude MINUS the sub-solar one (H = lon - subLon), so
@@ -11535,11 +11788,34 @@ function drawSunPathMap(now) {
     const subLon = now.lon - now.H;
     const sun = [((subLon + 540) % 360) - 180, now.dec];
     const dark = antipode(sun);
-    const mapW = 400, lonToX = l => mapW / 2 + l * (mapW / 360);   // callers normalise; no wrap
+    // Longitudes are measured as an offset from the map's own centre, which is the only way the
+    // bars below stay right when the projection is rotated to follow the sun. `lonToX` therefore
+    // takes a DELTA rather than a longitude, and never wraps: a span ending exactly at the far
+    // edge has to land there rather than back at the near one.
+    const mapW = sunPathMap.W || 400, lonToX = dl => mapW / 2 + dl * (mapW / 360);
+    sunPathDrawSatellite(c0);
     [102, 96, 90].forEach((r, i) => {
         const d = p(d3.geoCircle().center(dark).radius(r)());
         if (d) dyn.append('path').attr('class', 'sp-map-night n' + i).attr('d', d);
     });
+    // City lights, if the optional Black Marble is present: clipped to the night cap, so it is
+    // the dark half of the world that lights up and the day half is untouched.
+    if (sunPathState.satellite && sunPathSat.night && sunPathSat.day) {
+        const capD = p(d3.geoCircle().center(dark).radius(90)());
+        if (capD) {
+            const cid = 'sp-night-clip';
+            let defs = sunPathMap.svg.select('defs');
+            if (defs.empty()) defs = sunPathMap.svg.append('defs');
+            defs.selectAll('#' + cid).remove();
+            defs.append('clipPath').attr('id', cid).append('path').attr('d', capD);
+            const W = sunPathMap.W, H = sunPathMap.H, dx = -c0 / 360 * W;
+            const gN = dyn.append('g').attr('clip-path', `url(#${cid})`).attr('class', 'sp-map-sat-night');
+            [-1, 0, 1].forEach(k => gN.append('image').attr('href', sunPathSat.night.src)
+                .attr('x', dx + k * W).attr('y', 0).attr('width', W).attr('height', H)
+                .attr('preserveAspectRatio', 'none'));
+        }
+    }
+
     const term = p(d3.geoCircle().center(dark).radius(90)());
     if (term) dyn.append('path').attr('class', 'sp-map-term').attr('d', term);
 
@@ -11549,6 +11825,11 @@ function drawSunPathMap(now) {
     // map — and they slide bodily westward with the sunlight while their proportions change only
     // with the date.
     sunPathParallels(now.lat).forEach(par => {
+        // The observer's own parallel is not furniture — it is where they are — so it survives
+        // the tropic-line switch, which is about the five fixed ones. (`you`, not `me`: the flag
+        // sunPathParallels actually sets. Guessing the name switched off the one line that
+        // should never go.)
+        if (!sunPathState.tropics && !par.you) return;
         const y = proj([0, par.lat]);
         if (!y || !isFinite(y[1])) return;
         const yy = y[1];
@@ -11559,7 +11840,7 @@ function drawSunPathMap(now) {
         // endpoints are normalised BEFORE they are mapped to x, and the mapping itself must not
         // wrap — a span ending at exactly +180° has to land at the right-hand edge, not back at
         // the left one, or every night bar measures the full width of the map.
-        const norm = l => ((l + 540) % 360) - 180;
+        const norm = l => ((l - c0 + 540) % 360) - 180;
         const spansFor = (l0, l1) => {
             const a = norm(l0), b = norm(l1);
             return b <= a ? [[a, 180], [-180, b]] : [[a, b]];
@@ -11575,7 +11856,7 @@ function drawSunPathMap(now) {
                     .attr('x1', x).attr('x2', x).attr('y1', yy - 3).attr('y2', yy + 3));
                 if (!widest || Math.abs(x1 - x0) > Math.abs(widest[1] - widest[0])) widest = [x0, x1];
             });
-            if (widest && Math.abs(widest[1] - widest[0]) > 26) {
+            if (sunPathState.dayLengths && widest && Math.abs(widest[1] - widest[0]) > 26) {
                 g.append('text').attr('class', 'sp-par-hrs' + (lit ? ' lit' : ' dark'))
                     .attr('x', (widest[0] + widest[1]) / 2).attr('y', yy - 3.5)
                     .attr('text-anchor', 'middle').text(`${hours.toFixed(1)} h`);
@@ -11589,6 +11870,24 @@ function drawSunPathMap(now) {
         }
         g.append('text').attr('class', 'sp-par-name').attr('x', 3).attr('y', yy - 3.5).text(par.name);
     });
+
+    // The moon: where it is overhead, and the line where it is rising or setting. Dotted, so it
+    // never reads as the sunrise line — the same distinction Sun & Moon draws.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m && m.sub) {
+            const ml = p(d3.geoCircle().center(antipode(m.sub)).radius(90)());
+            if (ml) dyn.append('path').attr('class', 'sp-map-moonline').attr('d', ml);
+            const mp = proj(m.sub);
+            if (mp) {
+                const g2 = dyn.append('g').attr('class', 'sp-map-moon')
+                    .attr('transform', `translate(${mp[0].toFixed(1)},${mp[1].toFixed(1)})`);
+                g2.append('circle').attr('r', 4.6).attr('class', 'sp-moon-disc');
+                g2.append('path').attr('class', 'sp-moon-half')
+                    .attr('d', `M0,-4.6 A4.6,4.6 0 0,${m.limb > 0 ? 1 : 0} 0,4.6 Z`);
+            }
+        }
+    }
 
     const sp = proj(sun);
     if (sp) dyn.append('circle').attr('class', 'sp-map-sun').attr('cx', sp[0]).attr('cy', sp[1]).attr('r', 5);
@@ -11623,11 +11922,16 @@ function updateSunPath() {
     if (!sunPathState) return;
     const now = sunPathNow();
 
-    if (sunPathState.fromOrbit) { updateSunPathOrbit(now); renderSunPathOrbit(); }
-    else drawSunPathHorizon(now);
+    drawSunPathHorizon(now);
     drawSunPathMap(now);
     drawSunPathOrbitInset(now);
     if (sunPathState.three) {
+        // The dome's camera depends on the sun when it is tracking, so it is re-aimed here rather
+        // than only when somebody drags it.
+        const wasAz = sunPathState.sunAz;
+        sunPathState.sunAz = now.az;
+        if (sunPathState.trackSun && Math.abs((wasAz == null ? 1e9 : wasAz) - now.az) > 0.05)
+            applySunPathDomeCamera();
         updateDomeScene(now);
         updateGlobeScene(now);
         sunPathAutoFrame();          // both panes zoom to whatever is actually in them
@@ -11701,8 +12005,26 @@ function buildSunPathPanel() {
                     <input type="range" id="sun-path-speed" min="-20" max="20" step="1" value="0">
                     <span class="sandbox-note" id="sun-path-speed-val"></span></label>
                 <div class="sandbox-nudge" id="sun-path-stops"></div>
-                <label class="sandbox-check"><input type="checkbox" id="sun-path-from-orbit">
-                    From orbit instead of the ground</label>
+                <div class="sp-panes" id="sun-path-panes">
+                    <span class="sp-group-lab">Views</span>
+                    ${SUNPATH_PANES.map(v => `<label class="sandbox-check">` +
+                        `<input type="checkbox" id="sp-pane-${v.key}" checked> ${v.label}</label>`).join('')}
+                </div>
+                <div class="sp-panes">
+                    <span class="sp-group-lab">Show</span>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-track-sun" checked>
+                        Track sun</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-show-moon">
+                        Show moon</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-satellite">
+                        Satellite</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-tropics" checked>
+                        Tropic lines</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-daylen" checked>
+                        Day lengths</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-zones">
+                        Time zones</label>
+                </div>
                 <label class="sandbox-check"><span>Figure</span>
                     <select id="sun-path-figure">${SUNPATH_FIGURE_STYLES.map(f =>
                         `<option value="${f.key}">${f.label}</option>`).join('')}</select></label>
@@ -11738,11 +12060,43 @@ function buildSunPathPanel() {
             rebuildSunPathDomeFigure();
             updateSunPath();
         });
-        document.getElementById('sun-path-from-orbit').addEventListener('change', function () {
-            sunPathState.fromOrbit = this.checked;
-            syncSunPathGroundPane();
-            updateSunPath();
+        SUNPATH_PANES.forEach(v => {
+            const box = document.getElementById('sp-pane-' + v.key);
+            if (box) box.addEventListener('change', function () {
+                sunPathState.panes[v.key] = this.checked;
+                // Never all four off: an empty stage is not a view of anything, and the way back
+                // from it is to tick a box you can no longer see the point of.
+                if (!SUNPATH_PANES.some(o => sunPathState.panes[o.key] !== false)) {
+                    sunPathState.panes[v.key] = true;
+                    this.checked = true;
+                }
+                syncSunPathPanes();
+            });
         });
+        const flag = (id, key, after) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', function () {
+                sunPathState[key] = this.checked;
+                if (after) after();
+                updateSunPath();
+            });
+        };
+        flag('sp-track-sun', 'trackSun', () => {
+            // Handing over where it is rather than snapping: turning tracking off leaves the
+            // camera exactly where tracking had it, so the switch reads as "stop following"
+            // rather than as a jump to somewhere else.
+            if (!sunPathState.trackSun) {
+                const n = sunPathNow();
+                sunPathState.groundAz = n.az;
+                sunPathState.groundEl = n.alt;
+            }
+            applySunPathDomeCamera();
+        });
+        flag('sp-show-moon', 'showMoon');
+        flag('sp-satellite', 'satellite', () => refreshSunPathEarthTexture(true));
+        flag('sp-tropics', 'tropics');
+        flag('sp-daylen', 'dayLengths');
+        flag('sp-zones', 'zones');
         document.getElementById('sun-path-play-day').addEventListener('click', () => toggleSunPathPlay('day'));
         document.getElementById('sun-path-play-year').addEventListener('click', () => toggleSunPathPlay('year'));
         document.getElementById('sun-path-here').addEventListener('click', () => {
@@ -11866,7 +12220,6 @@ function removeSunPathMode() {
     if (!sunPathState) return;
     if (sunPathState.raf) cancelAnimationFrame(sunPathState.raf);
     if (sunPathState.ro) { try { sunPathState.ro.disconnect(); } catch (_) { /* best effort */ } }
-    disposeSunPathOrbit();
     const th = sunPathState.three;
     if (th) {
         [th.dome, th.globe].forEach(v => {
@@ -13440,8 +13793,6 @@ function showFlagsSelector() {
 // short round — the whole point of which is that it starts fast — took three clicks to reach.
 // Sun & Moon and Who's Missing moved OUT of here entirely, up to the landing page.
 const SANDBOX_SUBMODES = [
-    { key: 'sun-path', icon: 'routine', label: 'Sun Path',
-      desc: 'How sunrise and sunset move through the year at any latitude' },
     { key: 'odd-one-out', icon: 'filter_alt', label: 'Odd One Out',
       desc: 'Four countries, three with something in common' },
     { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",

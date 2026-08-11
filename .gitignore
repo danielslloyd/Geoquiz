@@ -7,3 +7,6 @@ build/
 
 # Full-res orbital cap tiles (~230MB) — rebuild locally via scripts/build-earth-texture.py
 data/textures/earth-cap-*.jpg
+
+# Optional Black Marble for Sun & Moon's night side — scripts/build-earth-night.py
+data/textures/earth-night-2048.jpg
