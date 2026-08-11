@@ -3799,6 +3799,13 @@ body.sun-path-active #sun-path-panel .sandbox-title {
    the countries that mattered. */
 .country.sb-mark-target { fill: var(--accent, #d08a2c); fill-opacity: 0.85; }
 .country.sb-mark-right { fill: var(--correct, #3d8f5f); fill-opacity: 0.75; }
+/* A dot is a country too small to draw, so it means exactly what the shape would have meant.
+   The anchor of a distance round is filled solid green: it is the one place everything else on
+   the map is being measured FROM, and on the equidistant view it sits at the very centre. */
+circle.island-marker.sb-mark-target { fill: var(--correct, #3d8f5f); fill-opacity: 1; stroke: var(--surface, #fff); stroke-width: 1.2; }
+circle.island-marker.sb-mark-right { fill: var(--correct, #3d8f5f); fill-opacity: 0.85; }
+circle.island-marker.sb-mark-missed { fill: var(--correct, #3d8f5f); fill-opacity: 0.45; }
+circle.island-marker.sb-mark-wrong { fill: var(--incorrect, #c0503f); fill-opacity: 0.6; }
 /* Same three-state reading as Flyover, so the two reveals mean the same thing: named it =
    solid, missed it = green hatch, named one that isn't = red hatch. The hatch fill is set
    inline from a <pattern>, so these rules leave `fill` alone for the hatched pair.
@@ -3808,6 +3815,19 @@ body.sun-path-active #sun-path-panel .sandbox-title {
    COUNTRIES — and a country is a shape, not an edge. The shading does the work now. */
 .country.sb-mark-missed { stroke: var(--correct, #3d8f5f); stroke-width: 0.8; }
 .country.sb-mark-wrong { stroke: var(--incorrect, #c0503f); stroke-width: 0.8; }
+
+/* Near to Far, equidistant: rings of constant great-circle distance about the anchor, and the
+   frame at the projection's own clip. Both are measurements rather than geography, so they are
+   drawn as thin dashed rules that sit under everything. */
+/* A parenthetical the prompt needs but should not shout: "mainland only, where a country has
+   outlying parts" is a caveat about the measurement, not part of the question. */
+.sb-aside { display: block; margin-top: 0.35em; font-size: 0.86em; opacity: 0.7; font-weight: 400; }
+
+.sb-dist-frame { fill: none; stroke: var(--text, #333); stroke-opacity: 0.35; stroke-width: 1.2; }
+.sb-dist-ring { fill: none; stroke: var(--text, #333); stroke-opacity: 0.28; stroke-width: 0.9;
+                stroke-dasharray: 5 5; }
+.sb-dist-ring-lab { font-size: 10px; font-family: Georgia, 'Times New Roman', serif;
+                    fill: var(--text, #333); fill-opacity: 0.6; text-anchor: middle; }
 
 /* Near to Far: one spoke per country. Hairline — the spokes are there to say WHICH pair of
    points each distance was measured between, and at 2px five of them converging on the anchor

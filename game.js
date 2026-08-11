@@ -2066,6 +2066,10 @@ function isStaticMapMode(mc) {
     // the country disappear. It unlocks the moment the reveal hands the board back (which
     // clears `solo`), because zooming into the answer is the whole point of that map.
     if (mc && mc.sbQuizMode && gameState.sbQuestion && gameState.sbQuestion.solo) return true;
+    // A reveal may lock the board back down. Near to Far's is an argument about distances made by
+    // a particular projection centred on a particular place: dragging it re-centres nothing (the
+    // rotation comes from the anchor) and only slides the argument off the edge.
+    if (mc && mc.sbQuizMode && gameState.sbQuestion && gameState.sbQuestion.lockMap) return true;
     if (mc && mc.framingSandboxMode) return true;
     return !!(mc && (mc.findCapitalMode || mc.statePuzzleMode || mc.countryShapeIdMode ||
                      mc.sandboxMode || mc.drawBorderMode));
@@ -13416,6 +13420,33 @@ function sbAreaKm2(name) {
     return km2;
 }
 
+// The area of the FRAMING CORE, and a note saying so. Several countries own land the question
+// nobody is asking includes: France's is 18% overseas, Denmark's is nine tenths Greenland, and a
+// round that draws the mainland while quoting the total is not wrong so much as answering a
+// different question from the one on screen. Below the threshold the two are the same figure and
+// the note is not written at all — it exists to be RARE, or it is noise on every prompt.
+const SB_CORE_NOTE_FRAC = 0.92;
+let sbCoreAreaCache = { src: null, map: new Map() };
+function sbCoreAreaKm2(name) {
+    const src = gameState.countries;
+    if (sbCoreAreaCache.src !== src) sbCoreAreaCache = { src, map: new Map() };
+    if (sbCoreAreaCache.map.has(name)) return sbCoreAreaCache.map.get(name);
+    const f = sbFeature(name);
+    const core = f && shapeFramingCore(f);
+    const a = core ? d3.geoArea(core) : 0;
+    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : sbAreaKm2(name);
+    sbCoreAreaCache.map.set(name, km2);
+    return km2;
+}
+// "" or " (mainland)". Metropolitan France is mainland plus Corsica, which the core keeps, so
+// "mainland" is the word that is true of every case rather than of the famous one.
+function sbCoreNote(name) {
+    const whole = sbAreaKm2(name), core = sbCoreAreaKm2(name);
+    if (!whole || !core) return '';
+    return core / whole < SB_CORE_NOTE_FRAC ? ' (mainland)' : '';
+}
+function sbCoreLabel(name) { return displayLabelForName(name) + sbCoreNote(name); }
+
 function sbPop(name) {
     const d = (window.countryData || {})[effectiveDataName(name)];
     return d && d.population > 0 ? d.population : null;
@@ -19312,10 +19343,17 @@ const SB_QUIZZES = {
             return {
                 items: picks, anchor: from,
                 correct: [...picks].sort((a, b) => dist(a) - dist(b)),
-                prompt: `Drag these into order by distance from <strong>${displayLabelForName(from)}</strong> — nearest at the top. ` +
-                        `Measured between their <strong>closest points</strong>.`,
+                prompt: `Drag these into order by distance from <strong>${sbCoreLabel(from)}</strong> — nearest at the top. ` +
+                        `Measured between their <strong>closest points</strong>` +
+                        // The distances are measured on the framing core, so a country whose
+                        // outlying territory has been left out of the measurement says so rather
+                        // than quietly reporting a number nobody could reproduce: France to
+                        // Brazil is 0 km with French Guiana in and 6,377 km without it.
+                        (picks.some(n => sbCoreNote(n)) || sbCoreNote(from)
+                          ? `, and mainland only where a country's outlying parts would decide it`
+                          : ``) + `.`,
                 format: n => sbFormatKm(dist(n)),
-                explain: `Measured from ${displayLabelForName(from)}.`
+                explain: `Measured from ${sbCoreLabel(from)}.`
             };
         }
     },
@@ -19518,28 +19556,33 @@ const SB_QUIZZES = {
             if (pool.length < 12) return null;
             for (let t = 0; t < 40; t++) {
                 const seed = sbRandom(pool);
-                const ka = sbAreaKm2(seed);
+                const ka = sbCoreAreaKm2(seed);
                 // Within a factor of three of EACH OTHER, checked pairwise. Filtering only
                 // against the seed lets the extremes sit 9x apart (Chile against the Republic
                 // of the Congo), and then the odd one out is simply the biggest picture.
                 const near = pool.filter(n => !namesMatch(n, seed) &&
-                    sbAreaKm2(n) / ka < 1.8 && ka / sbAreaKm2(n) < 1.8);
+                    sbCoreAreaKm2(n) / ka < 1.8 && ka / sbCoreAreaKm2(n) < 1.8);
                 if (near.length < 3) continue;
                 const picks = shuffleArray([seed, ...shuffleArray(near).slice(0, 3)]);
-                const areas = picks.map(sbAreaKm2);
+                const areas = picks.map(sbCoreAreaKm2);
                 if (Math.max(...areas) / Math.min(...areas) > 3) continue;
                 const idx = Math.floor(Math.random() * 4);
                 const factor = sbRandom([2.1, 2.4, 1 / 2.1, 1 / 2.4]);
                 return {
                     highlight: [],
-                    scaleOptions: picks.map((n, i) => ({ label: displayLabelForName(n), name: n,
+                    scaleOptions: picks.map((n, i) => ({ label: sbCoreLabel(n), name: n,
                                                          factor: i === idx ? factor : 1 })),
-                    correct: displayLabelForName(picks[idx]),
-                    options: picks.map(displayLabelForName),
+                    correct: sbCoreLabel(picks[idx]),
+                    options: picks.map(sbCoreLabel),
                     prompt: 'These four outlines are drawn at <strong>one shared scale</strong> — except one. ' +
-                            'Which is the wrong size?',
-                    explain: `${displayLabelForName(picks[idx])} is drawn ${factor > 1 ? factor.toFixed(1) + '× too big' : (1 / factor).toFixed(1) + '× too small'}. ` +
-                             `True areas: ` + picks.map(n => `${displayLabelForName(n)} ${Math.round(sbAreaKm2(n)).toLocaleString()} km²`).join(', ') + '.'
+                            'Which is the wrong size?' +
+                            (picks.some(n => sbCoreNote(n))
+                              ? ' <span class="sb-aside">Mainland only, where a country has outlying parts.</span>' : ''),
+                    // The area quoted is the area DRAWN. These tiles are fitted to the framing
+                    // core, so quoting the whole feature's total states one thing and shows
+                    // another — for France a fifth of the figure is not on the card.
+                    explain: `${sbCoreLabel(picks[idx])} is drawn ${factor > 1 ? factor.toFixed(1) + '× too big' : (1 / factor).toFixed(1) + '× too small'}. ` +
+                             `True areas: ` + picks.map(n => `${sbCoreLabel(n)} ${Math.round(sbCoreAreaKm2(n)).toLocaleString()} km²`).join(', ') + '.'
                 };
             }
             return null;
@@ -20019,20 +20062,41 @@ function sbApplyBoardMarks() {
     const bm = q && q.boardMarks;
     if (!countriesGroup) return;
     const paths = countriesGroup.selectAll('path.country');
-    ['target', 'right', 'missed', 'wrong'].forEach(k => paths.classed('sb-mark-' + k, false));
+    // The DOTS as well as the paths. A country too small to draw as an outline is drawn as a
+    // marker instead, and marking only the paths meant every reveal that picked countries out
+    // silently skipped the small ones — they sat there in the ordinary dot colour, which reads
+    // as "not one of the ones being talked about". Same classes, same hatch, so a dot means what
+    // a shape means.
+    const dots = svg ? svg.selectAll('circle.island-marker') : null;
+    ['target', 'right', 'missed', 'wrong'].forEach(k => {
+        paths.classed('sb-mark-' + k, false);
+        if (dots) dots.classed('sb-mark-' + k, false);
+    });
+    if (dots) dots.attr('display', null);
     if (svg) svg.selectAll('g.sb-marklab').remove();
     if (!bm || !bm.marks) return;
     const cls = new Map(Object.keys(bm.marks).map(k => [normalizeName(k), bm.marks[k]]));
     const green = sbThemeColour('--correct', '#3d8f5f');
     const red = sbThemeColour('--incorrect', '#c0503f');
-    paths.attr('fill', null).each(function (d) {
+    const markOne = function (d) {
         const nm = d && d.properties && (d.properties.parent || d.properties.name);
         const kind = nm && cls.get(normalizeName(nm));
-        if (!kind) return;
+        if (!kind) return kind;
         const el = d3.select(this).classed('sb-mark-' + kind, true);
         // The hatched pair take their fill from a <pattern>, which CSS cannot name.
         if (kind === 'missed') el.attr('fill', sbHatchPattern('sb-hatch-green', green));
         else if (kind === 'wrong') el.attr('fill', sbHatchPattern('sb-hatch-red', red));
+        return kind;
+    };
+    paths.attr('fill', null).each(markOne);
+    // `onlyDots` says the dot field is CLUTTER on this reveal: keep the dots of the countries the
+    // round is about and hide the rest, rather than leaving a scatter of unrelated markers over a
+    // map whose whole content is a handful of named places.
+    const only = bm.onlyDots ? new Set(bm.onlyDots.map(normalizeName)) : null;
+    if (dots) dots.attr('fill', null).each(function (d) {
+        const nm = d && d.properties && (d.properties.parent || d.properties.name);
+        if (only && !(nm && only.has(normalizeName(nm)))) { d3.select(this).attr('display', 'none'); return; }
+        markOne.call(this, d);
     });
     const layer = sbOverlay();
     // Where a flag sits relative to its country. Centred on the centroid it covers the very
@@ -20254,7 +20318,13 @@ function sbRevealDistanceMap(q) {
     // Flags rather than names: five country names written across a zoomed map is more type
     // than map, and a flag says which country in a quarter of the width.
     // The anchor is named so the flags can be placed relative to it — see sbFlagOffsets.
-    q.boardMarks = { marks, flags: true, anchor: q.anchor };
+    // The dot field is noise here: the five countries are named by flags and the anchor is the
+    // one point everything is measured from, so its dot is the only one worth drawing.
+    q.boardMarks = { marks, flags: true, anchor: q.anchor, onlyDots: [q.anchor] };
+    // And the map is FIXED. This reveal is an argument about distances made by a particular
+    // projection centred on a particular place; dragging it re-centres nothing (the rotation is
+    // set from the anchor) and only slides the argument off the edge.
+    q.lockMap = true;
     // Swap the live projection for the one this view asks for. The board is the ordinary map at
     // this point, so everything downstream — the fills, the flags, the spokes, a later pan —
     // simply uses whatever `projection` is; nothing here needs to know which of the three it is.
@@ -20274,6 +20344,7 @@ function sbRevealDistanceMap(q) {
         try { projection.fitExtent([[m, m], [W[2] - m, W[3] - m]], { type: 'Sphere' }); }
         catch (_) { if (!sbFitToFeatures(names, 0.09)) return; }
         if (box) { /* nothing else to do: the fit is the frame */ }
+        q.distRings = c0 && isFinite(c0[0]) ? c0 : null;
     } else if (!sbFitToFeatures(names, 0.09)) return;
     drawCountries();
     sbDistViewControl(q);
@@ -20296,8 +20367,80 @@ function sbRevealDistanceMap(q) {
         // slide a flag clear of a spoke it happens to be sitting on.
         (q.boardMarks.spokes = q.boardMarks.spokes || []).push(arc);
     });
+    // The rings are the whole claim this projection makes: distance from the centre is to scale
+    // in every direction, so a circle of constant radius on the map IS a circle of constant
+    // distance on the earth. Drawn at 10,000 km — only one fits, since the rim is the clip at
+    // 170°, about 18,900 km, and the next ring would be past the antipode — plus the frame.
+    // Drawn after the spokes so the label can be put where none of them points.
+    if (sbDistView === 'azimuthal' && q.distRings)
+        sbDrawDistanceRings(layer, q.distRings, (q.boardMarks && q.boardMarks.spokes) || []);
     sbApplyBoardMarks();
     layer.selectAll('g.sb-marklab').raise();
+}
+
+// Rings of constant great-circle distance about the anchor, and the frame at the projection's
+// own clip. `d3.geoCircle` builds them on the sphere, so they are drawn by the same path as the
+// countries and are correct on any projection — they are simply only WORTH drawing on this one.
+const SB_DIST_RING_KM = 10000;
+// A point `deg` of arc from `centre` along a given bearing — the destination formula on a sphere.
+// The rings' own vertex list cannot be used for this: d3 starts a circle wherever it likes, so a
+// label hung off `coordinates[0][0]` lands in a different place for every anchor.
+function sbBearingPoint(centre, deg, bearingDeg) {
+    const R = Math.PI / 180, D = 180 / Math.PI;
+    const p1 = centre[1] * R, l1 = centre[0] * R, d = deg * R, b = bearingDeg * R;
+    const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+    const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1),
+                               Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+    return [((l2 * D + 540) % 360) - 180, p2 * D];
+}
+
+function sbDrawDistanceRings(layer, centre, spokes) {
+    const circle = d3.geoCircle().center(centre).precision(1);
+    const clipDeg = 170;
+    // The frame first, under everything: it is the edge of what the projection will show, not a
+    // measurement, so it is drawn as a boundary rather than as another ring.
+    const frame = layer.append('path').datum(circle.radius(clipDeg)())
+        .attr('class', 'sb-dist-frame').attr('d', d => path(d));
+    frame.lower();
+    for (let km = SB_DIST_RING_KM; ; km += SB_DIST_RING_KM) {
+        const deg = km / SB_EARTH_R_KM * 180 / Math.PI;
+        if (deg >= clipDeg) break;
+        const geo = circle.radius(deg)();
+        const d = path(geo);
+        if (!d) continue;
+        layer.append('path').datum(geo).attr('class', 'sb-dist-ring').attr('d', d).lower();
+        // Labelled in the widest gap between the spokes — the one direction guaranteed to hold
+        // no line and no flag. A ring with no number on it is a decoration.
+        const at = sbBearingPoint(centre, deg, sbWidestGapBearing(centre, spokes));
+        const pt = at && projection(at);
+        if (pt && isFinite(pt[0]))
+            layer.append('text').datum({ at, dy: 0 })
+                .attr('class', 'sb-anchored sb-dist-ring-lab')
+                .attr('transform', `translate(${pt[0]}, ${pt[1]})`)
+                .append('tspan').attr('dy', -4).text(km.toLocaleString() + ' km');
+    }
+    frame.lower();
+}
+
+// The bearing of the middle of the widest gap between the spokes leaving the anchor. Same idea as
+// the anchor flag's placement, and for the same reason: with five lines radiating out, the only
+// direction certain to be clear is the one nothing points along.
+function sbWidestGapBearing(centre, spokes) {
+    const bs = (spokes || []).map(arc => {
+        const far = arc && arc[arc.length - 1];
+        if (!far) return null;
+        const R = Math.PI / 180;
+        const p1 = centre[1] * R, p2 = far[1] * R, dl = (far[0] - centre[0]) * R;
+        return (Math.atan2(Math.sin(dl) * Math.cos(p2),
+                Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl)) * 180 / Math.PI + 360) % 360;
+    }).filter(v => v != null).sort((a, b) => a - b);
+    if (!bs.length) return 0;
+    let best = 0, gap = -1;
+    for (let i = 0; i < bs.length; i++) {
+        const a = bs[i], b = bs[(i + 1) % bs.length] + (i === bs.length - 1 ? 360 : 0);
+        if (b - a > gap) { gap = b - a; best = (a + (b - a) / 2) % 360; }
+    }
+    return best;
 }
 
 // The three-way view switch, parked over the map's top-left corner. Redrawing is a plain re-run
