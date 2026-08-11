@@ -208,6 +208,42 @@ Scoring: `gameState.score` counts pieces the player placed themselves, `puzzlePl
 
 Layout: the tray lives in `#globe-side-panel`, so the puzzle opts into the existing `globe-side-layout` (as Places-been does for its category lists) despite not being a globe mode, and inherits its 1024px collapse to a stacked column for free. `state-puzzle-layout` on `.container` only widens that panel. **Side-by-side is the right call because the board is height-constrained**: with a fixed 800×600 viewBox in a wide container the fit scale comes from the height, so width spent on the tray costs the map nothing until it narrows past ~870px, whereas a tray underneath eats the one axis that limits it. Measured at 1280×720: **0.99 board scale side-by-side vs 0.50 for the earlier tray-underneath version.** Under 1024px (where it stacks anyway) `body.state-puzzle-active` scopes an **exception to the app-wide `body { height: 100vh; overflow: hidden }`** so the page can scroll instead of crushing the board — on a 375px phone that keeps the map at 422px and board scale 0.44.
 
+## The projection lab
+
+`projection-lab`, a sandbox tile. Every projection is a lie about a sphere and each one chooses
+which lie to tell; none of that is visible in a map you are handed, and all of it is visible the
+moment the SAME world goes through a dozen of them. Fourteen d3 projections, the two knobs every
+projection has (where it is centred, how it is turned), the two the conics have, and two
+instruments.
+
+**Tissot's indicatrix** is the first: a small circle drawn on the SPHERE (4° of arc, every 30°)
+and projected like everything else, so whatever it becomes on the map is exactly what the
+projection does to a small shape there. Round means angles are kept; equal blobs mean areas are;
+both at once is what no projection can do. Drawn as outlines rather than filled, because at high
+latitude on a Mercator one indicatrix covers a country and a filled one would hide the very thing
+it is measuring.
+
+**The second is a number**: the share of the PICTURE a country takes up against its share of the
+earth — which is exactly what "Greenland looks as big as Africa" means. Measured on the drawn
+path, so it is a fact about what is on screen rather than a formula about the projection.
+Verified across all fourteen: every equal-area projection reads **1.00× for all four countries**
+(Equal Earth, azimuthal equal-area, conic equal-area, Albers), Mercator puts Greenland at 5.22×,
+conic conformal at 3.85×. Two ways of reading low are not the projection being kind and the panel
+says so: a country partly outside the clip is only partly there, and one near the centre of a
+projection with a wildly stretched rim loses share because the rim has eaten the picture.
+
+Dragging turns the WORLD, not the picture — it moves the rotation, so what changes is which part
+of the earth is being distorted, which is the whole lesson and is invisible if the map merely
+slides. The projection is rebuilt from scratch on every change rather than mutated: a conic
+carries standard parallels a cylindrical has never heard of, and switching by setting properties
+leaves the old ones in force. The globe/flat, tilt and detail toggles are all hidden — the mode
+supplies its own projection and pins 110m.
+
+Fixed at source on the way: **the tilt toggle was tested with `isGlobeView()`**, which at that
+point in `startGameWithMode` still answers for the PREVIOUS mode — `flatGlobeView` is not set for
+the new one until further down the same function — so a flat board could inherit a tilt button
+from whatever came before it.
+
 ## Sandbox category
 
 **The Sandbox is one flat grid.** There used to be a Quick Quizzes tile inside it that opened a

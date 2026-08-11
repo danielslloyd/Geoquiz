@@ -994,6 +994,20 @@ const QUIZ_MODES = {
         framingSandboxMode: true,  // draw the box a country's silhouette is framed to
         sbHiRes: true              // judged on the outline, so the outline is the real one
     },
+    'projection-lab': {
+        name: 'Projections',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        projectionLabMode: true    // the world through a menu of projections, with the distortion drawn
+    },
     'missing-sandbox': {
         name: "Who's Missing Sandbox",
         quizList: quizCountries,
@@ -1601,7 +1615,10 @@ function startGameWithMode(mode) {
     // globe) and the controls into one column. On a phone that is taller than the viewport, and
     // `body { height: 100vh; overflow: hidden }` would cut the controls off — leaving no way to
     // submit. Same exception the puzzle board takes, scoped the same way.
-    document.body.classList.toggle('sb-tall-active', !!(modeConfig.sbQuizMode && modeConfig.sbNoMap));
+    // The panels that are taller than a phone viewport get the app-wide `height: 100vh;
+    // overflow: hidden` lifted, or their controls are simply cut off with no way to reach them.
+    document.body.classList.toggle('sb-tall-active',
+        !!((modeConfig.sbQuizMode && modeConfig.sbNoMap) || modeConfig.projectionLabMode));
     document.body.classList.toggle('sb-wide-panel',
         !!(modeConfig.sbQuizMode && modeConfig.sbEngine === 'estimate'));
     // And hand the map box back, for the same reason `sbTeardown` does: the tile-only rounds
@@ -1649,6 +1666,7 @@ function startGameWithMode(mode) {
     removeSandboxPanel();
     removeMissingSandbox();
     removeFramingSandbox();
+    removeProjectionLab();
     removeSunMoonPanel();
     removeSunPathMode();
     drawBorderState = null;
@@ -1734,8 +1752,12 @@ function startGameWithMode(mode) {
 
     // Show gamma lock toggle only for the orthographic globe view (not the fixed spaceship view)
     const gammaToggle = document.getElementById('gamma-lock-toggle');
+    // Named explicitly rather than left to isGlobeView(): `flatGlobeView` is not set for the new
+    // mode until further down this same function, so this test still sees the PREVIOUS mode's
+    // answer and a flat board can inherit a tilt button from whatever came before it.
     gammaToggle.style.display = (isGlobeView() && !modeConfig.spaceshipMode &&
-        !modeConfig.sbQuizMode) ? '' : 'none';
+        !modeConfig.projectionLabMode && !modeConfig.framingSandboxMode &&
+        !modeConfig.missingSandboxMode && !modeConfig.sbQuizMode) ? '' : 'none';
     gammaToggle.textContent = gammaLocked ? 'Tilt: Locked' : 'Tilt: Free';
 
     // Detail toggle: only for world (countries) maps that follow the global detail level —
@@ -1745,7 +1767,7 @@ function startGameWithMode(mode) {
     if (detailToggle) {
         detailToggle.style.display = (modeConfig.mapObject === 'countries' && !modeConfig.spaceshipMode &&
             !modeConfig.sandboxMode && !modeConfig.countryShapeIdMode &&
-            !modeConfig.sbQuizMode) ? '' : 'none';
+            !modeConfig.projectionLabMode && !modeConfig.sbQuizMode) ? '' : 'none';
         detailToggle.textContent = 'Detail: ' + mapDetail.charAt(0).toUpperCase() + mapDetail.slice(1);
     }
 
@@ -1777,7 +1799,7 @@ function startGameWithMode(mode) {
         // a flat pair, a coastline-only world — and none of them is answerable any better on
         // the other projection, so the toggle is only a way to break the framing.
         projToggle.style.display = (modeConfig.useGlobe && !modeConfig.spaceshipMode &&
-            !modeConfig.sbQuizMode) ? '' : 'none';
+            !modeConfig.projectionLabMode && !modeConfig.sbQuizMode) ? '' : 'none';
         projToggle.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
     }
 
@@ -1822,6 +1844,9 @@ function startGameWithMode(mode) {
         // A framing question is a Mercator question — that is the projection every mode that
         // uses shapeFramingCore fits into.
         if (modeConfig.framingSandboxMode) flatGlobeView = true;
+        // The lab supplies its own projection every frame; the globe/flat switch would only
+        // fight it.
+        if (modeConfig.projectionLabMode) flatGlobeView = true;
         setupGlobe();
         loadMapData();
     }
@@ -2071,6 +2096,9 @@ function isStaticMapMode(mc) {
     // rotation comes from the anchor) and only slides the argument off the edge.
     if (mc && mc.sbQuizMode && gameState.sbQuestion && gameState.sbQuestion.lockMap) return true;
     if (mc && mc.framingSandboxMode) return true;
+    // The lab's drag is its own — it turns the WORLD under the projection rather than panning
+    // the picture — so the shared pan and wheel must keep off it.
+    if (mc && mc.projectionLabMode) return true;
     return !!(mc && (mc.findCapitalMode || mc.statePuzzleMode || mc.countryShapeIdMode ||
                      mc.sandboxMode || mc.drawBorderMode));
 }
@@ -2965,6 +2993,10 @@ function drawCountries() {
     // drawCountries would otherwise replace the parts with the ordinary world map and the
     // country would simply vanish.
     if (mc && mc.framingSandboxMode) { if (framingState && framingState.feature) framingDraw(); return; }
+
+    // Same reason as the framing sandbox: the lab owns its board and has to rebuild it from
+    // state, or any caller reaching drawCountries replaces it with the ordinary world map.
+    if (mc && mc.projectionLabMode) { if (labState) labDraw(); return; }
 
     // Coming Into Focus draws one growing outline into countriesGroup and nothing else. The
     // shape-id branch below skips the join, so the path survives — but only if it is still
@@ -4204,6 +4236,11 @@ function startNewQuestion() {
 
     if (modeConfig.framingSandboxMode) {
         renderFramingSandbox();
+        return;
+    }
+
+    if (modeConfig.projectionLabMode) {
+        renderProjectionLab();
         return;
     }
 
@@ -13282,6 +13319,8 @@ const SANDBOX_SUBMODES = [
       desc: 'Trace a missing outline; scored by how close you get' },
     { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",
       desc: 'Dissolve any country into its neighbours; see which ones can go' },
+    { key: 'projection-lab', icon: 'public', label: 'Projections',
+      desc: 'The same world through a dozen projections, with the distortion drawn on it' },
     { key: 'framing-sandbox', icon: 'crop_free', label: 'Shape Framing',
       desc: 'Which polygons a country is framed by — switch its outliers in and out' },
     { key: 'flag-workshop', icon: 'palette', label: 'Flag Workshop',
@@ -16747,6 +16786,282 @@ function framingExport() {
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     } catch (_) { /* the text is on screen either way */ }
+}
+
+// ==================== PROJECTION LAB ====================
+// Every projection is a lie about a sphere, and each one chooses which lie to tell: Mercator
+// keeps angles and wrecks areas, the equal-area family keeps areas and wrecks shapes, and the
+// azimuthals keep something only about the one point they are centred on. None of that is
+// visible in a map you are handed. It becomes visible the moment you can put the SAME world
+// through a dozen of them and watch what moves.
+//
+// So: the world, a menu of projections, the two knobs every projection has (where it is centred
+// and how it is turned), the two the conics have (their standard parallels), and the two
+// instruments that make the distortion legible rather than merely present.
+
+// Tissot's indicatrix: a small circle drawn on the SPHERE at each grid point, projected like
+// everything else. It is a circle on the earth, so whatever it becomes on the map is exactly
+// what the projection does to a small shape there — round means angles are preserved, equal
+// blobs mean areas are, and both at once is what no projection can do.
+const LAB_TISSOT_RADIUS = 4;      // degrees of arc
+const LAB_TISSOT_STEP = 30;       // degrees between them
+
+const LAB_PROJECTIONS = [
+    { key: 'mercator',    label: 'Mercator',              make: () => d3.geoMercator(),            kind: 'conformal' },
+    { key: 'equirect',    label: 'Equirectangular',       make: () => d3.geoEquirectangular(),     kind: 'neither' },
+    { key: 'equalEarth',  label: 'Equal Earth',           make: () => d3.geoEqualEarth(),          kind: 'equalArea' },
+    { key: 'natural',     label: 'Natural Earth',         make: () => d3.geoNaturalEarth1(),       kind: 'neither' },
+    { key: 'ortho',       label: 'Orthographic',          make: () => d3.geoOrthographic().clipAngle(90), kind: 'neither' },
+    { key: 'azEqualArea', label: 'Azimuthal equal-area',  make: () => d3.geoAzimuthalEqualArea(),  kind: 'equalArea' },
+    { key: 'azEquidist',  label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant().clipAngle(170), kind: 'neither' },
+    { key: 'stereo',      label: 'Stereographic',         make: () => d3.geoStereographic().clipAngle(150), kind: 'conformal' },
+    { key: 'gnomonic',    label: 'Gnomonic',              make: () => d3.geoGnomonic().clipAngle(60), kind: 'neither' },
+    { key: 'transverse',  label: 'Transverse Mercator',   make: () => d3.geoTransverseMercator(),  kind: 'conformal' },
+    { key: 'conicEqArea', label: 'Conic equal-area',      make: () => d3.geoConicEqualArea(),      kind: 'equalArea', conic: true },
+    { key: 'conicConf',   label: 'Conic conformal',       make: () => d3.geoConicConformal().clipAngle(150), kind: 'conformal', conic: true },
+    { key: 'conicEqDist', label: 'Conic equidistant',     make: () => d3.geoConicEquidistant(),    kind: 'neither', conic: true },
+    { key: 'albers',      label: 'Albers',                make: () => d3.geoAlbers(),              kind: 'equalArea', conic: true }
+];
+
+const LAB_KIND_WORDS = {
+    conformal: 'Conformal — angles are true everywhere, so every indicatrix is a CIRCLE. What it pays is area: the circles grow without limit toward the edges.',
+    equalArea: 'Equal-area — every indicatrix covers the same AREA wherever it sits. What it pays is shape: they squash into ellipses.',
+    neither:   'Neither conformal nor equal-area — the indicatrices change both shape and size. A compromise like this is drawn to look right rather than to be right about any one thing.'
+};
+
+let labState = null;
+
+function renderProjectionLab() {
+    gameState.questionType = 'projection-lab';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('give-up-btn').style.display = 'none';
+    const restart = document.getElementById('restart-btn');
+    if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
+    document.getElementById('question-text').innerHTML =
+        '<strong>Projections.</strong> Drag the map to turn the world under the projection.';
+    labState = { proj: 'mercator', rotate: [0, 0, 0], parallels: [30, 60],
+                 tissot: true, graticule: true };
+    buildLabPanel();
+    labBindMap();
+    labDraw();
+}
+
+function labSpec() { return LAB_PROJECTIONS.find(p => p.key === labState.proj) || LAB_PROJECTIONS[0]; }
+
+// The projection as currently configured, fitted to the board. Rebuilt from scratch on every
+// change rather than mutated: a conic carries standard parallels a cylindrical has never heard
+// of, and switching between them by setting properties leaves the old ones in force.
+function labProjection() {
+    const spec = labSpec();
+    const p = spec.make();
+    if (p.rotate) p.rotate(labState.rotate);
+    if (spec.conic && p.parallels) p.parallels(labState.parallels);
+    const w = width || 800, h = height || 600, m = 10;
+    try { p.fitExtent([[m, m], [w - m, h - m]], { type: 'Sphere' }); }
+    catch (_) { /* leave the default framing rather than lose the projection */ }
+    return p;
+}
+
+function labDraw() {
+    if (!labState || !countriesGroup || !svg) return;
+    projection = labProjection();
+    path = d3.geoPath().projection(projection);
+    countriesGroup.selectAll('*').remove();
+    svg.selectAll('g.lab-layer').remove();
+    const host = countriesGroup.node() && countriesGroup.node().parentNode
+        ? d3.select(countriesGroup.node().parentNode) : svg;
+    // Under the land: the sphere and the graticule are the frame the countries are drawn on.
+    const under = host.insert('g', () => countriesGroup.node()).attr('class', 'lab-layer');
+    const sphere = { type: 'Sphere' };
+    // The world does not fill a rectangle on half of these, so without the sphere's own outline
+    // there is no telling where the map stops and the page starts.
+    under.append('path').attr('class', 'lab-sphere').attr('d', path(sphere) || '');
+    if (labState.graticule)
+        under.append('path').attr('class', 'lab-grat').attr('d', path(d3.geoGraticule10()) || '');
+    countriesGroup.selectAll('path.country')
+        .data(gameState.countries || []).enter().append('path')
+        .attr('class', 'country lab-land').attr('d', path);
+    // The indicatrices go ON TOP of the land: they are the instrument, and an instrument you
+    // have to look underneath is no use.
+    if (labState.tissot) {
+        const over = host.append('g').attr('class', 'lab-layer lab-tissot');
+        const circle = d3.geoCircle().radius(LAB_TISSOT_RADIUS).precision(2);
+        for (let lat = -90 + LAB_TISSOT_STEP; lat <= 90 - LAB_TISSOT_STEP + 0.001; lat += LAB_TISSOT_STEP)
+            for (let lon = -180; lon < 180; lon += LAB_TISSOT_STEP) {
+                const d = path(circle.center([lon, lat])());
+                if (d) over.append('path').attr('class', 'lab-tissot-cell').attr('d', d);
+            }
+    }
+    labReadout();
+}
+
+// What the projection is doing to one country, as a number. The indicatrices show the pattern;
+// this says how bad it gets, in the terms the argument is always had in — Greenland against
+// Africa. Measured on the DRAWN path: the projected polygon's own area in board units against
+// that country's true share of the sphere. So it is a fact about the picture on screen rather
+// than a formula about the projection, and it is wrong in exactly the ways the picture is.
+function labInflation(name) {
+    const f = sbFeature(name);
+    if (!f || !path) return null;
+    const drawn = Math.abs(path.area(f));
+    const whole = Math.abs(path.area({ type: 'Sphere' }));
+    const trueShare = d3.geoArea(f) / (4 * Math.PI);
+    if (!drawn || !whole || !trueShare) return null;
+    return (drawn / whole) / trueShare;
+}
+
+const LAB_MEASURED = ['Greenland', 'Australia', 'India', 'Democratic Republic of the Congo'];
+
+function labReadout() {
+    const el = document.getElementById('lab-readout');
+    if (!el) return;
+    const spec = labSpec();
+    const rows = LAB_MEASURED.map(n => ({ n, k: labInflation(n) })).filter(x => x.k && isFinite(x.k));
+    el.innerHTML =
+        '<div class="lab-kind">' + LAB_KIND_WORDS[spec.kind] + '</div>' +
+        (rows.length
+          ? '<div class="lab-rows">' + rows.map(x =>
+                '<div class="lab-row"><span>' + displayLabelForName(x.n) + '</span>' +
+                '<span class="lab-k' + (x.k > 1.6 || x.k < 0.65 ? ' bad' : '') + '">' +
+                (x.k >= 1 ? x.k.toFixed(2) + '× too big' : (1 / x.k).toFixed(2) + '× too small') +
+                '</span></div>').join('') +
+            '</div><div class="lab-note">Share of the picture against share of the earth — ' +
+            'which is exactly what "Greenland looks as big as Africa" means. On an equal-area ' +
+            'projection every one reads <strong>1.00×</strong>, and that is the only claim any ' +
+            'projection can make about every country at once.</div>' +
+            '<div class="lab-note">Two ways to read low that are not the projection being kind: ' +
+            'a country partly outside the clip is only partly there, and one near the centre of ' +
+            'a projection with a wildly stretched rim loses share because the RIM has eaten the ' +
+            'picture.</div>'
+          : '');
+}
+
+function buildLabPanel() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    let box = document.getElementById('lab-panel');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'lab-panel';
+    box.className = 'lab-panel';
+    box.innerHTML =
+        '<div class="lab-grid">' +
+        LAB_PROJECTIONS.map(p =>
+            '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
+            '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
+        '</div>' +
+        '<div id="lab-readout" class="lab-readout"></div>' +
+        '<label class="lab-slider"><span>Centre on longitude</span>' +
+        '<input type="range" id="lab-lam" min="-180" max="180" step="1" value="0">' +
+        '<output id="lab-lam-out">0°</output></label>' +
+        '<label class="lab-slider"><span>Centre on latitude</span>' +
+        '<input type="range" id="lab-phi" min="-90" max="90" step="1" value="0">' +
+        '<output id="lab-phi-out">0°</output></label>' +
+        '<label class="lab-slider"><span>Tilt</span>' +
+        '<input type="range" id="lab-gam" min="-180" max="180" step="1" value="0">' +
+        '<output id="lab-gam-out">0°</output></label>' +
+        '<div id="lab-conic" class="lab-conic">' +
+        '<label class="lab-slider"><span>Standard parallel 1</span>' +
+        '<input type="range" id="lab-p1" min="-89" max="89" step="1" value="30">' +
+        '<output id="lab-p1-out">30°</output></label>' +
+        '<label class="lab-slider"><span>Standard parallel 2</span>' +
+        '<input type="range" id="lab-p2" min="-89" max="89" step="1" value="60">' +
+        '<output id="lab-p2-out">60°</output></label>' +
+        '<div class="lab-note">A cone wrapped round the globe touches it along these two ' +
+        'circles, so the map is true along them and drifts either side. Bring them together and ' +
+        'the cone becomes a tangent one; move them apart and the error is spread wider and ' +
+        'shallower.</div></div>' +
+        '<div class="lab-checks">' +
+        '<label><input type="checkbox" id="lab-tissot" checked> Distortion circles</label>' +
+        '<label><input type="checkbox" id="lab-grat" checked> Graticule</label></div>' +
+        '<div class="lab-note">Each circle is the same size on the EARTH — ' + LAB_TISSOT_RADIUS +
+        '° of arc, every ' + LAB_TISSOT_STEP + '°. Whatever it becomes on the map is exactly ' +
+        'what this projection does to a small shape there.</div>';
+    host.appendChild(box);
+
+    box.querySelectorAll('[data-proj]').forEach(b => b.addEventListener('click', () => {
+        labState.proj = b.dataset.proj;
+        box.querySelectorAll('[data-proj]').forEach(o => o.classList.toggle('active', o === b));
+        labSyncConic();
+        labDraw();
+    }));
+    const wire = (id, out, set) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', () => {
+            set(+el.value);
+            const o = document.getElementById(out);
+            if (o) o.textContent = el.value + '°';
+            labDraw();
+        });
+    };
+    wire('lab-lam', 'lab-lam-out', v => { labState.rotate[0] = -v; });
+    wire('lab-phi', 'lab-phi-out', v => { labState.rotate[1] = -v; });
+    wire('lab-gam', 'lab-gam-out', v => { labState.rotate[2] = v; });
+    wire('lab-p1', 'lab-p1-out', v => { labState.parallels[0] = v; });
+    wire('lab-p2', 'lab-p2-out', v => { labState.parallels[1] = v; });
+    const chk = (id, set) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', () => { set(el.checked); labDraw(); });
+    };
+    chk('lab-tissot', v => { labState.tissot = v; });
+    chk('lab-grat', v => { labState.graticule = v; });
+    labSyncConic();
+}
+
+function labSyncConic() {
+    const el = document.getElementById('lab-conic');
+    if (el) el.style.display = labSpec().conic ? '' : 'none';
+}
+
+// Dragging turns the WORLD, not the picture: it moves the rotation, so what changes is which
+// part of the earth the projection is being unkind to. That is the whole lesson here, and it is
+// invisible if the map merely slides.
+function labBindMap() {
+    if (!svg) return;
+    let from = null;
+    svg.on('pointerdown.lab', function (event) {
+        from = { p: d3.pointer(event, this), r: labState.rotate.slice() };
+    });
+    svg.on('pointermove.lab', function (event) {
+        if (!from) return;
+        const p = d3.pointer(event, this);
+        const k = 0.4;
+        labState.rotate = [from.r[0] + (p[0] - from.p[0]) * k,
+                           Math.max(-90, Math.min(90, from.r[1] - (p[1] - from.p[1]) * k)),
+                           from.r[2]];
+        labSyncSliders();
+        labDraw();
+    });
+    const stop = () => { from = null; };
+    svg.on('pointerup.lab', stop);
+    svg.on('pointerleave.lab', stop);
+}
+
+function labSyncSliders() {
+    const set = (id, out, v) => {
+        const el = document.getElementById(id), o = document.getElementById(out);
+        if (el) el.value = Math.round(v);
+        if (o) o.textContent = Math.round(v) + '°';
+    };
+    set('lab-lam', 'lab-lam-out', -labState.rotate[0]);
+    set('lab-phi', 'lab-phi-out', -labState.rotate[1]);
+    set('lab-gam', 'lab-gam-out', labState.rotate[2]);
+}
+
+function removeProjectionLab() {
+    const box = document.getElementById('lab-panel');
+    if (box) box.remove();
+    if (svg) {
+        svg.on('pointerdown.lab', null);
+        svg.on('pointermove.lab', null);
+        svg.on('pointerup.lab', null);
+        svg.on('pointerleave.lab', null);
+        svg.selectAll('g.lab-layer').remove();
+    }
+    labState = null;
 }
 
 function removeFramingSandbox() {

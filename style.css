@@ -4394,3 +4394,42 @@ g.ms-story { pointer-events: none; }
    are therefore placed by hand. */
 .ws-wire-grid > .ws-col:first-of-type { grid-column: 1; }
 .ws-wire-grid > .ws-col:last-of-type { grid-column: 3; }
+
+
+/* ==================== PROJECTION LAB ==================== */
+/* The panel is a column of controls beside the map, in the same 300px side slot every globe mode
+   uses. The map is the whole point, so nothing here competes with it for width. */
+.lab-panel { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.6rem; }
+.lab-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.lab-proj {
+    font: inherit; font-size: 0.78rem; padding: 0.42rem 0.3rem; cursor: pointer;
+    background: var(--surface, #fff); color: var(--text, #333);
+    border: 1px solid var(--border, #ccc); border-radius: 5px; line-height: 1.15;
+}
+.lab-proj:hover { border-color: var(--accent, #d08a2c); }
+.lab-proj.active { background: var(--accent, #d08a2c); border-color: var(--accent, #d08a2c); color: #fff; }
+.lab-readout { display: flex; flex-direction: column; gap: 0.45rem; }
+.lab-kind { font-size: 0.8rem; line-height: 1.4; opacity: 0.85; }
+.lab-rows { display: flex; flex-direction: column; gap: 2px; }
+.lab-row { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.8rem; }
+.lab-row span:first-child { opacity: 0.8; }
+.lab-k { font-variant-numeric: tabular-nums; }
+.lab-k.bad { color: var(--incorrect, #c0503f); font-weight: 600; }
+.lab-note { font-size: 0.74rem; line-height: 1.45; opacity: 0.62; }
+.lab-slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 0.5rem; font-size: 0.8rem; }
+.lab-slider input[type="range"] { grid-column: 1 / 3; width: 100%; }
+.lab-slider output { grid-column: 2; font-variant-numeric: tabular-nums; opacity: 0.75; }
+.lab-conic { display: flex; flex-direction: column; gap: 0.45rem; }
+.lab-checks { display: flex; gap: 0.9rem; font-size: 0.8rem; flex-wrap: wrap; }
+.lab-checks label { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
+
+/* The sphere is the EDGE OF THE WORLD, not ocean: on half these projections the world is not a
+   rectangle, and without its outline there is no telling where the map stops. */
+.lab-sphere { fill: var(--surface, #f3efe4); stroke: var(--land-stroke, #b9ae95); stroke-width: 1; }
+.lab-grat { fill: none; stroke: var(--land-stroke, #b9ae95); stroke-opacity: 0.5; stroke-width: 0.4; }
+.country.lab-land { fill: var(--land, #ded3ba); stroke: var(--land-stroke, #b9ae95); stroke-width: 0.4; cursor: default; }
+.country.lab-land:hover { fill: var(--land, #ded3ba); }
+/* Drawn as outlines rather than filled blobs: at high latitudes on a Mercator one indicatrix
+   covers a country, and a filled one would hide the very thing it is measuring. */
+.lab-tissot-cell { fill: var(--accent, #d08a2c); fill-opacity: 0.16;
+                   stroke: var(--accent, #d08a2c); stroke-opacity: 0.85; stroke-width: 0.9; }
