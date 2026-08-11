@@ -10123,10 +10123,10 @@ function sunPathNow() {
 // dome and the ground view are two ways of saying the same thing that are worth seeing one at a
 // time as well as together.
 const SUNPATH_PANES = [
-    { key: 'dome',   cell: 'sun-path-dome-cell',    label: 'Sky above you' },
-    { key: 'globe',  cell: 'sun-path-globe-cell',   label: 'Earth in space' },
-    { key: 'ground', cell: 'sun-path-horizon-cell', label: 'From the ground' },
-    { key: 'map',    cell: 'sun-path-map-cell',     label: 'Sunrise line' }
+    { key: 'dome',   cell: 'sun-path-dome-cell',    label: 'Skydome' },
+    { key: 'globe',  cell: 'sun-path-globe-cell',   label: 'Globe' },
+    { key: 'ground', cell: 'sun-path-horizon-cell', label: 'POV' },
+    { key: 'map',    cell: 'sun-path-map-cell',     label: 'Map' }
 ];
 
 // Show or hide the cells and let what is left fill the stage. The count goes on the stage as a
@@ -10240,9 +10240,9 @@ function renderSunPathMode() {
     restart.textContent = 'Exit';
     restart.onclick = goHome;
     document.getElementById('question-text').innerHTML =
-        '<strong>Sun &amp; Moon</strong> — one moment, four views: the sky above you, the earth in ' +
-        'space, the view from the ground, and the sunrise line. Click the map to move; switch ' +
-        'any view off to give the rest the screen.';
+        '<strong>Sun &amp; Moon</strong> — one moment, four views of it: the skydome, the globe, the ' +
+        'view from where you are standing, and the map. Click the map (or double-click the globe) ' +
+        'to move; switch any view off to give the rest the screen.';
 
     const today = new Date();
     const day = Math.floor((today - new Date(today.getUTCFullYear(), 0, 0)) / 86400000);
@@ -10276,19 +10276,19 @@ function buildSunPathStage() {
     stage.className = 'sun-path-stage';
     stage.innerHTML = `
         <div class="sun-path-cell" id="sun-path-dome-cell">
-            <div class="sun-path-cap">Sky above you<span id="sun-path-dome-note"></span></div>
+            <div class="sun-path-cap">Skydome<span id="sun-path-dome-note"></span></div>
         </div>
         <div class="sun-path-cell" id="sun-path-globe-cell">
-            <div class="sun-path-cap">Earth in space<span id="sun-path-globe-note"></span></div>
+            <div class="sun-path-cap">Globe<span id="sun-path-globe-note"></span></div>
             <button class="sp-view-reset" id="sun-path-view-reset"
                     title="Back to the default view: edge-on to the sunlight">Reset view</button>
         </div>
         <div class="sun-path-cell" id="sun-path-horizon-cell">
-            <div class="sun-path-cap" id="sun-path-horizon-cap">From the ground<span id="sun-path-horizon-note"></span></div>
+            <div class="sun-path-cap" id="sun-path-horizon-cap">POV<span id="sun-path-horizon-note"></span></div>
             <svg id="sun-path-horizon" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <div class="sun-path-cell" id="sun-path-map-cell">
-            <div class="sun-path-cap">Sunrise line<span id="sun-path-map-note"></span></div>
+            <div class="sun-path-cap">Map<span id="sun-path-map-note"></span></div>
             <svg id="sun-path-map" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>`;
     host.appendChild(stage);
@@ -10609,16 +10609,25 @@ function wireSunPathGlobePick(v) {
         if (disc < 0) return;                       // the click missed the globe
         const t = (-b - Math.sqrt(disc)) / 2;       // the near root: the face we can see
         const hit = origin.clone().add(dir.clone().multiplyScalar(t));
-        // Back through the scene's own transforms, so the point is in the earth mesh's frame.
-        th.earth.updateMatrixWorld(true);
-        const local = th.earth.worldToLocal(hit.clone()).normalize();
+        // Into the HOLDER's frame — the tilt undone, the spin still in — because that is the frame
+        // this pane's own forward mapping is written in. Both the observer and the moon are placed
+        // by `(cos L·cos lat, sin lat, −sin L·cos lat)` for a RELATIVE longitude L, so inverting
+        // exactly that is the only way to be sure of the sign. Going through the earth MESH's
+        // frame instead means reasoning about SphereGeometry's own seam convention on top, which
+        // is where the longitude came out mirrored.
+        th.holder.updateMatrixWorld(true);
+        const local = th.holder.worldToLocal(hit.clone()).normalize();
         const la = Math.asin(Math.max(-1, Math.min(1, local.y))) / DEG;
-        // SphereGeometry's own mapping, inverted: longitude L sits at mesh angle -L about Y.
-        const lo = -Math.atan2(-local.z, local.x) / DEG;
+        const rel = Math.atan2(-local.z, local.x) / DEG;
+        // And back to an absolute longitude by adding whatever that frame measures from: the
+        // sub-solar meridian while tracking, the observer's own while the earth is held still.
+        const track = sunPathState.trackSun !== false;
+        const now = sunPathNow();
+        const origin0 = track ? (now.lon - now.H) : now.lon;
+        const lo = rel + origin0;
         if (!isFinite(la) || !isFinite(lo)) return;
         sunPathState.lat = Math.max(-89, Math.min(89, la));
         sunPathState.lon = ((lo + 540) % 360) - 180;
-        refreshSunPathDomeGround();
         updateSunPath();
     });
 }
@@ -11346,10 +11355,23 @@ function refreshSunPathEarthTexture(force) {
 // How big the dome's ground disc is drawn. 1024 across a 900 km radius is about 1.8 km a pixel,
 // which is roughly what a 2048-wide world image holds and well past what a disc this size shows.
 const SUNPATH_PATCH_PX = 1024;
-function refreshSunPathDomeGround() {
+// ONE LOCATION, EVERY PANE. `sunPathState.lat/lon` is the only place the observer lives, and each
+// pane derives its own picture from it on every update — except this disc, which is a texture and
+// therefore has to be told. It was built once and never re-cut, so moving the observer moved the
+// sun's arc, the globe's marker and the map's pin while the ground under the dome quietly stayed
+// where it had started: three panes at the new place and one at the old.
+//
+// Rebuilt only when the location actually changes, since re-projecting the world into a 1024 px
+// disc is not something to do sixty times a second.
+let sunPathDomeGroundAt = null;
+function refreshSunPathDomeGround(force) {
     const T = window.THREE;
     const disc = sunPathState && sunPathState.domeGround;
     if (!T || !disc) return;
+    const key = [sunPathState.lat.toFixed(3), sunPathState.lon.toFixed(3),
+                 !!sunPathState.satellite, !!sunPathSat.day].join('|');
+    if (!force && sunPathDomeGroundAt === key) return;
+    sunPathDomeGroundAt = key;
     // Drawn whenever there is anything to draw it FROM — the vector world always, the imagery when
     // satellite is on. The disc is the ground the observer is standing on, and a plain coloured
     // circle says nothing at all about where that is.
@@ -12328,6 +12350,9 @@ function updateSunPath() {
     drawSunPathMap(now);
     drawSunPathOrbitInset(now);
     if (sunPathState.three) {
+        // The one place every pane is brought up to date with the shared location. The disc keys
+        // itself on lat/lon, so this costs nothing until the observer actually moves.
+        refreshSunPathDomeGround();
         // The dome's camera depends on the sun when it is tracking, so it is re-aimed here rather
         // than only when somebody drags it.
         const wasAz = sunPathState.sunAz;
@@ -12499,7 +12524,10 @@ function buildSunPathPanel() {
             applySunPathDomeCamera();
         });
         flag('sp-show-moon', 'showMoon');
-        flag('sp-satellite', 'satellite', () => refreshSunPathEarthTexture(true));
+        flag('sp-satellite', 'satellite', () => {
+            refreshSunPathEarthTexture(true);
+            refreshSunPathDomeGround(true);
+        });
         flag('sp-tropics', 'tropics');
         flag('sp-daylen', 'dayLengths');
         flag('sp-zones', 'zones');
