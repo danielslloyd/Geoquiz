@@ -2050,14 +2050,62 @@ field could then be opened from 104° to **150°**, because equal angles carry n
 On the centre column the vertical axis IS altitude, exactly, so the tick scale is linear and needs
 no trigonometry at all.
 
+### The map that vanished
+
+Two bugs, one symptom each, both in the pane that had just been merged.
+
+**The land carried no datum.** The paths were appended with a `d` and nothing else, so re-pathing
+them after a rotation called the generator with `undefined` and assigned every country an empty
+`d`. It only showed once the map was ever re-centred — which is what Play does — so the map
+worked until you pressed the button and then emptied itself.
+
+**And the outline-only land rule keyed off the wrong thing.** The satellite `<g>` is created once
+and lives there empty, so `.sp-map-sat + g` matched whether or not any imagery was in it: every
+map, satellite or not, drew unfilled white outlines on blue. The class goes on the svg now, and
+only when an image is actually under the land.
+
+### The type
+
+**Every label in this mode is unbolded serif.** These panes are diagrams, and a bold sans label
+reads as an interface element sitting on top of the picture rather than as an annotation belonging
+to it. That covers the SVG text, the pane captions and the three.js sprites, which had their own
+`bold …px system-ui`. The parallel bars came down from 2.2 units to 1.1 and the terminator from
+1.2 to 0.7: they are measurements laid over a map, and at the old weights they buried the
+coastline they are measured against.
+
+Three labels went entirely — **Sunlight**, **Horizon**, and the sun-angle string on the elevation
+arc. The first two named objects nobody could mistake, and all three were the widest sprites in
+their panes: the auto-framing solves for whatever it can see, so a long string shrinks the earth
+itself to make room for it.
+
 ### Three switches that cross every pane
 
-**Track sun** is on by default and means something different in each pane, which is the point: the
-dome swings round the ground's normal to face the sun's bearing, the ground camera locks on it, and
-the sunrise-line map re-centres on the sub-solar meridian so the terminator stands still and the
-earth slides under it. Off, the dome and the ground pane are pannable by hand and the map is the
-map. Turning it off hands the camera over WHERE IT IS rather than snapping, so the switch reads as
-"stop following".
+**Track sun** is on by default and means something different in each pane, which is the point.
+
+The dome swings round the ground's normal to face the sun's bearing — by MINUS the azimuth, since
+the camera's own angle runs anticlockwise from +Z while a compass bearing runs clockwise from
+north, and adding it turned the dome the wrong way and sent the sun across the sky backwards. The
+ground camera locks on the sun. The map re-centres on the sub-solar meridian.
+
+Off, the earth-in-space pane changes frame rather than merely stopping: **the earth holds still
+and the sun goes round it.** The tilt then has to move from the earth to the sun's path — with the
+axis upright, the sun runs its daily circle at the declination's own latitude about that axis,
+which is what a diurnal circle IS. Physically the same picture; the difference is only which of the
+two is held still, and that is the whole of what somebody switching this off is asking to see.
+Verified: tracking, the earth turns ±45° across six hours and the sun sits at +X throughout; held,
+the earth does not move and the sun swings through 90°.
+
+The dome and the ground pane become pannable by hand. Turning tracking off hands the camera over
+WHERE IT IS rather than snapping, so the switch reads as "stop following".
+
+**The leader lines are rebuilt on a drag.** They are constructed in the CAMERA's basis — that is
+what makes them a tidy screen-space column whichever way the globe is pivoted — so a camera move
+that does not rebuild them leaves them where the old camera put them, sliding off their own
+parallels. That is what "the latitude labels move with the camera" was.
+
+**The orbit diagram moved out of the pane and into the panel.** It is a reference — where in the
+year we are — rather than something happening in that pane, and floating it over the globe made it
+compete with the thing it was annotating.
 
 **Show moon** puts the moon in every pane: on the dome with its illuminated percentage, in the
 ground panorama as a disc with its lit limb, and on the map as the sub-lunar point plus its own
@@ -2069,14 +2117,32 @@ overhead, so the local hour angle is the observer's longitude minus that — whi
 `sunAltitude` and `sunAzimuth` can be handed the moon unchanged.
 
 **Satellite** swaps the vector map for Blue Marble in three places at once: the sunrise-line pane,
-the earth-in-space globe, and the ground under the observer in the dome and the panorama. The
-ground is a patch of real surface around the observer, cut SQUARE ON THE GROUND rather than square
-in the image — longitude degrees shrink with latitude, and without the correction the ground under
-an observer at 70°N is stretched to three times its width.
+the earth-in-space globe, and the ground under the observer in the dome and the panorama.
+
+The dome's ground is a patch of real surface, cut SQUARE ON THE GROUND rather than square in the
+image — longitude degrees shrink with latitude, and without the correction the ground under an
+observer at 70°N is stretched to three times its width. It is 0.55° across at 1024 px: at the 2.2°
+it started at, a 512 px patch was asking a 2048-wide world image for half a kilometre per pixel,
+several times more than it holds, and it came out as coloured mush.
+
+**The panorama's ground is rendered PER PIXEL**, not tiled. Ground recedes, so a square of it near
+the horizon covers a sliver of the frame and a square at your feet covers a huge one; a pattern
+over that is a smear with no depth in it. Every pixel below the horizon is turned back into a ray,
+intersected with the ground plane, and the distance and bearing looked up in the imagery — so the
+texture compresses toward the horizon of its own accord. The eye is at **20 km**, deliberately: at
+standing height the whole visible ground is a couple of kilometres across, which on a 2048-wide
+image is one pixel repeated, and the render comes out perfectly correct and perfectly featureless.
+Cached against a rounded view key, since `toDataURL` is the expensive half and a degree of bearing
+is far below what the imagery resolves.
 
 The night side needs no image of its own: the twilight caps drawn over the top are the night. Where
-a real Black Marble is present (`scripts/build-earth-night.py`, gitignored like the cap tiles) it is
-clipped to the 90° cap and laid under them, so the dark half shows city lights.
+a Black Marble is available it is clipped to the 90° cap and laid under them, so the dark half
+shows city lights — **lazily, and from NASA's own servers**. It is a several-megabyte image that one
+checkbox in one mode wants, so committing it would cost every visitor who never ticks that box.
+A local copy wins if it is there (`scripts/build-earth-night.py` writes one), then two remote
+candidates in order, because over the life of a static site a URL eventually moves. `crossOrigin`
+is set, since a tainted canvas cannot be read back — a silent failure that would look like the
+ground going black rather than like a permissions problem.
 
 `ensureSunPathSat` calls back **only when the image arrives**. Calling back on failure sends the
 caller straight back here to try again, synchronously, forever — which blew the stack the first

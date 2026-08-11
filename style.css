@@ -3477,24 +3477,36 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     font-weight: 700;
 }
 
-/* The six parallels on the sunrise-line map, split into their lit and dark spans. */
-.sp-par-bar { stroke-width: 2.2; stroke-linecap: butt; }
-.sp-par-bar.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
-.sp-par-bar.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
-.sp-par-cap { stroke-width: 1.4; }
-.sp-par-cap.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
-.sp-par-cap.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
-.sp-par-hrs { font-size: 7.5px; font-weight: 700; paint-order: stroke;
-              stroke: rgba(10, 14, 22, 0.75); stroke-width: 2.4px; }
+/* EVERY LABEL IN THIS MODE IS UNBOLDED SERIF. These panes are diagrams — a dome with its arcs, a
+   globe with its angles, a map with its bars — and a bold sans label reads as a user-interface
+   element sitting on top of the picture rather than as an annotation belonging to it. A serif at
+   normal weight recedes into the drawing, which is what an annotation should do. */
+#sun-path-stage text,
+.sun-path-cap {
+    font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Times New Roman', serif;
+    font-weight: 400;
+}
+
+/* The six parallels on the sunrise-line map, split into their lit and dark spans. Hairlines: the
+   bars are a MEASUREMENT laid over the map, and at 2.2 units they were burying the coastline they
+   are measured against. */
+.sp-par-bar { stroke-width: 1.1; stroke-linecap: butt; }
+.sp-par-bar.lit { stroke: #ffd98a; stroke-opacity: 0.9; }
+.sp-par-bar.dark { stroke: #4b5f83; stroke-opacity: 0.75; }
+.sp-par-cap { stroke-width: 0.8; }
+.sp-par-cap.lit { stroke: #ffd98a; stroke-opacity: 0.9; }
+.sp-par-cap.dark { stroke: #4b5f83; stroke-opacity: 0.75; }
+.sp-par-hrs { font-size: 6.4px; font-weight: 400; paint-order: stroke;
+              stroke: rgba(10, 14, 22, 0.6); stroke-width: 1.6px; }
 .sp-par-hrs.lit { fill: #ffe9bd; }
 .sp-par-hrs.dark { fill: #b9c8e2; }
-.sp-par-name { font-size: 6.5px; fill: rgba(232, 240, 250, 0.85); paint-order: stroke;
-               stroke: rgba(10, 14, 22, 0.7); stroke-width: 2px; }
-.sp-par-you .sp-par-bar { stroke-width: 3.2; }
-.sp-par-you .sp-par-name { fill: #ffc9c0; font-weight: 700; }
+.sp-par-name { font-size: 6px; font-weight: 400; fill: rgba(232, 240, 250, 0.72);
+               paint-order: stroke; stroke: rgba(10, 14, 22, 0.55); stroke-width: 1.4px; }
+.sp-par-you .sp-par-bar { stroke-width: 1.8; }
+.sp-par-you .sp-par-name { fill: #ffc9c0; font-weight: 400; }
 
-.sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.55); stroke-width: 3; stroke-linecap: round; }
-.sp-map-me-body { stroke: #d0392b; stroke-width: 1.5; stroke-linecap: round; }
+.sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.5); stroke-width: 1.8; stroke-linecap: round; }
+.sp-map-me-body { stroke: #d0392b; stroke-width: 1; stroke-linecap: round; }
 
 .sp-orb-path { fill: none; stroke: rgba(214, 227, 244, 0.7); stroke-width: 1.1; stroke-dasharray: 3 3; }
 .sp-orb-sun { fill: #ffcf5c; }
@@ -3534,8 +3546,8 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     max-width: calc(100% - 84px);   /* leaves room for the Reset-view button */
     width: fit-content;
     z-index: 2;
-    font-size: 0.76rem;
-    font-weight: 700;
+    font-size: 0.74rem;
+    font-weight: 400;
     /* A light chip on a translucent dark pill. These captions sit over a pale dome, a bright
        sky, a lit globe and a dark ground by turns; text alone could not survive all four. */
     color: #f2f5fa;
@@ -3996,17 +4008,17 @@ circle.island-marker.sb-mark-wrong { fill: var(--incorrect, #c0503f); fill-opaci
 }
 
 .sp-altlabel {
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 400;
     fill: #6b4b12;
     paint-order: stroke;
-    stroke: rgba(255, 255, 255, 0.75);
-    stroke-width: 3px;
+    stroke: rgba(255, 255, 255, 0.7);
+    stroke-width: 2.2px;
 }
 
 /* The sunrise-line pane. */
 .sp-map-ocean { fill: #9fb8cc; }
-.sp-map-land { fill: #cbc3a4; stroke: #a79c78; stroke-width: 0.3; }
+.sp-map-land { fill: #cbc3a4; stroke: #a79c78; stroke-width: 0.25; }
 .sp-map-night { fill: #0a1020; pointer-events: none; }
 .sp-map-night.n0 { fill-opacity: 0.16; }
 .sp-map-night.n1 { fill-opacity: 0.16; }
@@ -4015,12 +4027,13 @@ circle.island-marker.sb-mark-wrong { fill: var(--incorrect, #c0503f); fill-opaci
 .sp-map-term {
     fill: none;
     stroke: #ffd28a;
-    stroke-width: 1.2;
+    stroke-width: 0.7;
+    stroke-opacity: 0.9;
     pointer-events: none;
 }
 
-.sp-map-sun { fill: #ffcf5c; stroke: #fff; stroke-width: 1; pointer-events: none; }
-.sp-map-me { fill: #d05c4a; stroke: #fff; stroke-width: 1.2; pointer-events: none; }
+.sp-map-sun { fill: #ffcf5c; stroke: #fff; stroke-width: 0.7; pointer-events: none; }
+.sp-map-me { fill: #d05c4a; stroke: #fff; stroke-width: 0.8; pointer-events: none; }
 .sp-map-me-ring { fill: none; stroke: #d05c4a; stroke-width: 1.1; stroke-opacity: 0.7; pointer-events: none; }
 
 #sun-path-map { cursor: crosshair; }
@@ -4539,7 +4552,19 @@ g.ms-story { pointer-events: none; }
 .sp-map-sat-day { opacity: 1; }
 .sp-map-sat-veil { fill: #0a1018; opacity: 0.1; pointer-events: none; }
 .sp-map-sat-night image { opacity: 0.95; }
-.sun-path-stage .sp-map-sat + g .sp-map-land { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 0.4; }
+/* Outline-only land, but ONLY while the satellite basemap is actually under it. */
+#sun-path-map.sp-sat-on .sp-map-land { fill: none; stroke: rgba(255,255,255,0.3); stroke-width: 0.35; }
 /* The moon's rise/set line: dotted, so it is never mistaken for the sunrise line. */
-.sp-map-moonline { fill: none; stroke: #cfd6e2; stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.75; }
+.sp-map-moonline { fill: none; stroke: #cfd6e2; stroke-width: 0.6; stroke-dasharray: 2 3; opacity: 0.7; }
 .sp-map-moon { pointer-events: none; }
+
+
+/* The orbit diagram moved out of the Earth-in-space pane and into the panel. It is a REFERENCE
+   — where in the year we are — rather than something happening in that pane, and floating it
+   over the globe made it compete with the thing it was annotating. */
+.sp-orbit-row { display: flex; align-items: center; gap: 10px; }
+.sp-orbit-row .sandbox-readout { flex: 1 1 auto; min-width: 0; }
+#sun-path-panel .sp-orbit-inset {
+    flex: 0 0 auto; width: 84px; height: 84px; display: block;
+    position: static; background: none; border: none; padding: 0;
+}
