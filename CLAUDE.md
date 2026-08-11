@@ -1189,6 +1189,40 @@ A charge tile is drawn on a **checkerboard**, because half the world's charges a
 other half black: a plain light tile hid every white crescent, and a plain dark one would hide
 every black eagle.
 
+### Every charge keeps its own colours
+
+Two charges wearing the same red used to be one entry in the palette, so recolouring either
+recoloured both, and there was no way to say "that eagle, not this one". Each piece of the
+composed flag — the design, and every borrowed charge — is now its own SCOPE (`data-ws-scope`
+on the wrapper, `sbNodeScope` walking up to it), the palette keeps entries apart by scope even
+when the hex is identical, and `sbRepaint` will only move a node onto an entry belonging to its
+own piece. Repeated colours are numbered in the swatch column, in the order they appear; a colour
+that occurs once carries no badge, because a number on everything is noise.
+
+**Areas are measured by a PROBE RENDER** (`wsScopedPalette`): every entry is temporarily painted a
+colour unique across the whole document, the result is rasterised, and the pixels are counted by
+exact match. That handles overlap for free — a charge drawn over a band takes those pixels and
+the band does not — which no sum of bounding boxes can do, and it is the only way to tell two
+entries apart when their real colour is the same. There is no area floor: the old one existed to
+throw away antialiased blends, a probe render has none, and dropping the small entries would
+silently remove a charge hidden under another, which is exactly the entry worth being able to
+re-point.
+
+**A colour the mapping had to invent is adopted into the donor's palette.** `sbMatchPalettes`
+fills slots the donor cannot cover with harmonics of the donor's own wheel — and those arrived on
+the cloth from nowhere, with no swatch, no wheel dot, and no way to edit them or tell them from
+the ones that were chosen. They are pushed into `st.extra` after each compose, so each gets a
+swatch and a dot like every other. Idempotent: on the next compose the colour is already in the
+palette and within `SB_SAME_COLOUR` of itself.
+
+**A charge is indexed against the CENTRE.** Two flags are rarely the same proportion — a 2:1
+against a 3:2 — and a charge placed by its distance from the top left drifts by the difference:
+a disc dead centre on its own flag arrived visibly off centre on a wider one, which is the one
+placement error everybody can see. The offset of the charge's centre from its own flag's centre
+is laid against the new flag's centre instead, which puts centred things dead centre by
+construction and moves everything else by no more than the change in proportion. Verified:
+Japan's disc on Qatar's 11:28 cloth lands at 49.7% / 49.5%.
+
 ### The palette, wired
 
 The palette is measured on the **composed** document, so a borrowed charge is part of the flag by

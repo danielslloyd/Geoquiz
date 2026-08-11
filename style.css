@@ -4433,3 +4433,53 @@ g.ms-story { pointer-events: none; }
    covers a country, and a filled one would hide the very thing it is measuring. */
 .lab-tissot-cell { fill: var(--accent, #d08a2c); fill-opacity: 0.16;
                    stroke: var(--accent, #d08a2c); stroke-opacity: 0.85; stroke-width: 0.9; }
+
+
+/* ==================== THE WORKSHOP, RESTYLED ====================
+   Same controls, same behaviour — the panel had simply grown into one undifferentiated column of
+   headings, hints and swatch strips, so nothing told you where one job ended and the next began.
+   Each section is a card now, the preview holds the top of the screen, and the two things a
+   person actually operates (the colour wires and the charge menu) get the room. */
+.ws { gap: 20px; align-items: start; }
+.ws-stage {
+    padding: 12px; border-radius: 12px; background: var(--surface, #fff);
+    border: 1px solid var(--border, #ddd); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.ws-stage img { border-radius: 6px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.16); }
+.ws-controls { gap: 12px; }
+.ws-sec {
+    padding: 11px 13px; border-radius: 10px; background: var(--surface, #fff);
+    border: 1px solid var(--border, #ddd);
+}
+.ws-sec h4 {
+    margin: 0 0 5px; font-size: 0.7rem; letter-spacing: 0.09em; text-transform: uppercase;
+    opacity: 0.55; font-weight: 700;
+}
+.ws-sub {
+    margin: 12px 0 4px; font-size: 0.7rem; letter-spacing: 0.09em; text-transform: uppercase;
+    opacity: 0.55; font-weight: 700;
+}
+.ws-hint { font-size: 0.78rem; line-height: 1.45; opacity: 0.66; }
+
+/* The colour columns. Bigger targets, because every one of them is a drag handle. */
+.ws-node { position: relative; }
+.ws-node-n {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 0.62rem; font-weight: 700; color: #fff; pointer-events: none;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.9), 0 0 1px rgba(0, 0, 0, 0.9);
+}
+.ws-col-lab {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.55;
+    font-weight: 700; margin-bottom: 2px;
+}
+
+/* The charge menu reads as a shelf of things you own rather than as another swatch strip. */
+.ws-swatches { gap: 7px; }
+.ws-menu-item .ws-swatch { border-radius: 8px; }
+
+/* The preview and the controls stack under a phone, with the flag still first. */
+@media (max-width: 900px) {
+    .ws { grid-template-columns: 1fr; }
+    .ws-stage { position: static; }
+    .ws-stage img { max-height: 38vh; }
+}

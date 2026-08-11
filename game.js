@@ -18013,21 +18013,34 @@ function sbDefaultsToBlack(el) {
     return true;
 }
 
+// Which piece of the composed flag a node belongs to: the design itself, or one of the borrowed
+// charges. The workshop marks each charge's wrapper as it lays it in, so this is a walk up the
+// tree — and it is what lets two charges wearing the same red be two different colours as far
+// as the palette is concerned.
+function sbNodeScope(el) {
+    for (let n = el; n && n.getAttribute; n = n.parentNode) {
+        const v = n.getAttribute('data-ws-scope');
+        if (v) return v;
+    }
+    return '';
+}
+
 function sbSvgColourNodes(doc) {
     const out = [];
     doc.querySelectorAll('*').forEach(el => {
-        if (sbDefaultsToBlack(el)) out.push({ el, attr: 'fill', rgb: [0, 0, 0] });
+        const scope = sbNodeScope(el);
+        if (sbDefaultsToBlack(el)) out.push({ el, attr: 'fill', rgb: [0, 0, 0], scope });
         SB_COLOUR_ATTRS.forEach(a => {
             const v = el.getAttribute(a);
             const rgb = sbParseColour(v);
-            if (rgb) out.push({ el, attr: a, rgb });
+            if (rgb) out.push({ el, attr: a, rgb, scope });
         });
         const style = el.getAttribute('style');
         if (style) {
             SB_COLOUR_ATTRS.forEach(a => {
                 const m = style.match(new RegExp('(?:^|;)\\s*' + a + '\\s*:\\s*([^;]+)', 'i'));
                 const rgb = m && sbParseColour(m[1]);
-                if (rgb) out.push({ el, attr: a, rgb, inStyle: true });
+                if (rgb) out.push({ el, attr: a, rgb, inStyle: true, scope });
             });
         }
     });
@@ -18191,6 +18204,94 @@ async function sbFlagPalette(code, doc) {
     if (!out.length) return null;
     out.sort((a2, b2) => b2.share - a2.share);
     return out.slice(0, SB_PALETTE_MAX);
+}
+
+// The composed flag's palette, with the design and each borrowed charge kept APART: two charges
+// wearing the same red are two entries, not one, so each can be sent somewhere different. The
+// quiz never wants this (a flag is one thing there) and does not use it.
+//
+// Areas are measured by a PROBE RENDER rather than by matching pixels back to source colours:
+// every entry is temporarily painted a colour of its own, unique across the whole document, and
+// the raster is then counted by exact match. That handles overlap for free — a charge drawn over
+// a band takes those pixels and the band does not — which no sum of bounding boxes can do, and
+// it is the only way to tell two entries apart when their real colour is identical.
+const WS_PROBE_STEP = 17;      // distinct probe colours, spaced far wider than any antialiasing
+async function wsScopedPalette(doc) {
+    const nodes = sbSvgColourNodes(doc);
+    if (!nodes.length) return null;
+    // Group: same piece of the flag AND near enough in colour to be the same colour.
+    const groups = [];
+    nodes.forEach(n => {
+        const g = groups.find(x => x.scope === (n.scope || '') && sbRgbDist(x.rgb, n.rgb) < SB_SAME_COLOUR);
+        if (g) g.nodes.push(n); else groups.push({ scope: n.scope || '', rgb: n.rgb, nodes: [n] });
+    });
+    if (!groups.length) return null;
+    if (groups.length > 64) groups.length = 64;          // a probe colour each, and a sane menu
+    const probe = i => [((i % 6) * 51), (Math.floor(i / 6) % 6) * 51, (Math.floor(i / 36) % 6) * 51]
+        .map((v, k) => Math.max(0, Math.min(255, v + (k === 2 ? WS_PROBE_STEP : 0))));
+    // Painted onto a COPY, so the document being composed is untouched by the measurement.
+    const copy = new DOMParser().parseFromString(new XMLSerializer().serializeToString(doc), 'image/svg+xml');
+    if (!copy || copy.querySelector('parsererror')) return null;
+    const cNodes = sbSvgColourNodes(copy);
+    if (cNodes.length !== nodes.length) return null;     // the two must line up index for index
+    const owner = new Map();
+    groups.forEach((g, i) => g.nodes.forEach(n => owner.set(nodes.indexOf(n), i)));
+    cNodes.forEach((n, i) => {
+        const gi = owner.get(i);
+        if (gi == null) return;
+        const hex = sbHex(probe(gi));
+        if (n.inStyle) {
+            const style = n.el.getAttribute('style') || '';
+            n.el.setAttribute('style', style.replace(
+                new RegExp('((?:^|;)\s*' + n.attr + '\s*:\s*)([^;]+)', 'i'), '$1' + hex));
+        } else n.el.setAttribute(n.attr, hex);
+    });
+    let counts = null;
+    try {
+        const root = copy.documentElement;
+        const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+        const ar = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[3] / vb[2] : 2 / 3;
+        const W = SB_AREA_W, H = Math.max(8, Math.round(W * ar));
+        const url = 'data:image/svg+xml;charset=utf-8,' +
+            encodeURIComponent(new XMLSerializer().serializeToString(copy));
+        const img = await new Promise((res, rej) => {
+            const im = new Image();
+            im.onload = () => res(im);
+            im.onerror = () => rej(new Error('decode'));
+            im.src = url;
+        });
+        const cv = document.createElement('canvas');
+        cv.width = W; cv.height = H;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, W, H);
+        const data = ctx.getImageData(0, 0, W, H).data;
+        counts = new Array(groups.length).fill(0);
+        let total = 0;
+        for (let i = 0; i < data.length; i += 4) {
+            if (data[i + 3] < 200) continue;
+            const px = [data[i], data[i + 1], data[i + 2]];
+            let bi = -1, bd = Infinity;
+            for (let g = 0; g < groups.length; g++) {
+                const d = sbRgbDist(px, probe(g));
+                if (d < bd) { bd = d; bi = g; }
+            }
+            if (bd > 20) continue;                        // an antialiased blend of two probes
+            counts[bi]++; total++;
+        }
+        if (total) counts = counts.map(c => c / total); else counts = null;
+    } catch (_) { counts = null; }
+    const out = groups.map((g, i) => ({
+        hex: sbHex(g.rgb), rgb: g.rgb, scope: g.scope,
+        key: g.scope ? sbHex(g.rgb) + '@' + g.scope : sbHex(g.rgb),
+        share: counts ? counts[i] : 1 / groups.length
+    }));
+    // No area floor. The old one existed to throw away antialiased blends, and a probe render has
+    // none to throw away — every group here is a colour somebody DECLARED. Dropping the small
+    // ones would silently remove a charge that happens to be hidden under another from the list,
+    // and an entry nobody can see is exactly the one worth being able to re-point.
+    if (!out.length) return null;
+    out.sort((a2, b2) => b2.share - a2.share);
+    return out.slice(0, SB_PALETTE_MAX * 3);
 }
 
 async function sbDonorPalette(code) {
@@ -18378,7 +18479,8 @@ function sbRepaint(doc, palette, donor, pick) {
     if (!pool) return null;
     let map = sbMatchPalettes(palette, pool);
     if (!map) return null;
-    if (pick && pick.size) map = map.map(m => pick.has(m.from.hex) ? { from: m.from, to: pick.get(m.from.hex) } : m);
+    const keyOf = e => e.key || e.hex;
+    if (pick && pick.size) map = map.map(m => pick.has(keyOf(m.from)) ? { from: m.from, to: pick.get(keyOf(m.from)) } : m);
     // Something has to have MOVED. Below this the swap is invisible at tile size and the round
     // degenerates into "which one looks very slightly off", which is not a question about flags.
     if (!pick && !map.some(m => sbRgbDist(m.from.rgb, m.to) >= 60)) return null;
@@ -18394,11 +18496,20 @@ function sbRepaint(doc, palette, donor, pick) {
             n.el.setAttribute(n.attr, hex);
         }
     };
+    // Whether this palette distinguishes the pieces of the flag from each other. The quiz's does
+    // not — a flag is one thing there — and the workshop's does, in which case a node may only
+    // travel with an entry belonging to its OWN piece. That is the whole of what makes two
+    // charges wearing the same red recolourable apart from each other.
+    const scoped = palette.some(e => e.scope);
     nodes.forEach(n => {
         // Every node goes to the palette entry it is NEAREST, so a shade a few units off the one
         // that was measured still travels with its own colour rather than being left behind.
         let hit = null, bd = Infinity;
-        map.forEach(m => { const d2 = sbRgbDist(n.rgb, m.from.rgb); if (d2 < bd) { bd = d2; hit = m; } });
+        map.forEach(m => {
+            if (scoped && (m.from.scope || '') !== (n.scope || '')) return;
+            const d2 = sbRgbDist(n.rgb, m.from.rgb);
+            if (d2 < bd) { bd = d2; hit = m; }
+        });
         if (!hit) return;
         // The measured shade becomes the donor's colour exactly; anything else that files under
         // it moves by the same delta, so an emblem's light and dark greens stay light and dark
@@ -18603,10 +18714,18 @@ async function wsCompose() {
         // of the way along this one -- and its own size relative to the cloth.
         const dv = a.part.vb || { x: 0, y: 0, w: a.part.box.w, h: a.part.box.h };
         const k = Math.min(W / dv.w, H / dv.h);          // uniform: never stretched on the way over
-        const tx = X0 + ((a.part.box.x - dv.x) / dv.w) * W;
-        const ty = Y0 + ((a.part.box.y - dv.y) / dv.h) * H;
-        const cx = tx - a.part.box.x * k;
-        const cy = ty - a.part.box.y * k;
+        // INDEXED AGAINST THE CENTRE, not against the edges. Two flags are rarely the same
+        // proportion — a 2:1 against a 3:2 — and a charge placed by its distance from the top
+        // left drifts by the difference: a disc dead centre on its own flag arrived visibly off
+        // centre on a wider one, which is the one placement error everybody can see. Measuring
+        // the offset of the charge's centre from its own flag's centre, and laying that offset
+        // against the new flag's centre, puts centred things dead centre by construction and
+        // moves everything else by no more than the change in proportion.
+        const from = [dv.x + dv.w / 2, dv.y + dv.h / 2];
+        const mid = [a.part.box.x + a.part.box.w / 2, a.part.box.y + a.part.box.h / 2];
+        const to = [X0 + W / 2 + (mid[0] - from[0]) * k, Y0 + H / 2 + (mid[1] - from[1]) * k];
+        const cx = to[0] - mid[0] * k;
+        const cy = to[1] - mid[1] * k;
         // Every id in the borrowed fragment is renamed, because two charges from two flags will
         // both call their gradient "a" and the second would quietly take over the first. The
         // rename covers the definition and every reference to it in one pass, so the fragment
@@ -18625,7 +18744,10 @@ async function wsCompose() {
             .map(k2 => ` ${k2}="${a.part.inherit[k2]}"`).join('');
         const frag = new DOMParser().parseFromString(
             `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` +
-            `<g transform="translate(${cx},${cy}) scale(${k})">` +
+            // The scope marker. Everything below it is THIS charge, so its colours can be
+            // measured, listed and recoloured apart from the design's and from every other
+            // charge's, however many of them happen to be wearing the same red.
+            `<g data-ws-scope="c${i}" transform="translate(${cx},${cy}) scale(${k})">` +
             keepIds(a.part.defs || '') +
             `<g transform="matrix(${m.join(',')})"${inh}>` + dropIds(a.part.xml) + `</g>` +
             `</g></svg>`, 'image/svg+xml');
@@ -18638,16 +18760,27 @@ async function wsCompose() {
     // that the answer follows what is actually on the cloth — which is also what makes a borrowed
     // charge get recoloured ALONGSIDE the design rather than pasted on in its own country's
     // colours: by the time the palette is read, the charge is part of the flag.
-    const key = 'ws:' + st.base.code + ':' + st.added.map(a => a.part.xml.length).join('|');
-    const palette = await sbFlagPalette(key, doc);
+    const palette = await wsScopedPalette(doc);
     st.palette = palette;
     let changes = null, mapping = null;
     if (st.donor && palette) {
         const pal = wsDonorPal();
         const pick = new Map();
-        st.pick.forEach((di, hex) => { if (pal[di]) pick.set(hex, pal[di].rgb); });
+        st.pick.forEach((di, key) => { if (pal[di]) pick.set(key, pal[di].rgb); });
         changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick);
         mapping = sbRepaint.lastMap;
+        // Anything the mapping had to INVENT is adopted into the donor's palette. A colour the
+        // flag is wearing but the donor column does not show is a colour nobody can edit or
+        // re-point a wire at, and there is no telling it from the ones that were chosen — it is
+        // simply on the cloth, from nowhere. Adopted, it gets a swatch and a dot on the wheel
+        // like every other. Idempotent: next compose it is already there and near enough to
+        // itself that nothing is added twice.
+        (mapping || []).forEach(m => {
+            if (!pal.some(c => sbRgbDist(c.rgb, m.to) < SB_SAME_COLOUR)) {
+                st.extra.push(m.to);
+                pal.push({ key: 'x', rgb: m.to, hex: sbHex(m.to), share: 0 });
+            }
+        });
     }
     st.mapping = mapping;
     const xml = new XMLSerializer().serializeToString(doc);
@@ -19031,17 +19164,33 @@ function wsPaintWire() {
     if (!base.length) { box.innerHTML = `<div class="ws-hint">Pick a design to see its colours.</div>`; return; }
     // Where each base colour currently points: the pin if there is one, otherwise whichever donor
     // swatch the automatic mapping landed nearest.
+    const keyOf = c => c.key || c.hex;
     const cur = new Map();
     (st.mapping || []).forEach(m => {
         let bi = -1, bd = Infinity;
         pal.forEach((c, i) => { const d = sbRgbDist(c.rgb, m.to); if (d < bd) { bd = d; bi = i; } });
-        cur.set(m.from.hex, st.pick.has(m.from.hex) ? st.pick.get(m.from.hex) : bi);
+        const k2 = keyOf(m.from);
+        cur.set(k2, st.pick.has(k2) ? st.pick.get(k2) : bi);
     });
+    // Two entries can be the same colour — that is the point of keeping the charges apart — and
+    // two identical swatches side by side are unusable, so repeats are numbered in the order they
+    // appear. A single occurrence carries no number: a badge on everything is noise.
+    const seen2 = new Map();
+    base.forEach(c => seen2.set(c.hex, (seen2.get(c.hex) || 0) + 1));
+    const tick = new Map();
+    const badge = c => {
+        if ((seen2.get(c.hex) || 0) < 2) return '';
+        const n2 = (tick.get(c.hex) || 0) + 1;
+        tick.set(c.hex, n2);
+        return `<span class="ws-node-n">${n2}</span>`;
+    };
+    const whose = c => c.scope ? 'a borrowed charge' : 'the design';
     box.innerHTML =
         `<div class="ws-wire-grid">` +
         `<div class="ws-col" id="ws-col-a"><div class="ws-col-lab">Yours</div>` +
-        base.map(c => `<div class="ws-node" data-hex="${c.hex}" style="background:${c.hex}" ` +
-                      `title="${c.hex} \u2014 ${Math.round(c.share * 100)}% of the flag"></div>`).join('') + `</div>` +
+        base.map(c => `<div class="ws-node" data-key="${keyOf(c)}" style="background:${c.hex}" ` +
+                      `title="${c.hex} on ${whose(c)} — ${(c.share * 100).toFixed(1)}% of the flag">` +
+                      `${badge(c)}</div>`).join('') + `</div>` +
         `<svg class="ws-wires" id="ws-wires"></svg>` +
         `<div class="ws-col" id="ws-col-b"><div class="ws-col-lab">${displayLabelForName(st.donor.name)}</div>` +
         pal.map((c, i) => `<div class="ws-node donor" data-i="${i}" style="background:${c.hex}" title="${c.hex}"></div>`).join('') +
@@ -19059,12 +19208,12 @@ function wsPaintWire() {
         svg2.setAttribute('height', gb.height);
         let out = '';
         base.forEach(c => {
-            const from = box.querySelector(`.ws-node[data-hex="${c.hex}"]`);
-            const i = cur.get(c.hex);
+            const from = box.querySelector(`.ws-node[data-key="${keyOf(c)}"]`);
+            const i = cur.get(keyOf(c));
             const to = box.querySelector(`.ws-node.donor[data-i="${i}"]`);
             if (!from || !to) return;
             const a2 = mid(from), b2 = mid(to);
-            const pinned = st.pick.has(c.hex);
+            const pinned = st.pick.has(keyOf(c));
             out += `<path class="ws-wire-line${pinned ? ' pinned' : ''}" d="M${a2[0]},${a2[1]} C${(a2[0] + b2[0]) / 2},${a2[1]} ${(a2[0] + b2[0]) / 2},${b2[1]} ${b2[0]},${b2[1]}"/>`;
         });
         if (liveFrom && liveTo)
@@ -19077,14 +19226,15 @@ function wsPaintWire() {
     // the same reason the puzzle uses them: a live line has to follow the finger.
     let dragHex = null;
     const gb = () => grid.getBoundingClientRect();
-    box.querySelectorAll('.ws-node[data-hex]').forEach(el => el.addEventListener('pointerdown', e => {
-        dragHex = el.dataset.hex;
+    box.querySelectorAll('.ws-node[data-key]').forEach(el => el.addEventListener('pointerdown', e => {
+        dragHex = el.dataset.key;
         try { el.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
         e.preventDefault();
     }));
     box.addEventListener('pointermove', e => {
         if (!dragHex) return;
-        const from = box.querySelector(`.ws-node[data-hex="${dragHex}"]`);
+        const from = box.querySelector(`.ws-node[data-key="${dragHex}"]`);
+        if (!from) return;
         const g2 = gb(), fr = from.getBoundingClientRect();
         draw([fr.left + fr.width / 2 - g2.left, fr.top + fr.height / 2 - g2.top],
              [e.clientX - g2.left, e.clientY - g2.top]);
