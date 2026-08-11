@@ -1779,7 +1779,7 @@
         "code": "vc",
         "capital": "Kingstown",
         "capitalCoords": [
-            13.1600,
+            13.16,
             -61.2248
         ],
         "population": 110940,
@@ -3246,6 +3246,51 @@
         ],
         "alternateNames": [
             "Republic of Kosovo"
+        ]
+    },
+    "Andorra": {
+        "code": "ad",
+        "capital": "Andorra la Vella",
+        "capitalCoords": [
+            42.5063,
+            1.5218
+        ],
+        "population": 79824,
+        "similar": [
+            "Monaco",
+            "San Marino",
+            "Liechtenstein",
+            "Luxembourg"
+        ]
+    },
+    "Palau": {
+        "code": "pw",
+        "capital": "Ngerulmud",
+        "capitalCoords": [
+            7.5006,
+            134.6242
+        ],
+        "population": 18024,
+        "similar": [
+            "Marshall Islands",
+            "Micronesia",
+            "Nauru",
+            "Kiribati"
+        ]
+    },
+    "Marshall Islands": {
+        "code": "mh",
+        "capital": "Majuro",
+        "capitalCoords": [
+            7.0897,
+            171.3803
+        ],
+        "population": 42050,
+        "similar": [
+            "Micronesia",
+            "Kiribati",
+            "Nauru",
+            "Palau"
         ]
     }
 }

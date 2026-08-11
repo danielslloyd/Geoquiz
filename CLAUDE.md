@@ -5,7 +5,7 @@ Interactive geography quiz game built with vanilla JS and D3.js.
 ## Architecture
 
 - `index.html` — single-page app; all game UI lives here
-- `game.js` — all game logic (~5000 lines)
+- `game.js` — all game logic (~7900 lines)
 - `style.css` — all styles
 - `4_niedrig.geo.json` — local GeoJSON for German states
 - `data/england-counties.geo.json` — local GeoJSON for England's 47 ceremonial counties
@@ -16,6 +16,56 @@ Interactive geography quiz game built with vanilla JS and D3.js.
 - `data/textures/earth-*.jpg` — NASA Blue Marble Next Generation (June, public domain) Earth textures for the orbital `spaceship` view. `earth-bmng-2048.jpg` (committed) is a full-globe low-res **base sphere** (instant paint + far side + fallback). `earth-cap-c{col}-r{row}.jpg` are a full-500m-res **8×4 grid of 45° tiles** (10800² each, ~230 MB total, **gitignored** — rebuild locally). At ≤500 km only a ~22° cap is ever visible, so each round loads only the handful of tiles that cap reaches (`orbitalLoadCap`/`capTilesForTarget`, pruned to the current cap) onto tile meshes at radius 1 over the base (radius 0.997, so tiles always win depth). Full res is delivered as tiles because a single browser texture caps at 16384 (Chrome/ANGLE `MAX_TEXTURE_SIZE`, even on big GPUs). Regenerate via `scripts/build-earth-texture.py` (downloads the eight 21600² 500m tiles, slices each 2×2 with Pillow; a `build_half()` two-hemisphere alternative is kept but unused). three.js (r160, ESM via importmap in `index.html`, exposed as `window.THREE`) renders it.
   - **NASA live fallback (for deploys without the gitignored cap tiles, e.g. Netlify).** `probeLocalTiles()` HEAD-checks `earth-cap-c0-r0.jpg` on entry; a 404 (or non-image 200) flips `orbitalNasaFallback` and, instead of the local tiles, each round **crops just the visible cap** straight out of a NASA equirectangular source and drapes it on a partial-sphere mesh (`nasaCapRect`→`capDestSize`→`setNasaCapMesh`/`makeRectMesh`), so the texture is always ≤ the GPU ceiling (never the whole oversized globe). Default source is the single **21600×10800** globe (`loadNasaGlobe`, prefers 21600, falls back to 5400×2700 if it won't decode; cropped via `cropGlobeToCanvas`, a 3-copy draw that handles antimeridian wrap). The **"500 m tiles"** checkbox (`#tune-hires-500m` → `orbitalUse500m`) opts into fetching NASA's full 21600² **500m** tiles live and stitching the cap from them (`build500mCap`/`tilePieces500m`/`fetch500mTile`, `createImageBitmap` crop+resize so a 466 MP tile is never held as a canvas); this works even when local tiles are present and falls back to the globe crop on any failure. `orbitalRefreshCap` picks the source (local tiles / globe crop / 500m); `orbitalCapToken` voids stale async builds. Crop canvases are capped at `CAP_TEX_MAX` (12000 px) for memory.
 - `data/lakes.geo.json` — Natural Earth **110m** major lakes (Great Lakes, Victoria, Baikal, …), drawn as an overlay on world maps (`drawLakes`). Lakes track the map's detail level (`lakesResForDetail`): `low`/`medium` both use the bundled local 110m file, `high` fetches 50m from jsdelivr (`martynafford/natural-earth-geojson`), cached in `lakesCache` with the local file as fallback. `medium` maps to 110m (not 50m) deliberately — country coastlines at `medium` are the 50m source simplified down to `MEDIUM_SIMPLIFY_RETAIN` (20%, locked) client-side, but raw 50m lakes have no equivalent simplification pass, so they used to render sharper than the coastline they sit inside; 110m lakes are close in coarseness to a 20%-simplified 50m coastline and need no network fetch. They share the globe's `userSpaceOnUse` `#ocean-gradient` (kept in sync by `syncOceanGradient`) so they read as ocean; on flat maps they fill `var(--surface)` (the flat-map ocean colour) and carry a `var(--land-stroke)` coastline border. `MIN_LAKE_DIAM_KM` (32 km, locked) filters out lakes below Great Salt Lake size via `lakeInscribedDiamKm`.
+
+## Lakes are cut out of the countries
+
+Natural Earth draws the countries round a lake as meeting in the middle of the water: the DRC's
+polygon and Tanzania's share a border down Lake Tanganyika. Every consequence of "which polygon
+is this point in" inherited that — a click in the middle of the lake landed in a country, areas
+counted the water as land, centroids were pulled out into it, and the border graph had neighbours
+that share nothing but a horizon.
+
+So the lakes are **stamped out of the polygons**, in `worldFeaturesFromTopology`, before anything
+downstream sees them. That is a polygon difference and there is no clipping library here, so
+`ghDifference` is one: Greiner–Hormann, difference only. Measured on the 110m world: **58
+country/lake pairs clipped, 0 failures**; 12 of 12 probe points in big lakes now read as water and
+12 of 12 land points still read as their own country. Areas land on the published LAND figures
+rather than the totals — Uganda 216,709 km² against a total of 241,550, Malawi 99,611 against
+118,484.
+
+Four things it has to get right, and three of them produced a plausible-looking map while being
+completely wrong:
+
+* **The two rings are labelled OPPOSITELY.** On the country a crossing is an entry when what
+  follows is outside the lake; on the lake, when what follows is inside the country. With both the
+  same way round the identical code returns the INTERSECTION — a corner clip of 1 rather than the
+  99 that is left — which is a plausible enough picture to go unnoticed on a coastline. It was
+  caught by clipping squares with known answers before it was ever pointed at a map.
+* **Winding.** d3 reads a GeoJSON ring spherically: counter-clockwise is the inside, clockwise is
+  the whole earth except it. The clipper emits rings in whatever order the traversal walked them,
+  so a backwards ring is not a country but everything that is not that country — Tanzania, Canada,
+  the USA and Russia all vanished at once, which is to say every country with a big lake in it.
+  Each output ring is turned to match the ring it came from and each hole to the opposite.
+* **The antimeridian.** A ring crossing ±180° has no meaningful planar signed area, and the
+  winding fix depends on one; a mis-wound Russia swallows the Canadian Arctic. Those rings are
+  unwrapped (every negative longitude shifted east by 360), clipped, and wrapped back. Skipping
+  them instead left Baikal and Ladoga as land.
+* **Degeneracies.** Natural Earth derives some borders FROM the lake outline, so a crossing landing
+  exactly on a vertex is the ordinary case rather than an exotic one. Greiner–Hormann cannot
+  classify those, so the attempt is abandoned and retried with the lake nudged a ten-millionth of
+  a degree, up to five times; a pair that still will not clip is left alone, which is exactly the
+  old behaviour and never worse than it.
+
+**Adjacency is fixed separately**, because it is derived from the ARC TABLE rather than from the
+polygons: a pair of countries is dropped when every arc they share has its midpoint in a lake.
+That is what makes `playableNeighbours`, the border graph and Who's Missing agree with the map —
+the DRC's neighbour list no longer contains Tanzania, and Tanzania's no longer contains the DRC.
+The rule is deliberately conservative (EVERY shared arc must be wet), so a pair meeting on land at
+one end of a lake keeps its border.
+
+The lakes arrive over the network, so the first world drawn may have none; the cut is applied when
+they land and the map redrawn once, the same shape as the coastline model's own readiness gate.
+The cutting set is the bundled 110m file at every detail level.
 
 ## Country dots (dynamic)
 
@@ -31,6 +81,2142 @@ A country's bounding box is only as tight as its most remote scrap of land, and 
 
 The rule grows outward from the largest landmass, biggest part first: a part joins the core if it rivals the main mass (`CORE_BIG_PART_FRAC` 25% of it) **or** is at least `CORE_MIN_AREA_FRAC` (0.5%) of the country's area *and* within `max(CORE_MIN_GAP_KM 200, extent-of-core-so-far)` of what's accumulated. Testing against the **growing** box rather than just the main part is what keeps genuinely strung-out countries whole (Indonesia reaches Papua island by island, Malaysia keeps both halves, the USA keeps Alaska). Bounds are measured relative to the main part's centroid longitude (`partRelBounds`) so an antimeridian straddle reads as one continuous span. A final guard: if the core holds under `CORE_MIN_KEPT_FRAC` (60%) of the area, the country genuinely *is* a scatter (Kiribati) and the whole feature is used unchanged. Measured over the 10m atlas this reframes 28 quiz countries — Mauritius ×18, Netherlands ×12, France ×5.8, South Africa ×2.1, Ecuador ×1.8, Japan ×1.4 — and Kiribati is the only fallback.
 
+
+## Framing overrides, and the sandbox that makes them
+
+`shapeFramingCore`'s rule is right most of the time and hopeless in a handful of cases, and no
+threshold fixes them. Norway is the clearest: Svalbard is a real, large, permanently-populated
+part of Norway 1,650 km north of the mainland, so it clears every test the rule has — and
+including it stretches the frame across **22.5° of latitude**, which on a Mercator leaves the
+mainland a ribbon at the bottom. (At 10m it is worse still: Norway also owns Bouvet Island in the
+Southern Ocean, and the raw feature spans **135°**.) Indonesia reaching Papua island by island is
+geometrically the same situation; the two differ only in what a person expects to see. So there
+is a table of exceptions, `SHAPE_CORE_OVERRIDES`, consulted at the top of `shapeFramingCore` so
+every caller (the fit, the shape descriptor, the flag pattern) agrees.
+
+**An override has three forms**, and `corePartKept` is the single predicate all three go through,
+so the sandbox's preview and the real framing cannot disagree about what one means:
+
+    { box: [w, s, e, n] }    keep parts that lie WHOLLY inside this lon/lat box
+    { maxKm: n }             keep parts within n km of the main landmass
+    { drop: [[lon,lat], …] } exclude these by centroid, within CORE_OVERRIDE_TOL degrees
+
+A box and a distance are both resolution-proof, which a centroid list is not: Svalbard is one
+polygon in nobody's atlas — six at 50m, dozens at 10m — so an enumeration has to be rewritten
+whenever the source changes, while "inside this rectangle" and "further than 700 km" are the same
+fact at every resolution. `'Norway': { maxKm: 700 }` takes the frame from 135° of latitude to
+**13.1°**, and 120 parts to 2.
+
+The box tests the part's **bounds, not its centroid**. Half a country hanging out of the frame is
+exactly what the frame exists to prevent, and a centroid test lets a long island through on the
+strength of its middle.
+
+**Sandbox ▸ Shape Framing** is one control: the box. Drag its corners; anything not wholly inside
+is cut, and cut parts stay drawn faintly, because a part that has been cut *and* has vanished
+tells you nothing about whether cutting it was right. The map is fitted to the **whole country**
+and left alone while you drag — a frame that refits under the hand cannot be aimed — and the
+sandbox runs at **10m** (`sbHiRes`), since the outline is the thing being judged.
+
+That is deliberately less than it used to do. There were three ways to switch individual parts in
+and out, and then a `framingDeriveRule` that worked backwards from the selection to whichever
+rule reproduced it. But the box is the only thing an override actually produces, so everything
+else was editing a proxy for it: now the rule *is* what you are drawing, and *Save override*
+writes the rectangle verbatim.
+
+**Overrides are saved** to `localStorage` immediately (so a change is in force on the next
+reload) and to `data/shape-core-overrides.json` via *Download all*, which is the only sense in
+which anything is permanent. `loadCoreOverrides` reads the file as the baseline and lays local
+edits on top, so a country you have overridden yourself is not quietly reverted by a fresh
+checkout. A box that cuts nothing is not saved at all — that is the default, not an override.
+Saving also clears `shapeDescriptorCache` — which is **null**-when-invalid, not empty-object,
+since an empty object is truthy and would be used as a finished cache.
+
+**The panel ranks every country by how much of its own bounding box it fills**, worst first,
+which is how you find a bad framing instead of stumbling on one. Below 5,000 km² the number stops
+having a numerator — at 50m the atlas rounds Andorra and Monaco to an area of nothing, so every
+microstate reported 0% and filled the list with countries that have no framing problem at all.
+Above the floor it reads: Bahamas 2.2%, Solomon Islands 3.3%, Vanuatu 4.3%, Japan 16%, Norway 18%
+(already improved by its override), Indonesia 18%, Chile 22%, Morocco 23% — and Morocco has one
+part, so it is a diagonal country rather than a fixable one, which the parts count says at a
+glance.
+
+Note the override only *restricts* what the rule may consider; the rule still runs on top. Box
+four parts of Japan and the frame may keep one, and the panel re-opens on that live result rather
+than on what the box held.
+
+Fixed at source on the way: **`featureParts` now accepts a bare geometry as well as a Feature.**
+`shapeFramingCore` *returns* a bare MultiPolygon — except when it abandons the core for a genuine
+scatter, when it returns the whole **Feature** — so anything asking for the parts of a core it
+had just computed was silently getting an empty list, which reads as "this country has no parts
+at all".
+
+## US States Puzzle
+
+The whole interaction rests on **one coordinate trick**. Each tray piece is its own `<svg>` whose `viewBox` *is* that feature's projected bounding box, expressed in board user units — so `d3.pointer(event, pieceSvg)` returns the grab point already in **board** coordinates. The misplacement of a drop is then just `cursor-in-board-coords − grab-point`: no CTM arithmetic, no bbox bookkeeping, and it stays correct however the tray happens to be scaled by CSS. `puzzleDropOffset` is that one subtraction, and it's the whole snap test. `boardScreenFrame()` (origin + px-per-unit, read live off the viewBox and client rect) is the only bridge back to screen space, and only the ghost's placement uses it.
+
+### The world board's per-piece Mercator
+
+On a Mercator a shape's distortion is decided entirely by *where it is*, so a piece cut from the board and parked in a tray is a lie — Greenland in the corner is drawn at Greenland's latitude whether or not that's where you think it goes. On the **world** board (`puzzleDynamicMercator()`, i.e. `mapObject === 'countries'`) each piece therefore carries its own scale.
+
+The whole correction is **one uniform scale in projected space**, about the point being dragged: Mercator's scale factor is `1/cos φ` in *both* axes, so the same shape at latitude b instead of a is that shape at `cos(a)/cos(b)` times the size (`puzzleLatRatio`), rendered as `translate·scale` on the board path (`puzzlePieceTransform`, `puzzleScaledBounds`). Parked in the tray a piece is scaled to the equator (cos of its own centroid latitude); dragged it grows and shrinks live with the cursor's latitude; dropped where it belongs the ratio is exactly 1 and the transform is a literal `translate(0,0) scale(1)` over the board's own path string — an identity, not an approximation.
+
+**This replaced a great-circle carry** (`carryFeature`, two composed `d3.geoRotation`s) and the reason matters: a sphere rotation only preserves north-up *at its anchor*, so the further a point sat from that anchor the more it skewed — meridians stopped being vertical and the piece visibly wobbled. It also re-projected the geometry each frame, which meant a piece dragged over the tray (board x > width → lon > 180°) **wrapped across the antimeridian and split into a phantom copy**. The projected-space scale has neither problem: nothing is re-projected, the path string is fixed, so verticals stay vertical, the aspect ratio is preserved exactly (Norway 0.601 board / 0.601 tray, Canada 0.767 / 0.767, Kenya 1.00 / 1.00) and wrapping is not expressible.
+
+The grab is un-scaled the same way: the tray piece is drawn scaled about its projected centroid (the ratio and centroid ride along as `data-scale`/`data-from`), so dividing the grab point back out gives where on the board it belongs. The scale reference is the **grabbed point's** latitude, not the centroid's — that is what makes a correct drop exactly 1. `PUZZLE_CARRY_LAT_MAX` (78°) clamps the latitude the ratio may read, since Mercator runs to infinity at the poles. Blind mode records `{from, to, scale}` alongside the drop vector so `commitBlindPlacement`'s feedback and `revealBlindPlacements` redraw the piece as it actually looked at release; every other board keeps the plain translate (ratio 1 throughout).
+
+`puzzleSnapRadius` (Settings ▸ Map, default 24) is therefore in **board user units**, not screen pixels. The board's viewBox is a fixed 800×600 whatever size it renders at, so a snap is exactly as forgiving on a phone as on a desktop — verified identical at board scales 0.44 and 1.11. `puzzleBoardScale()` (screen px per board unit, the smaller of the two `meet` ratios) is used *only* to size tray pieces and the drag ghost so they visually match the board; no snap maths depends on it, which is why a stale scale can never desync a drop.
+
+`PUZZLE_DIFFICULTY` drives everything that varies: `board` (`slots` vs `silhouette`), `labels`, `snap` (a multiplier on `puzzleSnapRadius`), `showHit`, and `blind`. `puzzleRules()`/`puzzleActiveSnap()` are the only readers — nothing else branches on the difficulty string.
+
+| | Board | Snap | Hit cue | Scored on |
+|---|---|---|---|---|
+| easy | outlined + named slots | `1×` (24) | green | pieces placed |
+| medium | silhouette only | `0.2×` (4.8) | none | pieces placed |
+| hard | silhouette only | **none at all** | none | distance + time |
+
+Easy and medium are snap-to-fit jigsaws; **hard is a different game** — see Blind mode below. Note `PUZZLE_DIFFICULTY.hard` carries no `snap` key whatsoever and `puzzleActiveSnap()` short-circuits to `0` on `blind`, so there is no radius to accidentally widen.
+
+A placed piece is **named on the board** (`.puzzle-placed-label`, bold white with a dark halo so it survives both themes and the muted Solve-It fill), skipping anything under `PUZZLE_LABEL_MIN_PX` and all of blind mode, whose placements are wiped after the grading pause. The labels live in their own layer above `.puzzle-placed-layer` so a later neighbour's fill can't paint over an earlier name.
+
+The board takes **no map drag at all**: `isStaticMapMode` now short-circuits the drag attachment in `setupGlobe` (it already guarded the wheel and touch handlers) and cancels the browser's native drag/select of the SVG, so a drag across the board is inert rather than panning the map out from under the pieces. This is belt-and-braces — `startStatePuzzleMode` also forces `useGlobe = false` for every region, which is what stopped the world puzzle rotating its globe on the first drag.
+
+A piece snaps **only into its own slot** — the offset is measured against that state's real position, so a Kansas-shaped piece dropped over Nebraska is a miss (`puzzleMisses`), not a placement. Snapped pieces fill **green** (`--correct` at 0.62), so the board accumulates what you got right; Solve It's pieces stay muted (`.puzzle-placed.revealed`) and remain visually distinct. The board is static: `isStaticMapMode()` excludes it from wheel-zoom and touch-pan alongside find-capital and Shape ID, and no drag branch applies, so slots can't drift out from under the pieces.
+
+### Blind mode (hard)
+
+One state at a time against a bare silhouette, nothing snaps, and **nothing accumulates on the board** — that last part is the whole point, since a filled-in map would give every later state a reference. `refreshPuzzleTray` slices the queue to its head, and `onPuzzleDragEnd` diverts to `commitBlindPlacement` before any snap test.
+
+Scoring is distance **and** time, on the same `exp(-x/scale)` curves as the spaceship view: `puzzleBlindPoints` splits `PUZZLE_POINTS_PER_STATE` (10) between an accuracy and a speed term via `puzzleScoreBalance` (%), with `puzzleDistScale` (km) and `puzzleTimeScale` (s) setting where each falls to ~37%. All three are Settings sliders. Each state's clock starts when it is *presented*, so the reveal pause doesn't cost the player anything.
+
+`puzzlePlacementErrorKm` is the great-circle error: un-project the true centroid and the dropped point and measure between them. `d3.geoAlbersUsa` is a **composite** and inverts to `null` in the dead gaps between its insets, so there's a fallback that estimates km-per-board-unit locally at the true position. One consequence worth knowing: the Alaska/Hawaii insets are drawn at a compressed scale, so the same pixel error there is a genuinely larger real-world distance (20 units ≈ 502 km on Alaska vs 176 km on Texas). That's geographically honest, which is what "great-circle distance" asks for, but it does make the inset states harsher.
+
+Feedback is the only thing the player gets back: the state is drawn **where they dropped it**, tinted by `puzzleErrorColor` (green → amber → red, ceiling `puzzleDistScale × 4`, theme vars read live so both palettes work), held for `ANSWER_PAUSE_MS`, then removed before the next state is handed out. That pause runs on a *tracked* `puzzleDropTimer` — a restart or mode switch mid-pause would otherwise fire the advance against fresh state. `revealBlindPlacements` then ends the round with the map the player actually built: every state at its own drop position, still carrying its grading colour, over faint leader lines back to where it belonged.
+
+**Pieces live in a tray**, in `#globe-side-panel` — so the puzzle opts into the existing `globe-side-layout` (as Places-been does for its category lists) despite not always being a globe mode, and inherits its 1024px collapse to a stacked column for free. `buildPuzzleTray` creates the shell once and wires ONE delegated `pointerdown` on `#puzzle-pieces`, because `refreshPuzzleTray` rewrites that strip’s innerHTML after every placement. Tray pieces are sized from their own board footprint (`puzzleBoardScale`) and then clamped to `TRAY_PIECE_MIN`..`TRAY_PIECE_MAX` (24–78px), so relative sizes read but Rhode Island is still grabbable. The order is shuffled **once per game** and then held — reshuffling on each placement would move the remaining pieces out from under the player’s hand. In blind mode the strip is sliced to its head, so exactly one piece is on offer at a time.
+
+Colour is the whole legend and the three states never share one: **slots** are recessed grey holes, **tray/ghost** pieces are warm amber with a dark outline, **placed** pieces are green. `puzzleSnapRadius` defaults to **24** board units.
+
+A placed piece animates in from where it was actually dropped — offset by the drop delta and 1.12× oversized, easing to true position and size. The `settle` cleanup is bound to `end interrupt cancel` **and** a plain `setTimeout`: d3 transitions are rAF-driven, so a backgrounded tab would otherwise strand the piece permanently offset and oversized *on the board*. `setTimeout` still fires when rAF is throttled, which makes the correct final state unconditional. `prefers-reduced-motion` skips the animation; `playPuzzleClick` synthesises the snap sound (a decaying noise burst through a bandpass — no asset), lazily creating the `AudioContext` inside a pointerup/button handler so autoplay policy lets it start. Settings ▸ Map has an off switch. Solve It skips both per-piece (fifty overlapping clicks and animations would be a mess) and plays one click for the lot.
+
+The drag ghost's wrapper sets `line-height: 0` and its `<svg>` `display: block`: an inline SVG sits on a text baseline, which made the wrapper 4px taller than the piece and hung it that far below the cursor.
+
+`drawCountries()` early-returns into `drawPuzzleBoard()`. Hard mode's silhouette needs **no union geometry** — filling every state with no internal stroke renders the union for free (a hairline stroke in the *same* colour as the fill closes the antialiasing seams along shared edges). Easy names each slot but skips any under `PUZZLE_LABEL_MIN_PX` (20 units), since a centroid label inside Rhode Island is illegible mush. `puzzlePieceFeatures()` filters to quiz-list states with **finite** bounds: `d3.geoAlbersUsa` drops everything outside the 50 states, so Puerto Rico (present in `usStates`, and the reason the list has 51 entries) projects to null and infinite bounds — it is silently unplayable rather than a broken piece.
+
+The drag ghost is a `position: fixed` overlay on `<body>`, **not** a `<g>` inside the board SVG: the tray sits outside the map, so an in-SVG ghost would be clipped — and therefore invisible — for the whole first half of every drag. Its `viewBox` is nevertheless in **board units** and it is sized at the board's own px-per-unit (`boardScreenFrame`), so what you drag is pixel-for-pixel what will land — checked at board scales 0.99 and 0.44. `startPuzzleDrag` follows the `DragToReorder` conventions (listeners attached *before* `setPointerCapture`, which is wrapped in `try/catch`).
+
+Scoring: `gameState.score` counts pieces the player placed themselves, `puzzlePlaced` is everything on the board, and "Solve It" (`giveUp` → `solveStatePuzzle`) fills the rest in via `placePuzzlePiece(name, false)` — rendered muted (`.puzzle-placed.revealed`) so the final board still shows what was actually earned. `puzzleRating` only applies its time-per-piece buckets when `earned === total`; a board finished by Solve It is rated on how far the player got instead, or the summary would call 3/50 "excellent". `endGame` has its own `statePuzzleMode` branch (the puzzle can't be *failed* — every piece ends up placed), which forks again for blind mode: points out of `total × 10`, average error, and `puzzleBlindRating`, which withholds praise unless the whole set was placed. In blind mode Give Up is relabelled "End Round" and simply ends it — there is nothing to solve, and unplaced states just go unscored.
+
+Layout: the tray lives in `#globe-side-panel`, so the puzzle opts into the existing `globe-side-layout` (as Places-been does for its category lists) despite not being a globe mode, and inherits its 1024px collapse to a stacked column for free. `state-puzzle-layout` on `.container` only widens that panel. **Side-by-side is the right call because the board is height-constrained**: with a fixed 800×600 viewBox in a wide container the fit scale comes from the height, so width spent on the tray costs the map nothing until it narrows past ~870px, whereas a tray underneath eats the one axis that limits it. Measured at 1280×720: **0.99 board scale side-by-side vs 0.50 for the earlier tray-underneath version.** Under 1024px (where it stacks anyway) `body.state-puzzle-active` scopes an **exception to the app-wide `body { height: 100vh; overflow: hidden }`** so the page can scroll instead of crushing the board — on a 375px phone that keeps the map at 422px and board scale 0.44.
+
+## The projection lab
+
+`projection-lab`, a sandbox tile. Every projection is a lie about a sphere and each one chooses
+which lie to tell; none of that is visible in a map you are handed, and all of it is visible the
+moment the SAME world goes through a dozen of them. Fourteen d3 projections, the two knobs every
+projection has (where it is centred, how it is turned), the two the conics have, and two
+instruments.
+
+**Tissot's indicatrix** is the first: a small circle drawn on the SPHERE (4° of arc, every 30°)
+and projected like everything else, so whatever it becomes on the map is exactly what the
+projection does to a small shape there. Round means angles are kept; equal blobs mean areas are;
+both at once is what no projection can do. Drawn as outlines rather than filled, because at high
+latitude on a Mercator one indicatrix covers a country and a filled one would hide the very thing
+it is measuring.
+
+**The second is a number**: the share of the PICTURE a country takes up against its share of the
+earth — which is exactly what "Greenland looks as big as Africa" means. Measured on the drawn
+path, so it is a fact about what is on screen rather than a formula about the projection.
+Verified across all fourteen: every equal-area projection reads **1.00× for all four countries**
+(Equal Earth, azimuthal equal-area, conic equal-area, Albers), Mercator puts Greenland at 5.22×,
+conic conformal at 3.85×. Two ways of reading low are not the projection being kind and the panel
+says so: a country partly outside the clip is only partly there, and one near the centre of a
+projection with a wildly stretched rim loses share because the rim has eaten the picture.
+
+Dragging turns the WORLD, not the picture — it moves the rotation, so what changes is which part
+of the earth is being distorted, which is the whole lesson and is invisible if the map merely
+slides. The projection is rebuilt from scratch on every change rather than mutated: a conic
+carries standard parallels a cylindrical has never heard of, and switching by setting properties
+leaves the old ones in force. The globe/flat, tilt and detail toggles are all hidden — the mode
+supplies its own projection and pins 110m.
+
+Fixed at source on the way: **the tilt toggle was tested with `isGlobeView()`**, which at that
+point in `startGameWithMode` still answers for the PREVIOUS mode — `flatGlobeView` is not set for
+the new one until further down the same function — so a flat board could inherit a tilt button
+from whatever came before it.
+
+## Sandbox category
+
+**The Sandbox is one flat grid.** There used to be a Quick Quizzes tile inside it that opened a
+second grid of its own, so a short round — the whole point of which is that it starts fast —
+took three clicks to reach. The quizzes are now sandbox tiles themselves, generated from
+`SB_QUIZZES` by `sandboxQuizTiles()` so the registry stays the single source of truth. Two things
+moved further, out of the drawer entirely and onto the **landing page**: **Who's Missing**
+(`sb-missing`, which is why `sandboxQuizTiles` skips it) and **Sun & Moon**. Both are real
+`QUIZ_MODES` keys, so the landing grid needs no interception for them — but the grid exists in
+two places (static markup in `index.html` and `resetModeSelector`'s template) and both were
+updated.
+
+Newer, rougher modes sit behind one **Sandbox** tile (`science` icon) rather than cluttering the landing grid: Sun & Moon, Sun Path, Odd One Out, Draw the Border, the **Flag Workshop**, Quick Quizzes (twelve of its own — see below), and the **Spaceship Sandbox, which moved here** from the orbit tile (`?mode=spaceship-sandbox` still works, and `showSpaceshipSelector` is now just Play). `SANDBOX_SUBMODES` + `showSandboxSelector()` follow the `FLAG_SUBMODES` pattern exactly; `sandbox` joins the six other **selector triggers that are not mode keys** and must be intercepted in all three dispatch points (`setupEventListeners`, `resetModeSelector`'s re-attach, `switchToMode`).
+
+Two entries open **another** picker first: Draw the Border (`showDrawBorderSelector` → `startDrawBorderMode(region)`), since it runs over any geography, and Quick Quizzes (`showSandboxQuizSelector`), which holds twenty-four tiles of its own.
+
+## Sandbox quizzes (Quick Quizzes)
+
+Fifteen short modes — twelve under Quick Quizzes, plus Who's Missing on the landing page and
+Upside Down and Out of Scale under Name the Shape (`SB_IN_SHAPE_ID`; `sandboxQuizTiles` skips all
+three). Almost all are **derived at run time** from data already in the app. Areas and bounds from `d3.geoArea`/`d3.geoBounds`, adjacency and coastlines from the arc table, **border LENGTHS from `topojson.mesh` + `d3.geoLength`**, the solar round from the same series Sun & Moon uses, the lake round from the bundled Natural Earth lakes, and — the one exception — `data/airports.json`, a curated 148-airport set (IATA code, city, country, `[lat, lon]`) that Flyover needs because no airport data existed anywhere in the repo.
+
+### The two that live under Name the Shape
+
+**Upside Down** and **Out of Scale** are questions about a silhouette and nothing else, which is
+what Name the Shape is, so they are offered there rather than in Quick Quizzes (`SB_IN_SHAPE_ID`;
+`sandboxQuizTiles` skips them). They take that screen's region toggle too, by the same
+reconfigure-in-place trick as `startShapeIdMode` — `startShapeQuizMode(key, region)`. Nothing in
+either quiz needed changing for it: `sbPool()` and `sbFeature()` read
+`gameState.currentQuizList` and `gameState.countries` and have never cared which atlas those came
+from, so a state is as good a silhouette as a country. AlbersUSA is forced off (these rounds fit
+a projection to one shape at a time and a composite cannot), the name-keyed caches are cleared
+with the pool, Upside Down's prompt says "state" or "country" via `sbItemLabel()`, and Out of
+Scale's area floor drops from 20,000 to 5,000 km² because states are simply smaller. Measured:
+12 of 12 draws succeed for both quizzes over both regions.
+
+### Two from the second wave
+
+Ten more were written and eight were cut again. The two that stayed are the two that could not
+be answered any other way than by picturing the map:
+
+* **Out of Scale** — four outlines at one shared scale, except one. It needs a genuinely
+  **equal-area projection**: "the same scale" has to survive measurement, and a Mercator divided
+  by cos(centroid latitude) does not, because the stretch varies across a country — Finland
+  (60–70°N) came out 23% off while being drawn perfectly honestly. Azimuthal equal-area centred
+  on each country makes drawn area exactly proportional to true area; rasterising the rendered
+  tiles, the three honest ones share one km²-per-pixel to **0.6%** and the liar is off by 4.40×
+  against an expected 4.34×. Candidates are within 3× of each other **pairwise** (filtering
+  against the seed alone lets the extremes sit 9× apart, and then the odd one out is simply the
+  biggest picture) and no more elongated than 2.6:1 — the question is about area, and Chile at a
+  shared scale is a hair nobody can weigh against a blob. **On the reveal all four are brought
+  onto one scale**: the scale at which the BIGGEST of them exactly fills its tile, with the
+  others at their honest fraction of it. That is the largest scale at which all four still fit,
+  so the comparison uses every pixel there is and nothing runs off its card. Normalising to
+  whatever the largest DRAWN tile happened to be is not the same thing — when the lie was an
+  over-scaled country, it made every honest one grow to match a size that was wrong to begin
+  with. The cap is measured on what is DRAWN, not on the framing core: a country whose full
+  geometry runs past its core (a remote islet) overflowed its card by up to 35% when the core
+  set it, and with every tile on one scale that spills into the tile beside it. Verified over
+  six rounds — one scale every time, the largest filling its tile exactly, nothing over.
+* **Fewest Borders** — the shortest path between two countries, counted in crossings. Its
+  adjacency is **not** `playableNeighbours`: that one is honestly topological and says France
+  borders Brazil and Suriname, which is true via French Guiana and useless for a question about
+  crossing borders on the ground (Spain to Brazil came out at two hops). At 110m the atlas ships
+  France as one MultiPolygon with Guiana inside it, so there is no geometry to filter and the
+  test has to be geometric: `sbLandNeighbours` keeps a pair only when their LARGEST parts'
+  bounding boxes come within a degree. Measured across nine countries it drops exactly Brazil
+  and Suriname from France and nothing else at all — Russia 14/14, China 14/14, India 6/6.
+
+Deleted with the other eight: the `latitude` engine (Read the Daylight went too), the pin and
+walked-track overlays, `sbCountryAt`, and the second-level Quick Quizzes picker.
+
+`SB_QUIZZES` is the registry and the single source of truth: each entry carries its label/icon/description **and** a `build()` returning one round. `QUIZ_MODES` entries are generated from it in a loop, and `showSandboxQuizSelector` renders its grid from the same object, so adding a quiz means adding one key.
+
+**`build()` returning `null` is the error-handling strategy.** A draw can fail for many ordinary reasons — no capital coordinates, a pair too close to call, a Mercator pair the projection does *not* mislead you about — and the renderer simply retries (up to 60) rather than each quiz special-casing its awkward cases. `sb-distance-order` succeeds on ~2 of 12 draws (it insists on 650 km between consecutive entries) and `sb-mercator-lie` on ~11 of 12; both are comfortably inside the retry budget.
+
+Seven modes were **deleted** in the same pass — First Light, Zoom Out, Climate Band, Longest Border, More Coastline, Which Way Is North, The Wrong Capital — taking the `reveal` engine, `sbCoastKm`, `sbMapBearing`/`sbCompass`, `sbDrawNorthArrows` and `sbRenderPairOptions` with them.
+
+Seven engines, chosen by `engine`:
+
+| Engine | Interaction | Scoring | Quizzes |
+|---|---|---|---|
+| `fact` | highlight + 2–4 option MC | 1 per round, or 1 + a speed bonus where `speedBonus` is set | mercator-lie, great-circle, lake, missing, fake-flag, upside-down |
+| `multi` | pick every one that applies | `10·(hits − false positives)/|truth|` | flyover, all-neighbours |
+| `estimate` | log slider | `10·exp(−ln(ratio)/ln 6)` | estimate-pop |
+| `order` | drag five | `calculatePairwiseScore/10` | distance-order |
+| `pinpoint` | click the map | `10·exp(−km/scale)` | capital-pin |
+| `latitude` | arc slider, 90°N–90°S | `10·exp(−°error/12)` | daylight-lat |
+| `picker` | type-to-filter over every country | ratio-based, heavily penalised over the line | price-pop, price-area |
+
+`fact` also carries three option renderers beyond plain text buttons — `imageOptions` (flags),
+`shapeOptions` (silhouettes, each fitted to its own tile so size is never the tell) and
+`routeOptions` (A–D buttons tinted to match their own line on the map).
+
+### A dozen more
+
+All twelve read off geometry or data already in the app, and all of them are questions answered by
+picturing the map rather than by remembering a list. Draw rates over 12 attempts against a retry
+budget of 60: 11-12 for all but **North to South** (5, which insists on 4° between consecutive
+countries) and the line round.
+
+| | Engine | The question |
+|---|---|---|
+| **Cross the Line** | multi | Which countries a named parallel or meridian actually crosses |
+| **Antipodes** | pinpoint | Dig through the earth from one country — click where you surface |
+| **Further North** | fact | Two capitals, and which is nearer the pole |
+| **Landlocked** | multi | Which of these has no coast at all |
+| **Island Nations** | multi | Which of these shares no land border with anybody |
+| **Not a Neighbour** | fact | Three of these border it; one does not |
+| **Room to Move** | fact | Which is the most crowded, people per km² |
+| **Straight Up** | fact | Walk due north from here — whose land do you reach first? |
+| **Noon and Midnight** | fact | It is noon here; where is it closest to midnight? |
+| **Which Continent** | multi | Pick every one of these from the named continent |
+| **North to South** | order | Five countries by latitude |
+| **Reaches Furthest** | fact | Which one gets furthest north, south, east or west |
+
+**A bounding box is not an answer to "does this line cross it".** Chile's box spans thirty-eight
+degrees of latitude it has no land at, and a country lying either side of a line without touching
+it reads as crossing by bounds alone. The box only says where to look; the line is then sampled
+inside it (400 points) and the country has to CONTAIN one of them. Verified against the atlas: the
+Equator returns Brazil, Colombia, the DRC, Ecuador, Gabon, Indonesia, Kenya, the Republic of the
+Congo, Somalia and Uganda; the Tropic of Capricorn returns exactly the ten it should.
+
+**And `d3.geoBounds` reports a wrapped box for anything straddling ±180** — Russia comes back as
+`[19.6…, …-169.8]`, its east edge west of its west edge, which is the antimeridian-aware answer
+and not a mistake. Subtracting one from the other gives a negative span and the country is
+dropped: that is what lost **Russia from the Arctic Circle**, the first country anybody would
+name, and the United States from it via Alaska. A wrapped box now samples the whole parallel.
+
+**Straight Up walks the meridian rather than comparing centroids**, because those disagree
+constantly: from Madagascar the answer is not "the country to the north" but whichever land the
+line actually meets. Land the quiz does not deal (a territory, an unnamed id) still ENDS the walk
+— you have set foot on it, and carrying on would name a country you would have to walk through
+somebody else to reach — so the draw is abandoned rather than answered wrongly.
+
+**`boardMarksOnAnswer` is the plainest of the three multi reveals**: paint the set on the ordinary
+map in the same three states Flyover and Every Neighbour use. Naming a dozen countries in a
+sentence and asking somebody to find them is work the map does for free, and on these rounds the
+geography IS the argument.
+
+Two stale-animation crashes were fixed on the way, both of the same shape: an interval or a tween
+outliving the mode that started it and landing on `d3.geoAlbersUsa`, which is a composite and has
+no `.rotate`. The globe's auto-spin (a 50 ms interval) and Odd One Out's 700 ms framing tween both
+now check before they turn anything, which is how the Map Puzzle came to report a rotation error
+about a board that does not rotate.
+
+### Board-replacing rounds
+
+Three round-spec keys let a quiz take the board over entirely. `drawCountries()` hands off to
+`sbCustomBoard()` before drawing anything, and `renderSandboxQuizQuestion` re-runs
+`drawCountries()` for them because the map finishes loading *before* the first question exists.
+
+* **`solo: {feature, kind}`** — one shape, alone, framed through `shapeFramingCore` (the same
+  guard Shape ID uses: a country's box is only as tight as its most remote islet). Used by Every
+  Neighbour, Pin the Capital and Name the Lake, all of which previously showed their subject on
+  the world map — where the surrounding geography *was* the answer. The lake variant adds an
+  inward blue fade, clipped to the lake so it cannot haze outward into land that is not drawn.
+* **`coastOnly: true`** — coastlines and no borders at all, via the same
+  `(a, b) => a === b` mesh filter Draw the Border uses. Flyover's board.
+* **`surgery: {gone, features, absorbers}`** — see Who's Missing below.
+
+Note the dots and the lake overlay are **siblings** of `countriesGroup`, not children, so
+emptying it leaves both behind — and a field of dots around a lone silhouette is exactly the
+surrounding map these rounds exist to remove.
+
+**`fitExtent` works in PROJECTION units, which are the SVG's viewBox units, not client pixels.**
+The svg is viewBox-scaled, so measuring it with `clientWidth` overshoots the fit by the display
+ratio and pushes the shape off the edges — which is exactly what made Pin the Capital look broken.
+
+### Who's Missing
+
+A country is removed and its land handed to its neighbours. Every neighbour takes a **bite**, and
+the size of its bite is its share of the country's land border — whoever holds most of the
+frontier ends up with most of the land, which is the rule a person would guess. Bites go round
+biggest share first; whoever is left at the end keeps what has not been eaten, so nothing has to
+be reconciled afterwards and there is never a leftover stranded in the middle.
+
+**The shape of each bite is a STENCIL, and the stencil is the frontier itself**: the biter's own
+stretch of the old boundary, moved inward until the land behind it is the share that neighbour is
+owed. HOW it is moved is a choice of two constructions — see below — one of which moves it
+rigidly, so every corner of the new border is a corner the old one had. Nothing is pinned and nothing is stretched — the
+tripoints do not anchor the cut, and the new border lands wherever the slid copy happens to meet
+the old boundary. Two earlier constructions pinned the cut's ends at the tripoints and stretched
+a borrowed curve between them, and both times the arithmetic showed through the geography (first
+a sine arch — a parabola with fuzz on top — then a flat-topped envelope that still read as
+built). Sliding an existing border keeps a real border's character at **full amplitude whatever
+the depth**, because it is the border that was already there. Measured over all 286 bites the
+world produces, departure from a best-fit sine arch is **0.262 against 0.268 for real land
+borders** — statistically indistinguishable, against 0.075 and 0.177 for the two pinned
+constructions.
+
+The slid copy's ends are inside the country by construction — they started on its edge and moved
+inward — so each end is **continued until it finds the old boundary again**: along its own end
+tangent (swung 26° either way if the straight line finds no exit), wandering to the trace of a
+real border sampled from elsewhere in the topology (`sbBorderShapes`). The borrowed part is only
+the continuation; on most bites it is a small fraction of the cut. Several traces are tried in
+both mirrorings; candidates are ranked by **how much of the owed area they reach**, compactness
+of the remainder as the tie-break. Depth is one bisection (`solve`) and every invalid
+configuration reads as "too deep", so the slide backs off exactly as far as it must.
+
+**A bite is bounded three ways**: it may not take more than `SB_BITE_MAX_FRAC` (80%) of the
+region still standing, nor more than `SB_BITE_OVERSHOOT` (2.5×) of what it was asked for, and
+candidates are ranked on a SYMMETRIC fit — as bad to take three times the ask as a third of it.
+Overshoot used to cost nothing at all, because `reach` was capped at 1: a cut taking eight times
+its ask scored as perfectly as one taking exactly it, and where the only cuts that land are deep
+ones that is what got taken. Myanmar, which bounds India's north-eastern salient and is owed 9%,
+came away with **73% of India**; Zambia, whose frontier with Namibia is the tip of the Caprivi
+Strip, came away with **99% of Namibia**. Refusing the overshoot makes the bisection back off,
+and if nothing shallower lands the neighbour is crowded out, which is the honest answer.
+
+**Three escalations keep the bites aggressive**, because the first cut of this construction was
+honest but timid — the moment the far coast came near, it backed off to a nibble:
+
+* **Excursions are SPLICED, not rejected.** A deep slide through a narrowing country exits
+  mid-way and comes back; where the slid copy leaves the country, the cut follows the OLD
+  boundary between the exit and the re-entry — which is what a maximal bite does: it goes right
+  up to the far side and takes everything short of it. The spliced stretch is the old border
+  verbatim. In the remainder ring this leaves a zero-width keyhole corridor, which only cancels
+  when the ring is wound consistently — so the ring is **normalised to CCW** up front (Brazil,
+  Saudi Arabia, Thailand, Morocco and Mozambique were exactly the countries wound the other way)
+  and `writeArc` un-flips on the way out. Sixty of the world's bites splice.
+* **The stencil may be STRETCHED or SHRUNK** (±12–22%, uniform, least distortion first, only
+  when the honest stencil cannot reach 95% of the owed share). A border scaled by a tenth is
+  still that border to the eye, and a fifth of the country going to the wrong neighbour is far
+  more visible than a fifth of linear stretch. Eighteen bites use it.
+* **One invariant guards it all, per candidate**: piece plus remainder must equal the region to
+  0.5%. Whatever goes wrong — a keyhole that fails to cancel, a splice that enclosed the wrong
+  side — it shows up as leaked area, and that candidate reads as too deep rather than
+  corrupting the country.
+
+## Who's Missing: four routes to a zero-width join
+
+The surgery's own arithmetic can be perfect and the map still show a country in two pieces joined
+by a thread — the area conserves, the rings close, nothing leaks, and Austria is drawn as two
+near-equal halves of Germany with 85 km of somebody else's land between them. Every one of these
+was found by measuring the FINISHED territory rather than the arithmetic: rasterising each
+absorber and counting connected components, and sweeping a line across each ring to find the
+latitudes it crosses twice at one longitude.
+
+* **The REMAINDER was never checked for pinching, only the piece.** A cut that reaches the far
+  side and grazes it splits what is left into two lobes joined at a point — and what is left is
+  the next region to be bitten and, in the end, the leftover's own territory. Checking the piece
+  alone could never catch it: the piece was fine and the hole it left behind was pinched.
+* **The leftover's frontier had to survive a bite, but only as a VERTEX.** A bite could eat all
+  but the last point of it, and the remainder then met the leftover at exactly 0.00 km of border.
+  It is measured now, against the same width as everything else here.
+* **It also has to survive as ONE run**, for the biter as much as for the leftover. The rewrite
+  writes the whole outline into one arc, so a frontier met in two places is walked twice and
+  closes as a corridor.
+* **A splice copies the old boundary into the cut verbatim, and those copied points carry no
+  leg.** So a stretch of somebody else's frontier could be written into this piece's outline while
+  that somebody kept it too — a defect no count of anyone's remaining legs can see, because the
+  second copy is not labelled as a border at all. A splice may no longer run along the border of
+  anyone still to write an outline of their own. (Someone already bitten, or crowded out, is no
+  hazard: their border simply ends up drawn twice in the same place by two countries, which every
+  other copied border here does and is invisible by the same argument.)
+
+Two tolerances go with them. **`SB_BITE_NECK_FRAC`** (1.2% of the region's diagonal, about 12 km
+across Germany) is how wide a strip has to be before it counts as joining two places rather than
+as a thread between them, and it bounds all three of: the narrowest neck a piece may have, the
+narrowest the remainder may have, and the shortest stretch of the leftover's frontier a bite may
+leave. Raising it from a decimetre is paid for by a second condition — the two vertices must also
+be a twentieth of the ring apart — since every wiggle in a coastline has non-consecutive vertices
+within a few kilometres of each other, while a pinch separating two substantial lobes must have
+substantial perimeter on both sides of it. And **`SB_BITE_LOBE_TOL`** drops from 1% to a
+thousandth: it exists to forgive the zero-AREA keyhole corridors the splices leave behind, and at
+1% it also forgave a real lobe, 1% of Germany being 3,570 km².
+
+Measured over the world afterwards: **145 of 197 still divide, unchanged**, and 4 absorbers of
+about 420 still come out in two pieces (India–Pakistan, Greece–Bulgaria, Poland–Czechia,
+Ukraine–Belarus). Note the sweep-line test flags harmless spurs too — a zero-width corridor that
+is not the only connection between two lobes is, by construction, invisible — so components are
+the metric that matters and corridors are only a pointer to where to look.
+
+**Every bite must be ONE lobe, touching the biter.** A spliced cut can touch itself, and where
+it does the piece is pinched into lobes joined by nothing but a zero-width corridor — which
+draws as a country acquiring a detached blob somewhere across the map, connected to it on paper
+only. One bite in seven was pinched like that and the detached part ran to **80%** of the bite
+(Argentina handing Brazil a lobe it never touched). The lobes cannot be split off and handed
+back — a stray lobe meets the remainder at a single point, and a ring cannot express that — so
+a pinched cut is REFUSED, which the bisection reads as too deep and slides back from. The land
+was never taken, so it stays with the donor and falls to a later biter or to the leftover, and
+nothing needs reconciling. **Zero stray lobes** over the world, against 41 before.
+
+Two things that test has to get right, both of which had it silently passing everything:
+* **Two vertices are the same pinch point if they are CLOSE, not identical.** A pinch is a
+  computed intersection landing back on a ring vertex and those agree to within decimetres; the
+  tolerance is a millionth of the region, which no genuine pair of 110m vertices comes near.
+* **A spatial-hash cell has to hold EVERY index in it, not the latest.** Consecutive vertices
+  often share a cell, and one-index-per-cell let the second evict the first — which is exactly
+  the vertex a distant pinch partner was going to match against. Nineteen stray lobes survived
+  that way, unchanged through two tolerance rewrites, which is what made it look like a
+  tolerance problem and not a bookkeeping one.
+
+## Who's Missing: two constructions
+
+How a country is divided is a **choice** (`SB_BITE_ALGOS`, `sbBiteAlgo`, the first select in the
+sandbox panel), because the two ways of asking the question are genuinely different questions
+rather than one answer and a mistake.
+
+**`slide`** asks it of each neighbour in turn: *how far can THIS border move in?* The frontier is
+moved RIGIDLY, which is an isometry — the stencil's length and every one of its corners are the
+frontier's own, exactly, at any depth. It searches depths and slight rotations and keeps whichever
+takes the most land per kilometre of new border, a convexity measure in disguise: a cut that wraps
+round something spends border and gains almost no land.
+
+**`chord`** asks it of the country: *where is this most nearly two countries?* See below.
+
+| | Divides | Absorbers | Leftover holds | Split absorbers | Whole world |
+|---|---|---|---|---|---|
+| Slide the border in | **145** of 197 | 2.66 | 49% | 3 | 114 s |
+| Cut where it is nearly two countries | 99 of 197 | 2.54 | **17%** | **1** | **11 s** |
+
+The chord reaches two thirds as many countries and divides the ones it reaches far more evenly,
+in a thirtieth of the time. Neither dominates, which is why both are offered.
+
+### A third construction is gone
+
+A smoothed **propagating front** — every point of the frontier moved along its own local normal,
+a step at a time — has been deleted. It was the only one that could bend a border round an
+obstacle, and it paid for that by rounding every border it drew: repeated smoothed offsetting
+converges on a circle whatever it started as. Measured as mean absolute turning per 100 km, its
+cuts came out at **52 deg/100 km against 74 for the real frontiers they replaced** — 30% smoother
+than a real border, which is exactly the complaint it existed to answer and never could. Its two
+failure modes were opposites: it left 98 neighbours with nothing because it could not get
+anywhere, where the rigid slides reach much further and instead swallow small neighbours on the
+way past.
+
+### A borrowed border is MOVED, not redrawn
+
+Every borrowed border in this surgery — the ends of a slid cut, the whole of a chord cut — is now
+laid down by **translation and rotation only** (`sbBorrowRigid`). Nothing is stretched, nothing is
+squashed, nothing is resampled: what lands on the map is a piece of a real border at its real size
+in its real shape.
+
+That is a bigger claim than it sounds, because what it replaces was a normalised **height
+profile** — offsets from the chord, sampled at even fractions along it — and a height profile can
+only ever describe a border that is a FUNCTION of its own chord. Real borders are not: a river
+doubles back, a frontier hooks round a hill and returns. Every one of those was being flattened
+into the nearest single-valued curve, which is why the borrowed borders all had the same
+well-behaved character however wild the border they came from.
+
+The trick is choosing WHICH stretch. A rigid move cannot make a border of one length span a gap
+of another, so the gap picks the stretch: walk the border for a pair of points exactly |PQ| apart
+and take what lies between them, trimming off the rest. Among the many such pairs the one taken is
+whichever **wanders about a third further than the straight line** (`SB_BORROW_WANT_WANDER` 1.3),
+which is what a real land border does. Taking the wiggliest stretch on offer instead produced cuts
+two and a half times longer than the gap they spanned, which fail the no-crossing test almost
+every time and leave only the tiniest bites standing.
+
+Three things it needs that the height profile did not:
+
+* **A source long enough.** At 110m the arc table cuts every border at every tripoint, so the
+  longest single arc in the world is 64 km against chords of 350 to 770. Nothing could ever have
+  been borrowed for a chord. So a country's whole **boundary** is offered as well — not one border
+  but the continuous line round it, which is as real a boundary as any single arc of it. The story
+  says which it was, since "traced from Peru's boundary" and "traced from the Peru–Brazil border"
+  are different claims and only one is true of a given cut.
+* **The same units as the ring.** The borders are read out of the arc table in DEGREES and the
+  region's ring is in a local kilometre frame. A normalised profile never noticed; a rigid borrow
+  is a claim about lengths, and every one of them failed to find a stretch that fitted. (Zambia's
+  chords ran 354 to 767 while its own boundary measured 46.)
+* **No antimeridian rings.** A ring that straddles ±180° has one enormous phantom segment where
+  the coordinates jump, and its length is mostly that: Russia's was the longest boundary in the
+  world by a wide margin, and every borrowed cut came from it — from a rendering artefact, drawn
+  as if it were a border. The test is against the ring's own MEDIAN segment rather than against
+  its length, because at 110m a real segment can legitimately be a large fraction of a short ring
+  while a jump is orders of magnitude longer than anything real.
+
+### Where the ends of a cut get their shape
+
+The middle of a new border is the frontier being moved; its two ENDS are inside the country by
+construction — they started on its edge and moved inward — so each has to be carried on until it
+reaches the boundary again.
+
+Each end now **aims at the nearest piece of boundary that is not its own frontier**, and gets
+there in the character of the frontier it is made of: the offsets are that frontier's own, at the
+continuation's own length. Marching out along the end tangent and hoping to stumble across the
+boundary is what this replaces, and the difference is that a cut can now always be closed if there
+is anywhere at all to close it to — a tangent pointing into a pocket found nothing however far it
+went, and the whole bite was refused for it.
+
+Three targets are offered rather than one (`SB_AIM_MINS`), because the nearest boundary point is
+not always the one worth closing to: nearest is the shortest new border, which is what the yield
+criterion wants, but a cut that closes the instant it can takes almost nothing. So the aim is also
+offered the nearest point half a frontier away and the nearest a whole frontier away. That is what
+the five borrowed traces used to provide and no longer do — variety in where a cut can END, which
+is where every refused bite is refused.
+
+**A rotation is a last resort, not a first one.** Turning the stencil is the one thing in this
+construction that stops the new border being a copy of the old one in ORIENTATION as well as in
+shape, so it is tried only when the frontier moved straight in cannot reach three quarters of what
+it is owed.
+
+**And the aim is kept short.** A continuation may be sent at the nearest boundary that is not its
+own frontier, or at the nearest a quarter or six tenths of a frontier-span away. It used to run to
+1.2 spans, which on a long frontier is most of a country: Egypt's cut into Sudan reached past
+Libya's corner and the Red Sea and came down on Chad and Ethiopia. A cut that spends far more
+border than the boundary it swallowed is also penalised outright now, since without that term the
+deepest cut that lands wins on reach alone however extravagantly it got there.
+
+### A frontier that is stuck at one end hops on the rest of itself
+
+A frontier that will not go is usually not stuck along its whole length: it is one END that is
+caught, on a protrusion or in a pocket, and the rest of it would go forward perfectly well. So it
+is shortened and hopped again — a fifth off, then two fifths, from one end or the other or from
+the middle (`spans`). Every sub-run is still a rigid copy of a real border, simply less of one,
+and the whole run is always tried first, so this costs nothing in the ordinary case. Germany could
+not bite Poland at any depth without it.
+
+**The ladder is walked to the top, not walked until something fails.** "Invalid means too deep" is
+true of a front, which deforms continuously, and false of a rigid slide: a translation can fail at
+80 km because its ends happen to land where their continuations cannot get back out, and succeed
+perfectly at 300 km. Stopping at the first failure left France's bites at 71, 92 and 102 km into a
+country 1,100 km across — three nibbles, and Italy holding 88% of France.
+
+Its last clause is **who holds the surplus**. Somebody has to not bite: the last few per cent of a
+country cannot be chased without producing slivers, and a neighbour that has already bitten cannot
+take the remainder as well, since its own outline would then be written into the arcs twice. The
+candidate pool is the neighbours touching in exactly one place, and the division is run once for
+each of the three biggest, keeping whichever ends up with the most compact territory.
+
+## Who's Missing: the best chord
+
+Not "how far can this border move in" but "where is this country most nearly two countries".
+
+Find the pair of boundary points, **not both on the same neighbour's frontier**, a straight line
+between which would break off the most land **for its own length**. Area over length is the whole
+criterion and it is the right one: a waist is exactly a place where a short line encloses a lot,
+so maximising it finds the isthmus, the panhandle's base, the neck of the Caprivi Strip, without
+any of those ever having to be named. Then **draw the line as a real border** rather than as the
+straight line that found it — a trace sampled from the topology, at the chord's own length, so it
+is a real border at true amplitude. Then give the piece to **whoever holds the longest stretch of
+its edge**: the land goes to whoever the land is already up against. Repeat on what is left.
+
+**Nothing is ever lost to the borrowed border.** Which border a cut is TRACED from is a matter of
+taste; whether the cut is made at all is not. Every trace is tried in earnest — laid down, cut
+with, and put through the piece's own guards — because a border that will not fit and a border
+that fits but pinches the piece are both answered the same way, by borrowing a different one. And
+the **straight line goes last, as the floor rather than as a gate**: a pair no borrowed stretch
+will span is still cut, in the plainest border there is, and a good deal of Africa is drawn with
+one. Last and not first, because a bowed border can stay inside a concave country where the
+straight line between the same two points leaves it — straight-as-a-feasibility-test throws away
+pairs that are perfectly drawable. Only a pair that nothing at all can join is refused, and that
+is a fact about the country's shape rather than about anyone's taste in borders.
+
+**And the piece always goes to the neighbour holding the longest stretch of its edge**, then to
+the next, and the next. The pool is not only the countries on that edge: a cut across a peninsula
+can break off land whose whole boundary is coast, and "nobody holds any of that edge" is a fact
+about the piece rather than a reason to throw the cut away. So the order runs edge-holders first,
+then whoever holds the region's remaining boundary, then every eligible neighbour — and the only
+thing that can still turn one down is the rewrite's own invariant, that an absorber's frontier
+must be a single contiguous run.
+
+**A cut must break off at least `sbChordMinBite`% of the ORIGINAL country** (default 8). Against
+the remainder the same percentage means something different on the fourth cut than on the first,
+and the fourth cut is where the slivers are; against the original it means one thing throughout.
+Measured over 80 countries, the smallest bite anybody takes tracks the setting — 2.1% at 2, 6.8%
+at 8, 10.9% at 15, with the cuts per country falling 3.39 → 2.85 → 2.26. It runs slightly under
+the setting because the ranking measures the STRAIGHT chord's area and the drawn border bulges
+either side of it, which is the same effect the old size cap had.
+
+**The ratio is area over length SQUARED**, which is dimensionless: how many squares of the
+chord's own length fit in the piece it breaks off. Area over length has units of length, so it
+grows with the country and a big country's every cut outscored a small one's best — which is why
+it once needed a tunable exponent propping it up. Both that exponent (`sbChordPow`) and the old
+`sbChordMax` size cap are gone: the bite is the smaller side by definition, so no cut can take
+more than half of what is left, and the smallest-bite floor is the knob for size.
+
+The **story reports that ratio and calls it what it is**. It used to print the same number
+described as "km² of land per kilometre of line" and rounded to a whole number, so a cut of 0.59
+was reported as "1 km² per km" — arithmetic that cannot be checked, because it is not what was
+computed. Verified against the pieces: Kenya's first cut, 42,106 km² off a 128 km line, reports
+2.62 against 42,106/128² = 2.57, the difference being that the ranking measures the straight
+chord and the drawn border bulges either side of it.
+
+**A cut below the bar says so.** Under the blend a chord under `sbBlendRatio` is still taken when
+no push is available — "a mediocre waist beats nothing" — and the step now says which of those
+happened rather than presenting the cut as if the ratio had justified it.
+
+**The floor on chord LENGTH is no longer tunable.** It survives at one median border segment,
+purely as a guard against a degenerate line: two adjacent vertices are a notch in the coastline
+rather than a cut, and a zero-length one divides by zero. It decided nothing a person would want
+to decide once the smallest-bite floor existed, and that floor states the same intent in the units
+the question is actually asked in.
+
+**A country that has taken is not out of the running.** Its two pieces have to become one ring,
+because the rewrite gives each absorber one arc and one outline — and they can, whenever the
+second was cut off the remainder along the first one's own cut, which is a shared run of identical
+vertices and a splice rather than a polygon union. `chordMerge` finds the longest such run (the
+two rings traverse it in opposite directions, both being wound the same way) and walks round the
+outside of both. It returns null when there is no such run, and that is what keeps the
+one-arc-one-outline invariant: two pieces that meet nowhere cannot be one outline.
+
+**Every round asks the chord question first**, including the round after a push: `cand` is built
+and ranked before the push branch is even reached, so "after a push, look for a bite" is not a
+special case but what the ratio test does on every round there is. An explicit *do not push twice
+in a row* flag was tried and is exactly wrong — it forces a cut the threshold has just refused,
+which is how Zambia came to be cut at a ratio of 0.56 against a bar of 2.
+
+**`sbBlendShare` defaults to 0**: if there is no waist worth cutting, ANY neighbour with a border
+to push is a better answer than a line invented across the middle. Raising it insists the pusher
+dominate what is left. Measured over 60 countries at the default bar of 0.35: share 0 gives 29
+divisions, 76 cuts, 4 pushes and nothing handed whole to one neighbour, against 28/80/2 at 45%.
+At a bar of 2 the pushes take over (23 pushes against 29 cuts) and four countries end up with a
+single absorber and no cut at all.
+
+Measured over 197 countries with the cap at 30% and borders borrowed rigidly: **88 divide**, 2.53
+absorbers each, leftover 37%, **zero split absorbers**, 4.7 s for the world. Rigid borrowing costs
+coverage — 106 countries divided when the borrowed border could still be stretched to fit — and
+that is the price of the cuts being real borders rather than impressions of them.
+
+Three more things it has to get right:
+
+* **Shoelace prefix sums.** The area a chord cuts off is O(1) from a running sum, not O(n) from a
+  walk, which is what makes trying all sixty-odd thousand pairs on every round cheap enough to be
+  the obvious thing to do. The whole world divides in 11 seconds.
+* **A coast point is fair game at either end.** The one pairing refused is two points on the SAME
+  neighbour's frontier, which cuts a bite out of that country's own border and separates nothing.
+  Requiring a named neighbour at both ends limited the construction to landlocked countries — and
+  a peninsula's neck is exactly the kind of place it exists to find. (Coverage 94 → 99.)
+* **Nobody takes twice.** The rewrite gives each absorber one arc and one outline, so a second
+  piece would have to be merged with the first — a polygon union, the one machine this surgery
+  has always refused to build. A neighbour that has taken is out of the running, and the loop
+  stops when nobody is left to hold what remains.
+
+The pieces go through the same guards a slid bite does — one lobe, a neck no narrower than
+`SB_BITE_NECK_FRAC`, one contiguous run of the absorber's own frontier — in standalone form,
+since `bite` owns its copies as closures over one region's ring.
+
+Neither the **turn order** nor the **growth budget** means anything here, so the sandbox hides
+both when the chord is selected: it takes the cuts the country's shape offers, in the order the
+shape offers them, and draws no border longer than the chord that found it.
+
+**It stops when what is left is smaller than the smallest piece already cut.** There is no share
+to satisfy and no turn to run out of, so the honest end of an iterative cut is that the remainder
+has stopped being one of the pieces and become a remainder: one more cut would be dividing
+something already smaller than everything else on the map. Verified over the world — area
+conserved on all 99 that divide, and the rule holds wherever it fires; the seven exceptions are
+countries where the cutting stopped for the OTHER reason (no pair left gives a cut that can be
+drawn as a real border and handed to somebody who has not already taken), and the story says so
+rather than claiming a rule that did not fire.
+
+### A click shows the answer; the walk-through is a button
+
+Clicking a country performs the surgery and **shows the finished map**. Walking through the
+construction is the more interesting half of this tool and it is one button away ("Step through
+it"), but it is not what somebody clicking a country is asking for — they are asking what happens
+to it, and making them press Next six times to find out turns every parameter change into a
+six-press chore. Changing any parameter re-runs the country in hand immediately.
+
+### The chord's story is its own
+
+The slide's story is a round of turns and the chord has none, so it gets a story of its own SHAPE
+rather than its own words. Each cut is a self-contained operation and the three things that
+happen in it are three things to look at: **a pair of points is found** (every pair tried, the
+winner drawn as a dashed line — a measurement, not a boundary), **a border is drawn between them**
+(traced from a real border elsewhere, checked against every edge of the boundary), and **the piece
+is given to somebody** (the whole edge tally, not just the winner, because the assignment is the
+second half of this construction). Then the remainder, then the result. Zambia is nine steps.
+
+`msState.story.steps` is a flat list of `{phase, s}` built at story-begin time when the first
+entry is a `chord` record, and its presence is what switches `msStorySteps`, `msRenderStory` and
+`msDrawStory` over. Nothing about shares or turns survives into it — there is no shares step,
+because nobody is owed anything.
+
+`sbBiteGrowth` (**default 10**, editable in the sandbox panel) caps how much longer the new
+border may be than **the old boundary the bite swallowed** -- the frontier plus whatever coast
+and foreign border ends up inside the piece -- and that comparison is the whole of it. It
+**compounds**: a turn's budget is a percentage of the border as it stands at the START of that
+turn, so three turns of 10% is 1.10³ rather than 1.30, which is what "10% growth per turn"
+means, and the gap widens with every turn taken.
+
+Measured against the frontier ALONE, as it was, a rigid slide is charged for its two
+end-continuations as if they were extravagance, when they are the one thing it cannot do without:
+the ends of a rigid stencil travel as far as its middle, so the continuations are at least as
+long as the depth, and at a 10% budget France's bites came out at 71, 92 and 102 km. Measured
+against what the bite actually consumed, the budget means what it says, and the answer over the
+whole world is that these cuts are **shorter** than the borders they replace -- which is the
+right sign, since a bite that cuts across a country replaces a wiggly frontier plus a stretch of
+coast with one line.
+
+A consequence worth stating plainly: under the slide the budget therefore **rarely binds**, and
+depth is limited by the share and by whether the cut lands at all. It was the front's knob much
+more than the slide's, and with the front gone it is close to vestigial — kept because it is the
+one place a person can say "make the borders shorter than that" and be obeyed.
+
+**The turns iterate.** A border that came up short is given another turn -- another `sbBiteGrowth`
+per cent on top of what it has already spent -- while one that got what it was owed is left where
+it stopped. The turns are re-run from scratch rather than continued from the last cut, for the
+reason a second bite has always been avoided here: it would have to be merged with the first, and
+two rings sharing a boundary need a polygon union, whose failures are exactly the invisible-seam
+kind this surgery exists to prevent. Recomputing is the same code with the same guarantees. Bites
+routinely run to turn 2-5; the step-through says which turn it is on, and a neighbour that still
+cannot bite says how many turns it has had.
+
+**A deep slide can sweep clean past a small neighbour's boundary and swallow it** — that
+neighbour is crowded out, and so be it; bending the cut around it is exactly the drawn look this
+construction exists to avoid. Two frontiers are protected because the arc rewrite needs them:
+the **leftover's** (checked via `keepLegs`) and the **biter's own secondary frontier**
+(`avoidLegs` — a two-lobe country like Brunei still references that arc from its own ring, so a
+copy of it inside the outline traverses the same border twice and turns the ring inside out;
+Brunei "gained" 510 million km² this way).
+
+**Mid-arc landings are what the rewrite has to survive.** With no pins, a cut lands partway
+along somebody's arc, and any absorber whose frontier was truncated that way — by its own
+landing or by an earlier bite — would write an outline that stops mid-arc and falls open (its
+other arcs meet it at the true endpoints, which are shared topology nodes). The rewrite
+therefore **re-traces the original border** from the truncation point out to the arc's true
+endpoint (`onRun`/`runPts`): the land beyond the truncation is another piece carrying the same
+points verbatim, so the retrace is seam-free by the same copied-verbatim argument as every other
+border in the surgery. Every mainGroup leg is spoken for — the ones not carrying the outline
+collapse to the near endpoint, including any an earlier bite consumed whole.
+
+And one more thing the rewrite cannot assume: **two arcs consecutive on this ring need not be
+consecutive on the neighbour's own ring**. Belgium's two Netherlands arcs chain directly on
+Belgium's ring, while on the Netherlands' ring the Scheldt estuary's coast sits between them —
+so collapsing one arc and writing the whole outline into the other tore the Netherlands' ring
+open at the estuary node. A frontier run may only span arcs the absorber's own ring ALSO chains
+directly (`arcsChainInOwner`), and is split where it does not, the longest sub-run biting and
+the rest joining `avoidLegs`.
+
+One rule carried over from the earlier constructions, still doing its work: **a bite that cannot
+have everything it is owed takes what it can reach, not nothing.** With the splices and the
+stretch this is now rare — only a handful of neighbours in the world are crowded out entirely
+(was 153), and a neighbour whose whole stretch of boundary an earlier, deeper bite slid past is
+recorded as `swallowed` so the story can say what happened to it.
+
+## Who's Missing: the bites iterate
+
+One pass gets the ORDER right and the sizes wrong. A bite stopped short by geometry, and a
+neighbour swallowed before its turn, both leave their share to be held by somebody — and that
+somebody is the leftover, which finishes far over its share. The fix is not a cleverer single
+cut but a **second look**: having seen where the surplus ended up, ask the neighbours that could
+take more to take more, and run the whole division again (`runOnce`, six passes,
+`SB_BITE_DAMP` 0.7).
+
+Re-running from scratch rather than biting twice is deliberate. A second bite from a neighbour
+would have to be merged with its first, and two rings sharing a boundary stretch need a polygon
+union — a whole machine, and one whose failures would be exactly the invisible-seam kind this
+surgery exists to avoid. Re-running is a fixed point on the targets instead: same code, same
+guarantees, six times.
+
+**The objective had to be renormalised before any of it showed up.** A neighbour that gets
+nothing leaves its share to be held by someone, and whoever holds it is over by exactly that
+much however the rest is arranged — so total absolute error against the *original* shares is a
+constant, and scoring against it made every correction look like a wash. Germany's second pass
+moved Austria from 37% to 26% and pulled every other neighbour toward its share, and scored
+**worse**. Renormalising over the neighbours that actually took part asks the right question —
+*of the land that could be shared, was it shared in the right proportions?* — with the share of
+those that took no part added on top, so a run that includes more of them still wins.
+
+Measured over twenty countries that divide: share error **0.415 → 0.309** and the leftover's
+holding **44.6% → 39.6%**. Further passes move neither; damping 1.0 and 0.4 both score worse
+than 0.7, since a bite that cannot go deeper keeps asking for more and an undamped ask
+overshoots past what it can have.
+
+## Who's Missing: six turn orders
+
+Who bites first changes the map completely — the first bite cuts an untouched country and every
+later one works around it — and there is no single right answer, so it is a choice
+(`SB_BITE_ORDERS`, `sbBiteOrder`, the second select in the sandbox panel — under the choice of
+construction) rather than something settled in the code. Measured over the same twenty countries, under the slide (the chord has no turn order —
+it takes the cuts in the order the country's shape offers them):
+
+| Order | Share error | Leftover holds | Absorbers |
+|---|---|---|---|
+| Longest frontier first (default) | 0.213 | 45.1% | 3.75 |
+| Shortest frontier first | 0.257 | 47.8% | **4.10** |
+| Biggest neighbour first | 0.265 | 48.0% | 3.75 |
+| Smallest neighbour first | **0.199** | **45.0%** | 3.85 |
+| Clockwise from north | 0.232 | 46.5% | 3.95 |
+| Most convex frontier first | 0.275 | 49.1% | 3.65 |
+
+Only the ORDER changes: eligibility, shares and the leftover are identical across all six, so the
+comparison means something. (The rigid slide is the one construction that picks its own leftover
+by measurement rather than by position — see "two constructions" above — so the orders stay
+comparable within a construction, not across them.)
+Selection is made **at each step rather than by sorting up front**, because one of the orders is
+a question about the border as it stands and the border changes with every bite; for the five
+whose key is fixed this is the same sequence a sort would give, since a key cannot change and a
+frontier that has been swallowed can never come back.
+
+### Most convex frontier first
+
+"The neighbour that owns the most convex remaining part of the border", and every word of it is
+load-bearing. It is the order that eats the panhandles first — Angola's Cazombo salient, the thin
+bit that juts east, goes to Zambia before anything else is cut; India starts with Myanmar, which
+bounds the north-eastern salient.
+
+Three things it has to get right, and each was wrong first:
+
+* **The most convex PART, not the average.** A salient's tip is convex and so is the corner where
+  its far side turns — but the corner at its BASE is reflex by just as much, and summing the
+  three gives zero. The net turning of Zambia's frontier with Angola is −16°, which reads as
+  "straight", when what is there is a right angle round a spit of land. The score is therefore
+  the largest total over any CONTIGUOUS run of samples (Kadane), which finds the salient and
+  ignores the base.
+* **A frontier gets HALF credit for the corners at its ends.** The tip of a salient is often a
+  tripoint — Cazombo's is where the DRC and Zambia meet — so it sits at the END of a frontier
+  rather than in its middle, and a stretch measured strictly between its own endpoints turns
+  around nothing. The measure therefore looks one macro step past each end. At FULL credit that
+  backfires: a frontier claims corners that are not its border at all, and Angola's southern
+  frontier scored 196° almost entirely on the corner where the Atlantic coast turns north. Half,
+  because the corner is shared with whoever is round it.
+* **The macro window has a floor and a ceiling** (`SB_CONVEX_STEP`, a twelfth of the country's
+  diagonal). At a fortieth, Zambia's frontier with Zimbabwe more than doubles from 45° to 104° —
+  that is the wiggle of the river being counted as shape, which is exactly what "macro" was
+  meant to exclude. At a sixth it is too coarse the other way: Cazombo is about 220 km across
+  and the step was 317 km, so the one feature this order exists to find was resampled out of
+  existence. A twelfth finds it (Zambia 143° against Namibia's 117°) and the answer is stable
+  from a ninth to a twentieth.
+
+Two limits worth knowing. A protrusion whose tip is a tripoint is split between two neighbours
+and each is credited with half of it, so the order between *them* is decided by the rest of their
+frontiers. And a neighbour can only bite first if it is not the **leftover** — for Angola the DRC
+holds the salient's northern side and never bites at all, because it has the longest single-place
+frontier and is holding the surplus.
+
+**A neighbour touching this one in two separate places bites from its longest frontier** and its
+other arcs stay where they are, becoming its border with whoever ends up behind them (a bite may
+not *swallow* them — that is `avoidLegs`, above). At 110m an
+alternating run of arcs is common, and disqualifying a neighbour for it cost Poland both Germany
+and Slovakia. The one country that cannot be split like that is the **leftover** — it never bites,
+so its piece is whatever remains, and that region can contain its own second frontier, whose arc
+would then be both referenced by its ring and copied into the outline. So the leftover is chosen
+up front from the neighbours touching in exactly one place — by default the *biggest* of them,
+since it absorbs every bite that came up short and the country with the longest frontier is the
+one that should hold the surplus. Making it the smallest handed Czechia 76% of Germany. (The
+rigid slide instead runs the division once per candidate and keeps whichever finishes least
+contorted; the candidate pool is the same.)
+
+**And it has to be the one that was chosen, not merely the first left holding nothing.** Those
+are different countries the moment a bite is crowded out, and taking the first went wrong in both
+directions at once: the country deliberately picked to be the leftover — on the grounds that it
+touches this one in exactly one place — got nothing at all, while the whole remainder went to a
+neighbour that may well touch in two, which is the single case the outline cannot express and the
+entire reason the choice was made up front. Germany was handing 68% of itself to a Czechia that
+had already been crowded out of biting. **Biting smallest-first was tried and is
+worse** on every count — the big bites then cut across a region three small ones have already
+nibbled the edges off, and back off to slivers (Burkina Faso came out 92/8 between two neighbours
+instead of 79/20/1 between three).
+
+The surgery is still at the **arc level**, which is what makes it invisible: TopoJSON stores each
+shared border once and both countries point at it, so rewriting one arc moves exactly one border
+and leaves every other vertex of every other country **bit-identical**. An absorber's own arc is
+replaced by the whole outline of the land it has taken; the borders inside that outline which did
+not move (a coastline, a crowded-out neighbour) are copied verbatim, so they are drawn twice in
+exactly the same place and no seam can open. **Coastal countries divide as readily as landlocked
+ones** — a shore simply cannot be pushed inland, so whoever is opposite comes all the way up to
+it. The only structural requirement left is one land neighbour.
+
+Everything is **deterministic**: the same country always divides the same way.
+
+Measured over the 191-country pool at 110m: **145 divide cleanly** in ~2.7 s for the lot, 18 are
+islands with no land neighbour, 22 are too small to have a boundary worth cutting, 4 contain an
+enclave, 1 has no neighbour touching it in a single place, and 1 will not tile (Lesotho, whose
+whole ring is one neighbour — it failed under every construction; Malaysia and Belgium, the
+other historic failures, both divide now). Audited on twelve countries — **9,681 interior
+sample points, every one of them in exactly one absorber: zero gaps, zero overlaps** — with
+area conserved to 100.0%, identical output on repeat runs, and every untouched country
+bit-identical (the one exception per round is Australia, whose antimeridian ring re-decodes
+differently because the rebuilt topology carries absolute coordinates rather than a quantization
+transform).
+
+**Known limit: the two constructions trade one failure for another rather than fixing either.**
+The slide reaches far and swallows small neighbours on the way past; the chord divides what it
+touches evenly and simply cannot reach two countries in five. Germany under the slide comes out
+Austria, Czechia and the Netherlands, three neighbours of six, with Poland, France and
+Switzerland swallowed; under the chord it is the Netherlands, Austria and France, with the
+leftover holding 5%. That is the choice the picker exists to offer.
+
+## Who's Missing: what went wrong
+
+"Divides badly" names an outcome and not one of the reasons, and the reasons are the interesting
+half: a construction that refuses ninety-nine cuts out of a hundred is telling you something about
+the country, and it should be able to say what. So every gate a candidate can fail is counted by
+name (`sbDiag`, `sbDx`, `SB_GATE_WORDS`), and a country that will not divide gets a step-through
+of its own — what it is, what was tried, where it stopped.
+
+The counts are the point. Kenya under the chord: 691 pairs of boundary points over 3 rounds, 2
+cuts made, and then the tally — 566 pairs would have broken off more than the cap allows, 225 less
+than 2% of the country, 39 had both ends on the same neighbour's frontier, and the remainder fell
+on the borrowed border leaving the country or crossing the boundary. The panel says plainly that
+the largest number is not necessarily the culprit, because the cheap tests run first and reject
+the most; what is worth looking at is a gate near the BOTTOM of the list with a big number.
+
+Nothing about the surgery changed to make this possible. The counters are written where the
+refusals already happened; they only stop it being silent about them.
+
+## Who's Missing: the detached parts go first
+
+A country's islands and exclaves are bites like any other — land that has to go to somebody — and
+they are settled BEFORE a single cut is made, as their own steps at the head of the story. Doing
+it afterwards made the answer depend on who had happened to end up absorbing what: the owner was
+chosen from the list of countries that had taken a piece, which is not what decides who Cabinda is
+next to.
+
+**Nearest LAND, not nearest centroid.** Cabinda sits on the Congo river between the DRC and the
+Republic of the Congo and touches both; by centroid it went to Gabon, a different country 500 km
+away. A centroid answers "which country is that one most like the middle of", and nobody asked
+that. Measured against the countries' own outlines instead: Cabinda → DRC at 0 km, Nakhchivan →
+Turkey at 0 km, Musandam → the UAE at 0 km. Bounding boxes rule out almost every candidate before
+any distance is computed, so 171 exclaves across the world cost nothing measurable.
+
+## Who's Missing: the step-by-step story
+
+Performing the surgery and showing the finished map is the least interesting thing the sandbox can
+do, because **the rule is not visible in its result**. Which neighbour was owed what, which of
+them could not reach it, and — the part nobody would guess — that the shape of every new border
+was traced off a real border somewhere else in the world, are all invisible the moment the last
+cut closes. The seam is invisible *by construction*; that is the whole point of working at the arc
+level, and it is also why the finished map cannot explain itself.
+
+So a click walks through it a bite at a time: a shares step, one step per neighbour, and the
+result. `sbEatCountry` returns a `story` array written **inside** the bite loop rather than
+reconstructed afterwards, because most of what makes a step worth watching (the borrowed border's
+identity, what the neighbour was owed against what it could reach, the region as it stood before
+the cut) exists nowhere else. The map holds the country still and draws what each step did to it
+— `msDrawStory` re-projects from stored lon/lat on every call, so it follows a pan or a wheel like
+every other overlay — and only the **last** step replaces the world, putting it back on the way
+out of that step.
+
+Each bite step also draws the borrowed border **on its own** (`msSourceSvg`). Under the stencil
+construction the borrowed trace is only the cut's **end-continuations** — the bitemark proper is
+the frontier itself, slid inland, and the step says how far — but claiming the continuation came
+from the Mongolia–China border is still only worth saying if you can see that it did.
+
+Two things the copy has to get right, both of which were wrong first and both of which had the
+story telling a lie about machinery that was working correctly:
+* **"Crowded out" is only true once something has been taken.** On the first step nothing has, and
+  the honest reason is the shape of that neighbour's own frontier.
+* **Report what a bite GOT, not whether the backoff ran.** A cut can fail at the depth the
+  bisection first asked for and pass a fraction of a per cent shallower, and saying "it took what
+  it could reach" about a bite that got everything reads as a bug in the surgery.
+
+Candidates for the quiz must be at least **twice the area at which the map would draw them as a
+dot rather than an outline** (`SB_MISSING_MIN_KM2`) — "which one is missing" is not a question
+about something that was never visible — and under 900,000 km².
+
+Answers come from a **filterable list of every country**, not from four options
+(`pickOne` on the spec, rendered by `sbRenderPickOne`). Four options made this a question about
+the distractors: three of them were visibly still on the map, so the round collapsed to "which of
+these four can I not see". The chips carry `option-btn` as well as `sb-pick-btn` so the shared
+wrong-answer reveal can find the right one by text — which is also why answering clears the filter
+and repaints the full list first, then scrolls the answer into view.
+
+**The eaten country is absent from `gameState.countries`, not hidden.** Everything else — dots,
+lakes, highlights, clicks — then behaves normally with no knowledge of the surgery.
+`gameState.sbWorldBackup` restores the real world before the next `build()`. Two things that has
+to be paired with:
+* **`drawIslandMarkers` must skip it by name.** The country is still in the quiz list, and the
+  no-polygon fallback plants a dot at `capitalCoords` for anything in the list without a feature
+  — putting a marker exactly where the answer used to be.
+* **`drawCountries` needs a full join.** It was enter-only, which is invisible while the group
+  starts empty (the normal case) and silently wrong the moment it runs twice against a changed
+  feature list: `enter()` is empty, so the existing paths keep their old `d` and the new geometry
+  is never drawn.
+
+The board is **not** zoomed — framing the neighbourhood named the answer. The player zooms, and
+the round is scored on the clock (`speedBonus`).
+
+`sbEatWhy` records which rule refused an attempt (`island`, `enclave`, `twoplaces`, `tiny`,
+`divides`), so the sandbox can say what stopped it instead of shrugging.
+
+### False Flag
+
+The fake is a **real flag with its colours changed**, fetched from flagcdn and recoloured in SVG.
+Two things gave the old canvas generator away: it was a 320×213 **raster** beside three vector
+SVGs (every flag in the app is fetched as `.svg`), so sharpness alone decided the round; and its
+eight-layout vocabulary put a plain disc on screen constantly when exactly one country has one.
+
+**Nothing is added and nothing is taken away.** The fake is the seed's design throughout — every
+shape it had, in the same place, verified by element count over every draw. A flag's design is the
+half of it people actually know, so an invented flag is convincing precisely when it is a real one
+repainted; an emblem borrowed from a third country is a giveaway of its own kind, because nobody's
+flag carries somebody else's arms. (Borrowing charges deliberately is what the **workshop** is
+for, below.)
+
+**The palette is taken WHOLE from another real flag**, not assembled colour by colour. A colour
+scheme is a thing a country has rather than a set of independent choices — red-white-black is the
+pan-Arab vocabulary, gold-green-red the pan-African one — and picking three colours one at a time
+by regional frequency produces combinations no flag has ever worn. `sbDonorPalette` returns at
+most the donor's **three largest chromatic colours** with the **exact shade it actually uses** (the
+point of borrowing a scheme is that country's particular green, not a generic one), and `sbRepaint`
+lays the seed's own three against them **rank for rank**. A donor with fewer colours than the seed
+leaves the seed's remaining ones alone rather than topping the scheme up from the regional picker:
+half a borrowed scheme and half an invented one is neither. That picker survives only for when no
+donor can be read at all.
+
+**"Largest" is by AREA, measured by rasterising** (`sbFlagAreas`) — not by node count, which is
+wrong by orders of magnitude in the one direction that matters. A flag's field is a single rect
+and its emblem is forty paths, so by node count Portugal's principal colour is the black of its
+coat of arms rather than the red of its field, and the donor's dominant colour then gets hung on
+something nobody can see at tile size. Area is a question about overlap — a stripe covers the
+field, a disc punched out of a crescent removes what it sits on — and no sum of bounding boxes
+knows either of those things. Every pixel is attributed to the nearest of the flag's OWN source
+colours, and only when it is within 40 RGB units of one, so an antialiased blend of two counts as
+neither. Portugal reads red 60% / green 37%; Brazil green 71%; India orange 35% / green 35%.
+
+**The swap is measured against the seed's own dominant shade**, not against the bucket's nominal
+colour, and that is the whole of what was wrong with the colours before: a seed whose red is
+#ce1126 was being shifted by (donor − pure red), which lands nowhere near the donor's colour.
+Measured now, the donor's exact hexes appear on the finished cloth verbatim — Azerbaijan wearing
+Ethiopia's #078930 / #da121a / #fcdd09 at 33% / 33% / 29%. Other shades in the same bucket move by
+the same delta, so an emblem's light and dark greens stay light and dark relative to each other.
+
+**Four flags are never forged** (`SB_NO_FORGE`): those carrying the shahada or the takbir, where
+the words themselves are the flag. They still appear as real options.
+
+Colours are classified into perceptual **buckets** (near-identical hexes are the same colour for
+this purpose). Three constraints, all of which were wrong first time and all visible in a sample
+of draws — and note the injectivity set is seeded with the colours that are STAYING, not with
+every colour the flag has: a colour on its way out cannot collide with anything, and blocking the
+donor's red because the seed has a red it is about to lose left most flags with a single band
+recoloured:
+* the mapping must be **injective** — two colours landing on the same one merges the shapes they
+  distinguished, and Ethiopia's star dissolves into its field;
+* **never map into white or black** — they are what emblems and outlines are drawn in;
+* a replacement must be **≥90 RGB units away**, or the swap (navy for blue, maroon for red) is
+  invisible at tile size and the round becomes "which one looks very slightly off".
+
+**On the reveal all four tiles are named** (`sbNameImageTiles`, the same withhold-then-write
+pattern Upside Down uses, with the credit's height reserved so nothing jumps): three countries
+and one "invented". The answer to "which of these is not a flag" is largely "and here is what the
+other three were", and reading three names off a sentence and matching them back to three
+pictures is work the tiles can do for free.
+
+Seeds are rejected when the design is simple enough that another real country might already own
+the recoloured version — plain bi/tricolours are exactly that hazard (Ireland/Ivory Coast,
+Indonesia/Monaco, Chad/Romania) — so a seed needs either an emblem's worth of elements or a
+palette no plain tricolour has. ~35% of seeds are accepted; `sbPrepareFakeFlag` tries several per
+preparation and always has the next one in flight, so no round waits on the network.
+
+### The fake flag workshop
+
+`flag-workshop`, a sandbox tile. The quiz forges by rule and never adds an emblem, because a
+machine choosing which charge to hang on which flag has no way of being right. A **person** does,
+so the workshop hands over every piece of every flag and gets out of the way: pick a design, pick
+whose colours it wears, and borrow as many charges as you like from anywhere in the world.
+Everything is composed from the real SVGs, so a hand-made fake is a vector at exactly the
+crispness of the three real flags beside it — which is the property the whole round rests on.
+
+Saved flags go to `localStorage` (`geoquiz.fakeFlags`) and `sbClaimFakeFlag` deals one **half the
+time** when any exist. Not always: a workshop with three flags in it would be the whole quiz
+within two rounds, and the generated ones are what keep it from becoming a memory test on your own
+inventions. Not never either — the point of saving one is that it gets dealt.
+
+**`wsParts` is the whole of the hard part**: what counts as a piece of a flag, and where it is.
+Five things it has to get right, and each of them made the transplant invisible or absurd:
+
+* **`getCTM` is measured to the nearest VIEWPORT, so it folds in the viewBox-to-pixels scale.**
+  In a 0×0 hidden host that scale is zero, and Turkey — authored on a 90000-unit viewBox —
+  reported every piece of itself as 0.0002 of the flag and offered nothing at all. The host is
+  given a real size, and every matrix is taken **relative to the root** by cancelling the root's
+  own, so the answer is in the flag's own coordinates whatever size the host happens to be.
+* **`getBBox` is measured BEFORE the element's own transform and `getCTM` AFTER it.** The box
+  therefore wants the full matrix and the transplanted copy wants only its parent's — the copy
+  carries its own transform attribute along with it, and using one matrix for both draws the
+  piece twice as turned as it should be.
+* **A viewBox may start anywhere.** Brazil's is `-1743 -1113 3486 2226`, so its centre is (0,0)
+  rather than (W/2, H/2); placing a charge at W/2 put it in the bottom-right corner, mostly off
+  the cloth, which reads as the charge simply not drawing.
+* **The whole source flag rides along inside `<defs>`.** A charge is very often a `<use>` of
+  something defined elsewhere in the file — the US stars, India's chakra spokes, Nepal's rays —
+  and a `<use>` serialised on its own is an empty element that draws nothing. Harvesting only
+  `<defs>` is not enough either, because these files routinely `<use>` an ordinary `<g>` that is
+  drawn in place and given an id. Taking everything is the only rule with no exceptions; inside
+  `<defs>` none of it draws. Ids are renamed per borrowed charge (two flags will both call their
+  gradient "a"), and the DRAWN copy has its ids stripped while keeping its renamed references,
+  since it is also inside the definitions and one document cannot carry an id twice.
+* **A piece lifted out of a file inherits nothing**, so `fill`, `stroke` and friends set on an
+  ancestor are captured where the piece stood and re-applied on the wrapper. Without it a charge
+  whose fill was two groups up arrives as flat black.
+
+Both a group and its children are offered: which of them is "the emblem" is exactly the judgement
+the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
+pieces.
+
+### The charge menu, and charges made of several pieces
+
+Browsing is one thing and building is another, so they are two things: browsing happens in a
+**sub-panel**, and what comes out of it goes into a **menu** that outlives the browsing. Anything
+in the menu can be placed as often as you like, in any of four named slots (centre, canton, hoist,
+fly) at any size — those are the places a flag ever puts a charge, and a free x/y turns a
+two-click job into a fiddle.
+
+**Several pieces ticked together are ONE charge.** Albania's eagle is two halves and Kenya's
+shield is a shield plus two spears; picking them one at a time and placing them one at a time asks
+somebody to reassemble by eye what the flag had already assembled. `wsCombine` keeps each part's
+own matrix and its own inherited paint on a wrapper of its own, so the composite is the pieces
+exactly where they stood relative to each other, and its box is their union.
+
+A charge tile is drawn on a **checkerboard**, because half the world's charges are white and the
+other half black: a plain light tile hid every white crescent, and a plain dark one would hide
+every black eagle.
+
+### Every charge keeps its own colours
+
+Two charges wearing the same red used to be one entry in the palette, so recolouring either
+recoloured both, and there was no way to say "that eagle, not this one". Each piece of the
+composed flag — the design, and every borrowed charge — is now its own SCOPE (`data-ws-scope`
+on the wrapper, `sbNodeScope` walking up to it), the palette keeps entries apart by scope even
+when the hex is identical, and `sbRepaint` will only move a node onto an entry belonging to its
+own piece. Repeated colours are numbered in the swatch column, in the order they appear; a colour
+that occurs once carries no badge, because a number on everything is noise.
+
+**Areas are measured by a PROBE RENDER** (`wsScopedPalette`): every entry is temporarily painted a
+colour unique across the whole document, the result is rasterised, and the pixels are counted by
+exact match. That handles overlap for free — a charge drawn over a band takes those pixels and
+the band does not — which no sum of bounding boxes can do, and it is the only way to tell two
+entries apart when their real colour is the same. There is no area floor: the old one existed to
+throw away antialiased blends, a probe render has none, and dropping the small entries would
+silently remove a charge hidden under another, which is exactly the entry worth being able to
+re-point.
+
+**A colour the mapping had to invent is adopted into the donor's palette.** `sbMatchPalettes`
+fills slots the donor cannot cover with harmonics of the donor's own wheel — and those arrived on
+the cloth from nowhere, with no swatch, no wheel dot, and no way to edit them or tell them from
+the ones that were chosen. They are pushed into `st.extra` after each compose, so each gets a
+swatch and a dot like every other. Idempotent: on the next compose the colour is already in the
+palette and within `SB_SAME_COLOUR` of itself.
+
+**A charge is indexed against the CENTRE.** Two flags are rarely the same proportion — a 2:1
+against a 3:2 — and a charge placed by its distance from the top left drifts by the difference:
+a disc dead centre on its own flag arrived visibly off centre on a wider one, which is the one
+placement error everybody can see. The offset of the charge's centre from its own flag's centre
+is laid against the new flag's centre instead, which puts centred things dead centre by
+construction and moves everything else by no more than the change in proportion. Verified:
+Japan's disc on Qatar's 11:28 cloth lands at 49.7% / 49.5%.
+
+### The palette, wired
+
+The palette is measured on the **composed** document, so a borrowed charge is part of the flag by
+the time its colours are read — which is what makes a charge get recoloured ALONGSIDE the design
+rather than pasted on wearing its own country's colours. Adding Brazil's rhombus to Japan puts
+`#ffcb00` into Japan's palette, and the donor's scheme is then laid across all of it.
+
+The mapping is drawn as **two columns of swatches with a wire between each pair** — yours down one
+side, the donor's down the other. Dragging a wire's end onto another swatch is how it is changed,
+which is the same gesture as the thing it represents, and **several wires may land on one swatch**.
+That lifts the injectivity rule for exactly those entries: two of a flag's colours landing on one
+merges the shapes they distinguished, which is a defect when the search does it by accident and a
+decision when a person does it on purpose — a tricolour with two of its bands the same is a
+bicolour, and somebody may want one. `sbRepaint`'s `pick` argument is how that is expressed, and
+the quiz never passes one. A **placeholder at the foot of the donor column** adds a colour the
+donor never had, starting at the complement of whatever it has most of.
+
+The **wheel carries every donor colour at once**, one dot each, and dragging a dot moves that
+colour. A palette is a set of relationships and the wheel is where they are visible: three dots
+evenly spread is a triad, two opposite is a complement, a huddle is a scheme with no contrast in
+it — which is the whole reason to show them together rather than one at a time. Hue and saturation
+are the two axes a wheel HAS, so those are what dragging changes; lightness gets a slider, which
+is right anyway because it is the axis the contrast rests on. The field behind the dots is drawn
+at a fixed mid lightness rather than at any one colour's: redrawing it in the lightness of
+whichever colour was last touched puts every other dot on ground that has nothing to do with it.
+
+Two layout notes that cost an hour between them. The base and donor pickers are **custom
+dropdowns showing the flag as well as the name**, because "Chad" and "Romania" are the same answer
+to somebody choosing a palette and completely different flags, and a native `<select>` cannot
+carry an image. And the wires' SVG is absolutely positioned, so **grid auto-placement skips it
+entirely** — the donor column landed in the middle track with the third collapsed to nothing, and
+the two columns have to be placed by hand.
+
+**And `#multiple-choice-container` is HIDDEN, not emptied.** It holds `#options-grid`, a fixed
+element of the page that every quiz mode writes into, so emptying its parent deleted it for the
+rest of the session — after which the next mode to render any options threw inside the map load's
+callback and reported **"Error loading map data"** about a file that had downloaded perfectly.
+Twelve modes died that way, Near to Far among them, and only ever after a visit to the workshop.
+`clearMultipleChoice` and `renderMultipleChoice` are now null-safe as well, so a missing element
+can never again be reported as a network failure.
+
+**The panel is APPENDED to `#question-container`, not written over it.** That container holds
+`#feedback` and `#question-text`, which every other mode's setup writes to unconditionally, so
+replacing its innerHTML takes those with it and the next mode entered dies on a null. (The framing
+and Who's Missing panels append for the same reason.)
+
+### Read the Daylight
+
+An **arc slider** running 90°N to 90°S, graded on closeness — four options made this a recall
+question about four numbers, and an arc says what latitude actually is. The reveal reuses Sun
+Path's **Earth-in-space** pane: `buildEarthInSpace(scene, opts)` was extracted out of
+`buildGlobeScene` (and `sunPathEarthCanvas`/`applyEarthTexture` out of
+`refreshSunPathEarthTexture`) so it can be built against an explicit scene rather than
+`sunPathState`. The pane tilts to the date's declination and rings both the true and the guessed
+latitude, then spins the earth under them — the day/night share of each ring is something you
+watch happen rather than infer from a still.
+
+Notes worth keeping:
+* **`multi` must subtract false positives.** Scoring hits alone makes "select everything" a perfect answer, which is the only thing that would make "pick all" not a question.
+* **`estimate` marks the country's own bar on the reveal**, widened and in the accent colour
+  with its flag planted on it. "A factor of three out" says nothing about *where* in the
+  world's spread that sits, which is the thing the chart exists to show.
+* **`estimate` puts its chart up from the first frame and moves it with the slider.** Held
+  back until the answer it was a post-mortem; live it is the instrument you are reading — you
+  can watch your guess climb past most of the world before committing to it. The truth rule
+  stays hidden until you submit. The map's only job in that round is to say *which* country,
+  which a small globe does as well as a large one, so `body.sb-wide-panel` swaps their share of
+  the width (measured 431 px of map against an 830 px panel, from 3fr against a fixed 300).
+* **`estimate` scores on the RATIO, not the difference.** Being two million out matters enormously for Iceland and not at all for India; a log error says so, a linear one does not. Its reveal plots every country as one bar on a log axis with the guess and the truth ruled across it, flagged at the ends by whichever countries actually hold the extremes (India and Vatican City) — never hardcoded.
+* **`picker` scores on the ratio too, for the same reason.** The old `10·(guess/best)` paid ~0 for anything but the very top of the range, so a continuously-scored round read as all-or-nothing. Going over is still the failure — that is the Price-is-Right rule and the shape of the question — but it decays rather than dropping to a flat zero.
+* **`sbScoreClass`** grades the feedback box green/amber/red. The continuously-scored engines have no right-or-wrong to report, and painting 6/10 red misrepresented them; `.feedback.partial` already existed and was simply never used here.
+* **`sb-lake` holds its answers for the game.** There are only two dozen lakes worth asking
+  about, so a ten-round set draws a repeat by chance more often than not; used ones are released
+  only when the pool runs dry. Verified: no repeat in fourteen consecutive rounds.
+* **Who's Missing shows its clock**, and what the speed bonus is currently worth. The round
+  told you the clock was running and then hid it, which is the worst of both: the pressure
+  without the information. Its reveal fits the map to **the country**, with a wide margin,
+  rather than to the whole neighbourhood — fitting to every absorber framed the DRC or
+  Kazakhstan and left the country that vanished as a speck in the middle — and outlines the
+  hole in red, which is the only way to see what the neighbours took, because the seam is
+  invisible by construction.
+* **`sb-mercator-lie` asks only two kinds of question, and mixes them 50/50.** Either the
+  projection **reverses** the comparison (the one that looks bigger is the smaller, ratio at
+  least 1.25 so the reversal is legible) or the two are a **near-tie in real area** (within
+  ~20%, where the map's stretch is bigger than the real gap and eyeballing gets you nothing
+  either way). A pair where the map is right *and* the answer is obvious is not a question. The
+  near-ties also have to be tempting — the equatorial one is the smaller, with an 18° latitude
+  gap — so "pick the one nearer the equator" is exactly the move the round punishes. The split
+  is made by **finding one of each and then tossing a coin**, not by tossing the coin first and
+  searching for that kind: the near-tie rule is far harder to satisfy, so choosing first gives a
+  lopsided mix that moves whenever either rule is touched (measured at 27% near-ties with a 0.45
+  coin, 62% at 0.68, 36% at 0.60, all of them noisy). Searching for both is 50/50 by
+  construction — verified at **48% near-ties with the equator shortcut winning 52%**, and **zero
+  failed draws** in 50. Apparent Mercator size goes as `area/cos²(latitude)`, so the reversing
+  draws only keep pairs where the bigger-looking country is the smaller one — the projection is
+  the adversary, not the distractor list.
+
+  **It plays on a full-bleed map** (`fullMap` on the spec → `sbFullMap` → `.container.sb-full-map`),
+  with the prompt and its two answers stacked together at the top, floating on the map rather
+  than beside it — a question and the two ways of answering it are one thing to read, and
+  putting them at opposite edges of the map left the whole picture between them. A comparison of two shapes on a world map is a round
+  whose whole content is the map, and the reveal then zooms that map into them, so a 300px column
+  is 300px off the only thing anyone is looking at. Same overlay trick as Free Explore, including
+  the click-through gaps so a drag between the cards still pans. And no country under
+  `SB_LIE_MIN_KM2` (1,000 km²) is dealt: carried to the equator a microstate arrives as a dot.
+
+  **Its reveal (`sbRevealEquator`) takes the map away and CARRIES both countries to the
+  equator, re-projecting every frame**, so each one visibly un-stretches on the way down. Carried,
+  not scaled: a uniform scale by cos(latitude) is the right answer for a shape small enough to
+  have one latitude, and this mode deals in Greenlands. Rotating the globe so a country's own
+  centroid lands on the equator and re-running the Mercator is the honest version of the same
+  move, and it is the one that shows the shape changing rather than only the size. Verified: the
+  drawn area ratio at the end matches the true area ratio to within 3%, against a map ratio that
+  had one of them looking nearly twice the other.
+
+  **The camera is paced by what is on screen**, not by a curve of its own. At every frame the
+  two shapes' current boxes are unioned and the scale is capped at what that union will take
+  (`frameAt`/`camAt`, `k = min(fit, min(fit, S)^e)`), and the pan is clamped to keep that union
+  inside the frame. A geometric ramp toward the final scale ignores the fact that the pair is
+  still spread across the map early on, so the camera closed in faster than the shapes closed up
+  and each spent the middle of the move half out of frame. Two subtleties, both of which break
+  it: the transition must run **linear**, since the easing is applied inside `camAt` and would
+  otherwise be applied twice; and raising the fit to a power below one LIFTS it above the fit
+  wherever the fit is under 1, so the result is also capped at the fit itself. Verified by
+  replaying the camera over 4,000 random layouts × 61 frames: **244,000 samples, worst overhang
+  0.0000 px**.
+
+  **The hatch is sized in the layer's own space.** A `userSpaceOnUse` pattern is resolved in the
+  user space in force for the element referencing it, so a shape inside a group scaled by 46 gets
+  a hatch scaled by 46 too — the 3.4-unit stripes came out as one flat block of colour.
+  `sbHatchPattern` takes a pitch, and the reveal passes its own divided by the fit scale.
+
+  Four things that construction has to get right:
+  * **Rotate onto the prime meridian first.** A rotation by −φ about the y axis only lands a
+    point on the equator if it is already at longitude 0, so rotating by latitude alone left
+    Finland 220 px short of the line it was arriving at. Mercator's x is linear in longitude, so
+    undoing that sideways rotation is one constant added to the translate — the shape keeps its
+    own longitude, and at u = 0 the projection is pixel-identical to the live map's.
+  * **Animate a decimated copy.** Re-projecting 10m geometry every frame is 63 ms for Canada,
+    which is a slideshow rather than a motion; every nth vertex is 1.2 ms and, while the shape is
+    travelling, indistinguishable. Full resolution goes back on the instant the carry stops,
+    which is also the instant the shape is worth looking at closely.
+  * **Draw the framing core, and only offer countries whose core IS the country** (within 8% by
+    area). Norway's full geometry runs from Svalbard to Bouvet Island, so a pair fitted to it is
+    two specks either side of 135° of empty latitude — and drawing the core instead would mean
+    comparing a country against an area figure that includes land not on screen. For France,
+    Norway and Vanuatu "the area" is a question about which bits count, and this round is not the
+    place to argue it; they are dropped.
+  * **The camera zooms ABOUT THE PAIR.** Interpolating the layer's transform straight from
+    `translate(0,0) scale(1)` to `translate(W/2,H/2) scale(S)` is a zoom centred on the SVG's
+    top-left corner followed by a pan to catch up, which is exactly what it looked like — a lunge
+    at a random spot and then a scramble across to the countries. Written as
+    `translate(p) scale(k) translate(-q)` with q held on the pair, u = 0 is the identity and
+    u = 1 is the same final framing, with everything between anchored on the shapes.
+
+  **A click says only "this is the one you chose".** Not green, not red — a plain grey
+  (`sb-picked-wait`, and `deferMark` is what suppresses the usual classes in
+  `handleMultipleChoiceAnswer` and `handleCorrectAnswer`). The verdict arrives with everything
+  else at the end of the animation; colouring the button on the click states the conclusion
+  before the picture has made the case, which on this round is the entire round.
+
+  **The reveal is in three phases, and the third is the only one that gives anything away.**
+  Phase one carries each country south (or north) over its own longitude; phase two closes the
+  pair up and brings the camera in; phase three — the *tell*, `SB_EQ_TELL_MS` — puts the **area**
+  under each name, the **inequality sign** between them, and only then the colours on the shapes,
+  with the answer buttons following at four fifths of the hold. Everything before that is the
+  picture arguing for itself, and any of it arriving earlier answers the question while the
+  shapes are still moving. The sign points at the country that won, which is the shortest possible
+  statement of the answer.
+
+  The **answer is painted on the shapes**: the bigger country fills green and a wrong pick is
+  hatched red, so the right answer and the mistake are on screen together. As an inline **style**,
+  not an attribute — `.sb-equator-shape` sets `fill` in the stylesheet, and a CSS declaration beats
+  a presentation attribute however specific the attribute looks, so the colours were being
+  computed correctly and then thrown away and every shape came out plain amber. Labels are children of
+  the layer rather than of their shape, so they **share one baseline** — hung off each shape they
+  sat at different heights and read as two separate captions. They are serif, unbold and
+  unhaloed: the pair is alone on a cleared map by then, so there is nothing for a stroked label
+  to survive against and the outline only made it shout. The two phases are split along the axis
+  that carries the meaning — phase one is a pure **north–south** carry over each country's own
+  longitude, phase two closes the pair up **and** brings the camera in, because those are the same
+  gesture. Doing all of it at once meant the shapes were still travelling while the frame closed
+  in on them, so nothing could be read.
+* **`sb-upside-down` uses the transform that changes the silhouette LEAST.** Five are on
+  offer — both quarter-turns, the half-turn, and both mirrors — and the one chosen is whichever
+  scores highest against the country's own true outline, because that is the one that cannot be
+  caught by shape alone and has to be answered by knowing which way the country points. Scoring
+  is IoU between two 56×56 rasters, each fitted to its own bounds so position and size are
+  normalised away, and the winner has to land in a **band**: above 0.9 the country is symmetric
+  under its own best transform and no answer is defensible; below 0.25 nothing lines up at all,
+  which only happens for shapes too broken up to have an orientation. Archipelagos are excluded
+  outright (largest polygon part under 75% of the area) — Fiji scores 0.000 and the Bahamas
+  0.038, and a scatter of dots has nothing anyone could point at whether it is the answer or a
+  decoy. The transform is applied in **projected space, before fitting**, not to the fitted SVG
+  the way the old 180° flip was: a quarter-turn swaps the shape's width and height, so a tile
+  fitted before the turn frames it differently from its three neighbours and the framing, not
+  the outline, becomes the tell. Verified — all four tiles fitted to an identical 94-unit height
+  in a 110-unit box. In practice the mirrors and the half-turn win almost every draw; a
+  quarter-turn is nearly always the *least* similar, so it is rare rather than absent. The
+  tiles are **named, not lettered** — but not until the round is decided. A name hands over
+  the half of the question nobody notices you are answering: you cannot know a shape is upside
+  down without first knowing which country it is, and a caption does that for you. The tiles are
+  blank while it matters, carry their answer in `data-answer`, and are labelled by
+  `sbNameShapeTiles` from the reveal. The caption's box keeps its height throughout (a
+  `min-height` on the span), because the reveal is also un-flipping a shape inside one of the
+  tiles and cannot have every tile resize under it. That also means a decided card paints
+  its background green or red under the silhouette, so the silhouette is drawn **white with a
+  dark edge** on a decided card — filled in the same green it sat on, the correct answer read as
+  a blank green card.
+  **On the reveal the tile turns back the right way round** (`sbUndoTransform` /
+  `sbRightShapeTile`) — saying "mirrored top-to-bottom" is a claim, and watching it swing back
+  is the proof. The correction is derived rather than approximated: both tiles are the same
+  geometry through a fit of their own, so eliminating the geometry gives the exact affine
+  between them, and because a `geoIdentity` fit is one uniform scale plus a translation and
+  `mat` is orthogonal, that affine is always a rotation-or-axis-reflection with a scale. Those
+  interpolate cleanly; a raw matrix does not — its linear blend collapses a half-turn through a
+  squashed nothing on the way past. Two things the animation has to get right, both caught by
+  pushing the shape's own corners through 41 frames rather than by watching it:
+  * **pivot about the tile centre, not the origin.** Composing the raw translation with a
+    partial rotation throws the shape clean out of its tile — a half-turn swung out to the
+    corner and back, and a half-turn is the commonest case.
+  * **tuck it in through the turn.** A wide shape at 90° needs the tile's height for its width
+    and was clipped by the tile's own SVG (measured 25 px past a 150×110 box). The scale is
+    reduced by exactly what the rotated bounding box needs, which is 1 at both ends by
+    construction — the shape fits at the start, and the finish is a proper fit of its own.
+  Verified over **all 142 eligible countries** at 41 frames each: **zero overflow** and the
+  endpoint **pixel-identical** to how the country would have been drawn untransformed. The
+  auto-advance is held back for the flip, and the tween has the usual `setTimeout` backstop,
+  since d3 transitions are rAF-driven and a backgrounded tab would strand the shape mid-swing.
+* **`multi` lists its options alphabetically.** A "pick every one that applies" round is read by
+  SEARCHING it — you have a country in mind and you want to know whether it is on the list — and
+  a shuffled column of twenty-odd names has to be read end to end for every one of them. There is
+  nothing to give away by ordering it: the truth is a subset, not a position.
+* **`sb-all-neighbours` always offers twelve names**, however many of them are real
+  neighbours. A list that shrinks with the answer count tells you how many to pick before you
+  have looked at the map.
+* **`sb-all-neighbours` draws its wrong answers from the NEAREST non-neighbours.** A distractor from another continent is dismissed without knowing anything about the borders; a country 200 km away that just misses touching is the question.
+* **`sb-great-circle` rejects a pair unless EVERY wrong route is measurably longer.** Near the
+  equator, or on a nearly north-south haul, the map's straight line and the great circle
+  coincide — and the bent decoys close on it too, since their fixed 28° sag barely lengthens a
+  route that already runs that way. Measured before the gate covered all three alternatives, the
+  closest wrong answer came within **0.24%** of the right one, which is a coin flip dressed as a
+  question; at a 6% floor the worst case over 39 draws is **6.06%**. Pairs more than 180° apart
+  are dropped too: the straight line is interpolated in lon/lat, so it would be drawn the long
+  way round the map.
+* **`sb-flyover`'s reveal fills in and names what the route crossed**, endpoints included and in
+  their own colour (they were excluded from the question, so painting them like the answers
+  would read as "you missed these two"). With no borders drawn, "Kazakhstan" on its own means
+  nothing unless you are shown which patch of blank land that was — and reading the filled map
+  takes longer than a pause, so this is the one `multi` round that **waits for Next** instead of
+  auto-advancing. The fills carry their feature as datum, so `sbUpdateOverlay` re-paths them on
+  any pan or zoom, and the route and its airport pins are re-raised above them.
+* **A `preload` hook holds a round back while its data is still in flight** (lakes, airports, and the recoloured flag are all fetched on demand). The retry loop is synchronous, so without it the first round of such a mode was always skipped — and the guard has to test the **mode**, not `sbQuestion`, which is still `undefined` on the very first render.
+* **`sbUpdateOverlay` re-paths from stored data.** Every overlay element carries the geometry it was drawn from as its d3 datum (and point-anchored things carry `{at, dy}` under `.sb-anchored`), so routes, lake outlines, route letters and airport pins all follow drag, wheel and pinch. Before this they were drawn once and drifted off the map the moment it moved, which is why the rounds using them had to be static.
+* **Reveal animations must not depend on rAF alone.** d3 transitions are rAF-driven and a backgrounded tab does not fire it, so `sbRevealEquator` sets its finished state unconditionally from a `setTimeout` backstop — the same trap the puzzle's piece `settle` documents. Reveals also push the auto-advance back, deferred a tick because the shared answer handlers schedule *their* advance after calling `sbPlayRevealAnimation` and the last write wins.
+* Border lengths are cached per round (`sbMeshLenCache`, reset in the shared entry): a mesh over the whole topology is not free.
+
+### Who's Missing sandbox
+
+`missing-sandbox` is the quiz's surgery with the question taken away: every country is
+colour-coded by whether it CAN be dissolved into its neighbours and, if not, by what stops it,
+and clicking one performs the operation. It exists because the eligibility rules are not
+obvious from outside — "landlocked, two neighbours or more, and the finished geometry has to
+audit clean" sounds like small print until you see it rule out four countries in five.
+
+Measured at 110m: **145 removable**; 22 are too small to have a boundary worth cutting, 18 are
+islands with no land neighbour (the only structural bar left), 4 contain an enclave, 1 has no
+neighbour touching it in a single place, and 1 will not divide (Lesotho, whose whole ring is one
+neighbour).
+
+**Nothing is computed until it is clicked.** This used to sweep the whole world on entry — 191
+countries of surgery, chunked 40 ms at a time, to colour a map nobody had asked a question of
+yet. Every escalation since (splices, stretch, contiguity, six passes) made that sweep cost more:
+the same pass is 26 s now. `msVerdictFor` computes one country's verdict when it is clicked and
+not before, and the surgery a click performs is reused by the story rather than repeated. Entry
+is instant; a click is a fraction of a second. Clicking an ineligible country explains itself
+rather than doing nothing — that is the more interesting half of the tool.
+
+**And the verdict is forgotten as soon as the next country is picked**, so exactly one country is
+ever coloured. The map used to accumulate a colour per country tried, with a legend tallying
+them, which turned a tool for looking at one operation into a scoreboard of a survey nobody had
+asked for — and a stale one, since every verdict was reached under whatever construction and turn
+order happened to be set at the time. Each country starts over.
+
+### The five-colour map
+
+`#map-colour-toggle`, offered on Who's Missing and its sandbox. No two neighbours share a
+colour, which is the most useful way to look at a map when the question is about which country
+is next to which — and on a plain single-fill map the seam where a country was absorbed is
+invisible, so with the neighbours coloured the new border is the only place two blocks of one
+colour meet.
+
+Greedy in descending order of degree (Welsh–Powell), then a **repair sweep**. One greedy pass
+left two clashing pairs out of 615 adjacencies, entirely an artefact of visiting order: a
+country coloured early boxes in a country coloured late. Re-examining the clashers once the
+whole map is coloured almost always finds a free colour, because by then every neighbour is
+known rather than half of them. After the sweep: **0 clashes over 609 adjacent pairs**, using
+four of the five. Recomputed per round rather than cached, since Who's Missing rewrites exactly
+the adjacency the colouring is derived from.
+
+### Resolution
+
+`hiRes` on a spec forces the **10m** atlas, past the detail toggle's own 50m ceiling, and
+skips the `medium` simplification pass. It is set for the three rounds judged on an outline
+rather than on a setting — Mercator Lies (two shapes compared at true size), Name the Lake and
+Upside Down (a silhouette shown alone). `sbLakeFeatures` takes the **names** from the bundled 110m
+file — the lakes the map itself shows by default, i.e. the Great Lakes, Victoria, Baikal and
+their peers — and the **geometry** from 10m. Both halves matter: at 110m, Erie and Huron are
+near-identical blobs and the round is unanswerable, while the whole 10m list would deal obscure
+reservoirs nobody could name. That leaves 24 lakes, each drawn at full detail (Baikal, 662
+vertices) on a Mercator fitted to itself.
+
+### Presentation is fixed per round
+
+None of the quick quizzes offers the **globe/flat, tilt or detail toggles**. Each presents
+itself one way on purpose — a lone silhouette, a flat pair, a coastline-only world — and none is
+answerable any better on the other projection, so the toggle is only a way to break the framing.
+
+A **solo board also takes no pan, wheel or drag** until the answer is in (`isStaticMapMode`
+tests the live round for `solo`): the projection is fitted to that one shape and nothing else,
+so a wheel had nowhere to go but off the edge — scrolling on Every Neighbour simply made the
+country disappear. It unlocks the moment a reveal hands the board back, since zooming into the
+answer is the whole point of that map.
+
+`flat` on a spec is therefore not just about pairs any more: the three **solo-board** rounds
+(Name the Lake, Pin the Capital, Every Neighbour) carry it so their one shape is framed on a
+Mercator centred on itself. Without it they opened on an orthographic globe, and `setupGlobe`
+draws the **ocean disc as a sibling of `countriesGroup`** — so emptying that group for a solo
+board left a blue planet with a silhouette on it and nothing else. `drawLakes` needed the same
+guard for the same reason: the lake overlay is also a sibling, and while the board removing the
+group once was enough at first, any later redraw put the world's lakes back over the lone shape.
+
+### A reveal owns the clock, and the marking with it
+
+Every animated reveal used to have the same defect, and it was invisible because it only showed
+on a WRONG answer: the shared `scheduleWrongThenCorrect` marks the correct option after one
+pause, through `autoAdvanceTimer` — the very timer `sbPlayRevealAnimation` reschedules to hold
+its animation, deferred a tick so it always wins. So in every round with a reveal animation the
+right answer was never marked at all.
+
+It is marked by the reveal instead (`sbMarkCorrectOption`), **four fifths of the way through the
+hold** — a proportion rather than a fixed lead, because these reveals are all "animation, then a
+pause to read it", and a fixed lead either fires mid-flight on a short one or leaves no time to
+see the mark on a long one.
+
+Two rounds go further and ask for the marking to be withheld from their own click, via
+`deferMark` on the round spec (honoured in `handleCorrectAnswer` and `handleMultipleChoiceAnswer`,
+and only for buttons — a map highlight still fills green immediately). Turning the button green
+the instant it is clicked states the conclusion before the animation has made the case, which on
+Mercator Lies is the entire round. `sbMarkCorrectOption` and the shared reveal both prefer a
+button's **`data-answer`** over its text, because a tile need not wear its answer — see Upside
+Down.
+
+### A reveal frames the CORE, never the raw features
+
+`sbFitToFeatures` fits on each feature's `shapeFramingCore`, for the reason the core exists at all:
+a frame is only as tight as the most remote scrap of land in it, and these sets are whole
+neighbourhoods. Dividing Germany hands land to the Netherlands, whose feature reaches **Aruba**, so
+the frame ran from the Caribbean to Poland — at which point everything outside the fitted set
+overflows the 800×600 viewBox and is clipped by the svg, which is what "the Who's Missing sandbox
+clips the map for no apparent reason" was. The map was framed on somebody's island 6,000 km away.
+Measured: the Netherlands' span drops 80° → 9°, France's 118° → 15°, Portugal's 25° → 3°, and
+every absorber of eight divided countries lands on screen.
+
+### Reveals that hand the board back
+
+`sbApplyBoardMarks` is the counterpart to `sbCustomBoard`: a reveal that wants the ordinary map
+back (rather than painting over the one it has) sets `boardMarks` on the round, clears `solo`,
+fits the projection to the features that matter and calls `drawCountries()`. Marks are
+re-applied at the end of every `drawCountries`, which is the one place every redraw goes through
+— so the player can zoom into the answer instead of freezing it.
+
+* **Every Neighbour** plays against a bare silhouette (with the map around it, its neighbours
+  are simply the shapes touching it) and only brings the map back once the answer is in, zoomed
+  to hold the country, every real neighbour, and every country you named that isn't one —
+  marked target / right / missed / wrong.
+* **Near to Far** is played as a column of names with no map at all, so its reveal is the only
+  place the geography that decided the answer is ever shown: the anchor, the five countries, and
+  a **great-circle** spoke to each labelled with the distance it was ranked by. A great circle,
+  not a straight line — the distance being ranked is the great-circle one, and on a Mercator
+  those are not the same line — and each spoke runs between the two points the ranking was
+  actually measured between (`sbNearestPair`), or it would draw one distance and label it with
+  another.
+
+  The spokes are **hairline and dashed** and carry no distance label: the order is the answer and
+  it is already in the list beside the map, so a number at every midpoint only competed with the
+  shapes, and at 2px five spokes converging on the anchor read as a solid wedge over the very
+  countries they point at. Dashed because a spoke is a MEASUREMENT, not another border on a map
+  already full of them. Countries are marked with a **small flag** rather than their name — five
+  country names written across a zoomed map is more type than map (`boardMarks.flags`) — and with
+  no frame around it, since a flag is already a rectangle of solid colour and a border on one
+  only says "this is a picture".
+
+  **Three ways of looking at it** (`SB_DIST_VIEWS`, `sbDistView`, the switch floating over the
+  map's top-left corner), because the answer being explained is a set of GREAT-CIRCLE distances
+  and no flat map shows those honestly.
+
+  Plain **Mercator** bends every spoke and stretches the far ones by latitude. **Centred** is a
+  genuinely OBLIQUE Mercator, `rotate([-lon, -lat])`, re-founded on the anchor rather than a
+  standard one panned across: rotating by longitude alone leaves the cylinder tangent at the
+  equator, so the anchor arrives in the middle of the frame still carrying whatever stretch its
+  own latitude imposes — the picture moves and the distortion does not. And **Equidistant** is
+  azimuthal equidistant centred on the anchor, which is the projection this round is actually
+  about: every great circle through the centre is a straight line AND its length on screen is
+  proportional to the real distance, so the five spokes can be compared with a ruler.
+
+  Measured: the anchor lands on the projection's own origin for both (0.0000 offset), px-per-km
+  from it is identical to five significant figures over five wildly different targets, and the
+  sagitta of a spoke against its own chord is **0.00%** against Centred's 12.4% and Mercator's
+  28.6%. `clipAngle(170)` keeps it short of the antipode, where every meridian meets and the
+  projection degenerates into a smear round the rim. Switching re-runs the whole reveal, which is
+  idempotent — the marks and the spokes are rebuilt from the round rather than accumulated.
+
+  **Where the flag goes is the whole of `sbFlagOffsets`.** Centred on the centroid it covers the
+  shape it is naming, and here it also lands on the spoke arriving from the anchor. So each flag
+  is pushed clear of its own country along the direction AWAY from the anchor — the side the
+  spoke does not come in on. The anchor is the awkward one: it has a spoke to every other
+  country, so there is no "away", and its flag goes into the **widest angular gap** between them,
+  which is the one direction guaranteed to hold no line, no other flag and no country the round
+  is talking about. A final pass lets any flag still clashing slide **further out along its own
+  ray** — outward only, so it never drifts back over its country or round to the spoke's side.
+  Recomputed on every redraw rather than stored, since both a country's size on screen and the
+  direction between two of them change with pan and zoom. Measured over eight rounds (48 flags,
+  240 sample points): 0 flag-on-flag overlaps, 0 flag-on-spoke, 2 points brushing an unrelated
+  country.
+
+  The distance itself is **nearest point to nearest point** (`sbKmApart`), not centroid to
+  centroid, and it is measured over the **framing core** rather than the whole feature: "how far
+  is France from Brazil" has an answer nobody means when French Guiana is allowed to count — it
+  was 0 km, and is now 6,377. The Galápagos and Bouvet Island are the same case. Centroids answer a different question and get it visibly wrong on anything long or
+  scattered: Chile's centroid is 2,000 km from its own northern border, so Peru read as further
+  from Chile than countries Chile does not touch, and any country with an ocean territory has
+  its centroid out at sea. Two touching countries are **0 km** apart, which is the only answer
+  that makes "nearest" mean anything — verified: Chile–Peru 0, France–Spain 0, USA–Canada 0,
+  UK–France 42 km, Japan–South Korea 77 km, against centroid figures of 3,007 / 394 / 1,815 /
+  1,251 / 892. Every boundary vertex against every boundary vertex is too much at 10m, so each
+  ring is walked at a stride keeping ~260 points per country (cached), which is exact to well
+  under the 650 km separation the round already insists on.
+* **Flyover** cannot use board marks (its board is coastlines only, with no country paths at
+  all), so it paints into the overlay — but it says the same three things: a country you named
+  is **solid**, one you missed is **hatched green**, one you named that the flight never crossed
+  is **hatched red**. The hatch sits on a **wash** of its own colour and the wash is most of the
+  reading: at a thin backing the country was really being marked by the dashed outline these
+  reveals used to carry, which is the wrong thing to look at, because the answer is about which
+  COUNTRIES and a country is a shape rather than an edge. The dashes are gone and the edge is a
+  thin plain line. A hatch rather than a second flat colour because each country has to
+  report two things at once, what it is and whether you got it, and solid-next-to-hatched reads
+  without a legend. Every Neighbour uses the same three states, so the two reveals mean the same
+  thing. Take-off and landing are now **guessable** rather than excluded: being told IST and then
+  not being allowed to say Turkey made naming the airport stand in for naming the country.
+
+Two more things Flyover's board needs, both of them about the route being read against nothing:
+* **The answer key runs on the geometry the BOARD draws.** Flyover meshes its coastline straight
+  off `gameState.mapTopology`, which is the raw fetched source, while `gameState.countries` has
+  been through the medium-detail simplification pass — so the shore on screen was sharper than
+  the polygons the key was tested against, and a country clipped by a few kilometres of headland
+  could be on the map and not in the answer. `sbBoardFeatures()` builds the countries from the
+  same topology the coastline comes from (the Netherlands: 261 vertices against 72), and the
+  reveal's fills use it too, or a simplified outline shows daylight along the coast it is
+  supposed to be filling.
+* **`sbCountriesAlong` samples for the NARROWEST country on the route, not a typical one.** At
+  140 samples an 8,000 km flight steps 57 km at a time, and the Netherlands is ~150 km across
+  where a Munich–Seattle track clips it — so it was missed about half the time, which makes the
+  answer key wrong rather than merely coarse. 700 samples steps ~12 km. That is 700
+  point-in-polygon tests against every country, so candidates are pre-filtered by bounding box
+  first (measured once per feature per round, and it rejects almost everything in four
+  comparisons): **108 ms, and the result matches a 4,000-sample brute force exactly.**
+* **Lakes are drawn as coastline.** A big lake is a shoreline like any other, and on a board
+  showing nothing but shoreline the Caspian, the Great Lakes and Baikal are often the only
+  landmark for a thousand kilometres. Same stroke as the coast, unfilled — they are outlines
+  here, not water.
+The world is also **refitted at the start of every round** (`fitFlatWorld`), or the pan and zoom
+used to read the last flight are still in force when the next one is dealt.
+
+### Layout
+
+`sbNoMap` marks the rounds whose question lives entirely in the answer tiles (Upside Down, Spot
+the Fake Flag) plus the slider one; they still **load** the map — the tiles are cut from its
+geometry — but never show it, and skip `globe-side-layout` so the tiles fill the width instead of
+a 300px column. `#map-container`'s `display` is set **both ways every round**, because an inline
+`display: none` outlives the mode that set it and the next quiz would open on a zero-height map
+whose overlay silently measured 0×0.
+
+That is only half the problem, and the other half was outside the sandbox entirely: nothing
+handed the map box back when you LEFT one of those rounds. **Draw the Border** was the visible
+casualty — a board fully built and drawn into an element measuring 0×0, with no error anywhere
+to say so. Both `sbTeardown()` and `startGameWithMode` now clear the inline style, and the
+sandbox rounds set it both ways per round, so neither can fight the other.
+
+Two shared CSS defects were fixed at source in the same pass, both of which had been mis-rendering
+these rounds since they were written:
+* **`.feedback` was a centred flex ROW.** Right for a one-word "Correct!" badge, wrong for the
+  multi-sentence explanations with inline `<strong>` these quizzes emit — under `display: flex`
+  every text run becomes its own anonymous flex item laid out side by side, with no `flex-wrap`.
+  It is normal flow now; the badge still reads as centred because `min-height` minus padding
+  leaves exactly one line.
+* **The 300px side panel forced every `.options-grid` to one column** (specificity 0-3-0), which
+  silently out-ranked `.sb-img-grid` / `.sb-shape-grid` / `.sb-multi-grid` (0-1-0) — so the flag
+  and silhouette tiles had never actually rendered two-up.
+
+`body.sb-tall-active` scopes an exception to the app-wide `body { height: 100vh; overflow: hidden }`
+under 1024px, exactly as `state-puzzle-active` does: on a phone these rounds are taller than the
+viewport, and without it the controls bar is cut off and there is no way to submit.
+
+**Four memos carry the sandbox's cost.** `worldTopoForDetail` is a presimplify plus a quantile
+over every arc weight in the world (~100 ms) and Who's Missing calls it once per country it
+tests — thirty seconds of frozen page to colour the sandbox in, for a result that cannot change
+between calls; cached against the source topology it is 2.1 s for all 191. `sbAreaKm2` and
+`getCountryCentroid` are memoised against `gameState.countries` itself, so anything that replaces
+that list (a detail change, Who's Missing's surgery) invalidates them for free — at 10m a
+centroid is a walk over tens of thousands of vertices and Mercator Lies' draw loop asks for
+hundreds per round, which took `build()` from **606 ms to 0.3 ms**. `sbWholeCache` does the same
+for "is this country's framing core the whole country".
+
+Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
+
+## Static boards, and the click at the end of a drag
+
+`isStaticMapMode()` is the list of modes whose map must not pan or zoom, and it was consulted in
+three places live and **one place up front**: the drag was attached or not attached in
+`setupGlobe`. That runs when the map loads, which for a sandbox round is *before the round
+exists* — so `gameState.sbQuestion` was undefined, the test said "not static", and every solo
+board (Pin the Capital, Every Neighbour, Name the Lake) got a live pan handler attached for good.
+The board is fitted to one shape, so a drag slid that shape straight off the edge and the round
+looked like it had vanished. The drag now tests at drag time, like the wheel and touch handlers
+always did.
+
+The other half is **the click browsers fire at the end of a drag**. On a globe mode d3-drag
+swallows it once the pointer passes `clickDistance`, but a static board has no d3-drag installed
+to do the swallowing — so a stray swipe re-pinned a guess somewhere the player never aimed, or
+spent a step of detail. And it is the most likely accident there is on a board that does not pan:
+the map does not move, so a drag feels like nothing happened at all. `svgClickDragged(event)`
+compares the click against the pointerdown that started it, with the same 8 px the touch handlers
+already use to tell a tap from a drag, and Pin the Capital, Find the Capital and Coming Into
+Focus all consult it.
+
+## Type-to-filter lists are keyboard-driven
+
+Every "type a country" list in the app — Who's Missing, Coming Into Focus, the two Price-is-Right
+rounds, the framing sandbox — is a text box over a column of buttons, and the text box used only
+to *filter*: you typed three letters and then had to leave the keyboard, find the row and click
+it. `attachPickerKeys(input, list)` makes them behave the way a combo box is expected to — type
+a partial name, arrow up and down the matches, **Enter** to commit, Escape to clear — so the
+common case (type enough to be unambiguous, press Enter) is one gesture instead of three.
+
+The highlight lives in the DOM as a class (`.kb-active`) rather than in an index variable,
+because these lists are rebuilt wholesale on every keystroke by their owner's repaint: nothing
+to keep in step, and nothing to go stale. It has to be attached **after** the owner's own
+`input` handler, so the repaint has already happened by the time the first row is marked. Styled
+as an outline rather than a fill, so it reads as "where you are" and never competes with
+`.picked`, which means "what you chose".
+
+## Find the Capital: the game on one map
+
+Ten rounds are scored as a running total and each round's markers are wiped before the next,
+so the mode could tell you *how far off* you were and never *how* you were wrong.
+`logCapitalRound` keeps every round; `drawCapitalSummaryMap` ends the game by refitting the
+world and drawing all of them at once — each answer a dot, each guess tied to it by a line
+coloured through `puzzleErrorColor`, so "green is close" means the same thing here as in the
+blind puzzle.
+
+`capitalBias` is the number that makes it worth keeping. It averages the **signed** east/west
+and north/south offsets, not the distances: distances always average to something positive and
+say nothing, while the signed mean is exactly the part of the error that survives ten rounds —
+most people carry a constant pull toward the middle of whatever map they learned on. Reported
+only above 120 km, and reported as its absence otherwise ("no consistent direction — they
+scatter evenly"), since a bias readout that always finds a bias is a horoscope. Verified by
+playing ten rounds with a fixed 6° west / 3° north offset: it reports 596 km west and 332 km
+north, and 3° × 110.574 = 331.7.
+
+## Name All: practise what you missed
+
+The miss list was a column of names. Two things make it useful instead:
+
+* **The names are written on the map**, over their own shapes (`labelMissedOnMap`). It has to
+  **zoom first** — at the scale a world round is played most of Europe is a few pixels across,
+  and the size guard threw away 31 of 40 labels, so the feature worked perfectly and showed
+  almost nothing. Framing the misses (skipped when they are scattered over more than 140°, where
+  no frame helps) took Europe from 9 labels to 26. On a globe it rotates to their centroid
+  first, because `fitExtent` only scales and translates and would otherwise fit a hemisphere the
+  countries cannot appear in. The type shrinks with the country rather than the label being
+  dropped: a small name written small still says which shape it belongs to. Re-drawing for the
+  zoom rebuilds the paths, so the red highlight has to be re-applied afterwards.
+* **A "Practise the N you missed" button** starts an Identify round over exactly that list
+  (`startPractiseMissed`). Identify already takes its whole configuration from another mode's
+  entry — this is `startIdentifyMode`'s pattern with an explicit list instead of a region's
+  full one — and it asks *all* of them rather than a sample of ten, because the list is
+  already the set worth asking about. `name-all` stashes `sourceRegion` so the drill can borrow
+  the same map and data; its config is rewritten in place per region, so by the time the round
+  ends there is otherwise nothing left to say where it came from.
+
+## Shape ID difficulty
+
+`SHAPE_ID_TIERS` — **Outline** (as before), **Turned** (the whole outline at a random angle),
+and **Coming Into Focus**, which replaced an earlier Fragment tier. Nothing about the
+*question* changes: same countries, same shape-similar distractors, only how much of the shape
+you are given. Reached through `showShapeIdSelector()`, which makes `country-shape-id` the
+seventh selector trigger that is also a real mode key and so must be intercepted in all three
+dispatch points.
+
+**Every tier runs over the world or over the fifty US states** (`SHAPE_ID_REGIONS`,
+`startShapeIdMode(region, tier)` — the same reconfigure-in-place pattern as `startIdentifyMode`
+and `startDrawBorderMode`). A state is as hard to name from its outline as a country, and rather
+harder for the rectangular ones; the shape-similarity descriptor needs no changes to find them
+(Kentucky draws Oklahoma and North Carolina, which are the other wide horizontal ones). The
+region is picked on the same screen as the tier rather than behind another click — it is one of
+two answers, and a whole page for it would be a page for a toggle.
+
+Two things are **forced rather than copied** from the region's own entry. `useAlbersUsa` is
+dropped: a composite projection cannot sensibly fit itself to one state, since Alaska and Hawaii
+live in insets at their own scales, and Shape ID wants a plain Mercator fitted to whatever it is
+showing. And `shapeDescriptorCache` is cleared on the switch, because it is keyed by name and
+the pool has just changed.
+
+Three things it has to get right:
+* **Rotate in SCREEN space, not by re-projecting.** Re-projecting would refit the country to its
+  new bounding box, so how much of the viewport it fills would itself become a clue.
+* **Shrink so the turned shape still fits.** The projection fitted the country upright, so a
+  tall one spun a quarter turn needs the viewport's width for its height — Tonga came out
+  1,064 px tall in a 600 px box. The room a w×h box needs at angle a is
+  (w|cos a| + h|sin a|) by (w|sin a| + h|cos a|); solving that gives the factor. Measured over
+  30 rounds of the two turned tiers: **zero overflow of the framing core**, fit factors 0.60 to
+  1.00.
+**Coming Into Focus** draws the country at **three points** and you add detail **by hand**, a
+press at a time, until you are ready to name it.
+
+By hand, not on a clock, and **the shape is the button** — clicking the map is what adds detail.
+A separate control put the thing you press somewhere other than the thing you are looking at, and
+this board has nothing else on it to click. (The click is guarded by `svgClickDragged`, since a
+static board fires a click at the end of any stray swipe.)
+
+On a 26-second timer the round was a race against an animation — you were not deciding how much of
+the country you needed, you were waiting for it — and the score line ("named at 47 points") was
+reporting the stopwatch rather than the player.
+
+The first presses follow a fixed run — **3, 7, 12, 18, 25** — whose steps grow by one each time.
+That is the part anyone is actually reading, and at those sizes every single point is a visible
+corner, so the increments want to be chosen rather than derived. After that a constant ratio
+(1.35) takes over, because equal absolute steps stop meaning anything: 3 points to 7 changes the
+shape completely and 3,000 to 3,004 changes nothing, and on the fixed run alone a 3,000-vertex
+country would need eighty presses. Taking whichever of the two is larger hands over by itself, at
+about 25 points, with no seam. The `setInterval` this replaced is gone, and with it the reason it
+had to be `setInterval` rather than `requestAnimationFrame`.
+
+Three POINTS, not three percent. A percentage makes the budget hostage to a country's islands:
+South Korea is 53 polygons of which 51 are islets, so one percent of its vertices was already an
+unmistakable outline of the mainland. Two things fix it — an absolute count, and a **1,000 km²
+floor on the parts** (South Korea: 53 → 2, the mainland and Jeju). The budget is one pool shared
+across every kept ring rather than a fraction applied to each, so an island appears only once
+its own corners have out-competed the mainland's, which is the order someone sketching would
+reach them in — and a ring is not drawn at all until it has earned three, which is what makes
+the islands arrive one at a time instead of together as slivers. The count rises geometrically
+(3 to 6 changes the shape completely; 3,000 to 3,003 changes nothing), eased to linger at the
+low end. Measured on South Korea: 3, 3, 4, 5, 7, 9, 13.
+
+The growing shape is **stroked as well as filled**: at three points it is a triangle, and a bare
+fill says almost nothing about where its corners are, so the outline is what makes each new
+point visibly arrive. Both it and the framing sandbox also **redraw themselves from state**
+inside `drawCountries` rather than being drawn once — any caller reaching that function (a
+resize, a projection change) would otherwise replace their board with the ordinary world map and
+the country would simply vanish.
+
+One thing that had to be handled: `vwWeights` returns **Infinity** for a ring's two endpoints,
+because for an open polyline the ends can never be dropped. A ring has no ends — the "endpoints"
+are wherever the atlas happened to start the arc — so left as Infinity they each claim a slot
+before the budget buys a single real corner, and twenty islands would spend forty points saying
+nothing. They are demoted to their own ring's heaviest finite weight: important within the ring,
+ordinary globally. You answer whenever you are sure,
+from **the whole country list** rather than four options (four options and a growing outline are
+the same question asked twice: you would wait for the detail that separates those four and
+answer then, which is not the game), and the score line reports how little of it you needed.
+
+It runs on the same Visvalingam–Whyatt pass the coastline model uses, which is what makes it a
+question rather than a blur: VW drops the point whose triangle with its neighbours is smallest,
+so what survives at low detail is the country's actual corners — the cape, the bend in the
+river, the elbow of the border — in the order a person would draw them. Two properties of that
+pass matter here and neither is incidental: the weights are forced **monotonically increasing**,
+so every threshold is a nested subset and points can only ever be *added* (nothing that has
+appeared disappears, which is what stops the shape flickering as it grows — verified: vertex
+count never decreased across a full run, Malaysia 92 → 450 → 2,525); and a removal that would
+make the ring cross itself is **refused outright**, so even at one percent the silhouette is a
+simple polygon rather than a knot.
+
+`revealShapeIdTruth` turns it back upright and fills the fragment in once the round is decided,
+with the usual `setTimeout` backstop, since withholding through the answer would only make the
+answer unverifiable.
+
+## Draw the Border
+
+The board shows context **without the answer**, and `drawBorderBoard()` builds it with `topojson.mesh`'s filter rather than by drawing features and hiding one. Mesh hands the filter the two geometries sharing each arc (the same one twice for an exterior arc), so both rules are just predicates on that pair:
+
+* **world** — `(a, b) => a === b && !isTarget(a)`: coastlines only, no country borders at all, minus the target's own shore. A landlocked target therefore leaves no trace whatsoever.
+* **state maps** — `(a, b) => !isTarget(a) && !isTarget(b)`: every other border, foreign and internal, minus anything the target touches.
+
+Drawing per-feature cannot express this: a neighbour's outline still traces the target's border. Measured on the world board — all borders 80,263 vertices, coastlines only 60,835, drawn 60,785 with the target's 50 removed; the only 3 drawn vertices near its outline are the tripoint nodes where its neighbours' coastlines legitimately end.
+
+**Both cases use the same rule** — `(a, b) => a === b && !isTarget(a)`, exterior arcs only. On a state map that means the coast plus the international border of the whole union and *no state lines at all*: a state is as hard to place among its neighbours as a country is, which is the point. A landlocked target therefore leaves no trace on either board (West Virginia removes nothing, because it owns no exterior arc).
+
+**Which way is the sea** is answered by `shadeCoastline`: a **hard black coastline** (`.coast-line`) with a wide blurred blue stroke fading away from it, masked to everything-but-land. Masking is what makes it one-sided — a stroke has no idea which of its flanks is water.
+
+There used to be a brown band on the inland flank as well, clipped to the land polygons. It said nothing the line had not already said (*there is a coast here*) and it put a smudge over the very ground the player has to trace their border across. Blue on one side and nothing on the other is the same information on a clean board — and with the inland half gone, the shore needs to be a real line rather than the seam between two fades, which is what the black stroke is for: everything else on that board is thin grey context.
+
+**Scored as position and shape, separately.** The same error splits two ways and people fail
+in one or the other rather than both: the right shape in the wrong place, or the right place
+with the wrong shape. One averaged number describes neither. `scoreDrawnBorder` returns both —
+**position** is the gap between the two loops' centroids, **form** is the symmetric mean again
+measured after sliding the drawn loop onto the true centroid, which removes exactly the
+placement error and leaves size and shape. Five points each (`DRAW_BORDER_SCALE_KM` 250 for
+position, `DRAW_BORDER_FORM_SCALE_KM` 180 for form — tighter, because once the loop is in the
+right place being 200 km out on its outline is a much worse trace than being 200 km out on
+where you put it). Verified on a Philippines round: a perfect trace scores 5 + 5; the same trace
+shifted 4° east scores **0.9 for position and a full 5 for shape**, where the old single number
+gave it 3.5/10 and no way to tell which half was wrong; a correctly-placed circle of the right
+size scores 1.1 and 0.4.
+
+**Zoom** is bounded to 0.3×–3.5× of the scale this round was fitted at (`DRAW_ZOOM_MIN/MAX`), anchored on the cursor. The floor is well below 1 because pulling BACK is how you place a shape: the round fits the neighbourhood, and to know whether you are drawing Uruguay in the right part of South America you have to be able to see South America. That forced the stroke to be stored in **lon/lat rather than pixels**: a pixel-recorded stroke drifts off the map the moment it zooms, and would then score against the wrong place. Verified — tracing the true outline scores 1.15 km, and zooming 3.5× afterwards still scores 1.15 km.
+
+GeoJSON regions (India, Germany, England, Mexico) ship no arcs to filter, so they fall back to outlining the others and painting out the target's edge along its own path (`.draw-erase`) — the same result with a blunter instrument. `gameState.mapTopology` is stashed by `loadMapData` precisely so the mesh filter has something to work with, since the state atlases are fetched with plain `d3.json` and never touched `worldTopoCache`.
+
+## Sun Path
+
+**Four panes off one clock.** `sunPathState` is `{lat, lon, day, hour}` and `sunPathNow()` derives everything from it, so every pane is a view of a single instant rather than four animations that happen to look alike. `toggleSunPathPlay('day' | 'year')` moves that one clock — Day spins the hour (~6 s), Year walks the date while the hour keeps turning under it — and both call the same `updateSunPath()`.
+
+| Pane | What it adds |
+|---|---|
+| **Sky above you** | The dome, with the triangle lattice gone (it competed with the marks that matter). A compass rose on the ground with 15° ticks, N/E/S/W sprites, the sun's ring **solid above the horizon and dotted below**, the rise/set points marked with their azimuths, and the day and night arcs labelled with their lengths. |
+| **Earth in space** | A **textured globe carrying the Sunrise-line pane's own map**, so the two read as one planet. Plus the reference angles, drawn rather than asserted: the **axial tilt**, the **latitude** as an arc from the equatorial plane, the observer's **horizon as the tangent disc** at their feet, the sun's elevation arc against it — and standing on that disc, a faint **hemisphere with the sun's track arcing over it**, which is the Sky-above-you pane in miniature and in place. |
+| **From the ground** | A **wide-angle 104° camera** following the sun in **both** axes, over a **sky gradient that slides with the sun's altitude** (blue → warm band → dusk purple → night) and a **rough hill silhouette**, with altitude ticks, compass ticks and the sun continuing on a **dotted line below the horizon**. A checkbox swaps it for **From orbit**. |
+| **Sunrise line** | The terminator on an equirectangular map, built the same way as Sun & Moon's (a 90° cap around the antisolar point). **Click it to move the observer** — this is the only way to set longitude. |
+
+Dashes are emitted as explicit `LineSegments` pairs rather than `LineDashedMaterial`, which needs `computeLineDistances` and still renders solid on some drivers. Labels are canvas sprites with `depthTest: false`, so they stay readable wherever they land.
+
+**The ground pane's camera must pitch, not just pan.** Tracking the sun's azimuth alone and pinning the horizon at a fixed y is not enough: at `400/60` units per degree a summer sun at 56° projects 373 units above a 220-unit box, so the pane rendered **completely empty** for most of the day. Pitch now rests low (horizon ~78% down, so the frame is mostly sky) and rises only far enough to keep the sun `MARGIN` inside the edge — how you would actually hold a camera on it. When the sun is high the horizon legitimately leaves the bottom, so the ground rect, the horizon line and the compass ticks are all conditional on it being in frame, and the altitude ticks are generated over the **visible** range (negatives included) rather than a fixed 0–80°. The viewBox height is also derived from the cell's own aspect each draw, since a fixed 400×220 letterboxed inside a near-square pane and threw away half the height.
+
+**The dome's track is a closed loop in hour angle and has to be cut into runs cyclically.** Sorting each sample into a single `above`/`below` array instead concatenates two *disjoint* below-horizon stretches — pre-dawn (from `H = −180`) and post-dusk (to `H = +180`) — which drew a dashed chord straight across the sky between sunrise and sunset, and put the "N h of night" label on the seam between them, down at the horizon on top of the **W** compass sprite. Runs are now built by walking the samples and merging the first into the last when both ends share a sign; labels take the midpoint of the longest run of each kind, which puts night at solar midnight (y = −0.43, well clear of the letters at y = 0.06). Verified: every normal day yields exactly two runs and polar day/night exactly one, with the lit run's length matching `dayH` to within the 2° sampling step (London 16.41 vs 16.4 h in June, 7.6 vs 7.6 in December; equator equinox 12.13 vs 12.00).
+
+**The map pane's sub-solar longitude is `lon − H`, not `−H − lon`.** Hour angle is the observer's longitude minus the sub-solar one, so the sign matters — and the wrong form is a *mirror about the prime meridian*, which is exactly right at longitude 0 (the default, which is why it looked synchronised) and puts local solar noon on the far side of the planet at 90°E. Now verified the only way that means anything: at hour 12 the sun marker sits **exactly on** the observer at 0°, 90°E, 60°W, 150°E and 175°W, and the sub-solar point sweeps westward through the day.
+
+**The ground pane is a true rectilinear (gnomonic) camera locked on the sun**, not a plot of azimuth against altitude. The old plot was fine while the sun was low and degenerate once it was not: azimuth runs away toward the zenith — at the equator on an equinox it swings the whole 180° in minutes — so the track sheared and the camera lurched. Gnomonic about the sun's own direction has none of that: great circles stay straight (so the horizon is a *level line* at `y = H/2 + focal·tan(alt)`, and the compass and altitude marks are closed-form), the arc is smooth everywhere, and at the zenith the frame simply rolls 180°, which is what a camera tracking the sun through the zenith does. The up reference is the zenith, via `right = f × zenith` — which reduces to a purely horizontal vector depending on **azimuth alone**, so it stays defined right up to the zenith where the azimuth's own flip rolls the picture over. Verified at the equator on an equinox (peak altitude 89.87°): nothing non-finite, sun dead centre throughout, azimuth flipping 85° → 275° across the crossing.
+
+**Six parallels run through all three geographic panes** — the five fixed ones (both polar circles, both tropics, the equator) plus the observer's own, which is the only one that moves. `SUNPATH_PARALLELS` + `sunPathParallels(lat)` is the single list; the globe rings them, the map bars them.
+
+On the **map** each parallel is split into its lit and dark spans and labelled with their lengths, so the bars *are* the day-length curve read straight off the map: they slide bodily west with the sunlight while their proportions change only with the date. Two things the split has to get right, both of which were wrong first time and both caught by checking that every bar spans the map's full width:
+* the polar cases are a **whole circle**, and normalising both ends of a 360° span collapses it to zero width;
+* the longitude→x mapping must **not wrap** — a span ending at exactly +180° belongs at the right-hand edge, not back at the left one, or every night bar measures the full width.
+Verified across three dates × six parallels: all 18 span the full width and match `sunPathDayHours` to within 0.12 h, including 24 h at the Arctic Circle in June and 0 h at the Antarctic.
+
+On the **globe**, leader lines run out to a left-hand column (`sunPathGlobeLeaders`). Everything is built in the **camera's** basis and converted back to world space, which is what lets a scene the user can pivot still produce a tidy screen-space column: leaders run level, every label starts at the same camera-x (measured: six labels, left edges identical to 3 dp), and the leaders begin clear of the longest of them. Only the near half of each ring is considered — a leader to a point round the back would cross the planet to get there.
+
+**Earth-in-space zoom is LOCKED**, not fitted: the earth is exactly 2 units across, so a half-height of `1/0.9` makes it 90% of the frame and keeps it there. Fitting to content meant the pane breathed whenever a label changed width or the figure's little dome swung round the limb — the planet resizing to keep a 0.075-unit stick figure in shot. The consequence is that annotations must fit the fixed frame rather than expect the camera to back off: the orbital-normal line stops just above the pole, the tilt arc sits just off the surface, and the tilt label is pushed sideways **in camera space**, which is the one direction that stays clear whichever way the globe is pivoted. Verified: no label clips at any of six date/latitude/pivot combinations.
+
+**Earth-in-space is orthographic and free-look.** Isometric keeps the tilt, latitude and sun-arc angles true wherever they sit in frame, which perspective does not. Drag pivots (`sunPathState.view` az/el, elevation clamped to ±85° where `lookAt` degenerates); Reset view returns to az 0 / el 0 — camera in the ecliptic plane at `(0, 0, 8)`, edge-on to the sunlight, so the terminator runs straight down the middle. That default is also why the ambient light had to come up: the middle of the visible face sits exactly on the terminator, where Lambert shading is zero. Orthographic framing needs its own fit (`sunPathOrthoExtent`) — there is no dolly to solve for, so the frustum half-extents are sized instead.
+
+**Year playback runs a day at a time and steps a week at each sunset**, rather than sliding the date continuously (which moved the track and the sun at once, so nothing could be read against anything). Two traps, both found by counting jumps against day-cycles rather than by watching it:
+* a sunset **and** a midnight both firing walks the calendar two weeks per day — midnight has to be a *fallback* used only when no sunset occurred, which is what keeps polar day and polar night advancing at all;
+* advancing at the instant of sunset also moves the declination, and while the days are lengthening the sun on the new date is still up at that clock time, so it sets again minutes later and re-fires. Measured before the `armed` latch: **twelve jumps in five days at 51°N**, while the southern hemisphere in a shortening season looked perfectly fine. A sunset only counts while armed; only a sunrise or midnight re-arms it. Now exactly one week per day at 51°N in both spring and autumn, at the equator, at Sydney, and under both polar day and polar night — with the jump time drifting later through spring (18.8 → 19.0 → 19.2) and earlier through autumn.
+
+**Playback speed** is `2^(v/5)` over a −20..20 slider: the midpoint is exactly 1×, the ends 1/16× and 16×. An exponent because the useful range spans two orders of magnitude (creeping through a sunset, skimming a year) and a linear slider would spend most of its travel in the fast half. Measured: 4× multiplies the rate by exactly 4 in both Day and Year, with the base rates unchanged (6 s/day, 9.1 s/year).
+
+**The same run-splitting bug lived in the ground pane too**, and it is what drew "an odd straight line cutting across the dotted arc": one `below` array concatenating the pre-dawn and post-dusk stretches, made worse by points being *skipped* whenever the track left the camera's azimuth window, which broke runs a second way. Runs now break on both a sign change and a window exit. Measured: the largest gap between consecutive points within any run is 3.3 units (the old chord spanned the pane), and midnight correctly yields two separate below-horizon runs.
+
+**The handedness of the globe pane is set by one minus sign, and it decides three things at once.** The observer sits at `(cos H·r, y, −sin H·r)`. The `−` is not cosmetic: the earth turns eastward about `+Y`, east at a point is `Ŷ × up` — which at the `+X` meridian is `−Z` — so as the hour advances the observer must move toward `−Z`. With `+sin H` the globe spins backwards, the map reads east–west backwards, and the sun runs the wrong way round the mini-dome's arc. They are one bug, not three. The texture is then drawn **unmirrored**, with `rotation.y = H − lon`, because `SphereGeometry` places an unmirrored equirectangular map's longitude L at mesh angle −L and the sub-solar longitude has to land at `+X`.
+
+An earlier version had `+sin H` *and* a mirrored texture — two reflections that cancelled. The geography sat under the observer correctly and a 10-point land/ocean pixel check passed, because that check predicted each sample's position with the **same formula the renderer used**: a consistently mirrored world is self-consistent. Testing self-consistency proves nothing about handedness. What catches it is a quantity with an outside definition — **the sun's azimuth measured in the observer's own local frame**, compared against `sunAzimuth()`. Mirrored, that returns `360 − az` (249° at 09:00 instead of 111°), which is exactly what it did in all six cases tried. After the fix: **75 cases across five latitudes, five hours and three dates, worst azimuth and altitude error 0.000°**; the 14-point pixel check re-run against *physics-derived* positions is 14/14; landmarks track left-to-right (eastward) 9–10 steps to 0–1; and the sun ball on the dome arc reads 63.9° at 05:00, 180° at noon and 296.1° at 19:00, zero error over 15 cases.
+
+**Both 3D panes frame themselves by solving per axis, not from a bounding sphere.** A sphere is badly conservative here — the widest thing in either pane is a text sprite, and a sphere large enough to contain it pushes the camera back as if the pane were that tall too, when these panes are wide and short and horizontal room is what they have spare. For a camera at `dir·d` looking at the origin, a point is inside when `|p·right| ≤ tanH·(d − p·dir)` and `|p·up| ≤ tanV·(d − p·dir)`; solving each for `d` and taking the max clips nothing at the tightest distance. Real vertices are walked for anything under 4096 of them, because the flat things (the ground disc, the parallel rings) are seen nearly edge-on and a sphere of their radius claims several times the vertical room they use — that alone was holding both cameras back. Re-framed only on a >2% change, or label text would make the camera breathe all through a playback. Verified over a 24-hour sweep: content reaches 98% of the frame height and never clips.
+
+**From orbit** reuses the spaceship mode's Blue Marble texture and its `(R+h)/R` distance convention, deliberately *not* its atmosphere shell or cap tiles — those exist to make a photographic guessing view and here would only obscure the day/night line the pane is about. It sits at 700 km, where the horizon is 64° off nadir; the lens is **74°, wider than the spaceship mode's 48°, because at 48° you can frame the observer's own spot *or* the curved limb but not both**. Aiming at the horizon put the limb dead centre with three quarters of the pane in space, and the spaceship mode's own tilt rule threw the observer's spot three frame-heights below the bottom edge; splitting the difference (`horizonAngle/2`) lands both. Lighting verified by mean luminance over a day: at 20°N it tracks the sun exactly (133.6 at noon, 4.4 at midnight), at 70°N in June it never goes dark and in December never lights up.
+
+Verified numerically: London's noon sun is **61.95° in June and 15.08° in December** (exactly 90 − 51.5 ± 23.44, and the pane's own year-range label agrees to 0.02°); the equinox sunrise azimuth is 90.4°, i.e. due east; hour angle 0 puts the equatorial sun at 89.7° and hour angle −180° at −89.7°; and 66.56°N at the June solstice reports polar day exactly at the boundary.
+
+The stage is `position: absolute; inset: 0` inside `#map-container` with `z-index: 0`, and `#mode-selector` carries `z-index: 30` — but the real fix for panes appearing over the menu is that **`resetModeSelector()` now calls `teardownActiveGame()` first**, and teardown drops the Sun Path stage and the Sun & Moon panel. Sub-selectors are reachable from inside a live mode, and these modes hang canvases off containers the old reset never touched.
+
+The original three panels were driven by the same two numbers — the observer's latitude and the sun's declination — and that remains the core: moving either slider moves everything together, and watching the panes agree *is* the mode. The whole thing is two lines of spherical astronomy with pictures wrapped round them: `sin(alt) = sin φ sin δ + cos φ cos δ cos H`, and `cos H₀ = −tan φ tan δ` for the half-day length. `halfDayAngle` returns `polar: 'day' | 'night'` rather than failing when `|cos H₀| > 1` — the midnight sun and the polar night are the interesting answers, not error cases.
+
+Checked against known values: equator at the March equinox → 12.00 h and a noon sun at 89.7°; **London at the June solstice → 16.4 h and 61.95°** (exactly 90 − 51.5 + 23.45); 70°N → midnight sun in June and polar night in December, with the December noon sun 3.4° *below* the horizon. Sydney in December → 14.3 h.
+
+Both canvases are plain `WebGLRenderer`s with `alpha: true` sized from their grid cells, disposed by `removeSunPathMode()`. Play runs a year in ~9 s; `dt` is capped at 0.1 s so a frame hitch can't jump the date.
+
+## Country facts (neighbours, coastline, islands)
+
+`ensureCountryFacts()` derives who borders whom and who has a coast **straight out of the TopoJSON**, so neither needs another data file. `topojson.neighbors` gives adjacency; the arc table gives the rest — an arc used by exactly **one** geometry is a shore rather than a shared border, so a country with no such arc is landlocked, and one with no neighbours but plenty of shore is an island. Cached per resolution, since the arcs differ between the 110m and 50m sources. Measured at 110m: 201 countries, 161 with coastline, **40 landlocked**, 45 islands — Switzerland, Bolivia, Chad, Nepal, Mongolia all read correctly.
+
+The arc walk's `depth` argument counts down to 0 = a single arc index, so a Polygon needs **2** and a MultiPolygon **3**. Passing anything less hands whole arrays to the counter, every key is then unique, and *every* country reads as coastal — which is exactly what happened the first time round.
+
+`playableNeighbours(name)` restricts that adjacency to the current quiz list, so a chain never asks for a country the game doesn't otherwise know. Note it is genuinely topological, not political: France borders Brazil and Suriname (via French Guiana), which is correct and occasionally surprising.
+
+## Sun & Moon
+
+The night side **is** a 90° cap around the antisolar point, so `d3.geoCircle` does all the work and the shapes stay correct on the globe and the flat Mercator alike (verified on both). The twilight bands are the same cap at 96° and 102°, drawn widest-first so each stacks its own alpha over the last; the terminator is that 90° circle stroked.
+
+The astronomy is the standard low-precision series — the Astronomical Almanac's solar formulae (~0.01°) and the truncated ELP terms for the moon (~0.3°, a third of the moon's own width) — so it needs no ephemeris data. Checked against known values: at **12:00 UTC on the June solstice** the subsolar point comes out at **23.44°N, 0.46°E** (the axial tilt exactly, and the half-degree east is the equation of time), and stepping +1 hour moves it exactly −15° of longitude.
+
+Everything is UTC, including the date/time inputs — filled from `getUTC*` rather than the local parts, or a user east of Greenwich would see the clock jump when they press Now. The time-zone overlay draws **nautical** zones (15° bands on each multiple of 15°), which is what the sun actually does; political zones wander all over that and would need their own dataset.
+
+**Satellite imagery** reprojects the Blue Marble texture per pixel: the source is equirectangular, so any projection can be filled by walking destination pixels, inverting each to a lon/lat and sampling. Half-resolution (480 px) and debounced, since it is a still image that only changes when the map does. Two things it must get right: a pixel only counts if **projecting the inverted point lands back where it started** (orthographic's `invert` happily returns coordinates for pixels outside the disc, and Mercator's wraps past ±180), and the output must be **PNG, not JPEG** — everything off the globe is transparent and JPEG would flatten that surround to a black rectangle. Alignment spot-checked: Sahara (201,167,121), Amazon (25,38,10), mid-Atlantic (2,5,20).
+
+The **moon is drawn as it looks**: a disc with the terminator as an ellipse whose width is `r·|1−2k|` (k = illuminated fraction), so k=0.5 collapses it to a straight line and k=1 bulges it back to a full circle, with the whole group rotated so the bright limb points at the sun's sub-point on screen. Its phase colours need the selector `.sun-moon-mark.moon .moon-dark` — the plain `.sun-moon-mark .moon-dark` (0,2,0) loses to the generic `.sun-moon-mark.moon circle` (0,2,1) and the dark limb silently renders light. The moon's own rise/set line is drawn too, **dotted** so it never reads as the sunrise line. The **tropics and polar circles** are drawn from the obliquity rather than typed in (23.44° and 90−23.44°), since their positions *are* the obliquity. **Satellite hides the lake overlay** — the imagery already shows the lakes and the vectors just fight it.
+
+**Play year** walks a year in ~38 s, holding 3.2 s at each of the four turning points to caption what the lines are doing (`SUN_TOUR_STOPS`). The date does the moving and the layers already follow it, so the tour is just a clock plus a caption track. **Locate me** is the only geolocation call and only ever runs from that button — never on load.
+
+`updateModeOverlays()` is called from `updateIslandMarkers()` — the one function every re-path already goes through — so the terminator, the chain and the revealed border all follow drag, wheel, pinch and animation without each mode wiring its own hooks.
+
+## Coastline model (where spaceship spots come from)
+
+Orbital spots sit **in a strip around the world's shoreline**, modelled once as a discontinuous polyline rather than found by throwing darts. `topojson.mesh(topo, countries, (a, b) => a === b)` keeps only the arcs no two countries share — which is exactly the coastline and nothing else — off the **110m** topology (`COAST_TOPO_URL`, shared with `worldTopoCache`), and the **major lakes** (`COAST_LAKES_URL`, the same Natural Earth 110m file the map overlay uses) contribute their polygon rings: the Great Lakes, Victoria, Baikal and the Caspian are as recognisable from orbit as any sea coast. Rings under `COAST_MIN_RING_KM` (300 km of shore) are dropped, along with the antimeridian seam and Antarctica's artificial closing edge along the bottom of the map (`COAST_ANTARCTIC_EDGE`, −84°) — but **every latitude is in play**, so Greenland and the Antarctic coast proper are both fair game (−84.3° to +83.6°, 129 rings, 372,000 km). What survives is indexed by cumulative length (`coastSegs`/`coastTotalKm`) so `coastPointAt(km)` is a binary search; the kept segments are also stitched back into runs (`coastRings`) purely so the sandbox can **draw exactly the set the picker can choose from**.
+
+Lakes must be in hand **before** the rings are cut, which is why `whenCoastReady(cb)` waits on the topology and the lakes together and throws away anything already built when the lakes land late. A spot is a *fraction of the total shoreline length*, so resolving one against a lake-less model puts it hundreds of km from where it was authored — that is exactly what a seeded spaceship round did until `renderSpaceshipQuestion` was moved inside `whenCoastReady`. The lakes are also punched back out of the land raster (`destination-out`), since the country polygons cover them and a lake shore's water side would otherwise read as land in both the offshore probe and the land-fraction sweep.
+
+**Visvalingam–Whyatt, self-intersections refused.** `vwWeights` runs the classic pass once per ring — repeatedly drop the point whose triangle with its neighbours is smallest, recording that area as the point's weight — so the strength slider is afterwards just a threshold (`coastSimplifyThreshold`, a quantile over every weight, so strength reads as "% of the world's coastline points cut"). Two departures from the textbook: weights are forced **monotonically increasing**, so every threshold yields a *nested* subset (without it a point can carry a smaller weight than one already removed and the line flickers as the slider moves); and a removal that would make the line cross itself is **refused outright**, the point keeping its infinite weight, which is what stops a simplified fjord folding through its own coast (cf. jasondavies.com/simplify). The crossing test only looks at `VW_CROSS_WINDOW` alive neighbours each way — a self-intersection from deleting one point is always local, and an all-pairs test would be quadratic on top of quadratic. Brute-force verified: **zero self-intersections at strengths 0/8/16/24/30/35**, where the model goes from 4871 segments to 97.
+
+The pass **must** use a heap (`vwHeap`, lazily-deleted binary min-heap). The naive linear scan for the smallest triangle is quadratic and measured **3.5 s** over the world's coastline — precisely the entry stall this whole rewrite exists to remove. With the heap it is **19 ms** (plus 6 ms to cut the model at a given strength).
+
+**The four tunables** are all authoritative — each decides where spots can *land*, not merely what is drawn — so all four ride in the seed header as one base36 character each (`coastTuneCodes`/`applyCoastTuneCodes`), and `startSpaceshipWithSeed(spots, tune)` applies them *before* the spots resolve. `Array.slice` drops the `.tune` property off a decoded list, which is why it is passed separately; `pendingCoastTune` holds it when a seed link arrives before the topology does (`routeFromUrl` runs long before the 110m file lands).
+
+| Slider | Code | Default | Effect |
+|---|---|---|---|
+| Coast | `coastSimplifyStrength` → `coastCutFrac()` | 28 = **80% cut** | VW threshold as a fraction of all shoreline points dropped (capped at 98%) |
+| Bias | `coastSizeBiasCode` → `coastSizeBias()` = code/10 | 5 = **×0.5** | Exponent on `(medianRingKm / ringKm)`, applied to every weight by `applyCoastBias`. At 0 it is plain VW — one global ranking by area. At ×2, points on the three longest rings keep **12%** while the 40 shortest keep **99%**: continents lose their wiggles before small islands lose their shape |
+| Strip | `spotStripCode` → `spotStripKm()` = (code+1)×25 | 19 = **±500 km** | The reachable set is a **band**, not the line: the offset is signed, so a spot sits anywhere within ±strip of a shore, inland as readily as offshore (measured at ±500 km: mean 171 km out, 7 of 10 inland) |
+| Land | `spotMinLandCode` → `spotMinLand()` | 20 = **20–80%** | The X in "between X and 100−X % land in frame". At 10 the accepted frames spread 0.34–0.88; at 35 they tighten to 0.36–0.64 |
+
+**Positions are apportioned by true distance**, not by projected length: `kmBetween` is `d3.geoDistance × R`, so the cumulative index is great-circle km throughout. Verified over 20,000 draws — the share of spots landing in each 20° latitude band matches that band's share of real shoreline km to within **0.55 percentage points**, and a fixed 50 km step along the index moves the point 49.6–50.1 km at every latitude. (A Mercator-length index would over-weight the high latitudes by ~1/cos φ, i.e. 2–5× at 60–80°.)
+
+The sandbox draws the strip as well as the line: `coastSegs` are bucketed into `STRIP_BAND_DEG` (10°) latitude bands and each band is stroked at its own width (`stripPixelWidth`), because Mercator inflates with latitude and one fixed stroke would be several times too narrow near the poles (measured 8 board units at the equator against 96 in the polar bands).
+
+`ensureLandRaster()` rasterises land once into a 1024×512 equirectangular bitmap (`isLandFast` is then an array lookup). Choosing a facing tests thousands of points; the old `pickCoastalTarget` walked all 177 countries' rings for each of them, which is why sampling 400 candidates cost **~4.3 s at 110m** (worse still at the 50m the sandbox used to load). `pickCoastalTarget` survives only as the fallback for when the mesh/topology isn't available.
+
+The view geometry is duplicated in plain arrays (`orbitalFrame`/`orbitalGroundPoint`/`viewFootprint`/`viewLandFraction`) so it works with no three.js loaded — verified to agree with three.js raycasting to 3 dp. Rays that clear the limb are clamped to their closest approach, i.e. a point *on* the horizon circle, which is what makes a footprint's far edge follow the horizon instead of running to infinity.
+
+`resolveSpaceshipSpot({pos, var, hdg})` turns a hash triple into a full spot: `pos` picks the point on the shore, then a `mulberry32(var)` stream decides which side is water (probe 45 km each way through `isLandFast`), where in the ±`spotStripKm()` strip to sit, the roll, and a jitter on the shore-facing bearing. The PRNG is seeded from the **variation alone, deliberately** — seeding it with the position as well meant sliding a spot 100 km along the coast re-rolled its offshore distance and threw the sub-point 271 km. With `var` as the only seed, sliding keeps the framing and only the place changes, which is what makes the slider usable for authoring. An explicit `hdg` (a hand-spun facing, or a re-resolved spot) wins outright and skips the sweep; the chosen facing is always stamped back as `out.hdg`, so re-resolving an already-resolved spot replays the same view — without that, the sandbox handing its live objects to the mode re-swept them and played a different heading than the one authored. That facing is then swept through `SPOT_HEADING_SWEEP` (nearest first) until `viewLandFraction` lands between `SPOT_MIN_LAND` and 1−`SPOT_MIN_LAND` (30–70%) — an all-ocean or all-land frame is unguessable, which is the whole point of aiming at a coast. Measured over 200 spots: 192 land inside the band, mean 0.53, and the misses (isolated islands where every facing is lopsided) fall back to the closest-to-50% one.
+
+## Spaceship sandbox
+
+The sandbox map fits the taller **−82..84°** band (`fitSandboxWorld`, `FLAT_SANDBOX_SOUTH`) rather than the Greenland–Chile crop the guessing maps use, because the Antarctic coast is shoreline like any other and has to be visible; the fit is height-limited, so the world sits narrower than the container and centred. It is not pannable or zoomable (`isStaticMapMode`). Its layer is attached to the **map group, not `countriesGroup`** — the dot markers for tiny countries and the lake overlay are siblings that come *after* `countriesGroup`, so a layer inside it would be painted over by both; up here the shoreline and its strip stay on top of the dots.
+
+The sandbox draws the shoreline and its strip as the reachable set, overlays the chosen spots with a heading spoke each, and for the selected one adds its **ground footprint** as a wedge over the map (`viewFootprint` → `projectedRingPath`) plus a **low-res orbital preview** — the 2048px Blue Marble base sphere and nothing else: no cap tiles, no atmosphere, no outlines, so clicking through ten spots costs nothing (`ensureSandboxPreview`/`drawSandboxPreview`/`disposeSandboxPreview`, sharing `aimOrbitalCamera` with the real view). The footprint is projected by hand rather than through `geoPath` because a spherical polygon's winding decides whether d3 fills the wedge or everything *but* the wedge.
+
+The mode pins **110m** detail (`worldCountriesUrl`, and `forced` in `worldFeaturesFromTopology` so it skips the medium simplification pass); `#detail-toggle` is hidden for it, as for spaceship and Shape ID.
+
+**Authoring.** The quiz is always **exactly ten** spots (`lockSpotCount` trims or tops up a decoded seed, so a hand-edited hash can't produce a 3- or 40-round game). Each spot is editable two ways:
+
+* **On the map.** Drag a **pin** to slide that spot along the shoreline — `nearestCoast` brute-forces the segment list for the closest position, and the perpendicular distance becomes the strip offset (measured: dropping on a point off Lisbon resolves 3 km from the cursor). Drag the **handle on the end of the spoke** (`.sandbox-rotor`) to spin the view; the heading is the bearing of the cursor from the pin, so dragging east reads exactly 90°. Both write straight into the hash.
+* **With the sliders.** Slide (full-range, plus ±10/±100 km nudges that go through `coastTotalKm` so a nudge is a real distance) and Spin (0–359°). Sliding re-runs the facing sweep — a new stretch of coast deserves a fresh look — while spinning and pin-dragging keep the facing the player framed.
+
+Dragging a pin is only expressible because the 2-char `var` splits: the low base-36 digit is the position **across** the strip (`spotVarParts`/`spotVarFrom`, 36 steps — 29 km apart at ±500 km, under half a pixel at the sandbox's scale) and the high digit seeds what stays random (roll, and the tie-break when both sides of a shore read the same). Which side of the shore a drop lands on is settled by resolving both the step and its mirror and keeping whichever ends up nearer the cursor — cheaper than re-deriving the water-side normal, and it always agrees with what the player sees.
+
+The layer splits into a static half (shoreline + strip, thousands of segments) and `drawSandboxSpots()` (footprint + pins), so a drag repaints only the latter.
+
+**The seed.** `s4`: four leading chars for the tunables (strength, bias, strip, land), then **8 chars per spot** — 4 of base36 for a distance along the coastline, 2 for a variation index, 2 for the facing (`SPOT_HDG_MAX` = 1296 steps, 0.28°). A 10-round quiz is **86 chars** and every character means something: edit a spot's first four to slide it along the shore, its last two to spin the camera. `s3` (one tunable char), `s2` (6 chars/spot, no header or facing) and `s1` (8 chars/spot holding lon/lat/roll outright, heading re-derived by `computeCoastHeading`) all still decode so old links keep working — an older format simply leaves the tunables it never carried at whatever is currently set; `spotHeading` covers the missing facings.
+
+Playback: `pendingSpaceshipSeed` is handed to the fresh `gameState` exactly once by `startGameWithMode` (which also sets `totalQuestions` to the seed length), then `renderSpaceshipQuestion` resolves each entry in order, and `orbitalSetTarget` uses the pinned roll **and heading** (`gameState.spaceshipHeading`). `routeFromUrl` reads `?mode=spaceship&spots=<hash>`, and `syncModeUrl` is suppressed for seeded runs so it can't overwrite the seed in the address bar.
+
+## Flags category
+
+`mystery-flag` (see a flag, find the country) and `flag-place` (drag every flag onto its country) are both "flag → place", so they share one 🚩 tile and `showFlagsSelector()`.
+
+## Capitals category
+
+`capitals-race` (type it), `capitals-choice` (pick from four) and `find-capital` (pin it on the map) are three ways of asking the same thing, so they share one ⭐ landing tile and `showCapitalsSelector()` rather than three icons. `capitals-choice` reuses `capitals-race`'s globe-highlight setup verbatim and differs only in the answer UI; its distractors come from `generateMultipleChoiceOptions(..., 'capital')`, the same pool the Find modes' capital sub-question draws from, and `giveUp` reveals it through the existing `questionType === 'capital'` branch.
+
+`generateMultipleChoiceOptions`'s `answerType === 'capital'` branch **must shuffle after mapping** names → capitals: it used to `return` the mapped list directly, above the shuffle at the end of the function, which put the correct capital first in every single Capitals ▸ Multiple Choice question. The Find modes' capital sub-question was unaffected because it asks for `'item'` options and maps them itself, after the shuffle.
+
+## Flag fills
+
+`fillCountryWithFlag` paints a country's shape with its own flag. The pattern is
+`userSpaceOnUse` and **rotated to local north** (`patternTransform`), rebuilt by
+`updateFlagFills()` on every redraw, so the flag turns and rescales with the country as the
+globe spins — it reads as painted onto the surface rather than as a window cut through it.
+
+**Scope is the whole difficulty.** One pattern per *drawn shape* (`syncFlagPattern`, keyed by
+flag code + feature id), sized to that shape's **framing core** (`shapeFramingCore`) rather
+than its raw bounding box. Both halves of that matter and both have been got wrong:
+
+* sized to the union of a country **and its territories**, the box spans most of the map;
+* sized to the raw feature, it is still huge wherever the atlas ships a country as one
+  scattered MultiPolygon — at 110m "France" *includes* French Guiana, so the box is 470 units
+  wide against a 53-unit mainland.
+
+Either way `slice` then crops one flat band of the flag into each shape, and mainland France
+lands in the white stripe and reads as **empty** — while rotating the globe until the remote
+parts clip away shrinks the box back and it works again, which is exactly the "empty unless
+the globe is rotated just so" symptom. Sized to the core, the mainland gets a whole flag and
+the pattern simply **tiles** across the remote parts at the same scale.
+
+Dots get a separate `objectBoundingBox` pattern per flag (`dotFlagFill`): a marker is a few
+pixels across, so orientation is meaningless and a bounding-box fill is immune to the
+projection. A shape that is fully clipped by the limb yields no pattern, but the name is still
+recorded — `updateFlagFills` re-derives it the moment it rotates into view.
+
+## Flag Match
+
+`flag-place` rings the globe with every country's flag; drag one onto its country and `fillCountryWithFlag` paints that country's shape with the flag pattern, so the map fills itself in as you play. The pool is intersected against **both** the drawn features and the flag codes, so a country with no atlas geometry or no `code` is never dealt.
+
+It borrows the puzzle's pointer-drag conventions (listeners before `setPointerCapture`, a `position: fixed` ghost on `<body>`) but **drops by hit-testing, not by distance**: `countryUnderPointer` runs `document.elementFromPoint` and walks up to a `path.country`/`circle.island-marker`, reading the feature straight off `d3.select(el).datum()`. That works because the ghost is `pointer-events: none`. A drop on an overseas territory credits its sovereign parent, matching how clicks resolve elsewhere. Dropping on the ocean is a no-op rather than a miss — only landing on the *wrong* country counts against you.
+
+The globe still rotates normally: a drag that starts on a tray chip captures the pointer to the chip, so it never reaches the globe's own drag handler.
+
+## Places I've Been
+
+`places-been`'s `QUIZ_MODES` entry is an explicit **placeholder**: `startPlacesMode(region, opts)` copies `quizList`/`dataObjKey`/`useGlobe`/`useAlbersUsa`/`mapUrl`/`mapObject`/`itemLabel(Plural)` from `countries` or `us-states` (same reconfigure pattern as `startIdentifyMode`/`startNameAllMode`) and sets `placesRegion`. `startNewQuestion()` early-returns into `renderPlacesMode()` since there is no quiz target; `#restart-btn` is repurposed as "Exit".
+
+`PLACE_META` (label + CSS fill class per category) doubles as the category validator. `PLACE_CYCLE` is keyed by *current* category with `'none'` for unmarked, and runs **Visited → Passed through → Lived → clear**: ordered by how often each is picked, not by how committed it is, so the common case is one click and the rare one is three. `PLACE_LIST_ORDER` is intentionally a *different* order from the click cycle — most-committed first. `placesPendingSelectionsStr`/`placesPendingMessage` exist because decoding a shared link needs `gameState.currentDataObj` (the region's code↔name table), which only exists after the data load — `startPlacesMode` runs before that, so it stashes and `renderPlacesMode` drains.
+
+Unlike the quizzes, a places click keys on the feature's **own** name, not `d.properties.parent` — clicking Denmark does not fill Greenland. `TERRITORY_BY_ID` therefore carries an own-ISO `code` per territory (with `TERRITORY_CODE_BY_NAME`/`TERRITORY_NAME_BY_CODE` built from it) so territories get their own flag and their own share-URL code; `placesCodeForName` prefers that over the parent's, and `placesFlagUrl` is deliberately quiet where `getFlagUrl` warns. `applyPlacesFills()` paints both country paths **and** dot circles and is idempotent, so it is safe to re-run after any draw — which it must be, since `drawIslandMarkers` rebuilds dots from scratch (`captureFeatureMarks` covers the paths; `drawIslandMarkers` re-calls `applyPlacesFills` for the dots).
+
+Chip drag-between-lists is wired **once** by `wirePlacesListInteractions` as delegated listeners on the persistent `#places-lists`, so `refreshPlacesPanel`'s `innerHTML` rebuild needs no re-wiring. `dragover` reads the module-level `placesDragName` rather than `dataTransfer` (unreadable there per the HTML5 DnD spec) and `dragleave` is guarded by `!cat.contains(e.relatedTarget)` to stop child elements flickering the highlight. Hover-delete (`.place-chip-remove`) is forced visible under `@media (hover: none)` for touch.
+
+## Shareable URLs and challenge links
+
+Plain query params — no hash, no compression. `syncModeUrl(mode)` writes `?mode=<key>` for ordinary quiz modes from `startGameWithMode` (skipped when `placesMode`, which owns a richer URL). `placesQueryString()` adds `region` plus `places=<encoded>` and `msg=<note>`; `encodePlaces` groups ISO alpha-2 codes by category prefix into e.g. `v:fr.jp~l:de~p:us` with codes **sorted** so the same map always yields the same string, and `decodePlaces` silently skips unknown segments (forward-compatible against a hand-edited link; lossy for any place without a code). Both go through `history.replaceState` — no history entry per click, and the message box replaceStates on every keystroke.
+
+`routeFromUrl()` runs at the end of `initGame()`; absent `?mode` it returns false and the landing page shows. A **challenge link** is `?mode=<key>&score=<n>&max=<n>`, generated by `shareCurrentGame()` (only attaching score/max once `gameState.ended`, with `max = totalQuestions * maxSubForMode(mc)`); the recipient gets `showChallengeBanner()` — a purely informational 8-second banner, with no verification or comparison — and then the quiz starts normally. `routeFromUrl` guards against starting a `placesMode` config without a region. UI: `#share-btn` in the controls bar, `appendChallengeButton` on the end-game screen, `#places-share-btn` in the places panel; `copyShareLink` writes to the clipboard and falls back to a `showToast` pointing at the address bar (which is why the URL is always replaceStated *before* the copy). There is no `localStorage` — the URL **is** the persistence.
+
+## Drag-to-reorder (population-order)
+
+`DragToReorder` (used by `renderOrderingMode`) is a **custom pointer drag**, not HTML5 DnD, so the drag can show a live preview instead of a browser ghost image. `render()` sets `element.draggable = false` *and* walks child `<img>`s doing the same, since natively draggable flag images would hijack the pointer. `handlePointerDown` snapshots the whole baseline layout (`tops`/`bottoms`/`centers`) in one `getBoundingClientRect` pass and pins `translateY(0px)` on the un-grabbed items so the CSS `:hover` lift can't fight the shift; move/up listeners are attached *before* `setPointerCapture` (wrapped in `try/catch`) so a capture failure can't abort the drag. `handlePointerMove` derives `newIndex` from the dragged element's leading edge against those **fixed baseline** edges — monotonic in drag distance, so it never oscillates — and the swap fires as soon as the bubble's edge overlaps a neighbour's, i.e. half a bubble before the cursor gets there. `previewShift` translates the others into their hypothetical slots. `options.overClass` is vestigial here (nothing applies it; the `.drag-over` rules belong to the Places-been chips).
+
+`renderOrderingResult` then draws a two-column guess→correct grid with an absolutely positioned `<svg class="order-arrows">` of cubic Béziers linking each guess to its true rank (green arrowhead when the guess was already right, muted when it moved). Arrows are drawn **synchronously** rather than in a `requestAnimationFrame` — row heights are fixed in CSS so measurement is valid before the flag images load, and rAF is throttled in a hidden tab — with one follow-up rAF to absorb late layout shift (font swap). The `window resize` handler is parked on `gameState._orderArrowResize` and cleared by the next `renderOrderingMode`.
+
+## The disputed glacier
+
+Natural Earth ships the **Siachen Glacier** as its own admin-0 unit — claimed by both India and
+Pakistan and administered exclusively by neither, so the atlas declines to award it. That is the
+honest cartographic choice and the wrong one here: it leaves a 2,232 km² hole belonging to no
+country in the quiz list, which reads as an unclickable blank in every Find round, an unnamed
+shape in Name All, and a stray neighbour in the border graph.
+
+`splitDisputedGlacier` cuts it down the middle and gives it to both — west to Pakistan, east to
+India, which is the side each actually holds (the Actual Ground Position Line runs roughly
+north–south along the Saltoro Ridge with Indian positions east of it). The cut is a meridian
+through the glacier's own centroid, clipped with Sutherland–Hodgman, which is a rough stand-in
+for that ridge — and rough is the right precision: the point is that the map has no holes in it,
+not that a quiz adjudicates a border dispute. Outer rings only, since a hole clipped
+independently of its shell is a shape with no defined inside.
+
+Called from all three places features are built (both load paths and `sbEatCountry`), so the
+split survives a detail change and Who's Missing's surgery. Measured at 50m: India +997 km²,
+Pakistan +1,236 km², total 2,232 — **area conserved to 100.0%** — and a point test at either end
+of the glacier now returns Pakistan in the west and India in the east. At 110m Natural Earth
+carries no such unit and there is nothing to do.
+
 ## Overseas territories
 
 Dependencies that appear as their OWN world-atlas feature but belong to a sovereign parent (Puerto Rico→USA, Greenland→Denmark, New Caledonia→France, …) are tagged in `tagTerritories()` (keyed by ISO numeric id in `TERRITORY_BY_ID`, run from `loadMapData`). Each gets `properties.parent`, `properties.isTerritory`, and a `displayName` like "Puerto Rico (USA)". Effects: `highlightCountryOnGlobe`/`highlightFoundCountry` fill the parent **and** its territories (`featureBelongsTo`); a click on a territory counts as finding the parent (`handleCountryClick` uses `d.properties.parent || name`); free-explore/flag lookups resolve through the parent (`effectiveDataName`, parent flag). Because territories stay SEPARATE features with their own names, the parent's shape/centroid/bounding box (zoom, Shape-ID) naturally excludes them (with the Debug overlay on, clicking a country draws both pixel boxes — orange own-feature vs cyan with-territories — via `drawDebugBoundingBoxes`). Highlighted paths are `.raise()`d (`raiseHighlight`) so their outline paints on top of neighbours instead of being clipped.
@@ -41,11 +2227,15 @@ World (`mapObject: 'countries'`) modes pick their world-atlas resolution from th
 
 The globe defaults to tilt-locked (`gammaLocked = true`, north-up) and `medium` detail.
 
+## The one dynamic Mercator
+
+Exactly one view rotates its Mercator projection as you interact with it: **`isFlatWorldView()`** — a `useGlobe` world mode (`mapObject: 'countries'`) with the `#projection-toggle` flipped to "View: Map". There, horizontal pan and cursor-anchored wheel zoom adjust `projection.rotate()[0]` rather than `translate[0]`, which is what makes the map wrap seamlessly east–west instead of hitting an edge. It covers every world globe mode when that toggle is on: Find ▸ World, Identify ▸ World, Name-All (world + continents), Mystery Flag, Capitals Race/Choice, Flag Match, Free Explore, Places-been. Everything else is static or translate-only: the regional flat maps (US/India/Germany/England/Mexico) pan by `translate`, and Find-the-Capital / Map Puzzle / Spaceship Sandbox / Shape ID are fixed (`fitCapitalWorld`, or a per-country `fitExtent`) and refuse pan and zoom outright via `isStaticMapMode`.
+
 ## Game Modes
 
 | Mode key | Description |
 |---|---|
-| `countries` | Click globe to find country, then identify its flag and capital (3 sub-questions per country, special 2/3+1/3 layout). Once the flag sub-question is answered, the country's shape is coloured in with its own flag via an `objectBoundingBox` SVG `<pattern>` (`fillCountryWithFlag`) that follows the shape as the globe rotates/zooms |
+| `countries` | Click globe to find country, then identify its flag and capital (3 sub-questions per country, special 2/3+1/3 layout). Once the flag sub-question is answered, the country's shape is coloured in with its own flag via an SVG `<pattern>` (`fillCountryWithFlag`) that follows the shape as the globe rotates/zooms — see Flag fills |
 | `us-states` | Click flat map to find US state, then identify its capital |
 | `indian-states` | Click flat map to find Indian state, then identify its capital |
 | `german-states` | Click flat map to find German Bundesland, then identify its capital |
@@ -53,21 +2243,58 @@ The globe defaults to tilt-locked (`gammaLocked = true`, north-up) and `medium` 
 | `mexican-states` | Click flat map to find a Mexican state, then identify its capital |
 | `identify` | A country/state is highlighted — pick its name from 4 choices (supports all geos: world, US, India, Germany, England, Mexico) |
 | `name-all` | Type all names in a geography to highlight them against a countdown timer (~6s/item, min 60s). One mode key (`nameAllMode:true`); `showNameAllModeSelector()`'s 12-button picker covers world + the 6 continents (subsets of `quizCountries`/`window.continentData`, via `startNameAllMode(region)`) **and** all 5 state-level maps (US/India/Germany/England/Mexico — each borrows its `quizList`/`dataObjKey`/`useGlobe`/`mapUrl`/`mapObject`/`itemLabel(Plural)` wholesale from that mode's own `QUIZ_MODES` entry, same pattern as `startIdentifyMode`). `renderNameAllMode()` reads `modeConfig.itemLabel(Plural)` generically for its text (not hardcoded "country"), and guards `projection.rotate()` behind `typeof === 'function'` since AlbersUSA (`us-states`) has no `.rotate()` method. |
-| `population-order` | Drag 5 countries into population order (high → low) |
+| `population-order` | Drag 5 countries into population order (high → low). No map (`startGameWithMode` skips the map load). The drag is a **custom pointer drag**, not HTML5 DnD — see Drag-to-reorder below; the result is a two-column guess→correct grid with connecting arrows (`renderOrderingResult`) |
 | `mystery-flag` | A flag is shown — click the globe to find the matching country |
-| `capitals-race` | A country is highlighted — type its capital to score |
+| `capitals-race` | A country is highlighted — type its capital to score. Reached through the **Capitals** category (⭐), alongside `capitals-choice` and `find-capital` — see Capitals category below |
+| `capitals-choice` | A country is highlighted — pick its capital from 4 choices (`capitalsChoiceMode`). Same globe-highlight setup as `capitals-race`; distractors come from `generateMultipleChoiceOptions(..., 'capital')`, the same pool the Find modes' capital sub-question uses |
+| `flag-place` | **Flag Match**: a world globe ringed by every country's flag — drag each onto its country (`flagPlaceMode`). A correct drop fills that country's shape with the flag via `fillCountryWithFlag`, so the map paints itself in. See Flag Match below |
+| `free-explore` | No questions, no score — click any country on the globe for a popup with its flag, capital and population (`freeExploreMode`, `renderFreeExploreMode`/`showCountryPopup`). `#restart-btn` is repurposed as "Exit Explore". Territory clicks resolve through `effectiveDataName` to the sovereign parent's data but keep the territory's own `displayLabelForName` title, so Greenland shows Denmark's flag/capital under the heading "Greenland (DK)". Uses its own `explore-overlay-layout` (below) |
+| `places-been` | Paint a personal travel map — no questions, no score (`placesMode`). Click cycles a place through unmarked → Visited → Lived → Passed through → unmarked; a side panel lists the picks as draggable chips and the state round-trips through a shareable URL. See Places I've Been below |
+| `state-puzzle` | Jigsaw over **any** geography (world, US, India, Germany, England, Mexico): pieces start in a tray and get dragged onto the board, snapping home within `puzzleSnapRadius` of their true position (`statePuzzleMode`). On the **world** board each piece carries its own Mercator and distorts live with the cursor's latitude. One continuous board — no rounds. Region + difficulty picked in `showStatePuzzleSelector()`. See US States Puzzle below |
 | `country-shape-id` | Only the target country's outline is shown as a flat Mercator silhouette (no globe/neighbours/lakes/dots; **10m** max detail, borderless `.shape-target` fill, projection fitted to the country's **framing core**, see below; only the single target path is drawn — `drawCountries` skips the rest) — pick its name from 4 choices (`countryShapeIdMode`). The 2 wrong answers are the most **shape-similar** quiz countries (`generateShapeIdOptions`/`shapeSimilarNames`): a size/aspect/compactness descriptor (`computeShapeDescriptor`, cached in `shapeDescriptorCache`, also measured on the framing core), z-scored with size down-weighted since the silhouette is fitted to fill the view |
 | `find-capital` | A capital name is shown — click the static world map to drop a guess marker, Submit; scored by total great-circle distance over X rounds (`findCapitalMode`) |
-| `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
+| `odd-one-out` | Four countries highlighted at once, three sharing a trait — pick the outlier (`oddOneOutMode`). Traits are computed, not shipped: continent (`continentData`), hemisphere (centroid), landlocked and island (both from the arc table). The trait is withheld until the round is decided — that *is* the question — then stated by `recordOddAnswer` either way, and all ten are replayed with their rationales on the end screen (`oddOneOutSummaryHtml`). The framing spin keeps `r_unconstrained` in step on every tick and `dragStart` interrupts it, so a drag takes the globe over cleanly instead of snapping back |
+| `draw-border` | The target is **cut out** of the map and you trace its outline with the pointer (`drawBorderMode`). Runs over **any geography** (world, US, India, Germany, England, Mexico) via `showDrawBorderSelector`. Scored by the symmetric mean distance between the drawn loop and the real one. See Draw the Border below |
+| `sun-moon` | View-only: where the sun and moon are directly overhead, the sunrise line, and the night side shaded, at any date and time (`sunMoonMode`). Optional nautical time-zone overlay and satellite imagery. See Sun & Moon below |
+| `sun-path` | **3D**: why sunrise and sunset move through the year, shown three ways at once for one latitude and date — a horizon POV, the tilted earth in space, and the celestial dome (`sunPathMode`). No map. See Sun Path below |
+| `flag-workshop` | Build a flag out of other flags — a real design, another country's colours, and charges borrowed from anywhere — and save it into False Flag (`flagWorkshopMode`). No map, no score. See The fake flag workshop below |
+| `spaceship-sandbox` | A flat world plotting every sub-point the orbital view could pick (400 live samples of `pickCoastalTarget`) with each chosen spot's heading spoke, plus a seed editor that freezes 10 spots into a shareable hash (`sandboxMode`). See Spaceship sandbox below |
+| `spaceship` | A photographic low-Earth-orbit view: a **three.js** textured globe (NASA Blue Marble — low-res base sphere + per-round full-500m-res cap tiles, see the textures note) through a perspective camera over a random coastal sub-point, tilted toward the shore so the curved horizon sits in the upper third. **Altitude tunable ≤500 km** via the Orbit-height slider (`orbitAltitudeKm`); `orbitDistance()`=(R+h)/R with the default tilt (`defaultOrbitTilt()`) + pan clamp (`clampOrbitTilt()`) derived from it. **Drag to look around** — grab-style (the point under the cursor sticks; FOV-derived sensitivity) about the fixed sub-point. Guess the sub-point on the **scroll-zoomable** inset map (`d3.zoom`, 1–60×), Submit; **scored** by accuracy + speed − panning with slider-tunable weights (`scoreAccuracyWeight`/`scoreSpeedWeight`/`scorePanWeight` + scales). Inset guess/answer pins + the connecting line use `vector-effect: non-scaling-stroke` and a `1/k` radius so they stay a **constant on-screen size** as the inset is zoomed.
+
+**The inset is equirectangular, not Mercator, and shows the whole earth including Antarctica.**
+The sub-point can be anywhere — the coastline model runs to −84.3° — and a Mercator reaching
+−78° is 1.3:1, which will not go in a 300×165 box without losing either the pole or most of the
+width. Plate carrée is exactly 2:1 pole to pole, close enough to that box to fit whole, and its
+degrees-per-pixel are constant, which is the right property for a map whose only job is "point
+at a latitude and longitude". The 2:1 sphere letterboxes inside the 1.82:1 box, so the sphere is
+**drawn as a path** over the backing rect: the bands top and bottom then read as off the edge of
+the world rather than as more ocean. The sea is a muted blue and the land a muted green — the
+inset is read at a glance beside a photographic globe, and the grey-on-grey it used to be gave
+the eye nothing to catch; muted rather than saturated because the two pins have to stay the
+brightest things on it.
+
+**On the answer the inset closes in on the pair** (`frameSpaceshipResult`). A world map with two
+dots 200 km apart says nothing about how close the guess was — the entire result of the round is
+the gap between them, and at world zoom that gap is two pixels. The margin is a **share of the
+gap** rather than a fixed number of pixels, so a near-miss and a wild one are framed the same
+way, floored so that two points a kilometre apart do not ask for a zoom of several thousand.
+Measured: a 300 km miss goes from a 2 px gap at k = 1 to a 15 px gap at k = 6.6, both pins
+inside the box. The transition carries the usual **`setTimeout` backstop** — d3 transitions are
+rAF-driven, and without it a backgrounded tab leaves the result framed on the whole world. The `makeAtmosphere` shader fades **in both directions away from the limb** — up into space *and* down across the earth's disc — with no hard shell edge. Its axis is each ray's **signed tangent altitude**: closest approach to the centre, minus 1, so it's positive while the ray clears the limb and negative once it cuts into the disc. That is normalised to `0` = `uSpreadSpace` above the limb → `0.5` = the limb → `1` = `uSpreadEarth` below it — the two sides scale **independently**, each with its own slider-capped reach (space ≤600 km via `atmoSpreadSpaceKm`, earth ≤1500 km via `atmoSpreadEarthKm`, since the ground haze a photo shows reads much further than the thin optical glow above the limb), and shaded by a **user-editable 5-stop gradient** (`atmoStops`: space / horizon-blue / **horizon** (fixed) / horizon-white / earth, each with colour + alpha) via chained `smoothstep` mixes over GLSL uniform arrays (`uPos[5]`/`uA[5]`/`uC[5]`). The middle **"Horizon" stop is pinned at pos 0.5** (`fixed: true`) — `setAtmoPos` no-ops on it and `buildAtmoEditor` skips attaching its drag handler entirely — so there's always an explicit anchor colour exactly at the limb regardless of where the two flanking stops are dragged. The space-side distance→position mapping is always **linear**; the earth side can instead warp through a bounded **tangent curve** (`uEarthTangent`, the "Tangent earth fade" checkbox in Settings — `tan(x·60°)/tan(60°)`, capped at 60° rather than 90° to stay finite) purely to compare the two shapes. Blending is **additive** — that's what lets one gradient serve both sides (blue reads as glow against black sky, white reads as haze over lit ground) and makes alpha mean intensity; `depthTest:false` + `renderOrder 1` are required or the earth would occlude the shell and clip the fade at the silhouette. Colours are raw sRGB `Vector3`s, **not** `THREE.Color` — colour management would convert them to linear, but a ShaderMaterial gets no output-conversion chunk, so raw sRGB is what makes the render match the swatch. No `uCamDist`: the band is anchored to tangent altitude, so it stays put as orbit height changes. Edited in Settings ▸ Spaceship by `buildAtmoEditor`/`setAtmoPos`/`applyAtmoUniforms` (a preview strip over black is an exact match for additive-over-space; stops are held `ATMO_MIN_GAP` apart because `smoothstep` is undefined when its edges coincide). A **Country-outlines hint** (`#hint-outlines-toggle` button, spaceship-only, in the **controls bar** — not Settings; `setOrbitalHint`/`orbitalHintOn`) overlays white country borders on the globe: `loadHintFeatures` fetches the **50m (medium-detail)** countries (simplified with `MEDIUM_SIMPLIFY_RETAIN`, shares `worldTopoCache`), `buildCountryLinePositions` turns them into border segments on the sphere at `HINT_RADIUS` **1.001** (just above the surface; each arc slerp-subdivided so long spans hug the ground), rendered as **fat lines** (`three/addons/lines` `LineSegments2`/`LineMaterial`, exposed as `window.THREE_Lines` via a separate dynamic import so a CDN failure can't block `window.THREE`; falls back to 1px `LineSegments` if the addon didn't load) with `resolution` kept in sync by `syncHintResolution`. Aligned to the texture via `surfaceNormal`, the opaque earth hides far-side lines by depth test. On **mobile** (`orbitalMobileSplit`, ≤768px + `body.spaceship-active`) the view **splits**: the earth canvas fills the top and the inset becomes a full-width map below it (`orbitalResize` reserves the inset height). Renders on its own WebGL canvas over the hidden `#globe` SVG (sized from the container in `orbitalResize` — measure the container, not the replaced canvas, or it runaway-zooms). Renderer: `ensureOrbital`/`orbitalSetTarget`/`orbitalLoadCap`/`drawSpaceshipView`, disposed via `disposeOrbital` |
 | `skyline-id` | **Hidden from the menu** (photo pool not yet vetted) — the mode, data, and CSS are all intact; only its 3 entry points (top-bar icon in `index.html`, landing card in `index.html` **and** in `resetModeSelector()`'s template in `game.js`) are HTML-commented out. Reachable directly via `startGameWithMode('skyline-id')`. Uncomment those 3 blocks to bring it back. A real photograph of a large city's skyline — name the city from 4 choices (`skylineIdMode`). **No map at all.** Photos are fetched live from **Wikimedia Commons** (`commonsSearch`; CORS-open via `origin=*`, and every file carries machine-readable licensing). `skylineLicenceOk` keeps only PD/CC0/CC-BY/CC-BY-SA — NonCommercial, NoDerivatives and unrecognised licences are dropped — and the photographer + licence + Commons link are shown **only after the round is decided** (`revealSkylineCredit`, called from `handleCorrectAnswer` and `giveUp`), because the file title almost always names the city. `skylineQuery` appends the state/country from the entry's `label`: without it `"Toledo" skyline` returns Toledo **Spain** above Toledo Ohio, and `"St. Petersburg"` lands in Russia; the term costs ~5% of hits and fixes the wrong-city answers. `skylineCandidates` drops non-photos (SVG/portrait/maps/logos) and *ranks* rather than rejects on whether the title names the city. Whether a city has a usable photo is only knowable after searching, so `resolveSkylineTarget` retries with another city on a miss and remembers barren ones in `skylineNoPhoto`; it reserves its pick in `usedCountries` **before** the search returns so `prefetchNextSkyline` (which resolves the next round in the background — a search takes 0.5–6 s) can't collide with a live pick. Distractors are ranked by `skylineDistractorScore`: same country dominates, then same region, then closeness in **log** population — so Abidjan draws Addis Ababa/Casablanca/Alexandria, never a suburb. Options are display `label`s, not keys |
+| `sb-*` (15 keys) | `sb-mercator-lie`, `sb-great-circle`, `sb-flyover`, `sb-lake`, `sb-all-neighbours`, `sb-estimate-pop`, `sb-distance-order`, `sb-capital-pin`, `sb-price-pop`, `sb-price-area`, `sb-fake-flag`, `sb-border-hops` under **Quick Quizzes**; `sb-missing` on the landing page; `sb-upside-down` and `sb-out-of-scale` under **Name the Shape**. All share the `sbQuizMode` flag and are **generated** from the `SB_QUIZZES` registry rather than declared individually — see Sandbox quizzes above |
 
 ## UI Structure
 
 ### Top Bar (in-game)
 Single thin bar with: title | mode icons | score display. Two dropdown groups:
-- **Find (🔍)** — expands to: World, USA, India, Germany, UK
-- **Identify (❓)** — expands to same 5 geos
-- Direct icons: ⌨️ name-all, 📊 population, 🚩 mystery-flag, 🏛️ capitals-race
+- **Find (🔍)** — expands to: World, USA, India, Germany, UK, Mexico
+- **Identify (❓)** — expands to the same geos
+- Direct icons: ⌨️ name-all, 📊 population, 🚩 mystery-flag, 🏳️ flag-place, ⭐ capitals, 🌐 free-explore, 📌 places, 🧩 state-puzzle, ⬠ country-shape-id, 🛰️ spaceship
+
+Icon conventions worth keeping: **`extension` (the puzzle piece) belongs to the Puzzle** — Shape ID uses `pentagon`, Places uses `push_pin`, and the Capitals category uses `star`.
+
+Six `data-mode` values are **selector triggers, not mode keys** — `places` opens `showPlacesModeSelector()` (a region must be picked first), `place-quiz` opens `showPlaceCountriesSelector()`, `state-puzzle` opens `showStatePuzzleSelector()` (a region and difficulty must be picked), `capitals` opens `showCapitalsSelector()`, `flags` opens `showFlagsSelector()` (Mystery Flag + Flag Match), and `spaceship` opens `showSpaceshipSelector()` (Play + Sandbox); all six short-circuit `switchToMode`. Note `spaceship` and `state-puzzle` are both real `QUIZ_MODES` keys *and* selector triggers, so the handlers must intercept them before falling through to `startGameWithMode`. Note `state-puzzle` is both a real `QUIZ_MODES` key *and* its own selector trigger, so the top-bar/grid handlers must intercept it before falling through to `startGameWithMode`. The landing grid exists **twice** — once as static markup in `index.html` and again in `resetModeSelector()`'s template string in `game.js` — and both copies must be kept in sync, along with both mode-grid click delegators (`setupEventListeners` and the re-attach inside `resetModeSelector`).
 
 The top-bar title (`#home-link`) **and** the big landing-page title/logo (`#landing-header`, `cursor:pointer` in CSS) both call `goHome()` — the header always works as a link back to the mode selector, from any screen it's visible on (landing page, in-game, any sub-selector).
 
@@ -77,8 +2304,12 @@ Full-screen card grid. "Find on the Map" and "Identify" open sub-selectors for r
 ### Globe-mode layout
 Every `useGlobe:true` mode except `spaceship` (its own bespoke inset/mobile-split layout) and `free-explore` (its own overlay layout, below) maximises the map: `startGameWithMode` toggles a `globe-side-layout` class on `.container` based on `modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.freeExploreMode` (cleaned up in `goHome()` and `teardownActiveGame()`). `#map-container` and a `#globe-side-panel` wrapper (holding `#question-container` + `#multiple-choice-container`) are nested inside a new `#globe-layout` wrapper in `index.html`; `.globe-layout`/`.globe-side-panel` default to `display: contents` (a no-op — children behave as direct `.container` children, exactly the pre-existing layout) and only become a real `flex` row/narrow-column (map ~3fr, panel fixed 300px, collapses to a stacked column under 1024px) when `.globe-side-layout` is present. `countries` mode's separate `world-quiz-layout`/`world-quiz-globe`/`world-quiz-panels` system (2/3+1/3 split) got the same treatment via a flex-ratio tweak (globe `flex:1`, panels fixed `300px`, restoring `flex:1` on panels under the existing 1024px breakpoint since flex-basis governs height once that breakpoint flips the layout to a column).
 
+**`useWorldQuizLayout` modes are excluded from `globe-side-layout` outright**, and the two must never both be applied. Those modes render into `#world-quiz-layout` and set `#map-container`/`#question-container`/`#multiple-choice-container` to `display: none` — which leaves `#globe-layout` holding nothing visible, but `globe-side-layout` had already promoted it from `display: contents` to a real `flex: 1 1 0%` row. It then claimed **310 px of blank space above the actual content** (measured at 1280×800), squashing the globe into the lower half.
+
 ### Free-Explore overlay layout
 Free Explore has no questions and no answer buttons — only a one-line prompt and, on click, a country popup — so reserving the 300px side column wasted a third of the screen. `explore-overlay-layout` on `.container` instead gives `#map-container` the full width and makes `#globe-side-panel` an **absolutely positioned floating column over the map's top-right corner** (always empty in a globe view). The panel is `pointer-events: none` with `> * { pointer-events: auto }`, so drags that start in the gaps between its cards still rotate the globe. `showCountryPopup` re-parents `#explore-popup` into that panel when the class is present (a `#globe-side-panel .explore-popup` rule turns the fixed centred dialog into a static card that stacks under the prompt); anywhere else it stays a body-level centred dialog. Under 600px wide the column spans the full width instead.
+
+That re-parenting is why `closeCountryPopup()` **removes** the node rather than hiding it, and why `startGameWithMode` calls it. The popup isn't attached to the map, so nothing else tore it down on a mode switch — and a merely-hidden node stays inside `#globe-side-panel` while the next mode drops `explore-overlay-layout`, which is the only thing scoping the rule that tames it. The base fixed/centred styling then took back over and stranded the popup on top of the new mode. Its Escape handler is parked on the module-level `exploreEscapeHandler` for the same reason: the old one only unbound itself when Escape was actually pressed, so closing any other way leaked a listener per country clicked.
 
 ### Flag image sizing
 Flags are **not** all 3:2 — Nepal is a taller-than-wide pennant, Switzerland/Vatican are square, Qatar is 11:28. Sizing by width alone therefore gave every list row a different height. Wherever flags appear side by side or stacked (`.bubble-flag`, `.order-flag`, `.flag-option img`) they get a **fixed box + `object-fit: contain`**, so odd ratios letterbox inside instead of resizing the row. The single large `.flag-display img` is capped on both axes (`max-height` as well as `max-width`) rather than boxed, since a border around a letterbox reads badly at that size.
@@ -91,7 +2322,7 @@ Flags are **not** all 3:2 — Nepal is a taller-than-wide pennant, Switzerland/V
 One constant, `ANSWER_PAUSE_MS` (default 1200ms, Settings ▸ Gameplay slider), paces every quiz mode's reveal/advance sequence — replacing what used to be a dozen independent hardcoded delays (650/800/1000/1200/1400/2500ms) scattered across `handleCorrectAnswer`/`handleIncorrectAnswer`/`handleFlagChoiceAnswer`/`handleCapitalChoiceAnswer`/`handleCountryClick`/`giveUp`, several of which weren't tracked by the shared timer at all (so a fast mode-switch mid-pause could fire a stale callback against new state).
 - **Correct answer:** pause `ANSWER_PAUSE_MS`, then advance (`handleCorrectAnswer`, branching on `subQuestionIndex < maxSubForMode(modeConfig)-1` for a sub-advance vs a full `goToNextQuestion()`).
 - **Wrong answer:** pause `ANSWER_PAUSE_MS`, reveal the correct answer **alongside** the wrong one (`scheduleWrongThenCorrect` — `handleIncorrectAnswer` no longer self-clears the wrong highlight; the whole button/shape grid is rebuilt fresh for the next question anyway, so nothing needs to explicitly clear it), pause `ANSWER_PAUSE_MS` again, then advance unscored (`handleCorrectAnswer(el, false)`).
-- **Distance/score-based rounds** (`find-capital`, `spaceship`, `population-order`) have no discrete right/wrong to reveal, so they get a single `ANSWER_PAUSE_MS` pause after the result is shown (`scheduleAutoAdvance()`, called from `revealCapitalAnswer`/`revealSpaceshipAnswer`/`checkOrderingAnswer`) — the relabelled Next/"See Results" button still works as a manual skip (`goToNextQuestion` calls `clearAutoAdvance()` first, so a manual click can't race the timer).
+- **Distance/score-based rounds** (`find-capital`, `spaceship`) have no discrete right/wrong to reveal, so they get a single `ANSWER_PAUSE_MS` pause after the result is shown (`scheduleAutoAdvance()`, called from `revealCapitalAnswer`/`revealSpaceshipAnswer`). **`population-order` is the exception**: its result grid — five guesses, five true ranks and the arrows between them — is the whole payoff of the mode, and a timed advance pulls it away mid-read, so `checkOrderingAnswer` calls `clearAutoAdvance()` and waits for the Next button instead — the relabelled Next/"See Results" button still works as a manual skip (`goToNextQuestion` calls `clearAutoAdvance()` first, so a manual click can't race the timer).
 - **Give Up** (`giveUp()`) now auto-advances for every mode via the same mechanism — previously several mode-specific blocks (`skylineIdMode`, `capitalsRaceMode`, the generic tail's final-subquestion case) only enabled the Next button and waited for a manual click.
 - Fixed along the way: `checkOrderingAnswer` used to increment `gameState.currentQuestion` itself *and* rely on the shared Next-button handler's `goToNextQuestion()` incrementing it again — a genuine pre-existing bug that made `population-order` skip every other round (10 configured rounds played as 5). It now only calls `scheduleAutoAdvance()`, incrementing exactly once via `goToNextQuestion`.
 - `autoAdvanceTimer`/`clearAutoAdvance()`/`scheduleAutoAdvance(delay = ANSWER_PAUSE_MS)`/`goToNextQuestion()` remain the shared primitives; every reveal/advance path in the file now routes through them (or a bare `setTimeout` using `ANSWER_PAUSE_MS` explicitly) rather than an ad-hoc literal.
@@ -103,7 +2334,9 @@ One constant, `ANSWER_PAUSE_MS` (default 1200ms, Settings ▸ Gameplay slider), 
 3. Add a render function (`renderXxxQuestion()`).
 4. Hook it into `startNewQuestion()` — set `gameState.questionType` and call your render function.
 5. If the mode scores one point per target (not per sub-question), add its flag to `maxSubForMode(modeConfig)` — the **single** source of truth for sub-question count, used by `handleCorrectAnswer`, `giveUp`, and `endGame` alike (a mode missing from it there is what capped Shape-ID at 50% on a perfect run).
-6. Add to the top-bar dropdowns in `index.html`, `showFindModeSelector()`, `showIdentifyModeSelector()`, and `resetModeSelector()` in `game.js`.
+6. Add to the top-bar dropdowns in `index.html`, `showFindModeSelector()`, `showIdentifyModeSelector()`, and `resetModeSelector()` in `game.js`. The landing grid lives in **two** places (static markup in `index.html` *and* `resetModeSelector()`'s template) — update both, plus both mode-grid click delegators.
+7. If the mode needs no map, also add its flag to the map-skip check in `startGameWithMode` and dispatch it **early** in `startNewQuestion()` — the shared body dereferences `countriesGroup` and filters against map features, and recurses forever on an empty `gameState.countries`.
+8. If the mode is reached through a sub-selector rather than started directly, have that selector call `teardownActiveGame()` first.
 
 ## Adding a New Region (Find/Identify)
 
@@ -125,6 +2358,9 @@ One constant, `ANSWER_PAUSE_MS` (default 1200ms, Settings ▸ Gameplay slider), 
 - `showFindModeSelector()` — shows region picker for Find modes
 - `showIdentifyModeSelector()` — shows region picker for Identify mode
 - `startIdentifyMode(region)` — configures identify mode with a region's data then starts game
+- `startNameAllMode(region)` / `startPlacesMode(region, opts)` / `startPlaceCountriesMode(difficulty, submode)` / `startStatePuzzleMode(difficulty)` — the other reconfigure-then-start entry points
+- `teardownActiveGame()` — tears down any live in-game view (WebGL, timers, panels, SVG) before showing a sub-selector
+- `routeFromUrl()` — reads `?mode`/`region`/`places`/`msg`/`score`/`max` on load and starts the right thing
 - `syncScoreDisplay()` — syncs top-bar score with gameState
 - `setupGlobe()` — creates SVG (viewBox-based, responsive), projection, drag, zoom, and touch handlers
 
@@ -135,7 +2371,15 @@ Uses quaternion-based rotation via Fil's versor library (inlined). Key state:
 - `r_unconstrained` — stores full rotation (including gamma) for quaternion continuity between drags
 - `gammaLocked` — when true, gamma (tilt) is forced to 0; togglable via UI button
 
-**Important:** Any code that changes `projection.rotate()` outside of the drag handler (e.g. `rotateToCountry`, zoom handler, reset points) must also update `r_unconstrained = projection.rotate().slice()` to prevent snap-back on the next drag.
+**Important:** Any code that changes `projection.rotate()` outside of the drag handler (e.g. `rotateToCountry`, zoom handler, reset points) must also update `r_unconstrained = projection.rotate().slice()` to prevent snap-back on the next drag. Both animations only do so in their `.on('end', …)`, so a drag that interrupts an in-flight spin resumes from the pre-spin value.
+
+**Shortest-path spin.** `rotateToCountry` and `zoomAndRotateToCountry` interpolate through `interpolateRotateShortest(from, to)`, not raw `d3.interpolate`. `projection.rotate()` returns a lambda in `[-180, 180]`, so any hop across the antimeridian (Fiji ↔ Alaska) used to read as a ~350° delta and spin the globe nearly all the way around the wrong way for an adjacent target. The helper nudges each axis' target by ±360° until the per-axis delta lands in `[-180, 180]`, then hands the *adjusted* target to plain `d3.interpolate`.
+
+## Tearing down a live view
+
+`teardownActiveGame()` exists because the sub-mode selectors (`showPlacesModeSelector`, `showPlaceCountriesSelector`) can be opened from the **in-game** top bar, and previously only swapped `#mode-selector`'s HTML — leaving the previous mode rendering *behind* the picker. It calls `disposeOrbital()`, `removeSpaceshipInset()`, `stopNameAllTimer()`, `stopGlobeSpin()`, drops `body.spaceship-active` / `.container.globe-side-layout`, removes `#places-panel`, empties both SVG roots, and hides the game containers. So it covers a live WebGL context + RAF loop, the spaceship inset, a running name-all countdown, the auto-spin timer, and the places panel. Any new sub-selector should call it first.
+
+`disposeOrbital()` additionally **restores `#globe`'s `display`** — `drawSpaceshipView()` sets it to `none` so the D3 SVG can't peek through the mobile split gap, and nothing else undoes that.
 
 ## Touch Support
 
@@ -155,13 +2399,19 @@ SVG uses `touch-action: none` and custom touch handlers:
 Each entry in `countryData` / `usStateData` / `indianStateData` / `germanStateData` / `ukCountryData`:
 ```js
 {
-  code: 'us',           // ISO 3166-1 alpha-2 (used for flagcdn.com URL)
+  code: 'us',           // ISO 3166-1 alpha-2 (used for flagcdn.com URL).
+                        // usStateData uses flagcdn SUBDIVISION codes ('us-al'),
+                        // and are what Flag Match / the state maps key off.
   capital: 'Washington, D.C.',
   capitalCoords: [38.9, -77.0], // [lat, lon] — only in countryData
   population: 331893745,        // only in countryData
   similar: ['Canada', ...]      // used for distractor generation
 }
 ```
+
+`generateMultipleChoiceOptions` seeds exactly **one** entry from `similar` as the plausible distractor and pads the rest at random, so a `similar` list guarantees one near-miss, not more.
+
+**Watch the id types.** `getStateName(id)`, `getCountryName(id)` and `tagTerritories()` all `parseInt(id, 10)` before looking up their numeric tables, because atlas feature ids are **zero-padded FIPS/ISO strings** (`"01"`, not `1`). Indexing the table with the raw string is what once turned Alabama–Connecticut (single-digit FIPS) into `"State 01"`, which then matched nothing in `usStateData` — no capital, no flag.
 
 ## Running Locally
 
