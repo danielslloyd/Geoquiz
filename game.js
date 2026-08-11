@@ -1798,9 +1798,16 @@ function startGameWithMode(mode) {
         // The quick quizzes each present themselves one way on purpose — a lone silhouette,
         // a flat pair, a coastline-only world — and none of them is answerable any better on
         // the other projection, so the toggle is only a way to break the framing.
-        projToggle.style.display = (modeConfig.useGlobe && !modeConfig.spaceshipMode &&
-            !modeConfig.projectionLabMode && !modeConfig.sbQuizMode) ? '' : 'none';
-        projToggle.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
+        // In the Explore pair the button is not a projection toggle at all: it is the door
+        // between the two halves of the folder. Free Explore has one view (a globe you turn) and
+        // the lab has fourteen, so "flat or round" was never the question there — the question is
+        // which of the two you want to be in.
+        const explorePair = modeConfig.freeExploreMode || modeConfig.projectionLabMode;
+        projToggle.style.display = (explorePair ||
+            (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.sbQuizMode)) ? '' : 'none';
+        projToggle.textContent = explorePair
+            ? (modeConfig.projectionLabMode ? 'View: Globe' : 'View: Projections')
+            : (flatGlobeView ? 'View: Map' : 'View: Globe');
     }
 
     // Reset the debug overlay for each new game
@@ -3525,6 +3532,11 @@ function drawDebugBoundingBoxes(d) {
 // map, preserving the in-progress question.
 function toggleFlatGlobe() {
     const mc = QUIZ_MODES[gameState.mode];
+    // In the Explore folder this button is the door between its two halves rather than a
+    // projection switch: Free Explore has one view and the lab has fourteen, so "flat or round"
+    // is not the question there. Which of the two you want to be in is.
+    if (mc && mc.freeExploreMode) { startGameWithMode('projection-lab'); return; }
+    if (mc && mc.projectionLabMode) { startGameWithMode('free-explore'); return; }
     if (!mc || !mc.useGlobe) return; // Only globe-capable modes can switch projection
     flatGlobeView = !flatGlobeView;
     reprojectMap();
@@ -6361,6 +6373,10 @@ function revealShapeIdTruth() {
 // One tile per tier, in the same shape as the puzzle's difficulty picker, with the geography
 // chosen on the same screen rather than behind an extra click — it is one of two answers, and
 // a whole page to give it would be a page for a toggle.
+// SHAPES. Everything whose question is an OUTLINE, in one place: name one, trace one, or drag a
+// set of them into position. They were three separate landing tiles asking the same kind of
+// question, and the puzzle in particular reads as its own genre when it is really "do you know
+// this shape" with the answer given by where you put it.
 function showShapeIdSelector() {
     teardownActiveGame();
     document.getElementById('top-bar').style.display = 'none';
@@ -6368,8 +6384,21 @@ function showShapeIdSelector() {
     const sel = document.getElementById('mode-selector');
     sel.classList.remove('hidden');
     sel.innerHTML = `
-        <h2>Name the Shape</h2>
-        <p class="selector-sub">One silhouette, no map around it — how much of it do you want?</p>
+        <h2>Shapes</h2>
+        <p class="selector-sub">Name an outline, trace one, or drag a set of them into place.</p>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-shapemode="state-puzzle">
+                <span class="mode-icon material-symbols-outlined">extension</span>
+                <span class="mode-name">Map Puzzle</span>
+                <span class="mode-desc">Drag every piece into place — world, US, India, Germany, England or Mexico</span>
+            </button>
+            <button class="mode-btn" data-shapemode="draw-border">
+                <span class="mode-icon material-symbols-outlined">gesture</span>
+                <span class="mode-name">Draw the Border</span>
+                <span class="mode-desc">The country is cut out of the map — trace where it goes</span>
+            </button>
+        </div>
+        <p class="selector-sub">Or one silhouette, no map around it — how much of it do you want?</p>
         <div class="scope-toggle" role="group" aria-label="Geography">
             <span class="scope-toggle-label">From:</span>
             ${SHAPE_ID_REGIONS.map(r => `<button type="button" class="scope-btn` +
@@ -6404,6 +6433,13 @@ function showShapeIdSelector() {
     });
     sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
         btn.addEventListener('click', () => startShapeQuizMode(btn.dataset.shapequiz, shapeIdRegion));
+    });
+    // The two that ask for a region of their own rather than taking this screen's.
+    sel.querySelectorAll('[data-shapemode]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (btn.dataset.shapemode === 'state-puzzle') showStatePuzzleSelector();
+            else showDrawBorderSelector();
+        });
     });
 }
 
@@ -7395,8 +7431,10 @@ function setupEventListeners() {
                 showPlacesModeSelector();
             } else if (mode === 'state-puzzle') {
                 showStatePuzzleSelector();
-            } else if (mode === 'country-shape-id') {
+            } else if (mode === 'shapes' || mode === 'country-shape-id') {
                 showShapeIdSelector();
+            } else if (mode === 'explore') {
+                showExploreSelector();
             } else if (mode === 'capitals') {
                 showCapitalsSelector();
             } else if (mode === 'flags') {
@@ -7517,7 +7555,8 @@ function setupEventListeners() {
             // difficulty), so open their selectors rather than starting a mode directly.
             if (mode === 'places') { showPlacesModeSelector(); return; }
             if (mode === 'state-puzzle') { showStatePuzzleSelector(); return; }
-            if (mode === 'country-shape-id') { showShapeIdSelector(); return; }
+            if (mode === 'shapes' || mode === 'country-shape-id') { showShapeIdSelector(); return; }
+            if (mode === 'explore') { showExploreSelector(); return; }
             if (mode === 'capitals') { showCapitalsSelector(); return; }
             if (mode === 'flags') { showFlagsSelector(); return; }
             if (mode === 'spaceship') { showSpaceshipSelector(); return; }
@@ -13277,8 +13316,45 @@ const FLAG_SUBMODES = [
     { key: 'mystery-flag', icon: 'flag',        label: 'Mystery Flag',
       desc: 'See the flag, find the country on the globe' },
     { key: 'flag-place',   icon: 'emoji_flags', label: 'Flag Match',
-      desc: 'Drag every flag onto its country to fill the map' }
+      desc: 'Drag every flag onto its country to fill the map' },
+    // Promoted out of the quick quizzes: it is a question about flags before it is anything else,
+    // and somebody looking for one looks here.
+    { key: 'sb-fake-flag', icon: 'gpp_maybe',   label: 'False Flag',
+      desc: 'Four flags, one invented — which country does not exist?' },
+    { key: 'flag-workshop', icon: 'palette',    label: 'Flag Workshop',
+      desc: 'Build a flag out of other flags, and save it into False Flag' }
 ];
+
+// EXPLORE. Two ways of looking at the world with nothing being asked of you: roam the globe and
+// click things, or put the same world through a dozen projections. They belong together because
+// they are the same activity at two removes, and the View toggle carries you between them.
+function showExploreSelector() {
+    teardownActiveGame();
+    document.getElementById('top-bar').style.display = 'none';
+    document.getElementById('landing-header').style.display = '';
+    const sel = document.getElementById('mode-selector');
+    sel.classList.remove('hidden');
+    sel.innerHTML = `
+        <h2>Explore</h2>
+        <p class="selector-sub">No questions and no score. Once you are in either, the View button
+            carries you to the other.</p>
+        <div class="mode-buttons">
+            <button class="mode-btn" data-explore="free-explore">
+                <span class="mode-icon material-symbols-outlined">explore</span>
+                <span class="mode-name">The Globe</span>
+                <span class="mode-desc">Click any country for its flag, capital and population</span>
+            </button>
+            <button class="mode-btn" data-explore="projection-lab">
+                <span class="mode-icon material-symbols-outlined">public</span>
+                <span class="mode-name">Projections</span>
+                <span class="mode-desc">The same world through a dozen of them, with the distortion drawn on it</span>
+            </button>
+        </div>
+        <button id="back-from-explore-btn" class="btn secondary" style="margin-top: 20px;">Back</button>`;
+    sel.querySelectorAll('[data-explore]').forEach(b =>
+        b.addEventListener('click', () => startGameWithMode(b.dataset.explore)));
+    document.getElementById('back-from-explore-btn').addEventListener('click', resetModeSelector);
+}
 
 function showFlagsSelector() {
     teardownActiveGame();
@@ -13288,7 +13364,7 @@ function showFlagsSelector() {
     modeSelector.classList.remove('hidden');
     modeSelector.innerHTML = `
         <h2>Flags</h2>
-        <p class="selector-sub">Two ways to match flags to countries.</p>
+        <p class="selector-sub">Match them to countries, catch a fake, or make one.</p>
         <div class="mode-buttons">
             ${FLAG_SUBMODES.map(m => `
             <button class="mode-btn" data-flag-mode="${m.key}">
@@ -13315,16 +13391,10 @@ const SANDBOX_SUBMODES = [
       desc: 'How sunrise and sunset move through the year at any latitude' },
     { key: 'odd-one-out', icon: 'filter_alt', label: 'Odd One Out',
       desc: 'Four countries, three with something in common' },
-    { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
-      desc: 'Trace a missing outline; scored by how close you get' },
     { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",
       desc: 'Dissolve any country into its neighbours; see which ones can go' },
-    { key: 'projection-lab', icon: 'public', label: 'Projections',
-      desc: 'The same world through a dozen projections, with the distortion drawn on it' },
     { key: 'framing-sandbox', icon: 'crop_free', label: 'Shape Framing',
       desc: 'Which polygons a country is framed by — switch its outliers in and out' },
-    { key: 'flag-workshop', icon: 'palette', label: 'Flag Workshop',
-      desc: 'Build a flag out of other flags, and save it into False Flag' },
     { key: 'spaceship-sandbox', icon: 'tune', label: 'Spaceship Sandbox',
       desc: 'Every spot the orbital quiz can pick; build and share a seed' }
 ];
@@ -13336,9 +13406,13 @@ const SANDBOX_SUBMODES = [
 // Shape is, so they are offered there rather than here — see SHAPE_ID_QUIZZES. Who's Missing is
 // on the landing page for the same kind of reason.
 const SB_IN_SHAPE_ID = ['sb-upside-down', 'sb-out-of-scale'];
+// And False Flag is offered in the Flags bin, which is where somebody looking for a question
+// about flags will go.
+const SB_IN_FLAGS = ['sb-fake-flag'];
 
 function sandboxQuizTiles() {
-    return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' && !SB_IN_SHAPE_ID.includes(k)).map(k => ({
+    return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' &&
+            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k)).map(k => ({
         key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
     }));
 }
@@ -24033,25 +24107,20 @@ function resetModeSelector() {
                 <span class="mode-name">Capitals</span>
                 <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
             </button>
-            <button class="mode-btn" data-mode="free-explore">
+            <button class="mode-btn" data-mode="explore">
                 <span class="mode-icon material-symbols-outlined">explore</span>
-                <span class="mode-name">Free Explore</span>
-                <span class="mode-desc">Explore the globe and click to learn about countries</span>
+                <span class="mode-name">Explore</span>
+                <span class="mode-desc">Roam the globe, or put the world through a dozen projections</span>
             </button>
             <button class="mode-btn" data-mode="places">
                 <span class="mode-icon material-symbols-outlined">push_pin</span>
                 <span class="mode-name">Places I've Been</span>
                 <span class="mode-desc">Fill in the map with your travels and share it</span>
             </button>
-            <button class="mode-btn" data-mode="state-puzzle">
+            <button class="mode-btn" data-mode="shapes">
                 <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">US States Puzzle</span>
-                <span class="mode-desc">Drag every state into place — pieces snap when close</span>
-            </button>
-            <button class="mode-btn" data-mode="country-shape-id">
-                <span class="mode-icon material-symbols-outlined">pentagon</span>
-                <span class="mode-name">Country Shape ID</span>
-                <span class="mode-desc">Identify countries by their shape</span>
+                <span class="mode-name">Shapes</span>
+                <span class="mode-desc">Name an outline, trace one, or drag the pieces into place</span>
             </button>
             <button class="mode-btn" data-mode="sb-missing">
                 <span class="mode-icon material-symbols-outlined">search_off</span>
@@ -24097,8 +24166,10 @@ function resetModeSelector() {
                 showPlacesModeSelector();
             } else if (mode === 'state-puzzle') {
                 showStatePuzzleSelector();
-            } else if (mode === 'country-shape-id') {
+            } else if (mode === 'shapes' || mode === 'country-shape-id') {
                 showShapeIdSelector();
+            } else if (mode === 'explore') {
+                showExploreSelector();
             } else if (mode === 'capitals') {
                 showCapitalsSelector();
             } else if (mode === 'flags') {
