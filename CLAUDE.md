@@ -618,18 +618,29 @@ at 8, 10.9% at 15, with the cuts per country falling 3.39 → 2.85 → 2.26. It 
 the setting because the ranking measures the STRAIGHT chord's area and the drawn border bulges
 either side of it, which is the same effect the old size cap had.
 
-**Length is raised to a tunable power** (`sbChordPow`, default 1.15) when ranking cuts. At 1 this
-is area over length, which is what a waist IS; above it a shorter line is preferred even at the
-cost of the land behind it, which is how a knob for "smaller bites" has to work. Much past 1.2 it
-stops finding waists and starts nibbling corners — at 1.5 the cuts came out at 3–12% of the
-country and the leftover held 90%.
+**The ratio is area over length SQUARED**, which is dimensionless: how many squares of the
+chord's own length fit in the piece it breaks off. Area over length has units of length, so it
+grows with the country and a big country's every cut outscored a small one's best — which is why
+it once needed a tunable exponent propping it up. Both that exponent (`sbChordPow`) and the old
+`sbChordMax` size cap are gone: the bite is the smaller side by definition, so no cut can take
+more than half of what is left, and the smallest-bite floor is the knob for size.
 
-**No cut may take more than `sbChordMax` (default 30%) of the ORIGINAL country** — not of what
-is left, which is a much weaker limit and what `SB_BITE_MAX_FRAC` already bounds. Against the
-original it means the same thing on the first cut as on the fourth; without it the first cut
-regularly took 60% and everything after it was a trimming. The cap is applied twice, because the
-candidate ranking measures the STRAIGHT chord's area and the drawn border bulges either side of
-it: at one check a 30% cap was letting through pieces of 37%.
+The **story reports that ratio and calls it what it is**. It used to print the same number
+described as "km² of land per kilometre of line" and rounded to a whole number, so a cut of 0.59
+was reported as "1 km² per km" — arithmetic that cannot be checked, because it is not what was
+computed. Verified against the pieces: Kenya's first cut, 42,106 km² off a 128 km line, reports
+2.62 against 42,106/128² = 2.57, the difference being that the ranking measures the straight
+chord and the drawn border bulges either side of it.
+
+**A cut below the bar says so.** Under the blend a chord under `sbBlendRatio` is still taken when
+no push is available — "a mediocre waist beats nothing" — and the step now says which of those
+happened rather than presenting the cut as if the ratio had justified it.
+
+**The floor on chord LENGTH is no longer tunable.** It survives at one median border segment,
+purely as a guard against a degenerate line: two adjacent vertices are a notch in the coastline
+rather than a cut, and a zero-length one divides by zero. It decided nothing a person would want
+to decide once the smallest-bite floor existed, and that floor states the same intent in the units
+the question is actually asked in.
 
 **A country that has taken is not out of the running.** Its two pieces have to become one ring,
 because the rewrite gives each absorber one arc and one outline — and they can, whenever the
@@ -639,10 +650,18 @@ two rings traverse it in opposite directions, both being wound the same way) and
 outside of both. It returns null when there is no such run, and that is what keeps the
 one-arc-one-outline invariant: two pieces that meet nowhere cannot be one outline.
 
-**After every push, the next round looks for a chord first.** A push is the answer when the
-country has no waist worth cutting — but having pushed, it may well have one, since the remainder
-is a different shape from the country. Two pushes in a row can still happen; they just cannot
-happen unexamined.
+**Every round asks the chord question first**, including the round after a push: `cand` is built
+and ranked before the push branch is even reached, so "after a push, look for a bite" is not a
+special case but what the ratio test does on every round there is. An explicit *do not push twice
+in a row* flag was tried and is exactly wrong — it forces a cut the threshold has just refused,
+which is how Zambia came to be cut at a ratio of 0.56 against a bar of 2.
+
+**`sbBlendShare` defaults to 0**: if there is no waist worth cutting, ANY neighbour with a border
+to push is a better answer than a line invented across the middle. Raising it insists the pusher
+dominate what is left. Measured over 60 countries at the default bar of 0.35: share 0 gives 29
+divisions, 76 cuts, 4 pushes and nothing handed whole to one neighbour, against 28/80/2 at 45%.
+At a bar of 2 the pushes take over (23 pushes against 29 cuts) and four countries end up with a
+single absorber and no cut at all.
 
 Measured over 197 countries with the cap at 30% and borders borrowed rigidly: **88 divide**, 2.53
 absorbers each, leftover 37%, **zero split absorbers**, 4.7 s for the world. Rigid borrowing costs

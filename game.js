@@ -13916,10 +13916,12 @@ let sbBiteGrowth = SB_BITE_GROWTH_DEFAULT;
 // length, so it grows with the country and a big country's every cut outscores a small one's best
 // -- which is why it needed a tunable exponent propping it up. It does not any more.
 //
-// The floor on chord length is in units of the map's own resolution: at 110m a "chord" of two
-// vertices is a notch in the coastline, and notches have superb ratios.
-const SB_CHORD_MIN_DEFAULT = 6;      // x the median border segment
-let sbChordMinX = SB_CHORD_MIN_DEFAULT;
+// A floor on chord LENGTH survives only as a guard against a degenerate line: two adjacent
+// vertices are a notch in the coastline rather than a cut, and a zero-length one divides by zero.
+// It is no longer tunable, because it no longer decides anything a person would want to decide --
+// the smallest-bite floor below is the knob for "do not bother me with small cuts", and it says so
+// in the units the question is actually asked in.
+const SB_CHORD_MIN_X = 1;            // x the median border segment
 
 // And a floor on what a cut has to BREAK OFF, as a share of the whole country rather than of
 // whatever is left of it. Against the remainder the same percentage means something different on
@@ -13933,7 +13935,10 @@ let sbChordMinBite = SB_CHORD_BITE_DEFAULT;
 // pushing ITS border in is the more honest answer than cutting across the middle.
 const SB_BLEND_RATIO_DEFAULT = 0.35;
 let sbBlendRatio = SB_BLEND_RATIO_DEFAULT;
-const SB_BLEND_SHARE_DEFAULT = 45;   // per cent of the remaining boundary
+// Zero by default: if there is no waist worth cutting, ANY neighbour with a border to push is a
+// better answer than a line invented across the middle. Raising it is how you insist the pusher be
+// a country that dominates what is left.
+const SB_BLEND_SHARE_DEFAULT = 0;    // per cent of the remaining boundary
 let sbBlendShare = SB_BLEND_SHARE_DEFAULT;
 
 // The median length of a border segment at this detail level, in km, over the whole world. The
@@ -15371,11 +15376,6 @@ function sbEatCountry(rawTopo, goneName) {
         let live = ring;
         let leftover = null;
         let minBite = Infinity;
-        // A push is the answer when the country has no waist worth cutting. Having pushed, it may
-        // well have one — the remainder is a different shape from the country — so the round
-        // after a push always LOOKS for a chord first, whatever share the next neighbour holds.
-        // Two pushes in a row can still happen; they just cannot happen unexamined.
-        let justPushed = false;
         const hist = [];
         for (let round = 0; round < 16; round++) {
             const L = live.length;
@@ -15412,7 +15412,7 @@ function sbEatCountry(rawTopo, goneName) {
             };
             const cand = [];
             const lo = area0 * Math.max(0.001, sbChordMinBite / 100);
-            const minChord = Math.max(1, sbMedianSegKm(topo) * Math.max(1, sbChordMinX));
+            const minChord = Math.max(1, sbMedianSegKm(topo) * SB_CHORD_MIN_X);
             for (let i = 0; i < L; i++) {
                 const oi = ownerOfLeg(live[i].leg);
                 for (let j = i + 4; j < L; j++) {
@@ -15452,7 +15452,14 @@ function sbEatCountry(rawTopo, goneName) {
             // So: cut a chord if the best one clears the ratio; otherwise push if one neighbour
             // holds enough of the remaining boundary; otherwise cut the chord anyway, because
             // something has to give and a mediocre waist beats nothing.
-            if (sbBiteAlgo === 'blend' && !justPushed && (!cand.length || cand[0].k < sbBlendRatio)) {
+            // Every round asks the chord question FIRST -- `cand` is already built and ranked by
+            // the time this runs -- so "after a push, look for a bite" is not a special case; it is
+            // what the ratio test does on every round there is. An explicit "do not push twice in a
+            // row" flag was tried and is exactly wrong: it forces a cut the threshold has just
+            // refused, which is how Zambia came to be cut at a ratio of 0.56 against a bar of 2.
+            let pushTried = false;
+            if (sbBiteAlgo === 'blend' && (!cand.length || cand[0].k < sbBlendRatio)) {
+                pushTried = true;
                 // Who holds what, of the boundary as it stands now.
                 const hold = new Map();
                 let tot = 0;
@@ -15480,7 +15487,6 @@ function sbEatCountry(rawTopo, goneName) {
                             source: pushed.source
                         });
                         live = pushed.rest;
-                        justPushed = true;
                         continue;
                     }
                     if (sbDiag) sbDiag.pushFail = (sbDiag.pushFail || 0) + 1;
@@ -15658,7 +15664,6 @@ function sbEatCountry(rawTopo, goneName) {
                         piece: closed(pushed.piece).map(toDeg), source: pushed.source
                     });
                     live = pushed.rest;
-                    justPushed = true;
                     continue;
                 }
             }
@@ -15691,6 +15696,7 @@ function sbEatCountry(rawTopo, goneName) {
                 took: got.ar, leftBefore: got.areaLeft,
                 chord: got.chord.map(toDeg), chordKm: got.chordKm,
                 ratio: got.ratio, bestRatio: got.bestRatio, rank: got.rank,
+                thresh: sbBiteAlgo === 'blend' ? sbBlendRatio : null, pushTried,
                 tried: got.tried, pairs: got.pairs, edges: got.edges,
                 regionBefore: closed(live).map(toDeg),
                 cut: got.cut.map(toDeg), piece: closed(got.piece).map(toDeg),
@@ -15698,7 +15704,6 @@ function sbEatCountry(rawTopo, goneName) {
                           pts: got.borrowed.pts.map(toDeg), wander: got.borrowed.wander }
             });
             live = got.rest;
-            justPushed = false;
         }
         if (!pieces.size) return null;
         // Whatever is left goes to whoever holds most of its edge. If nobody can hold it, the last
@@ -16904,13 +16909,6 @@ function msBuildPanel() {
         `</select></label>` +
         `<div class="ms-order-hint" id="ms-algo-hint">${SB_BITE_ALGOS[sbBiteAlgo].hint}</div>` +
         `<div id="ms-chord-only">` +
-        `<label class="ms-order"><span>Shortest chord</span>` +
-        `<input type="number" id="ms-chord-min" min="1" max="40" step="1" value="${sbChordMinX}">` +
-        `<span class="ms-unit">×</span></label>` +
-        `<div class="ms-order-hint">The shortest line worth calling a cut, in multiples of the ` +
-        `median border segment at this detail level. A chord of two vertices is a notch in the ` +
-        `coastline, and notches have superb ratios — stated this way the floor means the same ` +
-        `thing at 110m as at 50m.</div>` +
         `<label class="ms-order"><span>Smallest bite</span>` +
         `<input type="number" id="ms-chord-bite" min="1" max="40" step="1" value="${sbChordMinBite}">` +
         `<span class="ms-unit">%</span></label>` +
@@ -16924,7 +16922,7 @@ function msBuildPanel() {
         `<div class="ms-order-hint">How many squares of the chord\u2019s own length have to fit in the ` +
         `piece it breaks off before the cut is worth making on its own merits.</div>` +
         `<label class="ms-order"><span>Otherwise push at</span>` +
-        `<input type="number" id="ms-blend-share" min="10" max="90" step="5" value="${sbBlendShare}">` +
+        `<input type="number" id="ms-blend-share" min="0" max="90" step="5" value="${sbBlendShare}">` +
         `<span class="ms-unit">%</span></label>` +
         `<div class="ms-order-hint">If no chord is good enough, the border of a neighbour holding ` +
         `at least this much of what is left is pushed in instead — a line the map already has, ` +
@@ -16989,10 +16987,9 @@ function msBuildPanel() {
             redo(note + ' Pick a country off the map.');
         });
     };
-    num('ms-chord-min', 1, 40, SB_CHORD_MIN_DEFAULT, v => { sbChordMinX = v; }, 'Chord floor changed.');
     num('ms-chord-bite', 1, 40, SB_CHORD_BITE_DEFAULT, v => { sbChordMinBite = v; }, 'Smallest bite changed.');
     num('ms-blend-ratio', 0.05, 2, SB_BLEND_RATIO_DEFAULT, v => { sbBlendRatio = v; }, 'Ratio changed.');
-    num('ms-blend-share', 10, 90, SB_BLEND_SHARE_DEFAULT, v => { sbBlendShare = v; }, 'Share changed.');
+    num('ms-blend-share', 0, 90, SB_BLEND_SHARE_DEFAULT, v => { sbBlendShare = v; }, 'Share changed.');
     const grow = document.getElementById('ms-growth');
     if (grow) grow.addEventListener('change', () => {
         const v = Math.max(0, Math.min(200, +grow.value));
@@ -17172,12 +17169,23 @@ function msRenderChordStory() {
                `out of that country's own border and separate nothing.</p>` +
                `<p>The winner is the dashed line on the map: <strong>${kmL(s2.chordKm)}</strong> long, ` +
                `breaking off <strong>${km(s2.took)}</strong> of the ${km(s2.leftBefore)} still standing. ` +
-               `That is <strong>${Math.round(s2.ratio)} km² of land per kilometre of line</strong>` +
+               `The piece is <strong>${(s2.ratio || 0).toFixed(2)}× the square of the line's own ` +
+               `length</strong> — that ratio is what is being maximised, and it is dimensionless, so ` +
+               `a big country's every cut cannot outscore a small one's best` +
                (s2.rank > 0
-                 ? `, and it is not quite the best straight-line ratio there was (${Math.round(s2.bestRatio)}) — ` +
+                 ? `. It is not quite the best there was (${(s2.bestRatio || 0).toFixed(2)}) — ` +
                    `${s2.rank} better pair${s2.rank === 1 ? '' : 's'} could not be drawn as a real border ` +
                    `without crossing the coast, or left a piece nobody could be given.`
-                 : `, the best of them all.`) + `</p>`;
+                 : `, and it is the best of them all.`) + `</p>` +
+               (s2.thresh && s2.ratio < s2.thresh
+                 ? `<p>Note that is <strong>below the ${(+s2.thresh).toFixed(2)}</strong> a cut needs to ` +
+                   `be made on its own merits. It is made anyway because the alternative was not ` +
+                   (s2.pushTried
+                     ? `available: no neighbour's border could be pushed in here, and a mediocre waist ` +
+                       `beats leaving the country whole.`
+                     : `looked for: the last thing done was a push, and a push is never followed ` +
+                       `straight by another without a cut being considered first.`) + `</p>`
+                 : ``);
     } else if (step.phase === 'draw') {
         const s2 = step.s;
         head = `Cut ${which()} — drawing it`;
@@ -17384,11 +17392,17 @@ function msRenderStory() {
                        `else left — the land goes to whoever the land is already up against. Nobody ` +
                        `takes twice: the rewrite gives each country one arc and one outline, so a ` +
                        `second piece would have to be merged with the first.</p>` +
-                       `<p>The cut is drawn as a real border rather than as the straight line that ` +
-                       `found it, traced from the ` +
-                       `<strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
-                       `${s.source.flip < 0 ? ', mirrored' : ''}:</p>` +
-                       msSourceSvg(s.source);
+                       // A step need not have a borrowed border at all: a cut drawn straight has
+                       // no source, and `chord-rest` — the remainder handed to the leftover — was
+                       // never a cut in the first place. Reaching through `s.source` unguarded
+                       // threw here, which took the whole step-through down with it.
+                       (s.source && (s.source.owners || []).length
+                         ? `<p>The cut is drawn as a real border rather than as the straight line ` +
+                           `that found it, traced from the ` +
+                           `<strong>${(s.source.owners || []).map(displayLabelForName).join('–')}</strong> border` +
+                           `${s.source.flip < 0 ? ', mirrored' : ''}:</p>` + msSourceSvg(s.source)
+                         : `<p>No borrowed border would stay inside the country here, so the cut is ` +
+                           `drawn STRAIGHT — which is a real border too.</p>`);
                 msSay(
                     `<div class="ms-story-head"><strong>${head}</strong></div>` +
                     `<div class="ms-story-body">${body}</div>` +
