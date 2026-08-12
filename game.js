@@ -3387,6 +3387,28 @@ function wireMapStyleControls() {
     say();
 }
 
+// Borrow a geography.
+//
+// Seven modes are RECONFIGURED IN PLACE rather than declared per region: Identify, Name All,
+// Places I've Been, the Puzzle, Draw the Border, Name the Shape and its two sandbox quizzes all
+// take "which map, which list, which labels" from another mode's entry and then apply whatever
+// they force. Written out, that is the same eight assignments seven times, and the failure mode
+// is silent -- a mode that forgets `useAlbersUsa` inherits the last region's composite projection
+// and fits it to a country it cannot draw.
+//
+// `useAlbersUsa` is normalised to a boolean here, because most of the seven wrote
+// `base.useAlbersUsa || false` and the rest wrote `!!base.useAlbersUsa`, and an `undefined`
+// reaching a truthiness test somewhere else is exactly the sort of thing that works until it does
+// not. Returns the base so a caller can go on reading it for the overrides it wants to apply.
+const BORROWED_KEYS = ['quizList', 'dataObjKey', 'useGlobe', 'mapUrl', 'mapObject',
+                       'itemLabel', 'itemLabelPlural'];
+function borrowRegion(target, region, fallback) {
+    const base = QUIZ_MODES[region] || QUIZ_MODES[fallback || 'countries'];
+    BORROWED_KEYS.forEach(k => { target[k] = base[k]; });
+    target.useAlbersUsa = !!base.useAlbersUsa;
+    return base;
+}
+
 // ==================== RASTERISING, ONCE ====================
 //
 // Four places in the app answer a question by DRAWING the thing and looking at the pixels, and
@@ -5609,16 +5631,8 @@ function exitFreeExplore() {
 // wholesale (same reconfigure pattern as startIdentifyMode). `opts` carries state to restore
 // from a shared URL: selectionsStr (encoded) and message.
 function startPlacesMode(region, opts = {}) {
-    const base = region === 'us' ? QUIZ_MODES['us-states'] : QUIZ_MODES['countries'];
     const m = QUIZ_MODES['places-been'];
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.useGlobe = base.useGlobe;
-    m.useAlbersUsa = base.useAlbersUsa || false;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
+    borrowRegion(m, region === 'us' ? 'us-states' : 'countries');
     m.placesRegion = region;
 
     placesPendingSelectionsStr = opts.selectionsStr || null;
@@ -6392,15 +6406,10 @@ let shapeIdRegion = 'countries';
 // not the two hundred countries.
 function startShapeIdMode(region, tier) {
     const m = QUIZ_MODES['country-shape-id'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    const base = borrowRegion(m, region);
     shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
     shapeIdTier = tier || shapeIdTier;
     m.shapeIdRegion = shapeIdRegion;
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.useGlobe = false;
     m.useAlbersUsa = false;
     // The world silhouettes are judged on the outline, so they force 10m through
@@ -6424,14 +6433,14 @@ function startShapeIdMode(region, tier) {
 function startShapeQuizMode(key, region) {
     const m = QUIZ_MODES[key];
     if (!m) return;
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    const base = borrowRegion(m, region);
     shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.useAlbersUsa = false;
+    // NOT the region's. Every sandbox round is declared `useGlobe: true` and reaches its flat
+    // board through `sbFlat` instead, so borrowing `false` from the state maps would send it down
+    // the regional-flat-map path rather than the sandbox's own. This is the one key the borrow
+    // must not carry here.
+    m.useGlobe = true;
     // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
     // every other region ships one resolution and uses its own URL.
     m.mapUrl = base.mapObject === 'countries'
@@ -14681,15 +14690,8 @@ function showDrawBorderSelector() {
 
 function startDrawBorderMode(region) {
     const m = QUIZ_MODES['draw-border'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    borrowRegion(m, region);
     m.drawRegion = QUIZ_MODES[region] ? region : 'countries';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.useAlbersUsa = !!base.useAlbersUsa;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.useGlobe = false;           // always a flat, static board
     startGameWithMode('draw-border');
 }
@@ -24528,16 +24530,9 @@ function showStatePuzzleSelector() {
 // coordinates, which a rotatable globe would invalidate on the first drag.
 function startStatePuzzleMode(region, difficulty) {
     const m = QUIZ_MODES['state-puzzle'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['us-states'];
+    borrowRegion(m, region, 'us-states');
     m.puzzleRegion = QUIZ_MODES[region] ? region : 'us-states';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.useAlbersUsa = !!base.useAlbersUsa;
     m.useGlobe = false;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.puzzleDifficulty = difficulty || 'easy';
     startGameWithMode('state-puzzle');
 }
@@ -25732,16 +25727,7 @@ function startNameAllMode(region) {
     // ends there is nothing left to say where it came from.
     nm.sourceRegion = region;
     if (NAME_ALL_STATE_MODES.includes(region)) {
-        const base = QUIZ_MODES[region];
-        nm.quizList = base.quizList;
-        nm.dataObjKey = base.dataObjKey;
-        nm.useGlobe = base.useGlobe;
-        nm.useAlbersUsa = base.useAlbersUsa || false;
-        nm.mapUrl = base.mapUrl;
-        nm.mapObject = base.mapObject;
-        nm.itemLabel = base.itemLabel;
-        nm.itemLabelPlural = base.itemLabelPlural;
-        nm.regionLabel = base.name;
+        nm.regionLabel = borrowRegion(nm, region).name;
     } else {
         nm.quizList = (region && region !== 'world' && window.continentData && window.continentData[region])
             ? window.continentData[region] : quizCountries;
@@ -25962,21 +25948,10 @@ function showIdentifyModeSelector() {
 // Start identify mode with selected region
 function startIdentifyMode(region) {
     // Configure identify mode with the selected region's data
-    const baseMode = region === 'countries' ? 'countries' : region;
-    const baseModeConfig = QUIZ_MODES[baseMode];
-
-    // Update identify mode configuration
-    QUIZ_MODES.identify.quizList = baseModeConfig.quizList;
-    QUIZ_MODES.identify.dataObjKey = baseModeConfig.dataObjKey;
-    QUIZ_MODES.identify.useGlobe = baseModeConfig.useGlobe;
-    QUIZ_MODES.identify.useAlbersUsa = baseModeConfig.useAlbersUsa || false;
-    QUIZ_MODES.identify.mapUrl = baseModeConfig.mapUrl;
-    QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
-    QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
-    QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
+    const base = borrowRegion(QUIZ_MODES.identify, region);
     QUIZ_MODES.identify.totalQuestions = identifyQuizScopeAll
-        ? baseModeConfig.quizList.length
-        : Math.min(10, baseModeConfig.quizList.length);
+        ? base.quizList.length
+        : Math.min(10, base.quizList.length);
 
     // Start game with identify mode
     startGameWithMode('identify');
