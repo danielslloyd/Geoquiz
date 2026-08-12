@@ -421,11 +421,46 @@ which is a fact about the world rather than about geometry and is written down. 
 come from the same generator, since "beginning with C" and "beginning with M" in one puzzle is a
 spelling test rather than a geography one. 12 of 12 draws.
 
+**Which kinds of group may turn up is a choice** (`sbConnectOn`, the *Kinds of group…* button
+beside the lives). Twelve generators is enough that seeing them listed is the only way to know
+what the puzzle can ask at all, and turning some off is how you get a board about spelling or a
+board about geography rather than one of each.
+
+Turning them off is not free, and the picker says so by MEASURING rather than by counting boxes:
+a puzzle needs four categories that can all hold at once, so the tally runs twelve draws against
+the current selection and reports how many succeeded. Four kinds is not enough on its own —
+`unsc + huge + populous + island` and `unsc + huge + populous + landlocked` both draw **0 of
+12**, because the Security Council countries are also the huge and populous ones and the
+uniqueness rule can never hold. `letter + equator + unsc + neighbour` draws 12 of 12.
+
 Scoring is four points for solving it and up to six more for how few mistakes it took, out of four.
 **"One away"** is the one piece of feedback this shape of puzzle gives, and it is what makes a near
 miss useful rather than merely wrong. Solved groups rise into coloured bands and leave the grid, so
 the board shrinks as it is worked out; on a loss all four go up anyway, because the answer is the
 point.
+
+### Which of the country the figure covers
+
+A quiz that draws a shape and quotes a number has to be talking about the same country in both,
+and several are not: France's feature is 18% overseas, and nine tenths of the Kingdom of Denmark
+is a separate feature altogether. `sbCoreNote` is the parenthetical that says so, and it is
+written to be RARE — four countries out of 197 — or it is noise on every prompt.
+
+**It measures the framing core against the country INCLUDING the land held as separate features.**
+That second half was missing and it is what left Denmark unqualified: `shapeFramingCore` only
+ever drops parts of the feature in front of it, so core-against-feature answers "how much of this
+shape did the framing keep" when the question is "how much of this country is the shape".
+Denmark's feature is Denmark; Greenland is its own. Counting territories takes Denmark from 0.991
+of itself to **0.018**, and France from 0.862 to 0.831.
+
+**`SB_EXTENT_NOTES` supplies better words where the generic one is wrong**, and for one country
+decides that a note appears at all. That is not the table smuggling in an opinion: the American
+feature genuinely excludes Puerto Rico, Guam, American Samoa, the Virgin Islands and the Northern
+Marianas — five inhabited territories holding four million people and **0.1% of the country's
+area**, which is why an area test is blind to them and no threshold could be tuned to see them.
+The four that fire: **the United States (50 states)**, **France (metropolitan)**, **Norway
+(mainland)** and **Denmark (excluding Greenland)**. Everything else gets the generic word or
+nothing — the UK reads 0.942 with the Falklands counted and stays silent, which is right.
 
 ### Board-replacing rounds
 
@@ -1259,6 +1294,31 @@ Five things it has to get right, and each of them made the transplant invisible 
 Both a group and its children are offered: which of them is "the emblem" is exactly the judgement
 the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
 pieces.
+
+### Three ways to send a colour somewhere
+
+Where a colour should go is a question about intent rather than a question with one right answer,
+so the three intents are on offer (`SB_MATCH_ALGOS`, the select under the donor picker) rather
+than settled in the code.
+
+**Keep the separations** (the default, and what the quiz uses) holds the gaps the design already
+has between its own colours — those relationships *are* the design — and, within what that
+allows, moves each colour as far from its original as it can. **Closest colours** sends every
+colour to the nearest thing the donor has, which is the most conservative repaint there is.
+**Furthest colours** sends each to the least like itself the donor can offer.
+
+The score is two independent terms, which is what lets the default ask for both at once: how well
+the arrangement preserves the seed's pairwise contrasts, and how far each colour ends up from
+where it started (positive weight pushes away, negative pulls back). The merge penalty is not one
+of the three and applies to all of them — two colours landing on top of each other destroys the
+shapes they distinguished whatever anybody was aiming at, and it is what stops *Closest*
+collapsing a flag's two similar reds onto the donor's one red.
+
+Measured over eight seed/donor pairs, the three separate exactly as named: mean colour movement
+87 / 51 / 23 / 125 RGB units for *Closest* against 237 / 322 / 389 / 282 for *Furthest*, with
+*Keep* holding contrast error at 0.13–0.75 where *Furthest* runs 1.09–4.93. The default's
+distance term is new and it earns its place: it buys a **54% larger visible change** (mean
+movement 105 → 162) for 0.09 of contrast error, and leaves five of eight mappings identical.
 
 ### The charge menu, and charges made of several pieces
 

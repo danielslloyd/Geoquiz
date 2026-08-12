@@ -14462,12 +14462,58 @@ function sbCoreAreaKm2(name) {
     sbCoreAreaCache.map.set(name, km2);
     return km2;
 }
-// "" or " (mainland)". Metropolitan France is mainland plus Corsica, which the core keeps, so
-// "mainland" is the word that is true of every case rather than of the famous one.
+// Land the country holds that the atlas ships as its OWN feature — Greenland, Puerto Rico, New
+// Caledonia — which is the half of this the core could never see. `shapeFramingCore` only ever
+// drops parts of the feature in front of it, so measuring the core against that feature answered
+// "how much of this shape did the framing keep" when the question is "how much of this country is
+// the shape". Denmark's feature is Denmark; nine tenths of the Kingdom is a separate feature, so
+// the note that exists to say exactly that never fired for it.
+let sbTerrCache = { src: null, map: null };
+function sbTerritoryAreaKm2(parent) {
+    const src = gameState.countries;
+    if (sbTerrCache.src !== src || !sbTerrCache.map) {
+        const m = new Map();
+        (src || []).forEach(f => {
+            const p = f && f.properties && f.properties.parent;
+            if (!p) return;
+            const a = d3.geoArea(f);
+            if (!isFinite(a) || a <= 0) return;
+            const k = normalizeName(p);
+            m.set(k, (m.get(k) || 0) + a * SB_EARTH_R_KM * SB_EARTH_R_KM);
+        });
+        sbTerrCache = { src, map: m };
+    }
+    return sbTerrCache.map.get(normalizeName(parent)) || 0;
+}
+
+// Where the generic word is the wrong word, or where no amount of area will ever notice. The
+// threshold still decides WHETHER a note appears; this decides what it says — except for the
+// United States, where it also decides that one appears at all. That is not the table smuggling
+// in an opinion: the American feature genuinely excludes Puerto Rico, Guam, American Samoa, the
+// Virgin Islands and the Northern Marianas, five inhabited territories holding four million
+// people between them — and 0.1% of the country's area, which is why an area test is blind to
+// them and no threshold could ever be tuned to see them.
+const SB_EXTENT_NOTES = {
+    'France': ' (metropolitan)',
+    'Denmark': ' (excluding Greenland)',
+    'Norway': ' (mainland)',
+    'Netherlands': ' (European Netherlands)',
+    'United States of America': { note: ' (50 states)', always: true }
+};
+
+// "" or a parenthetical saying which of the country the figure covers.
 function sbCoreNote(name) {
-    const whole = sbAreaKm2(name), core = sbCoreAreaKm2(name);
-    if (!whole || !core) return '';
-    return core / whole < SB_CORE_NOTE_FRAC ? ' (mainland)' : '';
+    const own = sbAreaKm2(name), core = sbCoreAreaKm2(name);
+    if (!own || !core) return '';
+    const whole = own + sbTerritoryAreaKm2(name);
+    const fires = core / whole < SB_CORE_NOTE_FRAC;
+    const said = Object.keys(SB_EXTENT_NOTES).find(k => namesMatch(k, name));
+    const rule = said ? SB_EXTENT_NOTES[said] : null;
+    const words = rule && (rule.note || rule);
+    if (rule && (rule.always || fires)) return words;
+    // Mainland plus whatever sits just off it: the core keeps Corsica and Sicily, so "mainland"
+    // is the word that is true of every unnamed case rather than of the famous one.
+    return fires ? ' (mainland)' : '';
 }
 function sbCoreLabel(name) { return displayLabelForName(name) + sbCoreNote(name); }
 
@@ -14766,13 +14812,82 @@ const SB_CONNECT_CATS = [
     }
 ];
 
+// Which kinds of group may turn up. All of them, until somebody says otherwise in the picker —
+// which exists because "what sort of question is this puzzle allowed to ask" is the one knob
+// worth having on a generator with twelve of them, and because seeing the twelve listed is the
+// only way to know what it can ask at all.
+let sbConnectOn = new Set(SB_CONNECT_CATS.map(c => c.key));
+const SB_CONNECT_NAMES = {
+    letter: 'Beginning with a letter', ending: 'Ending in ‑stan, ‑land or ‑ia',
+    landlocked: 'Landlocked', island: 'No land border with anybody',
+    equator: 'On the Equator', continent: 'On one continent',
+    neighbour: 'Bordering one country', unsc: 'The Security Council',
+    huge: 'The largest by area', populous: 'Over 100 million people',
+    capinitial: 'Capital shares the first letter', twoword: 'More than one word'
+};
+
+// A puzzle needs FOUR categories that can all be satisfied at once, so turning them off is not
+// free: below four kinds there is nothing to build from, and several of the twelve can only ever
+// offer one group each (there is one Security Council). The picker therefore says how many draws
+// out of twelve the current selection actually produces, measured rather than guessed — the only
+// honest answer to "is this combination playable".
+function sbConnectDraws(tries) {
+    let ok = 0;
+    for (let i = 0; i < (tries || 12); i++) if (sbBuildConnections()) ok++;
+    return ok;
+}
+
+function sbOpenConnectCats() {
+    const ov = document.createElement('div');
+    ov.className = 'ws-overlay';
+    const rows = () => SB_CONNECT_CATS.map(c =>
+        `<label class="sb-conn-cat"><input type="checkbox" data-cat="${c.key}"` +
+        `${sbConnectOn.has(c.key) ? ' checked' : ''}> ${SB_CONNECT_NAMES[c.key] || c.key}</label>`).join('');
+    ov.innerHTML =
+        `<div class="ws-dialog"><div class="ws-dialog-head"><strong>Kinds of group</strong>` +
+        `<button type="button" class="ws-x" id="sb-conn-close" title="Close">×</button></div>` +
+        `<div class="ws-hint">Only the ticked kinds are offered to the generator. A puzzle needs ` +
+        `four that can hold at once, so a short list may not draw at all — the tally below says ` +
+        `whether it does.</div>` +
+        `<div class="sb-conn-cats" id="sb-conn-cats">${rows()}</div>` +
+        `<div class="ws-row"><button class="control-btn" id="sb-conn-all">All</button>` +
+        `<button class="control-btn" id="sb-conn-none">None</button>` +
+        `<span class="ws-hint" id="sb-conn-tally"></span></div>` +
+        `<div class="ws-row"><button class="control-btn" id="sb-conn-deal">Deal a new board</button></div></div>`;
+    document.body.appendChild(ov);
+    const tally = () => {
+        const el = document.getElementById('sb-conn-tally');
+        if (el) el.textContent = sbConnectOn.size < 4 ? 'Fewer than four kinds — nothing can be built.'
+                                                     : sbConnectDraws(12) + ' of 12 draws succeed.';
+    };
+    const wire = () => {
+        ov.querySelectorAll('input[data-cat]').forEach(cb => cb.addEventListener('change', () => {
+            if (cb.checked) sbConnectOn.add(cb.dataset.cat); else sbConnectOn.delete(cb.dataset.cat);
+            tally();
+        }));
+    };
+    const repaint = () => { document.getElementById('sb-conn-cats').innerHTML = rows(); wire(); tally(); };
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    document.getElementById('sb-conn-close').addEventListener('click', () => ov.remove());
+    document.getElementById('sb-conn-all').addEventListener('click', () => {
+        sbConnectOn = new Set(SB_CONNECT_CATS.map(c => c.key)); repaint();
+    });
+    document.getElementById('sb-conn-none').addEventListener('click', () => { sbConnectOn = new Set(); repaint(); });
+    document.getElementById('sb-conn-deal').addEventListener('click', () => {
+        ov.remove();
+        startGameWithMode('sb-connections');
+    });
+    wire();
+    tally();
+}
+
 // One puzzle: four categories, four countries each, and no country in two of them.
 function sbBuildConnections() {
     const pool = sbPool().filter(n => sbAreaKm2(n) > 5000);
     if (pool.length < 40) return null;
     // Every group every category can offer, from this pool.
     const all = [];
-    SB_CONNECT_CATS.forEach(c => {
+    SB_CONNECT_CATS.filter(c => sbConnectOn.has(c.key)).forEach(c => {
         let gs = [];
         try { gs = c.groups(pool) || []; } catch (_) { gs = []; }
         gs.forEach(g => { if (g && (g.names || []).length >= 4) all.push({ ...g, cat: c.key }); });
@@ -19584,8 +19699,38 @@ function sbHarmonic(donor, i, wantL) {
 // Every arrangement is tried and scored on total pairwise contrast error. A palette is at most
 // six colours, so that is at most C(6,5) x 5! = 720 arrangements, which is nothing.
 const SB_MIN_APART = 60;      // two colours nearer than this merge the shapes they distinguish
-function sbMatchPalettes(base, donor) {
+
+// Three ways of deciding where a colour should go, because "best" is a question about intent and
+// the three answers are genuinely different flags.
+//
+// `contrast` weighs how well the arrangement preserves the seed's own pairwise separations — the
+// relationships that ARE the design. `cross` weighs how far each colour ends up from where it
+// started: positive to push it away, negative to pull it back. The two are independent, which is
+// what lets `keep` ask for both at once — hold the design's internal separations AND move every
+// colour as far from its original as that allows, which is the arrangement that both reads as the
+// same design and reads as repainted.
+//
+// The merge penalty is not one of the three. Two colours landing on top of each other destroys
+// the shapes they distinguished whatever anybody was aiming at, so it applies to all of them —
+// and it is what stops `Closest` collapsing a flag's two similar reds onto the donor's one red.
+const SB_RGB_MAX = Math.sqrt(3) * 255;
+const SB_CROSS_SCALE = 6;      // puts a 0..1 mean distance on the same footing as a contrast sum
+const SB_MATCH_ALGOS = {
+    keep: { label: 'Keep the separations',
+            desc: 'Hold the gaps the design already has between its own colours, and move each one as far from itself as that allows.',
+            contrast: 1, cross: 0.35 },
+    near: { label: 'Closest colours',
+            desc: 'Every colour becomes the nearest thing the donor has to it. The most conservative repaint there is.',
+            contrast: 0, cross: -1 },
+    far:  { label: 'Furthest colours',
+            desc: 'Every colour becomes the least like itself the donor can offer.',
+            contrast: 0, cross: 1 }
+};
+const SB_MATCH_DEFAULT = 'keep';
+
+function sbMatchPalettes(base, donor, algoKey) {
     if (!base || !base.length || !donor || !donor.length) return null;
+    const algo = SB_MATCH_ALGOS[algoKey] || SB_MATCH_ALGOS[SB_MATCH_DEFAULT];
     const n = base.length;
     // The WHOLE donor palette is on offer, not its first few. A two-colour seed against a
     // four-colour donor was being shown only the donor's two biggest, so Japan's white had to
@@ -19625,11 +19770,23 @@ function sbMatchPalettes(base, donor) {
     let best = null;
     const score = acc => {
         let err = 0;
-        for (let i = 0; i < n; i++)
-            for (let j = i + 1; j < n; j++)
-                err += Math.abs(C[i][j] - sbContrast(acc[i], acc[j]));
+        // How well the design's own internal separations survive.
+        if (algo.contrast) {
+            let c = 0;
+            for (let i = 0; i < n; i++)
+                for (let j = i + 1; j < n; j++)
+                    c += Math.abs(C[i][j] - sbContrast(acc[i], acc[j]));
+            err += algo.contrast * c;
+        }
+        // How far each colour ends up from where it started. Positive weight pushes it away
+        // (a repaint you can see), negative pulls it back (a repaint you can barely see).
+        if (algo.cross) {
+            let d = 0;
+            for (let i = 0; i < n; i++) d += sbRgbDist(base[i].rgb, acc[i]) / SB_RGB_MAX;
+            err -= algo.cross * SB_CROSS_SCALE * (d / n);
+        }
         // Two colours landing on top of each other merges the shapes they distinguished, and no
-        // amount of contrast fidelity is worth that.
+        // objective above is worth that.
         for (let i = 0; i < n; i++)
             for (let j = i + 1; j < n; j++) {
                 const d2 = sbRgbDist(acc[i], acc[j]);
@@ -19716,12 +19873,12 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
 // entries: two of a flag's colours landing on one MERGES the shapes they distinguished, which is
 // a defect when a machine does it by accident and a design decision when a person does it on
 // purpose — a tricolour with two of its bands the same is a bicolour, and somebody may want one.
-function sbRepaint(doc, palette, donor, pick) {
+function sbRepaint(doc, palette, donor, pick, algo) {
     const nodes = sbSvgColourNodes(doc);
     if (!nodes.length || !palette || !palette.length) return null;
     const pool = donor && donor.palette && donor.palette.length ? donor.palette : null;
     if (!pool) return null;
-    let map = sbMatchPalettes(palette, pool);
+    let map = sbMatchPalettes(palette, pool, algo);
     if (!map) return null;
     const keyOf = e => e.key || e.hex;
     if (pick && pick.size) map = map.map(m => pick.has(keyOf(m.from)) ? { from: m.from, to: pick.get(keyOf(m.from)) } : m);
@@ -19910,7 +20067,8 @@ function wsParts(code, doc) {
 
 let wsState = null;
 const wsFresh = () => ({ base: null, donor: null, tweak: new Map(), pick: new Map(), extra: [],
-                         menu: [], added: [], browse: null, sel: new Set(), wheel: 0 });
+                         menu: [], added: [], browse: null, sel: new Set(), wheel: 0,
+                         algo: SB_MATCH_DEFAULT });
 // The donor's palette as it currently stands: its own colours, any hand edits laid over them, and
 // any colours added from the placeholder. A palette a person has extended is still the donor's
 // scheme as far as everything downstream is concerned.
@@ -20011,7 +20169,7 @@ async function wsCompose() {
         const pal = wsDonorPal();
         const pick = new Map();
         st.pick.forEach((di, key) => { if (pal[di]) pick.set(key, pal[di].rgb); });
-        changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick);
+        changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick, st.algo);
         mapping = sbRepaint.lastMap;
         // Anything the mapping had to INVENT is adopted into the donor's palette. A colour the
         // flag is wearing but the donor column does not show is a colour nobody can edit or
@@ -20266,6 +20424,15 @@ function renderFlagWorkshop() {
         `<div class="ws-hint">Drag a wire to send one of your colours somewhere else \u2014 several may ` +
         `share a donor colour. Drag a dot on the wheel to change that colour itself.</div>` +
         `<div class="ws-drop" id="ws-donor-drop"></div>` +
+        // WHERE a colour goes is a question about intent, not a question with one right answer,
+        // so the three intents are on offer rather than settled in the code.
+        `<div class="ws-row ws-algo-row"><label for="ws-algo">Send each colour to</label>` +
+        `<select id="ws-algo" class="ws-filter">` +
+        Object.keys(SB_MATCH_ALGOS).map(k =>
+            `<option value="${k}"${(wsState.algo || SB_MATCH_DEFAULT) === k ? ' selected' : ''}>` +
+            `${SB_MATCH_ALGOS[k].label}</option>`).join('') +
+        `</select></div>` +
+        `<div class="ws-hint" id="ws-algo-desc"></div>` +
         `<div id="ws-wheel-wrap"></div>` +
         `<div id="ws-wire"></div></section>` +
 
@@ -20313,6 +20480,20 @@ function renderFlagWorkshop() {
         wsRefresh();
     };
     wsFlagSelect('ws-donor-drop', wsState.donor && wsState.donor.name, setDonor, 'Keep its own colours');
+
+    const algoSel = document.getElementById('ws-algo');
+    const algoDesc = () => {
+        const d = document.getElementById('ws-algo-desc');
+        if (d) d.textContent = (SB_MATCH_ALGOS[wsState.algo] || SB_MATCH_ALGOS[SB_MATCH_DEFAULT]).desc;
+    };
+    if (algoSel) algoSel.addEventListener('change', () => {
+        wsState.algo = algoSel.value;
+        // The hand-made wires are answers to the old question; a new objective is a new answer.
+        wsState.pick = new Map();
+        algoDesc();
+        wsRefresh();
+    });
+    algoDesc();
 
     document.getElementById('ws-open-charges').addEventListener('click', wsOpenCharges);
     document.getElementById('ws-save').addEventListener('click', wsSave);
@@ -21688,7 +21869,8 @@ function sbPaintConnect(q) {
         `</div>` +
         `<div class="sb-conn-lives">${'●'.repeat(Math.max(0, SB_CONNECT_LIVES - q.mistakes))}` +
         `${'○'.repeat(Math.min(SB_CONNECT_LIVES, q.mistakes))}` +
-        `<span class="sb-conn-lives-lab">mistakes left</span></div>`;
+        `<span class="sb-conn-lives-lab">mistakes left</span>` +
+        `<button type="button" class="sb-conn-cats-btn" id="sb-conn-open">Kinds of group…</button></div>`;
 
     const byLabel = new Map(q.items.map(n => [displayLabelForName(n), n]));
     grid.querySelectorAll('.sb-conn-tile').forEach(b => b.addEventListener('click', () => {
@@ -21701,6 +21883,8 @@ function sbPaintConnect(q) {
         const next = document.getElementById('next-btn');
         if (next) next.disabled = q.picked.length !== 4;
     }));
+    const open = document.getElementById('sb-conn-open');
+    if (open) open.addEventListener('click', sbOpenConnectCats);
     const next = document.getElementById('next-btn');
     if (next && !gameState.sbAnswered) next.disabled = q.picked.length !== 4;
 }
