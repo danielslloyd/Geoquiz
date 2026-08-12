@@ -5423,19 +5423,11 @@ function labelMissedOnMap(missed) {
     // both Russia and Canada spans 170° of real world and read as 190° of empty Atlantic.
     const bb = geoBox(fc);
     const span = bb ? Math.max(bb.lonSpan, bb.latSpan) : 360;
-    if (span < 140 && projection && projection.fitExtent) {
-        try {
-            // Rotate first on a globe: fitExtent only scales and translates, so anything on the
-            // far side of an orthographic would be fitted to a hemisphere it cannot appear in.
-            if (typeof projection.rotate === 'function' && isGlobeView()) {
-                const c = d3.geoCentroid(fc);
-                if (c && isFinite(c[0])) {
-                    projection.rotate([-c[0], gammaLocked ? 0 : -c[1], 0]);
-                    r_unconstrained = projection.rotate().slice();
-                }
-            }
-            const pad = Math.min(width, height) * 0.08;
-            projection.fitExtent([[pad, pad], [width - pad, height - pad]], fc);
+    if (span < 140) {
+        // On a globe the world has to be turned first: fitExtent only scales and translates, so
+        // anything on the far side of an orthographic would be fitted to a hemisphere it cannot
+        // appear in.
+        if (fitTo(fc, { pad: 0.08, recentre: isGlobeView() ? 'globe' : false })) {
             drawCountries();
             // drawCountries rebuilds the paths and the dots, so the red highlight has to go
             // back on afterwards or the zoom silently undoes it.
@@ -5443,7 +5435,7 @@ function labelMissedOnMap(missed) {
                 .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
             if (islandMarkersGroup) islandMarkersGroup.selectAll('circle')
                 .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
-        } catch (_) { /* keep the framing we had */ }
+        }
     }
 
     const layer = g.append('g').attr('class', 'name-all-labels');
@@ -6397,6 +6389,63 @@ function computeShapeDescriptor(feature) {
 
 // name -> shape descriptor, from the largest feature per name (some names split
 // into micro-polygons at high detail; the biggest carries the recognisable shape).
+// ---- framing the projection on something ----------------------------------------------
+// One or many, features or country names, each replaced by its framing core and wrapped as a
+// collection. The core is taken per FEATURE and never over the collection: a set is only as
+// tight as the remotest islet in ANY of them, and these sets are whole neighbourhoods —
+// dividing Germany hands land to the Netherlands, whose feature reaches Aruba.
+function coreCollection(items) {
+    const list = (Array.isArray(items) ? items : [items])
+        .map(x => typeof x === 'string' ? sbFeature(x) : x)
+        .filter(Boolean)
+        .map(f => {
+            const core = shapeFramingCore(f);
+            if (!core) return f;
+            return core.type === 'Feature' ? core
+                 : { type: 'Feature', properties: {}, geometry: core };
+        });
+    return list.length ? { type: 'FeatureCollection', features: list } : null;
+}
+
+// Fit the projection to something. Seven places did this and each carried its own copy of the
+// same four decisions:
+//
+//   pad       a fraction of the SMALLER side, so a margin is the same margin whichever way
+//             round the board is
+//   core      run the target through coreCollection first
+//   recentre  turn the world under the projection BEFORE fitting, because fitExtent only
+//             scales and translates. 'lon' brings the target's own meridian to the middle,
+//             which is what keeps an antimeridian straddler from fitting to a box spanning the
+//             whole world; 'globe' brings it round to the near side of an orthographic, where
+//             it can appear at all.
+//
+// It returns a boolean and swallows its own failures, because the honest answer to a fit that
+// will not go is to keep the framing you had — which is what every one of the seven already did
+// in its own catch block.
+function fitTo(target, opts) {
+    const o = opts || {};
+    const proj = o.projection || projection;
+    const obj = o.core ? coreCollection(target) : target;
+    if (!proj || !proj.fitExtent || !obj) return false;
+    const w = o.width || width || 800, h = o.height || height || 600;
+    const pad = Math.min(w, h) * (o.pad == null ? 0.08 : o.pad);
+    try {
+        if (o.recentre && typeof proj.rotate === 'function') {
+            const c = d3.geoCentroid(obj);
+            if (c && isFinite(c[0])) {
+                proj.rotate(o.recentre === 'globe'
+                    ? [-c[0], gammaLocked ? 0 : -c[1], 0]
+                    : [-c[0], 0]);
+                // Any rotation set outside the drag handler has to be written back here, or the
+                // next drag snaps to the pre-fit value.
+                if (o.recentre === 'globe') r_unconstrained = proj.rotate().slice();
+            }
+        }
+        proj.fitExtent([[pad, pad], [w - pad, h - pad]], obj);
+    } catch (_) { return false; }
+    return true;
+}
+
 function buildShapeDescriptorCache() {
     const byName = new Map();
     (gameState.countries || []).forEach(f => {
@@ -6562,13 +6611,7 @@ function renderCountryShapeIdQuestion() {
     // South Africa, the Galápagos for Ecuador) sets the bounds and the country itself
     // shrinks to a smudge. The full geometry is still what's drawn below; excluded parts
     // just land outside the viewport.
-    if (target && projection && projection.fitExtent) {
-        const core = shapeFramingCore(target);
-        const c = d3.geoCentroid(core);
-        if (c && isFinite(c[0])) projection.rotate([-c[0], 0]);
-        const pad = Math.min(width, height) * 0.12;
-        projection.fitExtent([[pad, pad], [width - pad, height - pad]], core);
-    }
+    if (target) fitTo(target, { core: true, pad: 0.12, recentre: 'lon' });
 
     // Draw ONLY the target as a single borderless silhouette. Rendering the whole
     // 10m world (~250k vertices) just to show one country is far too heavy, so the
@@ -18235,12 +18278,7 @@ function framingDraw() {
     // aimed, and a view that refits under every drag cannot be aimed at anything.
     if (framingState.needFit) {
         framingState.needFit = false;
-        const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.1;
-        try {
-            const c = d3.geoCentroid(framingState.feature);
-            if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
-            projection.fitExtent([[pad, pad], [w - pad, h - pad]], framingState.feature);
-        } catch (_) { /* leave the framing alone */ }
+        fitTo(framingState.feature, { pad: 0.1, recentre: 'lon' });
     }
 
     countriesGroup.selectAll('*').remove();
@@ -22659,20 +22697,7 @@ function sbFlagOffsets(bm) {
 // which is what "the sandbox clips the map for no apparent reason" was — the map was framed on
 // somebody's island 6,000 km away.
 function sbFitToFeatures(names, padFrac) {
-    if (!projection || !projection.fitExtent) return false;
-    const feats = names.map(sbFeature).filter(Boolean).map(f => {
-        const core = shapeFramingCore(f);
-        if (!core) return f;
-        return core.type === 'Feature' ? core : { type: 'Feature', properties: {}, geometry: core };
-    });
-    if (!feats.length) return false;
-    const w = width || 800, h = height || 600;
-    const pad = Math.min(w, h) * (padFrac == null ? 0.08 : padFrac);
-    try {
-        projection.fitExtent([[pad, pad], [w - pad, h - pad]],
-            { type: 'FeatureCollection', features: feats });
-    } catch (_) { return false; }
-    return true;
+    return fitTo(names, { core: true, pad: padFrac == null ? 0.08 : padFrac });
 }
 
 // Every Neighbour's reveal: the silhouette was alone on purpose (with the map around it, its
@@ -23579,17 +23604,11 @@ function sbPlayRevealAnimation() {
     // whole point of dividing the land at the arc level rather than by redrawing polygons.
     if (q.surgery && q.surgery.goneFeature) {
         const feat = q.surgery.goneFeature;
-        if (projection && projection.fitExtent) {
-            // Fitted to the COUNTRY, with a wide margin rather than to the whole neighbourhood.
-            // Fitting to every absorber framed the DRC or Kazakhstan and left the country that
-            // vanished as a speck in the middle of it; a generous pad round the country itself
-            // shows the same neighbours and puts the thing being talked about in the middle.
-            const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.34;
-            try {
-                projection.fitExtent([[pad, pad], [w - pad, h - pad]], feat);
-                drawCountries();
-            } catch (_) { /* keep the framing we had */ }
-        }
+        // Fitted to the COUNTRY, with a wide margin rather than to the whole neighbourhood.
+        // Fitting to every absorber framed the DRC or Kazakhstan and left the country that
+        // vanished as a speck in the middle of it; a generous pad round the country itself
+        // shows the same neighbours and puts the thing being talked about in the middle.
+        if (fitTo(feat, { pad: 0.34 })) drawCountries();
         const d = path(feat);
         if (d) sbOverlay().append('path').datum(feat).attr('class', 'sb-ghost').attr('d', d);
         const c = d3.geoCentroid(feat);
@@ -23933,20 +23952,13 @@ function sbDrawCoastOnly() {
 function sbSoloDraw() {
     const q = gameState.sbQuestion;
     const solo = q && q.solo;
-    if (!solo || !solo.feature || !countriesGroup || !projection || !projection.fitExtent) return false;
-    const core = (solo.kind === 'lake' ? solo.feature : (shapeFramingCore(solo.feature) || solo.feature));
-    // fitExtent works in PROJECTION units, which are the SVG's viewBox units — not client
-    // pixels. The svg is viewBox-scaled, so measuring it with clientWidth overshoots the fit
-    // by the display ratio and pushes the shape off the edges.
-    const w = width || 800, h = height || 600;
-    const pad = Math.min(w, h) * 0.14;
-    try {
-        // Recentre longitude first, or a shape straddling the antimeridian fits to a box
-        // spanning the whole world (the same guard renderCountryShapeIdQuestion uses).
-        const c = d3.geoCentroid(core);
-        if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
-        projection.fitExtent([[pad, pad], [w - pad, h - pad]], core);
-    } catch (_) { return false; }
+    if (!solo || !solo.feature || !countriesGroup) return false;
+    // A lake is framed as it is; only a country needs its remote scraps taken off first. Note
+    // fitTo works in PROJECTION units, which are the SVG's viewBox units and not client pixels
+    // — the svg is viewBox-scaled, so measuring it with clientWidth overshoots the fit by the
+    // display ratio and pushes the shape off the edges.
+    if (!fitTo(solo.feature, { core: solo.kind !== 'lake', pad: 0.14, recentre: 'lon' }))
+        return false;
 
     countriesGroup.selectAll('*').remove();
     // The dot markers and the lake overlay are SIBLINGS of countriesGroup, not children, so

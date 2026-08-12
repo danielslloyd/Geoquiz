@@ -2537,6 +2537,36 @@ Verified: all 76 tiles across all twelve pickers start their mode with zero erro
 toggles (puzzle difficulty, Find/Identify scope, Shape ID region) all still drive their state,
 and nothing is left behind by any picker opened from any live mode.
 
+## Framing the projection on something
+
+Seven places fitted the projection to a feature and each carried its own copy of the same four
+decisions. `fitTo(target, {pad, core, recentre, projection})` is the one of them:
+
+* **`pad`** is a fraction of the SMALLER side, so a margin is the same margin whichever way
+  round the board is.
+* **`core`** runs the target through `coreCollection`, which takes `shapeFramingCore` **per
+  feature and never over the collection** — a set is only as tight as the remotest islet in any
+  one of them, and these sets are whole neighbourhoods.
+* **`recentre`** turns the world under the projection BEFORE fitting, because `fitExtent` only
+  scales and translates. `'lon'` brings the target's own meridian to the middle, which is what
+  stops an antimeridian straddler fitting to a box spanning the world; `'globe'` brings it round
+  to the near side of an orthographic, where it can appear at all (and writes `r_unconstrained`
+  back, or the next drag snaps to the pre-fit rotation).
+
+It returns a boolean and swallows its own failures, because the honest answer to a fit that will
+not go is to keep the framing you had — which is what all seven already did in their own catch
+blocks.
+
+Verified against the old inline formula, projection by projection: **scale, translate and
+rotation identical to three decimal places** for Shape ID, the three solo boards (Name the Lake,
+Every Neighbour, Pin the Capital) and the framing sandbox — including Lake Balkhash and Fiji,
+whose whole point is the antimeridian recentre.
+
+**Five sites are deliberately left alone**, because they are different machines rather than
+copies of this one: Draw the Border pads each axis by a fraction of ITS OWN length rather than
+of the smaller side, the projection lab and the spaceship inset fit a `Sphere`, and the raster
+and Out-of-Scale tile fits run on a `geoIdentity` in planar space with no projection to recentre.
+
 ## One seeded stream, so a link is the game you played
 
 A share link should hand somebody the game you played, not another game in the same mode. That
