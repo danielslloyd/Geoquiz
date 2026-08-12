@@ -1712,6 +1712,14 @@ function startGameWithMode(mode) {
         ended: false
     };
 
+    // A KNOWN LABEL on Give Up before the mode renders. It is shared furniture and a mode that
+    // shows the button without setting its text inherits whatever the last one wrote -- the
+    // Puzzle's "Solve It" turned up on Name All and on Capitals ▸ Multiple Choice, and Find the
+    // Capital's "Skip" on the Flag Workshop. Only the LABEL is reset here, not the visibility:
+    // which buttons a mode shows is a decision each one makes for itself, and forcing that too
+    // would hide a button in every mode that has always relied on it being there.
+    setModeChrome({ giveUp: MODE_CHROME_DEFAULTS.giveUp });
+
     // The stream is seeded BEFORE anything is drawn or any question chosen, so the very first
     // draw is already on it.
     seedGame(pendingGameSeed || newSeed());
@@ -3385,6 +3393,29 @@ function wireMapStyleControls() {
         say();
     });
     say();
+}
+
+// The two buttons every mode has an opinion about.
+//
+// They are shared page furniture -- one Give Up, one Next, written to from ninety places -- so
+// whatever the last mode left is what the next one starts from. `false` hides, `true` shows with
+// the default label, a string shows with that label, and anything OMITTED is left alone, because
+// plenty of callers deliberately touch one and not the other mid-round.
+const MODE_CHROME_DEFAULTS = { giveUp: 'Give Up', next: 'Next Question' };
+function setModeChrome(o) {
+    const set = (id, v, dflt) => {
+        const el = document.getElementById(id);
+        if (!el || v === undefined) return;
+        if (v === false) { el.style.display = 'none'; return; }
+        el.style.display = 'inline-block';
+        el.textContent = typeof v === 'string' ? v : dflt;
+    };
+    set('give-up-btn', o.giveUp, MODE_CHROME_DEFAULTS.giveUp);
+    set('next-btn', o.next, MODE_CHROME_DEFAULTS.next);
+    if (o.nextDisabled !== undefined) {
+        const n = document.getElementById('next-btn');
+        if (n) n.disabled = !!o.nextDisabled;
+    }
 }
 
 // Borrow a geography.
@@ -20660,6 +20691,9 @@ function renderFlagWorkshop() {
     // (Which is the same trap the note below warns about, sprung on the sibling container.)
     const mc = document.getElementById('multiple-choice-container');
     if (mc) mc.classList.add('hidden');
+    // The workshop has no rounds, so it has nothing to advance to — and a Next button it never
+    // set was showing whatever the last mode wrote on it ("Submit Guess", off Find the Capital).
+    setModeChrome({ next: false });
     if (!wsState) wsState = wsFresh();
 
     // APPENDED, not written over the container. `#question-container` holds `#feedback` and

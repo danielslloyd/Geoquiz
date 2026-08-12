@@ -2491,6 +2491,28 @@ Unlike the quizzes, a places click keys on the feature's **own** name, not `d.pr
 
 Chip drag-between-lists is wired **once** by `wirePlacesListInteractions` as delegated listeners on the persistent `#places-lists`, so `refreshPlacesPanel`'s `innerHTML` rebuild needs no re-wiring. `dragover` reads the module-level `placesDragName` rather than `dataTransfer` (unreadable there per the HTML5 DnD spec) and `dragleave` is guarded by `!cat.contains(e.relatedTarget)` to stop child elements flickering the highlight. Hover-delete (`.place-chip-remove`) is forced visible under `@media (hover: none)` for touch.
 
+## The two buttons are shared furniture
+
+There is one Give Up and one Next on the page and ninety places write to them, so what a mode
+starts with is whatever the last one left. Three modes showed Give Up without ever setting its
+text, and inherited: **Name All and Capitals ▸ Multiple Choice both read "Solve It" when entered
+straight after the Puzzle**, and the Flag Workshop read "Skip" after Find the Capital and
+"Submit Guess" on a Next button it has no use for.
+
+`setModeChrome({giveUp, next, nextDisabled})` is the one writer -- `false` hides, `true` shows the
+default label, a string shows that label, and anything OMITTED is left alone, since plenty of
+callers deliberately touch one button and not the other mid-round. `startGameWithMode` resets the
+Give Up **label** before the mode renders.
+
+Only the label, not the visibility. Which buttons a mode shows is a decision each one makes for
+itself, and forcing that centrally would hide a button in every mode that has always relied on it
+being there -- a much larger change than the bug warrants. Verified over the mode pairs that
+leaked and their inverses, plus a capture of all 47 modes' chrome from a clean start.
+
+A caution for anyone measuring this: two more modes *looked* like they leaked and did not. Reading
+the buttons 400 ms after a mode starts catches them before the map has loaded and the render has
+run, so the reading is the previous mode's. Wait for the round.
+
 ## One seeded stream, so a link is the game you played
 
 A share link should hand somebody the game you played, not another game in the same mode. That
