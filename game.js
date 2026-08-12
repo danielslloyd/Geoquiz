@@ -3208,6 +3208,37 @@ function featureParts(feature) {
     return [];
 }
 
+// ONE earth. Three constants held the same 6371 -- EARTH_R_KM for the orbital view,
+// SB_EARTH_R_KM for the sandbox, FRAMING_R2 for the framing sandbox's areas -- and seven more
+// places wrote the number out. Nothing was ever inconsistent, but three names for one fact is
+// three places to look when a distance disagrees with an area, and a fourth would have had to be
+// typed into all of them.
+const EARTH_R_KM = 6371;
+const EARTH_R2_KM2 = EARTH_R_KM * EARTH_R_KM;   // for d3.geoArea, which returns steradians
+
+// A memo that empties itself when the world does.
+//
+// Everything wrapped in this is a walk over the atlas keyed by country name -- a centroid, an
+// area, whether the framing core is the whole country -- and every one of them is wrong the
+// moment `gameState.countries` is replaced, which happens on a detail change and on every round
+// of Who's Missing, whose entire job is to hand back a different world. Keying on the ARRAY
+// IDENTITY rather than on a version number means nothing has to remember to invalidate anything:
+// a new list is a new cache, and there is no path that produces a new world without producing a
+// new list. Five caches wrote that ritual out by hand and one of them -- the shape-quiz one --
+// did not do it at all, relying on a single explicit clear that a detail change never reached.
+function memoByCountries(fn) {
+    let src = null, map = new Map();
+    const out = name => {
+        if (src !== gameState.countries) { src = gameState.countries; map = new Map(); }
+        if (map.has(name)) return map.get(name);
+        const v = fn(name);
+        map.set(name, v);
+        return v;
+    };
+    out.clear = () => { map = new Map(); };
+    return out;
+}
+
 // A bounding box you can do arithmetic on.
 //
 // `d3.geoBounds` is antimeridian-AWARE, which is not the same as antimeridian-safe: a feature
@@ -6268,7 +6299,7 @@ let shapeUnfold = null;
 function startShapeUnfold(target) {
     stopShapeUnfold();
     gameState.shapeIdTarget = target;
-    const R2 = 6371 * 6371;
+    const R2 = EARTH_R2_KM2;
     let rings = featureParts(target)
         .map(poly => poly[0])
         .filter(r => r && r.length > 4)
@@ -7021,16 +7052,7 @@ function drawOrderArrows(container, correctIndexOf) {
 // Memoised against the feature list itself, so anything that replaces that list (a detail
 // change, Who's Missing's surgery) invalidates it for free. At 10m a centroid is a walk over
 // tens of thousands of vertices, and the sandbox draw loops ask for hundreds of them per round.
-let sbCentroidCache = { src: null, map: new Map() };
-function getCountryCentroid(countryName) {
-    if (sbCentroidCache.src !== gameState.countries) {
-        sbCentroidCache = { src: gameState.countries, map: new Map() };
-    }
-    if (sbCentroidCache.map.has(countryName)) return sbCentroidCache.map.get(countryName);
-    const out = computeCountryCentroid(countryName);
-    sbCentroidCache.map.set(countryName, out);
-    return out;
-}
+const getCountryCentroid = memoByCountries(name => computeCountryCentroid(name));
 
 function computeCountryCentroid(countryName) {
     const country = gameState.countries && gameState.countries.find(c => c.properties.name === countryName);
@@ -7974,7 +7996,7 @@ function revealCapitalAnswer(extraLine) {
 function submitCapitalGuess() {
     if (gameState.capitalSubmitted || !gameState.currentGuess) return;
     gameState.capitalSubmitted = true;
-    const dKm = d3.geoDistance(gameState.currentGuess, gameState.capitalAnswer) * 6371;
+    const dKm = d3.geoDistance(gameState.currentGuess, gameState.capitalAnswer) * EARTH_R_KM;
     gameState.totalDistanceKm += dKm;
     logCapitalRound(gameState.currentGuess, dKm);
 
@@ -8124,13 +8146,13 @@ function puzzlePlacementErrorKm(feature, drop) {
     const a = projection.invert ? projection.invert(c) : null;
     const b = projection.invert ? projection.invert(dropped) : null;
     if (a && b && !isNaN(a[0]) && !isNaN(b[0])) {
-        return d3.geoDistance(a, b) * 6371;
+        return d3.geoDistance(a, b) * EARTH_R_KM;
     }
     // geoAlbersUsa is a composite and inverts to null in the gaps between its insets, so
     // fall back to the local scale: km per board unit, measured right at the true position.
     const probe = projection.invert ? projection.invert([c[0] + 10, c[1]]) : null;
     const kmPerUnit = (a && probe && !isNaN(probe[0]))
-        ? (d3.geoDistance(a, probe) * 6371) / 10
+        ? (d3.geoDistance(a, probe) * EARTH_R_KM) / 10
         : 4;   // ~4 km per unit across the lower 48 at this projection scale
     return Math.hypot(drop[0], drop[1]) * kmPerUnit;
 }
@@ -14422,7 +14444,7 @@ function showSandboxSelector() {
 // lets these hook the shared globe without editing setupGlobe or displacing another mode's
 // handler — d3 keeps namespaced listeners side by side.
 
-const SB_EARTH_R_KM = 6371;
+const SB_EARTH_R_KM = EARTH_R_KM;   // one name for it lives above
 
 // ---- shared helpers ----
 function sbFeature(name) {
@@ -14432,17 +14454,11 @@ function sbFeature(name) {
 // Memoised against the feature list itself, so Who's Missing's surgery (which replaces that
 // list wholesale) invalidates it for free. d3.geoArea on a 10m country is not cheap and the
 // draw loops ask for the same handful of countries hundreds of times.
-let sbAreaCache = { src: null, map: new Map() };
-function sbAreaKm2(name) {
-    const src = gameState.countries;
-    if (sbAreaCache.src !== src) sbAreaCache = { src, map: new Map() };
-    if (sbAreaCache.map.has(name)) return sbAreaCache.map.get(name);
+const sbAreaKm2 = memoByCountries(name => {
     const f = sbFeature(name);
     const a = f ? d3.geoArea(f) : 0;               // steradians
-    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : null;
-    sbAreaCache.map.set(name, km2);
-    return km2;
-}
+    return (isFinite(a) && a > 0) ? a * EARTH_R2_KM2 : null;
+});
 
 // The area of the FRAMING CORE, and a note saying so. Several countries own land the question
 // nobody is asking includes: France's is 18% overseas, Denmark's is nine tenths Greenland, and a
@@ -14450,41 +14466,28 @@ function sbAreaKm2(name) {
 // different question from the one on screen. Below the threshold the two are the same figure and
 // the note is not written at all — it exists to be RARE, or it is noise on every prompt.
 const SB_CORE_NOTE_FRAC = 0.92;
-let sbCoreAreaCache = { src: null, map: new Map() };
-function sbCoreAreaKm2(name) {
-    const src = gameState.countries;
-    if (sbCoreAreaCache.src !== src) sbCoreAreaCache = { src, map: new Map() };
-    if (sbCoreAreaCache.map.has(name)) return sbCoreAreaCache.map.get(name);
+const sbCoreAreaKm2 = memoByCountries(name => {
     const f = sbFeature(name);
     const core = f && shapeFramingCore(f);
     const a = core ? d3.geoArea(core) : 0;
-    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : sbAreaKm2(name);
-    sbCoreAreaCache.map.set(name, km2);
-    return km2;
-}
+    return (isFinite(a) && a > 0) ? a * EARTH_R2_KM2 : sbAreaKm2(name);
+});
 // Land the country holds that the atlas ships as its OWN feature — Greenland, Puerto Rico, New
 // Caledonia — which is the half of this the core could never see. `shapeFramingCore` only ever
 // drops parts of the feature in front of it, so measuring the core against that feature answered
 // "how much of this shape did the framing keep" when the question is "how much of this country is
 // the shape". Denmark's feature is Denmark; nine tenths of the Kingdom is a separate feature, so
 // the note that exists to say exactly that never fired for it.
-let sbTerrCache = { src: null, map: null };
-function sbTerritoryAreaKm2(parent) {
-    const src = gameState.countries;
-    if (sbTerrCache.src !== src || !sbTerrCache.map) {
-        const m = new Map();
-        (src || []).forEach(f => {
-            const p = f && f.properties && f.properties.parent;
-            if (!p) return;
-            const a = d3.geoArea(f);
-            if (!isFinite(a) || a <= 0) return;
-            const k = normalizeName(p);
-            m.set(k, (m.get(k) || 0) + a * SB_EARTH_R_KM * SB_EARTH_R_KM);
-        });
-        sbTerrCache = { src, map: m };
-    }
-    return sbTerrCache.map.get(normalizeName(parent)) || 0;
-}
+const sbTerritoryAreaKm2 = memoByCountries(parent => {
+    let km2 = 0;
+    (gameState.countries || []).forEach(f => {
+        const p = f && f.properties && f.properties.parent;
+        if (!p || !namesMatch(p, parent)) return;
+        const a = d3.geoArea(f);
+        if (isFinite(a) && a > 0) km2 += a * EARTH_R2_KM2;
+    });
+    return km2;
+});
 
 // Where the generic word is the wrong word, or where no amount of area will ever notice. The
 // threshold still decides WHETHER a note appears; this decides what it says — except for the
@@ -14528,9 +14531,7 @@ function sbCapitalLonLat(name) {
     return d && Array.isArray(d.capitalCoords) ? [d.capitalCoords[1], d.capitalCoords[0]] : null;
 }
 
-function sbKmBetween(a, b) {
-    return d3.geoDistance(a, b) * SB_EARTH_R_KM;
-}
+const sbKmBetween = kmBetween;   // one great-circle distance; see kmBetween
 
 // The distance between two COUNTRIES: nearest point to nearest point, not centroid to
 // centroid. Centroids answer a different question and get it visibly wrong on anything long or
@@ -17758,7 +17759,7 @@ function applyCoreOverride(feature) {
     });
     items.sort((x, y) => y.a - x.a);
     const home = items[0].centroid;
-    items.forEach(it => { it.km = d3.geoDistance(home, it.centroid) * 6371; });
+    items.forEach(it => { it.km = d3.geoDistance(home, it.centroid) * EARTH_R_KM; });
     const kept = items.filter(it => corePartKept(rule, it)).map(it => it.c);
     if (!kept.length || kept.length === parts.length) return feature;
     return { type: 'Feature', properties: feature.properties,
@@ -17783,7 +17784,7 @@ function applyCoreOverride(feature) {
 
 let framingState = null;
 
-const FRAMING_R2 = 6371 * 6371;
+const FRAMING_R2 = EARTH_R2_KM2;
 
 // Area of a lon/lat box on the sphere, in km². Antimeridian-safe, and guarded against a ring
 // wound the wrong way — d3.geoArea would then report the whole sphere minus the box.
@@ -20911,19 +20912,7 @@ const SB_QUIZZES = {
             // drawn smaller than the area it is being compared on. Both are the same problem:
             // for those countries "the area" is a question about which bits count, and this
             // round is not the place to argue it.
-            // Memoised: shapeFramingCore over the whole pool is 600 ms, and build() runs it on
-            // every draw and retry.
-            const whole = n => {
-                if (sbWholeCache.has(n)) return sbWholeCache.get(n);
-                const f = sbFeature(n);
-                let ok = false;
-                if (f) {
-                    const core = d3.geoArea(shapeFramingCore(f)), all = d3.geoArea(f);
-                    ok = all > 0 && core / all > 0.92;
-                }
-                sbWholeCache.set(n, ok);
-                return ok;
-            };
+            const whole = sbWholeCache;
             // A floor of 1,000 km². Below it the two silhouettes carried to the equator are
             // specks the comparison cannot be read off, and the question stops being about the
             // projection and becomes about whether you happen to know two microstates.
@@ -23730,8 +23719,14 @@ function sbDrawSoloLake(feature) {
 // of the same move, and it is the one that shows the shape changing rather than only the size.
 //
 // Slide first, then zoom. Split so each motion can be read on its own.
-// Whether a country's framing core IS the country, memoised across build() calls.
-const sbWholeCache = new Map();
+// Whether a country's framing core IS the country. Memoised across build() calls -- running
+// shapeFramingCore over the whole pool is 600 ms and build() does it on every draw and retry.
+const sbWholeCache = memoByCountries(n => {
+    const f = sbFeature(n);
+    if (!f) return false;
+    const core = d3.geoArea(shapeFramingCore(f)), all = d3.geoArea(f);
+    return all > 0 && core / all > 0.92;
+});
 
 // A cheap stand-in for the animation. Re-projecting 10m geometry every frame costs 63 ms for
 // Canada, which is a slideshow rather than a motion; every nth vertex is 2 ms and, while the
@@ -24269,7 +24264,6 @@ let orbDrag = null;            // pointer-drag state for look-around
 let orbitalResizeBound = false;
 let orbitAltitudeKm = 250;        // camera altitude — tunable via the Orbit-height slider
 const SPACESHIP_FOV = 48;         // vertical field of view (degrees)
-const EARTH_R_KM = 6371;
 // Distance ratio (R+h)/R and the derived viewing geometry. The camera-nadir→horizon
 // angle grows toward 90° as altitude drops, so the default tilt (which frames the
 // curved limb in the upper third) and the pan clamp are both derived from altitude.
@@ -25397,7 +25391,7 @@ function frameSpaceshipResult(answer, guess) {
 function submitSpaceshipGuess() {
     if (gameState.capitalSubmitted || !gameState.currentGuess) return;
     gameState.capitalSubmitted = true;
-    const dKm = d3.geoDistance(gameState.currentGuess, gameState.spaceshipTarget) * 6371;
+    const dKm = d3.geoDistance(gameState.currentGuess, gameState.spaceshipTarget) * EARTH_R_KM;
     gameState.totalDistanceKm += dKm;
 
     // Score = accuracy + speed − panning (weights are slider-tunable).
