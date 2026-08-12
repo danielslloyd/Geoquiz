@@ -19214,8 +19214,17 @@ function sbSvgColourNodes(doc) {
     return out;
 }
 
-// One flag's SVG, parsed, with the network and the obvious duds handled once.
+// One flag's SVG, parsed, with the network handled once.
+//
+// EVERY flag that parses is returned. The size cap that used to live here — 40 kB, on the grounds
+// that a big coat of arms is slow and recolours badly — was a QUIZ concern being enforced at the
+// fetch, and it fell hardest on exactly the flags the workshop exists for: a third of the world's
+// flags carry arms, and arms are what makes a file big. So Mexico, Ecuador, Croatia, Serbia,
+// Portugal and their like previewed perfectly in the picker (an `<img>` needs no parse) and then
+// reported that they could not be read. The judgement moves to `sbFlagSimple`, which the quiz
+// consults and the workshop does not.
 const sbFlagDocCache = new Map();
+const SB_FLAG_SIMPLE_MAX = 40000;
 async function sbFlagDoc(code) {
     if (sbFlagDocCache.has(code)) return sbFlagDocCache.get(code);
     let out = null;
@@ -19223,17 +19232,27 @@ async function sbFlagDoc(code) {
         const res = await fetch(`https://flagcdn.com/${code}.svg`);
         if (res.ok) {
             const text = await res.text();
-            // Enormous files (Mexico's coat of arms is 140 kB of gradients) are slow and
-            // recolour badly; a raster embedded in an SVG cannot be recoloured at all.
-            if (text && text.length <= 40000 && !/<image/i.test(text)) {
+            if (text) {
                 const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-                if (doc && !doc.querySelector('parsererror') && doc.documentElement) out = doc;
+                if (doc && !doc.querySelector('parsererror') && doc.documentElement) {
+                    // Kept on the document rather than recomputed: serialising a 140 kB flag back
+                    // to a string to ask how big it is costs more than the fetch did.
+                    doc.__sbBytes = text.length;
+                    doc.__sbRaster = /<image/i.test(text);
+                    out = doc;
+                }
             }
         }
     } catch (_) { out = null; }
     sbFlagDocCache.set(code, out);
     return out;
 }
+
+// Suitable as a QUIZ seed: small enough to recolour quickly and cleanly, and vector throughout —
+// a raster embedded in an SVG cannot be recoloured at all, so a fake built on one would be a real
+// flag with a few stripes changed round it.
+const sbFlagSimple = doc =>
+    !!doc && !doc.__sbRaster && (doc.__sbBytes || 0) <= SB_FLAG_SIMPLE_MAX;
 
 // How much of the CLOTH each colour covers, which is the only ranking that means anything here.
 // Counting nodes instead is off by whole orders of magnitude in the one direction that matters:
@@ -19604,7 +19623,7 @@ function sbMatchPalettes(base, donor) {
 // this seed is unsuitable.
 async function sbBuildFakeFlag(seedName, code, region, donor) {
     const src = await sbFlagDoc(code);
-    if (!src) return null;
+    if (!sbFlagSimple(src)) return null;
     // A private copy: the parsed docs are cached and a fake must not scribble on one.
     const doc = new DOMParser().parseFromString(
         new XMLSerializer().serializeToString(src), 'image/svg+xml');
