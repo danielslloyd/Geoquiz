@@ -1295,6 +1295,17 @@ Both a group and its children are offered: which of them is "the emblem" is exac
 the workshop exists to hand over. Measured across ten flags, every one offers between 1 and 24
 pieces.
 
+**The definitions go in the page once, not into every tile.** Written into each tile, "the whole
+source flag rides along" means the flag serialised once per tile -- San Marino offers 24 pieces
+and carries 94 kB of definitions, so its browse panel was **2.4 MB of markup**, twenty-four copies
+of a 300-element document for the browser to parse, style and lay out. That is what "taking a
+really long time to render" was, and no amount of SVG complexity accounts for it. Separate inline
+`<svg>` elements in one HTML document share ONE id space, so the definitions only need to be there
+once: they go into a hidden svg keyed by the source flag, ids prefixed with that flag's code, and
+each tile merely references them. **2.4 MB becomes 117 kB and the panel paints in 3 ms.** Verified
+across seven flags: 93 genuine `href`/`url()` references, none of them dangling -- the US stars,
+India's chakra, Nepal's rays and Brazil's stars all resolve into the shared host.
+
 ### Three ways to send a colour somewhere
 
 Where a colour should go is a question about intent rather than a question with one right answer,
@@ -2089,6 +2100,15 @@ It runs on the same Visvalingam–Whyatt pass the coastline model uses, which is
 question rather than a blur: VW drops the point whose triangle with its neighbours is smallest,
 so what survives at low detail is the country's actual corners — the cape, the bend in the
 river, the elbow of the border — in the order a person would draw them. Two properties of that
+**One point per press on the state maps.** The growth rule is right for countries and wrong for
+states, and the reason is the shapes: a country's outline runs to hundreds or thousands of points,
+so equal absolute steps stop meaning anything and a ratio is the only thing that reaches full
+detail in a sane number of presses. A state's runs to a fraction of that, and at that size every
+point is still a visible corner much further up -- so the ratio was skipping past the whole
+interesting range in three or four presses. Measured at the 10m detail this mode forces, the
+states' median outline is **166 points against 899** for the countries pool, and the smallest
+state is 34 points against a smallest country of 8.
+
 pass matter here and neither is incidental: the weights are forced **monotonically increasing**,
 so every threshold is a nested subset and points can only ever be *added* (nothing that has
 appeared disappears, which is what stops the shape flickering as it grows — verified: vertex
@@ -2459,6 +2479,37 @@ The globe still rotates normally: a drag that starts on a tray chip captures the
 Unlike the quizzes, a places click keys on the feature's **own** name, not `d.properties.parent` — clicking Denmark does not fill Greenland. `TERRITORY_BY_ID` therefore carries an own-ISO `code` per territory (with `TERRITORY_CODE_BY_NAME`/`TERRITORY_NAME_BY_CODE` built from it) so territories get their own flag and their own share-URL code; `placesCodeForName` prefers that over the parent's, and `placesFlagUrl` is deliberately quiet where `getFlagUrl` warns. `applyPlacesFills()` paints both country paths **and** dot circles and is idempotent, so it is safe to re-run after any draw — which it must be, since `drawIslandMarkers` rebuilds dots from scratch (`captureFeatureMarks` covers the paths; `drawIslandMarkers` re-calls `applyPlacesFills` for the dots).
 
 Chip drag-between-lists is wired **once** by `wirePlacesListInteractions` as delegated listeners on the persistent `#places-lists`, so `refreshPlacesPanel`'s `innerHTML` rebuild needs no re-wiring. `dragover` reads the module-level `placesDragName` rather than `dataTransfer` (unreadable there per the HTML5 DnD spec) and `dragleave` is guarded by `!cat.contains(e.relatedTarget)` to stop child elements flickering the highlight. Hover-delete (`.place-chip-remove`) is forced visible under `@media (hover: none)` for touch.
+
+## One seeded stream, so a link is the game you played
+
+A share link should hand somebody the game you played, not another game in the same mode. That
+needs every choice a round makes -- which country, which distractors, which of a hundred shuffles
+-- to come out of ONE stream with ONE seed, so a number in the URL replays the lot. `seedGame`
+sets it in `startGameWithMode` before anything is drawn; `rnd()` and `pickOne()` are the drop-ins
+for `Math.random()` and the `arr[floor(random*len)]` written out twenty-nine times.
+
+**`Math.random` stays where the choice is not part of the question**: the jitter that nudges two
+dots apart, an audio noise burst, the starfield, the orbital sandbox's display sampling. Those are
+drawn a different number of times depending on how the map happens to lay out, so routing them
+through the stream would put the sequence out of step and reproduce nothing.
+
+**The seed is in the address bar, not only in a share link.** `syncModeUrl` writes it on every
+mode start, so copying the URL is the same as pressing Share -- a share button nobody has to find.
+
+**The False Flag prefetch needed a stream of its own**, and the reason is worth stating: it is
+asynchronous and runs alongside whatever round is on screen, so its draws landed in the middle of
+the main stream at network-dependent points and put every later question out of step. It is the
+only thing in the app that draws off the clock. Its private stream is derived from the game seed
+and stepped per preparation, so it is still deterministic and no longer interferes.
+
+Measured, two independent fresh loads of the same URL: **Find, Identify, Mystery Flag, Capitals
+Race, Capitals Choice, Name the Shape, Odd One Out, Order by Population, Find the Capital, and
+every one of the eighteen sandbox generators** produce the identical run, and a different seed
+produces a different one. `?seed=555` on False Flag deals Malaysia's flag in Seychelles's colours
+against Iraq, Croatia and Andorra, in that order, every time.
+
+**The one that cannot be**: Skyline ID, whose photo comes from a live Commons search whose results
+are not stable over time. Its city choice is seeded; which photograph turns up is not.
 
 ## Shareable URLs and challenge links
 

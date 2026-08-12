@@ -1264,13 +1264,13 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
 
     // Add at least one similar item if available
     if (similarItems.length > 0) {
-        const randomSimilar = similarItems[Math.floor(Math.random() * similarItems.length)];
+        const randomSimilar = pickOne(similarItems);
         options.push(randomSimilar);
     }
 
     // Fill remaining options with random items
     while (options.length < 4) {
-        const randomItem = currentList[Math.floor(Math.random() * currentList.length)];
+        const randomItem = pickOne(currentList);
         if (!options.includes(randomItem)) {
             options.push(randomItem);
         }
@@ -1291,7 +1291,7 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
 function shuffleArray(array) {
     const shuffled = [...array];
     for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rnd() * (i + 1));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled;
@@ -1711,6 +1711,11 @@ function startGameWithMode(mode) {
         placesMessage: '',
         ended: false
     };
+
+    // The stream is seeded BEFORE anything is drawn or any question chosen, so the very first
+    // draw is already on it.
+    seedGame(pendingGameSeed || newSeed());
+    pendingGameSeed = null;
 
     // Set current data sources
     // A sandbox/link seed is handed over exactly once, into the fresh gameState.
@@ -3382,6 +3387,33 @@ function wireMapStyleControls() {
     say();
 }
 
+// ==================== ONE SEEDED STREAM ====================
+//
+// A share link should hand somebody the game you played, not another game in the same mode. That
+// needs every choice a round makes — which country, which distractors, which of a hundred
+// shuffles — to come out of ONE stream with ONE seed, so a number in the URL replays the lot.
+//
+// `Math.random` stays where the choice is not part of the question: the jitter that nudges two
+// dots apart, an audio noise burst, the starfield. Those are drawn a different number of times
+// depending on how the map happens to be laid out, so routing them through the stream would put
+// the sequence out of step and reproduce nothing.
+//
+// The seed is a plain 32-bit number and the generator is the mulberry32 already here for the
+// spaceship seeds. `rnd()` is a drop-in for `Math.random()` and `pickOne` for the
+// `arr[floor(random*len)]` written out twenty-nine times.
+let gameRng = Math.random;
+function seedGame(seed) {
+    const s = (seed >>> 0) || 1;
+    gameState.seed = s;
+    gameRng = mulberry32(s);
+    return s;
+}
+const rnd = () => gameRng();
+const pickOne = arr => (arr && arr.length) ? arr[Math.floor(rnd() * arr.length)] : undefined;
+const newSeed = () => (Math.floor(Math.random() * 0xFFFFFFFF) >>> 0) || 1;
+// Carried from a link into the fresh gameState exactly once, like the spaceship seed.
+let pendingGameSeed = null;
+
 // A memo that empties itself when the world does.
 //
 // Everything wrapped in this is a walk over the atlas keyed by country name -- a centroid, an
@@ -4608,7 +4640,7 @@ function startNewQuestion() {
         }
 
         // Select random item
-        const randomIndex = Math.floor(Math.random() * availableItems.length);
+        const randomIndex = Math.floor(rnd() * availableItems.length);
         gameState.targetCountry = availableItems[randomIndex];
         gameState.usedCountries.add(gameState.targetCountry);
 
@@ -5810,6 +5842,10 @@ function sharePlacesLink() {
 function syncModeUrl(mode) {
     const p = new URLSearchParams();
     p.set('mode', mode);
+    // The seed goes in the ADDRESS BAR as well as in a shared link, so the URL always names the
+    // game in front of you -- copy it out of the bar and it is the same game, which is what
+    // anybody copying a URL expects and is a share button they do not have to find.
+    if (gameState.seed) p.set('seed', String(gameState.seed));
     // Only when it is not the default: a `?map=atlas` on every link is noise saying nothing.
     if (mapStyleKey !== MAP_STYLE_DEFAULT) p.set('map', mapStyleKey);
     history.replaceState(null, '', location.pathname + '?' + p.toString());
@@ -5837,6 +5873,8 @@ function shareCurrentGame() {
     if (mc && mc.placesMode) { sharePlacesLink(); return; }
     const p = new URLSearchParams();
     p.set('mode', gameState.mode);
+    if (gameState.seed) p.set('seed', String(gameState.seed));
+    if (mapStyleKey !== MAP_STYLE_DEFAULT) p.set('map', mapStyleKey);
     if (gameState.ended) {
         p.set('score', String(gameState.score));
         const max = gameState.totalQuestions * maxSubForMode(mc);
@@ -5878,6 +5916,11 @@ function routeFromUrl() {
         root.style.setProperty('--map-ink', String(+(si * mapInkUser).toFixed(4)));
         root.dataset.mapStyle = st;
     }
+    // A seed replays the exact questions. Held here and handed to the fresh gameState by
+    // startGameWithMode, the same way the spaceship's own seed is.
+    const sd = parseInt(p.get('seed'), 10);
+    if (isFinite(sd) && sd > 0) pendingGameSeed = sd >>> 0;
+
     const mode = p.get('mode');
     if (!mode) return false;
 
@@ -6249,7 +6292,7 @@ function generateShapeIdOptions(correctAnswer) {
     // Top up to 4 with random quiz items if similarity yielded too few.
     let guard = 0;
     while (options.length < 4 && options.length < list.length && guard++ < 500) {
-        const r = list[Math.floor(Math.random() * list.length)];
+        const r = pickOne(list);
         if (!options.includes(r)) options.push(r);
     }
     return shuffleArray(options);
@@ -6385,7 +6428,7 @@ function renderCountryShapeIdQuestion() {
         // It must NOT return out of the whole function — the answer list is still to come.
         if (tier.unfold) startShapeUnfold(target);
         else if (tier.rotate) {
-            const ang = Math.round(Math.random() * 360);
+            const ang = Math.round(rnd() * 360);
             // Shrink far enough that the TURNED shape still fits. The projection was fitted to
             // the country upright, so a tall one spun a quarter turn needs the viewport's width
             // for its height and runs off the edge — Tonga came out 1,064 px tall in a 600 px
@@ -6520,7 +6563,17 @@ function startShapeUnfold(target) {
     order.sort((x, y) => y.w - x.w);
 
     const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
-    shapeUnfold = { target, prepared, order, total: order.length, layer,
+    // ONE POINT PER PRESS on the state maps. The growth rule is right for countries and wrong
+    // for states, and the reason is the shapes: a country's outline runs to hundreds or
+    // thousands of points, so equal absolute steps stop meaning anything and a ratio is the only
+    // thing that gets you to full detail in a sane number of presses. A state's runs to a
+    // fraction of that, and at that size every point is a visible corner much further up -- so
+    // the ratio was skipping past the whole interesting range in three or four presses.
+    // Measured at the 10m detail this mode forces: the states' median outline is 166 points
+    // against 899 for the countries pool, a factor of 5.4, and the smallest state is 34 points
+    // against a smallest country of 8.
+    const oneAtATime = !!(QUIZ_MODES[shapeIdRegion] && QUIZ_MODES[shapeIdRegion].mapObject !== 'countries');
+    shapeUnfold = { target, prepared, order, total: order.length, layer, oneAtATime,
                     points: SHAPE_UNFOLD_START, gap: 4 };
     drawShapeUnfold(SHAPE_UNFOLD_START);
 }
@@ -6531,8 +6584,10 @@ function startShapeUnfold(target) {
 function stepShapeUnfold() {
     if (!shapeUnfold || gameState.questionType !== 'country-shape-id') return;
     if (gameState.answeredCorrectly || shapeUnfold.points >= shapeUnfold.total) return;
-    const next = Math.max(shapeUnfold.points + shapeUnfold.gap,
-                          Math.round(shapeUnfold.points * SHAPE_UNFOLD_RATIO));
+    const next = shapeUnfold.oneAtATime
+        ? shapeUnfold.points + 1
+        : Math.max(shapeUnfold.points + shapeUnfold.gap,
+                   Math.round(shapeUnfold.points * SHAPE_UNFOLD_RATIO));
     shapeUnfold.gap++;
     shapeUnfold.points = Math.min(shapeUnfold.total, next);
     drawShapeUnfold(shapeUnfold.points);
@@ -6814,10 +6869,10 @@ async function resolveSkylineTarget() {
         const pool = Object.keys(data).filter(
             c => !gameState.usedCountries.has(c) && !skylineNoPhoto.has(c));
         if (!pool.length) return null;
-        const city = pool[Math.floor(Math.random() * pool.length)];
+        const city = pickOne(pool);
         gameState.usedCountries.add(city);
         const list = await fetchSkylineCandidates(city).catch(() => []);
-        if (list.length) return { city: city, photo: list[Math.floor(Math.random() * list.length)] };
+        if (list.length) return { city: city, photo: pickOne(list) };
         skylineNoPhoto.add(city);
     }
     return null;
@@ -8109,10 +8164,10 @@ function renderFindCapitalQuestion() {
         const d = gameState.currentDataObj[n];
         return d && Array.isArray(d.capitalCoords);
     });
-    let target = pool[Math.floor(Math.random() * pool.length)];
+    let target = pickOne(pool);
     let guard = 0;
     while (gameState.usedCountries.has(target) && gameState.usedCountries.size < pool.length && guard++ < 500) {
-        target = pool[Math.floor(Math.random() * pool.length)];
+        target = pickOne(pool);
     }
     gameState.usedCountries.add(target);
     gameState.targetCountry = target;
@@ -9389,7 +9444,7 @@ function buildOddOneOut() {
                 ? (trait.outsiders(grp, list.filter(n => !memberSet.has(normalizeName(n)))) || [])
                 : list.filter(n => !memberSet.has(normalizeName(n)));
             if (!outsiders.length) continue;
-            const odd = outsiders[Math.floor(Math.random() * outsiders.length)];
+            const odd = pickOne(outsiders);
             return {
                 trait: trait.key,
                 why: trait.label(grp.tag),
@@ -9570,7 +9625,7 @@ function pickDrawBorderTarget() {
         return d3.geoArea(f) > 0.0015;
     });
     if (!feats.length) return null;
-    return feats[Math.floor(Math.random() * feats.length)];
+    return pickOne(feats);
 }
 
 function ensureDrawBorderLayer() {
@@ -13677,8 +13732,8 @@ function decodeSpaceshipSeed(str) {
 
 function randomSpaceshipSpot() {
     return resolveSpaceshipSpot({
-        pos: Math.floor(Math.random() * SPOT_POS_MAX),
-        var: Math.floor(Math.random() * SPOT_VAR_MAX)
+        pos: Math.floor(rnd() * SPOT_POS_MAX),
+        var: Math.floor(rnd() * SPOT_VAR_MAX)
     });
 }
 
@@ -15120,7 +15175,7 @@ function sbPool() {
 }
 
 function sbRandom(list) {
-    return list.length ? list[Math.floor(Math.random() * list.length)] : null;
+    return list.length ? pickOne(list) : null;
 }
 
 function sbFormatKm(km) {
@@ -20218,7 +20273,7 @@ function wsParts(code, doc) {
                         // to find. Order matters the moment several are taken together — an
                         // outline drawn after the shape it outlines covers it — so the composite
                         // is assembled by `seq` and the ranking is only ever a way of looking.
-                        out.push({ xml: new XMLSerializer().serializeToString(c), defs, ctm: pctm, inherit, box,
+                        out.push({ xml: new XMLSerializer().serializeToString(c), defs, code, ctm: pctm, inherit, box,
                                    vb: { x: X0v, y: Y0v, w: W, h: H },
                                    tag: c.tagName.toLowerCase(), frac, seq: out.length });
                     }
@@ -20433,8 +20488,22 @@ let sbFakeFlagPending = false;
 // to a tricolour. They still appear as real options; they are simply never the thing forged.
 const SB_NO_FORGE = new Set(['sa', 'af', 'iq', 'ir']);
 
+// A STREAM OF ITS OWN, and the reason is subtle enough to be worth stating: this preparation is
+// asynchronous and runs alongside whatever round is on screen, so its draws would land in the
+// middle of the main stream at network-dependent points and put every later question out of step.
+// A seeded link would then reproduce nothing in this mode -- and in no other, because no other
+// mode draws off the clock. Derived from the game seed so it is still deterministic per
+// preparation, and stepped per preparation so consecutive ones differ.
+let sbFakePrep = 0;
 function sbPrepareFakeFlag() {
     if (sbFakeFlagReady || sbFakeFlagPending) return;
+    const mainRng = gameRng;
+    gameRng = mulberry32(((gameState.seed || 1) ^ (0x9E3779B9 * (++sbFakePrep))) >>> 0);
+    const ownRng = gameRng;
+    gameRng = mainRng;
+    // Every draw inside the preparation borrows the private stream and puts the main one back,
+    // since the preparation is interleaved with the round's own draws by the event loop.
+    const sbRnd = fn => { const keep = gameRng; gameRng = ownRng; try { return fn(); } finally { gameRng = keep; } };
     const pool = sbPool().filter(n => {
         const d = (window.countryData || {})[effectiveDataName(n)];
         return d && d.code && !SB_NO_FORGE.has(d.code);
@@ -20447,7 +20516,7 @@ function sbPrepareFakeFlag() {
     const codeOf = n => { const d = (window.countryData || {})[effectiveDataName(n)]; return d && d.code; };
     (async () => {
         for (let t = 0; t < 8 && !sbFakeFlagReady; t++) {
-            const seed = sbRandom(pool);
+            const seed = sbRnd(() => sbRandom(pool));
             const code = codeOf(seed);
             if (!code) continue;
             try {
@@ -20461,7 +20530,7 @@ function sbPrepareFakeFlag() {
                 // round wants to be making.
                 let donor = null;
                 for (let d2 = 0; d2 < 4; d2++) {
-                    const dn = sbRandom(pool.filter(n => !namesMatch(n, seed)));
+                    const dn = sbRnd(() => sbRandom(pool.filter(n => !namesMatch(n, seed))));
                     const dc = dn && codeOf(dn);
                     if (!dc) continue;
                     const palette = await sbDonorPalette(dc);
@@ -20513,6 +20582,7 @@ function wsCombine(parts0) {
             return `<g transform="matrix(${(q.ctm || [1, 0, 0, 1, 0, 0]).join(',')})"${inh}>${q.xml}</g>`;
         }).join(''),
         defs: parts[0].defs,
+        code: parts[0].code,
         vb: parts[0].vb,
         ctm: [1, 0, 0, 1, 0, 0],
         inherit: {},
@@ -20925,7 +20995,7 @@ function wsPaintBrowse() {
     }
     box.innerHTML = src.parts.map((pt, i) =>
         `<button type="button" class="ws-swatch${wsState.sel.has(i) ? ' on' : ''}" data-i="${i}">` +
-        `${wsPartSvg(pt, 'br' + i)}</button>`).join('');
+        `${wsPartSvg(pt)}</button>`).join('');
     box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
         const i = +bt.dataset.i;
         if (wsState.sel.has(i)) wsState.sel.delete(i); else wsState.sel.add(i);
@@ -20940,7 +21010,7 @@ function wsPaintMenu() {
     if (!wsState.menu.length) { box.innerHTML = `<div class="ws-hint">Nothing in the menu yet.</div>`; return; }
     box.innerHTML = wsState.menu.map((m, i) =>
         `<span class="ws-menu-item"><button type="button" class="ws-swatch" data-i="${i}" ` +
-        `title="Place ${displayLabelForName(m.from)}'s charge">${wsPartSvg(m.part, 'mn' + i)}</button>` +
+        `title="Place ${displayLabelForName(m.from)}'s charge">${wsPartSvg(m.part)}</button>` +
         `<button type="button" class="ws-x" data-drop="${i}" title="Remove from the menu">\u00d7</button></span>`).join('');
     box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
         const m = wsState.menu[+bt.dataset.i];
@@ -20955,11 +21025,53 @@ function wsPaintMenu() {
     }));
 }
 
-// One piece, drawn alone on a tile. Ids are namespaced per tile: twenty pieces of one flag share
-// a document, so they would otherwise all define the same "a" and every one of them draw the
-// first.
-function wsPartSvg(pt, tag0) {
-    const tag = 'sw' + tag0 + '_';
+// THE DEFINITIONS GO IN THE PAGE ONCE, not into every tile.
+//
+// The whole source flag rides along with every piece, because a charge is usually a <use> of
+// something defined elsewhere and a <use> serialised on its own draws nothing. Written into each
+// TILE, that is the flag serialised once per tile — San Marino offers 24 pieces and carries 94 kB
+// of definitions, so its browse panel was **2.4 MB of markup**, twenty-four copies of a
+// 300-element document for the browser to parse, style and lay out. That is what "a really long
+// time to render" was, and no amount of SVG complexity accounts for it.
+//
+// Separate inline <svg> elements in one HTML document share ONE id space, so the definitions only
+// need to be in the page once. They go into a hidden svg keyed by the source flag, ids prefixed
+// with that flag's code, and every tile merely references them. 2.4 MB becomes 97 kB.
+const wsDefsDone = new Set();
+const WS_SVG_NS = 'http://www.w3.org/2000/svg';
+function wsDefsPrefix(pt) {
+    const code = (pt && pt.code) || '_';
+    const tag = 'wsd' + code.replace(/[^a-z0-9]/gi, '') + '_';
+    if (wsDefsDone.has(tag) || !pt || !pt.defs) return tag;
+    let host = document.getElementById('ws-defs-host');
+    if (!host) {
+        host = document.createElementNS(WS_SVG_NS, 'svg');
+        host.id = 'ws-defs-host';
+        host.setAttribute('aria-hidden', 'true');
+        host.setAttribute('style', 'position:absolute;width:0;height:0;overflow:hidden');
+        document.body.appendChild(host);
+    }
+    const xml = pt.defs
+        .replace(/(href=")#([^"]+)"/g, (m, pre, id) => `${pre}#${tag}${id}"`)
+        .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`)
+        .replace(/\bid="([^"]+)"/g, (m, id) => `id="${tag}${id}"`);
+    try {
+        const frag = new DOMParser().parseFromString(
+            `<svg xmlns="${WS_SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink">${xml}</svg>`,
+            'image/svg+xml');
+        if (!frag.querySelector('parsererror')) {
+            [...frag.documentElement.children].forEach(c => host.appendChild(document.importNode(c, true)));
+        }
+    } catch (_) { /* a flag whose defs will not re-parse simply draws without them */ }
+    wsDefsDone.add(tag);
+    return tag;
+}
+
+// One piece, drawn alone on a tile — a reference into the page's shared definitions and nothing
+// else. The drawn copy keeps its renamed REFERENCES and loses its own ids, since those now live
+// in the host and one document cannot carry an id twice.
+function wsPartSvg(pt) {
+    const tag = wsDefsPrefix(pt);
     const pad = Math.max(pt.box.w, pt.box.h) * 0.06;
     const vb = `${pt.box.x - pad} ${pt.box.y - pad} ${pt.box.w + pad * 2} ${pt.box.h + pad * 2}`;
     const refs = xml => xml
@@ -20967,8 +21079,7 @@ function wsPartSvg(pt, tag0) {
         .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`);
     const m = pt.ctm || [1, 0, 0, 1, 0, 0];
     const inh = Object.keys(pt.inherit || {}).map(k => ` ${k}="${pt.inherit[k]}"`).join('');
-    const body = refs(pt.defs || '').replace(/\bid="([^"]+)"/g, (mm, id) => `id="${tag}${id}"`) +
-                 `<g transform="matrix(${m.join(',')})"${inh}>` +
+    const body = `<g transform="matrix(${m.join(',')})"${inh}>` +
                  refs(pt.xml).replace(/\bid="[^"]+"/g, '') + `</g>`;
     return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${body}</svg>`;
 }
@@ -21052,13 +21163,13 @@ function wsSave() {
 function sbClaimSavedFake() {
     const saved = wsLoadSaved();
     if (!saved.length) return null;
-    const f = saved[Math.floor(Math.random() * saved.length)];
+    const f = pickOne(saved);
     return { url: f.url, seed: f.seed || null, donor: f.donor || null, changes: [], made: f.name || 'you' };
 }
 
 function sbClaimFakeFlag() {
     const saved = sbClaimSavedFake();
-    if (saved && Math.random() < 0.5) return saved;
+    if (saved && rnd() < 0.5) return saved;
     const r = sbFakeFlagReady;
     sbFakeFlagReady = null;
     sbPrepareFakeFlag();          // start the next one now, so no round has to wait on the network
@@ -21156,7 +21267,7 @@ const SB_QUIZZES = {
                 };
                 if (found.lie && found.honest) break;
             }
-            if (found.lie && found.honest) return Math.random() < 0.5 ? found.lie : found.honest;
+            if (found.lie && found.honest) return rnd() < 0.5 ? found.lie : found.honest;
             return found.lie || found.honest || null;
         }
     },
@@ -21449,7 +21560,7 @@ const SB_QUIZZES = {
             if (pool.length < 20) return null;
             const ranked = [...pool].sort((a, b) => sbPop(b) - sbPop(a));
             // Anywhere but the very bottom, which has no country below it to find.
-            const i = Math.floor(Math.random() * (ranked.length - 6));
+            const i = Math.floor(rnd() * (ranked.length - 6));
             const target = ranked[i], answer = ranked[i + 1];
             if (!target || !answer) return null;
             return {
@@ -21471,7 +21582,7 @@ const SB_QUIZZES = {
             const pool = sbPool().filter(n => sbAreaKm2(n));
             if (pool.length < 20) return null;
             const ranked = [...pool].sort((a, b) => sbAreaKm2(b) - sbAreaKm2(a));
-            const i = Math.floor(Math.random() * (ranked.length - 6));
+            const i = Math.floor(rnd() * (ranked.length - 6));
             const target = ranked[i], answer = ranked[i + 1];
             if (!target || !answer) return null;
             const fmt = n => Math.round(sbAreaKm2(n)).toLocaleString() + ' km²';
@@ -21626,7 +21737,7 @@ const SB_QUIZZES = {
                 const picks = shuffleArray([seed, ...shuffleArray(near).slice(0, 3)]);
                 const areas = picks.map(sbCoreAreaKm2);
                 if (Math.max(...areas) / Math.min(...areas) > 3) continue;
-                const idx = Math.floor(Math.random() * 4);
+                const idx = Math.floor(rnd() * 4);
                 const factor = sbRandom([2.1, 2.4, 1 / 2.1, 1 / 2.4]);
                 return {
                     highlight: [],
@@ -24615,7 +24726,7 @@ function computeCoastHeading(target) {
         east += w * Math.cos(ar);
         north += w * Math.sin(ar);
     }
-    if (east === 0 && north === 0) return Math.random() * 2 * Math.PI;
+    if (east === 0 && north === 0) return rnd() * 2 * Math.PI;
     return Math.atan2(east, north); // forward = cosψ·north + sinψ·east
 }
 
@@ -25365,7 +25476,7 @@ function orbitalSetTarget(target) {
         tilt: defaultOrbitTilt(),
         // Seeded runs pin the roll too — heading and tilt are derived, but roll is random,
         // and an unpinned roll would show the same ground at a different angle.
-        roll: (gameState.spaceshipRoll != null) ? gameState.spaceshipRoll : (Math.random() * 2 - 1) * 5,
+        roll: (gameState.spaceshipRoll != null) ? gameState.spaceshipRoll : (rnd() * 2 - 1) * 5,
         fov: SPACESHIP_FOV
     };
     orbitalRefreshCap(target); // local tiles, NASA globe crop, or 500 m stitch — whichever is active
