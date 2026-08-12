@@ -3126,9 +3126,8 @@ function lakeInscribedDiamKm(f) {
     if (f._lakeDiamKm != null) return f._lakeDiamKm;
     const geom = f.geometry;
     const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
-    const [[w, s], [e, n]] = d3.geoBounds(f);
-    const lat0 = (s + n) / 2;
-    const kx = 111.320 * Math.cos(lat0 * Math.PI / 180), ky = 110.574; // deg → km at this latitude
+    const bb = geoBox(f);
+    const kx = 111.320 * Math.cos((bb ? bb.midLat : 0) * Math.PI / 180), ky = 110.574; // deg → km here
     let best = 0;
     for (const poly of polys) {
         const rings = poly.map(r => r.map(p => [p[0] * kx, p[1] * ky]));
@@ -3207,6 +3206,34 @@ function featureParts(feature) {
     if (geom.type === 'Polygon') return [geom.coordinates];
     if (geom.type === 'MultiPolygon') return geom.coordinates;
     return [];
+}
+
+// A bounding box you can do arithmetic on.
+//
+// `d3.geoBounds` is antimeridian-AWARE, which is not the same as antimeridian-safe: a feature
+// straddling ±180 comes back with its EAST edge west of its west edge — Russia reads
+// [[19.6, 41.2], [-169.8, 81.9]] — because that is the honest answer to which arc of the circle
+// it occupies. Subtract one from the other, as the obvious code does, and the span comes out
+// negative; take the absolute value, as the careful-looking code does, and it comes out as the
+// 190° of empty Atlantic the country is NOT in. Either way the countries that suffer are the
+// first anybody would name: Russia, the United States via Alaska, Fiji, Kiribati, New Zealand.
+//
+// geoBox returns a box whose east edge is UNWRAPPED — always east of the west edge, possibly
+// past 180 — so `lonSpan` is always the true span and `midLon` always lies between the two. Some
+// callers genuinely cannot answer their question for a wrapped box (which edge of Russia is its
+// easternmost point?), so `wrapped` says whether it happened and they can decline rather than
+// compute something wrong. Null for geometry with no finite bounds.
+function geoBox(feature) {
+    let b;
+    try { b = d3.geoBounds(feature); } catch (_) { return null; }
+    if (!b || !isFinite(b[0][0]) || !isFinite(b[0][1]) ||
+        !isFinite(b[1][0]) || !isFinite(b[1][1])) return null;
+    const w = b[0][0], s = b[0][1], n = b[1][1];
+    let e = b[1][0];
+    const wrapped = e < w;
+    if (wrapped) e += 360;
+    return { w, s, e, n, wrapped, raw: b,
+             lonSpan: e - w, latSpan: n - s, midLon: (w + e) / 2, midLat: (s + n) / 2 };
 }
 
 // Longitude span of a set of degrees, correctly handling antimeridian wraparound: the true
@@ -5046,11 +5073,10 @@ function labelMissedOnMap(missed) {
     if (!feats.length) return;
 
     const fc = { type: 'FeatureCollection', features: feats };
-    let span = 360;
-    try {
-        const bb = d3.geoBounds(fc);
-        span = Math.max(Math.abs(bb[1][0] - bb[0][0]), Math.abs(bb[1][1] - bb[0][1]));
-    } catch (_) { /* leave it as the whole world */ }
+    // The abs() this replaces measured the wrong arc for a wrapped set — a miss list holding
+    // both Russia and Canada spans 170° of real world and read as 190° of empty Atlantic.
+    const bb = geoBox(fc);
+    const span = bb ? Math.max(bb.lonSpan, bb.latSpan) : 360;
     if (span < 140 && projection && projection.fitExtent) {
         try {
             // Rotate first on a globe: fitExtent only scales and translates, so anything on the
@@ -5940,10 +5966,8 @@ let shapeDescriptorCache = null;
 function computeShapeDescriptor(feature) {
     const f = shapeFramingCore(feature);
     const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
-    const [[w, s], [e, n]] = d3.geoBounds(f);
-    let lonSpan = e - w;
-    if (lonSpan < 0) lonSpan += 360; // antimeridian wrap
-    const midLat = (s + n) / 2;
+    const bb = geoBox(f) || { s: 0, n: 0, lonSpan: 0, midLat: 0 };
+    const { s, n, lonSpan, midLat } = bb;
     const width = lonSpan * Math.cos(midLat * Math.PI / 180); // physical width (deg-equiv)
     const height = Math.max(n - s, 1e-3);
     const aspect = width / height;                            // >1 wide, <1 tall
@@ -14563,33 +14587,27 @@ const SB_LINE_SAMPLES = 400;
 function sbLineCrosses(name, line) {
     const f = sbFeature(name);
     if (!f) return false;
-    const b = d3.geoBounds(f);
-    if (!isFinite(b[0][0])) return false;
+    const b = geoBox(f);
+    if (!b) return false;
     if (line.lat != null) {
-        if (line.lat < b[0][1] || line.lat > b[1][1]) return false;
-        // A country straddling +-180 comes back from `d3.geoBounds` with its EAST edge west of
-        // its west edge — Russia reads [19.6, ..., -169.8] — which is the antimeridian-aware
-        // answer and not a mistake. Subtracting one from the other then gives a negative span
-        // and the country is dropped: that is what lost Russia from the Arctic Circle, the first
-        // country anybody would name, and the United States from it via Alaska. There is nothing
-        // to narrow the search to in that case, so the whole parallel is sampled.
-        const wrapped = b[1][0] < b[0][0] || b[1][0] - b[0][0] > 355;
-        const w = wrapped ? -180 : b[0][0], span = wrapped ? 360 : b[1][0] - b[0][0];
+        if (line.lat < b.s || line.lat > b.n) return false;
+        // A wrapped box gives the sampler nothing to narrow to — the country is on both sides of
+        // the seam — so the whole parallel is walked. This is what once lost Russia from the
+        // Arctic Circle, the first country anybody would name, and the USA from it via Alaska.
+        const wide = b.wrapped || b.lonSpan > 355;
+        const w = wide ? -180 : b.w, span = wide ? 360 : b.lonSpan;
         if (!(span > 0)) return false;
-        const n2 = wrapped ? SB_LINE_SAMPLES * 3 : SB_LINE_SAMPLES;
+        const n2 = wide ? SB_LINE_SAMPLES * 3 : SB_LINE_SAMPLES;
         for (let i = 0; i <= n2; i++)
             if (d3.geoContains(f, [w + span * i / n2, line.lat])) return true;
         return false;
     }
-    // Same wrap: a meridian is inside a wrapped box when it is east of the west edge OR west of
-    // the east one, which is the opposite test from the ordinary case.
-    const wrap2 = b[1][0] < b[0][0];
-    const inLon = wrap2 ? (line.lon >= b[0][0] || line.lon <= b[1][0])
-                        : (line.lon >= b[0][0] && line.lon <= b[1][0]);
-    if (!inLon) return false;
-    const s = b[0][1], n = b[1][1];
+    // The unwrapped east edge makes this the ordinary interval test even across the seam; the
+    // meridian is offered at both its own longitude and 360° east of it.
+    if (!((line.lon >= b.w && line.lon <= b.e) ||
+          (line.lon + 360 >= b.w && line.lon + 360 <= b.e))) return false;
     for (let i = 0; i <= SB_LINE_SAMPLES; i++)
-        if (d3.geoContains(f, [line.lon, s + (n - s) * i / SB_LINE_SAMPLES])) return true;
+        if (d3.geoContains(f, [line.lon, b.s + b.latSpan * i / SB_LINE_SAMPLES])) return true;
     return false;
 }
 
@@ -14599,11 +14617,11 @@ function sbLineCrosses(name, line) {
 function sbLineGapDeg(name, line) {
     const f = sbFeature(name);
     if (!f) return Infinity;
-    const b = d3.geoBounds(f);
-    if (!isFinite(b[0][0])) return Infinity;
-    if (line.lat != null) return Math.max(0, b[0][1] - line.lat, line.lat - b[1][1]);
-    if (b[1][0] < b[0][0]) return 0;                 // a wrapped box spans most longitudes
-    return Math.max(0, b[0][0] - line.lon, line.lon - b[1][0]);
+    const b = geoBox(f);
+    if (!b) return Infinity;
+    if (line.lat != null) return Math.max(0, b.s - line.lat, line.lat - b.n);
+    if (b.wrapped) return 0;                         // a wrapped box spans most longitudes
+    return Math.max(0, b.w - line.lon, line.lon - b.e);
 }
 
 
