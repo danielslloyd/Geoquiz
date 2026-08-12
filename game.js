@@ -3387,6 +3387,70 @@ function wireMapStyleControls() {
     say();
 }
 
+// ==================== RASTERISING, ONCE ====================
+//
+// Four places in the app answer a question by DRAWING the thing and looking at the pixels, and
+// they do it because the alternative is a polygon boolean engine over arbitrary geometry. Two ask
+// "which pixels are covered" (the land raster the coastline model probes against, and the
+// silhouette masks Upside Down compares) and two ask "how much of the picture is each colour"
+// (a flag's palette by area, and the workshop's probe render). They were four copies of the same
+// canvas-and-getImageData ceremony with the interesting three lines in the middle.
+
+// Draw into an offscreen canvas and read the alpha back as a bitmask. `draw` gets the context.
+function alphaMask(w, h, draw, tol) {
+    const bits = new Uint8Array(w * h);
+    try {
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        draw(ctx);
+        const data = ctx.getImageData(0, 0, w, h).data;
+        const t = tol == null ? 40 : tol;
+        for (let i = 0; i < w * h; i++) bits[i] = data[i * 4 + 3] > t ? 1 : 0;
+    } catch (_) { /* no canvas: everything reads as empty, and the caller says so */ }
+    return bits;
+}
+
+// An SVG document, decoded and drawn at a given size, returned as raw RGBA. Async because an
+// <img> is the only thing that will rasterise an SVG, and it decodes off the main thread.
+async function rasteriseSvg(doc, W, H) {
+    const url = 'data:image/svg+xml;charset=utf-8,' +
+        encodeURIComponent(new XMLSerializer().serializeToString(doc));
+    const img = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => rej(new Error('decode'));
+        im.src = url;
+    });
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, W, H);
+    return ctx.getImageData(0, 0, W, H).data;
+}
+
+// Attribute every opaque pixel to the NEAREST of a set of reference colours and tally the shares.
+// `tol` is how far a pixel may be from its nearest and still count: beyond it the pixel is an
+// antialiased blend of two colours and belongs to neither, which is what stops a stripe's edge
+// inventing a colour the flag does not have. Returns null when nothing was countable.
+function tallyByColour(data, refs, tol) {
+    const n = new Array(refs.length).fill(0);
+    let total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 200) continue;              // transparent margin
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let bi = -1, bd = Infinity;
+        for (let k = 0; k < refs.length; k++) {
+            const c = refs[k];
+            const d = Math.hypot(r - c[0], g - c[1], b - c[2]);
+            if (d < bd) { bd = d; bi = k; }
+        }
+        if (bd > tol) continue;
+        n[bi]++; total++;
+    }
+    return total ? n.map(c => c / total) : null;
+}
+
 // ==================== ONE SEEDED STREAM ====================
 //
 // A share link should hand somebody the game you played, not another game in the same mode. That
@@ -13067,14 +13131,10 @@ function applyCoastTuneCodes(codes) {
 function ensureLandRaster() {
     if (landRaster) return landRaster;
     const w = LAND_RASTER_W, h = w / 2;
-    const bits = new Uint8Array(w * h);
     const topo = worldTopoCache[COAST_TOPO_URL];
     const feats = topo ? topojson.feature(topo, topo.objects.countries).features
                        : (gameState.countries || []);
-    try {
-        const cv = document.createElement('canvas');
-        cv.width = w; cv.height = h;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const bits = alphaMask(w, h, ctx => {
         const proj = d3.geoEquirectangular().scale(w / (2 * Math.PI)).translate([w / 2, h / 2]).precision(0);
         const draw = d3.geoPath(proj, ctx);
         ctx.beginPath();
@@ -13090,9 +13150,7 @@ function ensureLandRaster() {
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
         }
-        const data = ctx.getImageData(0, 0, w, h).data;
-        for (let i = 0; i < w * h; i++) bits[i] = data[i * 4 + 3] > 40 ? 1 : 0;
-    } catch (_) { /* no canvas: everything reads as water and the facing sweep just gives up */ }
+    });
     landRaster = { w, h, bits };
     return landRaster;
 }
@@ -19685,19 +19743,6 @@ async function sbFlagAreas(code, doc) {
         const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
         const ar = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[3] / vb[2] : 2 / 3;
         const W = SB_AREA_W, H = Math.max(8, Math.round(W * ar));
-        const url = 'data:image/svg+xml;charset=utf-8,' +
-            encodeURIComponent(new XMLSerializer().serializeToString(doc));
-        const img = await new Promise((res, rej) => {
-            const im = new Image();
-            im.onload = () => res(im);
-            im.onerror = () => rej(new Error('decode'));
-            im.src = url;
-        });
-        const cv = document.createElement('canvas');
-        cv.width = W; cv.height = H;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, W, H);
-        const data = ctx.getImageData(0, 0, W, H).data;
         // The flag's own distinct source colours: a pixel belongs to whichever of THESE it is
         // nearest, not to whichever of the twenty nominal buckets it is nearest, or a slightly
         // off navy is filed under "blue" while the flag's real blue is filed under "navy" too and
@@ -19709,23 +19754,10 @@ async function sbFlagAreas(code, doc) {
             }
         });
         if (!srcs.length) throw new Error('no colours');
-        const area = new Map();
-        let counted = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            if (data[i + 3] < 200) continue;          // transparent margin
-            const px = [data[i], data[i + 1], data[i + 2]];
-            let bk = null, bd = Infinity;
-            for (const s of srcs) {
-                const d = sbRgbDist(px, s.rgb);
-                if (d < bd) { bd = d; bk = s.key; }
-            }
-            if (bd > 40) continue;                    // an antialiased blend of two colours
-            area.set(bk, (area.get(bk) || 0) + 1);
-            counted++;
-        }
-        if (counted) {
+        const shares = tallyByColour(await rasteriseSvg(doc, W, H), srcs.map(s => s.rgb), 40);
+        if (shares) {
             out = new Map();
-            area.forEach((n, k) => out.set(k, n / counted));
+            shares.forEach((v, i) => { if (v > 0) out.set(srcs[i].key, v); });
         }
     } catch (_) { out = null; }
     sbFlagAreaCache.set(code, out);
@@ -19848,33 +19880,8 @@ async function wsScopedPalette(doc) {
         const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
         const ar = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[3] / vb[2] : 2 / 3;
         const W = SB_AREA_W, H = Math.max(8, Math.round(W * ar));
-        const url = 'data:image/svg+xml;charset=utf-8,' +
-            encodeURIComponent(new XMLSerializer().serializeToString(copy));
-        const img = await new Promise((res, rej) => {
-            const im = new Image();
-            im.onload = () => res(im);
-            im.onerror = () => rej(new Error('decode'));
-            im.src = url;
-        });
-        const cv = document.createElement('canvas');
-        cv.width = W; cv.height = H;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, W, H);
-        const data = ctx.getImageData(0, 0, W, H).data;
-        counts = new Array(groups.length).fill(0);
-        let total = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            if (data[i + 3] < 200) continue;
-            const px = [data[i], data[i + 1], data[i + 2]];
-            let bi = -1, bd = Infinity;
-            for (let g = 0; g < groups.length; g++) {
-                const d = sbRgbDist(px, probe(g));
-                if (d < bd) { bd = d; bi = g; }
-            }
-            if (bd > 20) continue;                        // an antialiased blend of two probes
-            counts[bi]++; total++;
-        }
-        if (total) counts = counts.map(c => c / total); else counts = null;
+        counts = tallyByColour(await rasteriseSvg(copy, W, H),
+                               groups.map((g, i) => probe(i)), 20);
     } catch (_) { counts = null; }
     const out = groups.map((g, i) => ({
         hex: sbHex(g.rgb), rgb: g.rgb, scope: g.scope,
@@ -23266,20 +23273,15 @@ function sbPlanarFeature(f, mat) {
 // Rasterise a planar silhouette into an NxN bitmap, fitted to its own bounds — so comparing
 // two masks compares SHAPE, with position and size already normalised away.
 function sbSilhouetteMask(planar, N) {
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = N;
-    const ctx = cv.getContext('2d');
     let proj;
     try { proj = d3.geoIdentity().fitExtent([[1, 1], [N - 1, N - 1]], planar); }
     catch (_) { return null; }
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    d3.geoPath(proj, ctx)(planar);
-    ctx.fill();
-    const data = ctx.getImageData(0, 0, N, N).data;
-    const mask = new Uint8Array(N * N);
-    for (let i = 0; i < N * N; i++) mask[i] = data[i * 4 + 3] > 40 ? 1 : 0;
-    return mask;
+    return alphaMask(N, N, ctx => {
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        d3.geoPath(proj, ctx)(planar);
+        ctx.fill();
+    });
 }
 
 function sbMaskIoU(a, b) {
