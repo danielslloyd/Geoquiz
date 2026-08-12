@@ -111,11 +111,23 @@
 }
 
 /* Floating theme toggle */
-#theme-toggle {
+/* The app-wide tools, in the corner: palette, settings, debug. None of them belongs to a mode,
+   so none of them belongs in the controls bar. */
+:root {
+    /* Three 38px buttons, two 6px gaps, and the 10px it is inset from the edge. */
+    --app-tools-w: 136px;
+}
+
+#app-tools {
     position: fixed;
     top: 10px;
     right: 10px;
     z-index: 2000;
+    display: flex;
+    gap: 6px;
+}
+
+.app-tool {
     width: 38px;
     height: 38px;
     border-radius: 50%;
@@ -127,15 +139,32 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    /* transform and box-shadow only. Transitioning `background` here does not merely animate
+       the pressed state, it SUPPRESSES it: both the base and the pressed rule set the shorthand
+       through a var(), and Chrome will not restart a transition for that — measured, the button
+       stayed cream indefinitely with the transition on and turned primary instantly with it off.
+       Same trap as .country's fill under a map-style swap, documented in CLAUDE.md. */
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-#theme-toggle:hover {
-    transform: rotate(18deg) scale(1.06);
+.app-tool:hover {
+    transform: scale(1.06);
     box-shadow: var(--shadow-md);
 }
 
-#theme-toggle .material-symbols-outlined {
+/* The palette is the one that keeps its little twist — it is the playful one of the three. */
+#theme-toggle:hover {
+    transform: rotate(18deg) scale(1.06);
+}
+
+/* Debug is a state rather than an action, so it says so instead of carrying "On"/"Off" text. */
+.app-tool[aria-pressed="true"] {
+    background: var(--primary);
+    color: var(--surface);
+    border-color: var(--primary);
+}
+
+.app-tool .material-symbols-outlined {
     font-size: 1.4rem;
 }
 
@@ -254,7 +283,10 @@ header h1 .material-symbols-outlined {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 4px 12px;
+    /* The app-tools cluster is fixed over this corner, so the bar has to keep out from under
+       it — with one palette button it clipped the tail of the score, with three it covered the
+       score outright. --app-tools-w is the cluster's own width, so the two cannot drift apart. */
+    padding: 4px var(--app-tools-w) 4px 12px;
     margin-bottom: 6px;
     box-shadow: var(--shadow-sm);
     display: flex;
@@ -1574,11 +1606,25 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
         font-size: 2rem;
     }
 
+    /* On a phone the bar wraps and centres anyway, and 136px of reserved corner is most of the
+       width — so the cluster shrinks and the bar only keeps clear of the first row. */
+    :root { --app-tools-w: 106px; }
+
+    .app-tool {
+        width: 30px;
+        height: 30px;
+    }
+
+    .app-tool .material-symbols-outlined {
+        font-size: 1.15rem;
+    }
+
     .top-bar {
         flex-wrap: wrap;
         justify-content: center;
         gap: 6px;
         padding: 6px 10px;
+        padding-right: var(--app-tools-w);
     }
 
     .top-bar-title {

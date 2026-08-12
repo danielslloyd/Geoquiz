@@ -46,9 +46,21 @@
     </script>
 </head>
 <body>
-    <button id="theme-toggle" type="button" title="Switch color theme" aria-label="Switch color theme">
-        <span class="material-symbols-outlined">palette</span>
-    </button>
+    <!-- App tools, not mode controls. Settings and Debug apply to the whole app whatever is
+         being played, so they belong beside the palette in the corner rather than in the
+         controls bar competing for space with the buttons a mode actually owns. -->
+    <div id="app-tools">
+        <button id="theme-toggle" class="app-tool" type="button" title="Switch color theme" aria-label="Switch color theme">
+            <span class="material-symbols-outlined">palette</span>
+        </button>
+        <button id="settings-btn" class="app-tool" type="button" title="Tuning &amp; settings" aria-label="Settings">
+            <span class="material-symbols-outlined">tune</span>
+        </button>
+        <button id="debug-validity-toggle" class="app-tool" type="button" aria-pressed="false"
+                title="Debug: colour-code the map by which countries have quiz data" aria-label="Debug overlay">
+            <span class="material-symbols-outlined">bug_report</span>
+        </button>
+    </div>
     <div class="container">
         <header id="landing-header">
             <h1><span class="material-symbols-outlined">public</span> Geoquiz</h1>
@@ -239,10 +251,7 @@
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
             <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
             <button id="map-colour-toggle" class="btn secondary" title="Colour the map so no two neighbours share a colour" style="display:none">Colours: Off</button>
-
-            <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
             <button id="share-btn" class="btn secondary" title="Copy a link to this mode / challenge a friend"><span class="material-symbols-outlined">share</span> Share</button>
-            <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
         </div>
 
         <!-- Settings pop-up: all tuning sliders live here (opened from the Settings button). -->

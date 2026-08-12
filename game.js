@@ -1841,7 +1841,7 @@ function startGameWithMode(mode) {
     // Reset the debug overlay for each new game
     debugValidityOn = false;
     const debugToggle = document.getElementById('debug-validity-toggle');
-    if (debugToggle) debugToggle.textContent = 'Debug: Off';
+    if (debugToggle) debugToggle.setAttribute('aria-pressed', 'false');
 
     // Show appropriate layout based on mode
     if (modeConfig.useWorldQuizLayout) {
@@ -3842,7 +3842,7 @@ function toggleDebugValidity() {
     applyDebugValidity();
     if (!debugValidityOn) clearDebugBoundingBoxes();
     const btn = document.getElementById('debug-validity-toggle');
-    if (btn) btn.textContent = debugValidityOn ? 'Debug: On' : 'Debug: Off';
+    if (btn) btn.setAttribute('aria-pressed', debugValidityOn ? 'true' : 'false');
 }
 
 function applyDebugValidity() {
@@ -23576,9 +23576,33 @@ function recordSandboxAnswer(picked, correct) {
         syncScoreDisplay();
         if (correct) extra = ` <strong>${1 + bonus}/10</strong> — ${secs.toFixed(1)}s.`;
     }
-    feedback.innerHTML = (correct ? '' : `It was <strong>${q.correct}</strong>. `) + (q.explain || '') + extra;
-    feedback.className = 'feedback ' + (correct ? 'correct' : 'incorrect');
+    const html = (correct ? '' : `It was <strong>${q.correct}</strong>. `) + (q.explain || '') + extra;
+    const cls = 'feedback ' + (correct ? 'correct' : 'incorrect');
+    // A round that withholds its buttons has to withhold this too, and for a stronger reason:
+    // the box is green or red before the animation has drawn a single frame, and on a wrong
+    // answer it opens by naming the country. `deferMark` exists so the picture argues first,
+    // and a verdict popped over the top of it is the argument being given away — so the box is
+    // held and flushed by sbMarkCorrectOption at the end of the hold, with everything else.
+    if (q.deferMark) {
+        q.pendingFeedback = { html, cls };
+        feedback.innerHTML = '';
+        feedback.className = 'feedback';
+    } else {
+        feedback.innerHTML = html;
+        feedback.className = cls;
+    }
     sbPlayRevealAnimation();
+}
+
+// Write out a verdict that was held back for the reveal. Idempotent — the reveal's marking
+// step and its own unconditional backstop both call it.
+function sbFlushFeedback() {
+    const q = gameState.sbQuestion;
+    const box = document.getElementById('feedback');
+    if (!q || !q.pendingFeedback || !box) return;
+    box.innerHTML = q.pendingFeedback.html;
+    box.className = q.pendingFeedback.cls;
+    q.pendingFeedback = null;
 }
 
 // Rounds that have something to SHOW once the answer is in, rather than just say. One entry
@@ -23651,6 +23675,9 @@ function sbPlayRevealAnimation() {
         const q0 = q, at = hold * SB_MARK_AT;
         setTimeout(() => { if (gameState.sbQuestion === q0) sbMarkCorrectOption(q0.correct); }, at);
         setTimeout(() => { if (gameState.sbQuestion === q0) scheduleAutoAdvance(hold); }, 0);
+    } else {
+        // No reveal to wait for, so nothing is being held back — say it now rather than never.
+        sbFlushFeedback();
     }
 }
 
@@ -23660,6 +23687,8 @@ const SB_MARK_AT = 0.8;
 // Mark the option carrying this answer. `data-answer` first, because a tile need not wear its
 // answer — Upside Down's are blank until the reveal names them.
 function sbMarkCorrectOption(correct) {
+    // The held-back verdict arrives with the marking, which is the moment the round is decided.
+    sbFlushFeedback();
     if (!correct) return;
     document.querySelectorAll('.option-btn').forEach(btn => {
         if ((btn.dataset.answer || btn.textContent) === correct) btn.classList.add('correct');
@@ -24255,8 +24284,12 @@ function sbRevealEquator(pair) {
         a.attr('x', items[i].X).attr('y', labY + 20 / S).attr('font-size', (13 / S) + 'px')
          .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
     });
-    sign.attr('x', (items[0].X + items[1].X) / 2).attr('y', anchorY + 8 / S)
-        .attr('font-size', (34 / S) + 'px')
+    // On the NAMES' baseline, not floating between the shapes. The sign belongs to the caption
+    // — it is the relation between the two areas written underneath — and sitting it up at the
+    // shapes' own midpoint made it a third object in the picture rather than punctuation
+    // between the two labels.
+    sign.attr('x', (items[0].X + items[1].X) / 2).attr('y', labY)
+        .attr('font-size', (26 / S) + 'px')
         .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
     const paintAll = () => shapes.forEach(s => s.paint());
     if (!tellMs) paintAll();

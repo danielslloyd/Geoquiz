@@ -2491,6 +2491,25 @@ Unlike the quizzes, a places click keys on the feature's **own** name, not `d.pr
 
 Chip drag-between-lists is wired **once** by `wirePlacesListInteractions` as delegated listeners on the persistent `#places-lists`, so `refreshPlacesPanel`'s `innerHTML` rebuild needs no re-wiring. `dragover` reads the module-level `placesDragName` rather than `dataTransfer` (unreadable there per the HTML5 DnD spec) and `dragleave` is guarded by `!cat.contains(e.relatedTarget)` to stop child elements flickering the highlight. Hover-delete (`.place-chip-remove`) is forced visible under `@media (hover: none)` for touch.
 
+## The corner holds the app, the bar holds the mode
+
+**Settings** and **Debug** apply to the whole app whatever is being played, so they sit beside
+the palette in `#app-tools`, a fixed cluster in the top-right corner, rather than in the
+controls bar competing with the buttons a mode actually owns. Debug is a STATE rather than an
+action, so it is an icon carrying `aria-pressed` instead of a button reading "Debug: Off".
+
+The bar has to keep out from under the cluster, and `--app-tools-w` is the cluster's own width
+so the two cannot drift apart — with one palette button it clipped the tail of the score, and
+with three it covered the score outright. Measured: score ends at 1137 against a cluster
+starting at 1144 on desktop, 262 against 263 on a 375px phone, no horizontal overflow either
+way.
+
+**Do not transition `background` on these buttons.** It does not merely animate the pressed
+state, it SUPPRESSES it: the base rule and the pressed rule both set the shorthand through a
+`var()`, and Chrome will not restart a transition for that — measured, the button stayed cream
+indefinitely with the transition on and turned primary instantly with it off. This is the same
+trap `.country`'s `fill` hits under a map-style swap, in a second place.
+
 ## The two buttons are shared furniture
 
 There is one Give Up and one Next on the page and ninety places write to them, so what a mode
