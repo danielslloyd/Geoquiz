@@ -309,6 +309,15 @@
                     </div>
                     <div class="tuning-group" id="tuning-row">
                         <div class="tuning-group-title">Map</div>
+                        <!-- Style and theme are two axes on purpose: the palette button up top swaps
+                             the colours, this swaps how the map is drawn. Filled from MAP_STYLES. -->
+                        <label class="tuning-item" title="How the map is drawn — line weights, dot sizes, and in one case the colours too. Independent of the colour theme, which the palette button swaps.">
+                            <span class="tuning-label">Map style</span> <select id="tune-map-style"></select>
+                        </label>
+                        <div class="tuning-note" id="tune-map-style-desc"></div>
+                        <label class="tuning-item" title="Multiplies every map line width at once. For a projector, a small screen, or eyes that want help — without having to invent a whole style for it.">
+                            <span class="tuning-label">Line weight</span> <input type="range" id="tune-map-ink" min="0.4" max="3" step="0.05" value="1"><span id="tune-map-ink-val">1.00×</span>
+                        </label>
                         <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
                             <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
                         </label>

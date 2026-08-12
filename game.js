@@ -1605,8 +1605,10 @@ async function initGame() {
     const dataLoaded = await initializeGameData();
     if (!dataLoaded) return;
 
+    loadMapStyle();        // before anything draws, so the first map is already in the right style
     renderLandingGrid();   // before the listeners: they are attached to the tiles it creates
     setupEventListeners();
+    wireMapStyleControls();
 
     // Deep-link support: if the URL names a mode (from a shared/challenge link), open it.
     routeFromUrl();
@@ -2176,11 +2178,10 @@ function setupGlobe() {
 
     path = d3.geoPath().projection(projection);
 
-    // Add gradient for ocean
-    // Pull the muted ocean tones from the active theme's CSS variables
-    const rootStyle = getComputedStyle(document.documentElement);
-    const ocean1 = (rootStyle.getPropertyValue('--ocean-1').trim()) || '#aebfca';
-    const ocean2 = (rootStyle.getPropertyValue('--ocean-2').trim()) || '#647d8d';
+    // Add gradient for ocean. This is one of the four places CSS cannot reach — a gradient's
+    // stops are attributes on elements built in JS — so it reads the map tokens itself.
+    const ocean1 = mapStyle('--map-ocean-1', '#aebfca');
+    const ocean2 = mapStyle('--map-ocean-2', '#647d8d');
 
     const defs = svg.append('defs');
     // userSpaceOnUse so the ocean circle/sphere AND carved-out lakes all sample the
@@ -3215,6 +3216,171 @@ function featureParts(feature) {
 // typed into all of them.
 const EARTH_R_KM = 6371;
 const EARTH_R2_KM2 = EARTH_R_KM * EARTH_R_KM;   // for d3.geoArea, which returns steradians
+
+// ==================== MAP STYLES ====================
+//
+// THEME and STYLE are two axes and the point of this is that they stay independent. The theme
+// decides the palette — Atlas parchment, Slate blue-grey — and the style decides how the map is
+// DRAWN: how heavy the ink is, whether a border is a hairline or a rule, how big a dot has to be
+// before you can hit it. Asking one control to do both gives you a dark mode that also secretly
+// changes your line weights.
+//
+// Every map mark in the stylesheet reads a `--map-*` token, and each colour token falls back to
+// the theme's own. So a style that only wants heavier ink names widths and says nothing about
+// colour, and the theme still decides how the map LOOKS. Blueprint is the exception and it is
+// deliberate: it is a look rather than a weight, so it overrides the colours, and it says so.
+//
+// Widths are in VIEWBOX UNITS. The map svg is 800x600 whatever size it renders at, so 0.5 is the
+// same fraction of the map on a phone and on a desktop; a px would pin the stroke to the screen
+// and make every line proportionally fatter the smaller the map got.
+const MAP_STYLES = {
+    atlas: {
+        label: 'Atlas',
+        desc: 'The default. Hairline borders, the theme’s own colours.',
+        tokens: {}
+    },
+    fine: {
+        label: 'Fine',
+        desc: 'Thinner still, and dotted borders — for looking at coastlines rather than at countries.',
+        tokens: {
+            '--map-ink': '0.7',
+            '--map-w-border': '0.45',
+            '--map-dash-border': '1.4 1.1'
+        }
+    },
+    bold: {
+        label: 'Bold',
+        desc: 'Heavy ink and bigger dots. For a projector, a small screen, or eyes that want help.',
+        tokens: {
+            '--map-ink': '1.9',
+            '--map-w-dot': '1.6',
+            '--map-w-dot-hover': '2.2'
+        }
+    },
+    blueprint: {
+        label: 'Blueprint',
+        // The one style that is a LOOK rather than a weight, so it is the one that overrides the
+        // theme's colours. Everything else here leaves the palette alone on purpose.
+        desc: 'White lines on drawing-office blue. Overrides the theme’s map colours — the only style that does.',
+        tokens: {
+            '--map-ink': '1.15',
+            '--map-land': '#123a5c',
+            '--map-land-stroke': '#9fd4f0',
+            '--map-land-hover': '#1d5c8f',
+            '--map-ocean-1': '#0b2138',
+            '--map-ocean-2': '#061625'
+        }
+    }
+};
+const MAP_STYLE_DEFAULT = 'atlas';
+let mapStyleKey = MAP_STYLE_DEFAULT;
+// A multiplier ON TOP of whatever the style asks for, so "I need this heavier" is a slider rather
+// than a reason to invent another style. It composes: Fine at 2x is still dotted and still
+// relatively light against its own borders, which is what makes it a weight control and not a
+// fifth style hiding in a range input.
+let mapInkUser = 1;
+
+// Read a map token. For the four places CSS cannot reach — the ocean gradient's stops, the lake
+// overlay's fill, the three.js ocean sphere, the flag pattern's backing — which build attributes
+// or WebGL materials rather than matching selectors.
+function mapStyle(token, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+    return v || fallback || '';
+}
+// The widths are numbers, and the ink multiplier is not folded into them by the browser unless
+// something asks for the calc() — so anything wanting a width in JS has to do the multiply.
+function mapStyleWidth(token, fallback) {
+    const w = parseFloat(mapStyle(token, ''));
+    const ink = parseFloat(mapStyle('--map-ink', '1')) || 1;
+    return (isFinite(w) ? w : (fallback || 0)) * ink;
+}
+
+// Stamp a style onto the document. The tokens go on the root element as inline custom properties
+// rather than into a stylesheet rule, so a style is a plain object and adding one costs no CSS.
+// Every token not named by the style is REMOVED rather than left, or switching from Blueprint to
+// Bold would keep Blueprint's colours.
+function applyMapStyle(key, opts) {
+    const st = MAP_STYLES[key] ? key : MAP_STYLE_DEFAULT;
+    mapStyleKey = st;
+    const root = document.documentElement;
+    const all = new Set();
+    Object.values(MAP_STYLES).forEach(s => Object.keys(s.tokens).forEach(t => all.add(t)));
+    all.forEach(t => root.style.removeProperty(t));
+    Object.entries(MAP_STYLES[st].tokens).forEach(([t, v]) => root.style.setProperty(t, v));
+    // The user's weight multiplies the style's own rather than replacing it, which is what keeps
+    // the slider a weight control instead of a fifth style hiding in a range input.
+    const styleInk = parseFloat(MAP_STYLES[st].tokens['--map-ink'] || '1') || 1;
+    root.style.setProperty('--map-ink', String(+(styleInk * mapInkUser).toFixed(4)));
+    root.dataset.mapStyle = st;
+    // A TRANSITIONED PROPERTY DOES NOT NOTICE A CUSTOM PROPERTY CHANGING. `.country` carries
+    // `transition: fill 0.2s` for the hover, and Chrome will not restart that transition when
+    // only the var() behind `fill` moves — so the land kept the old theme's colour indefinitely
+    // while the stroke, which has no transition, changed instantly. Measured: still cream after
+    // 1200 ms, correct the moment the transition is taken off. Suppressed for two frames, which
+    // is a hair less than the swap costs anyway.
+    root.classList.add('map-style-swapping');
+    requestAnimationFrame(() => requestAnimationFrame(() =>
+        root.classList.remove('map-style-swapping')));
+    try {
+        localStorage.setItem('geoquiz.mapStyle', st);
+        localStorage.setItem('geoquiz.mapInk', String(mapInkUser));
+    } catch (_) { /* private mode */ }
+    // The gradient's stops and the WebGL materials were built from the old tokens and cannot
+    // hear a CSS change, so the map is redrawn — unless the caller is the boot, when there is
+    // nothing drawn yet.
+    if (!(opts && opts.quiet)) refreshMapStyle();
+}
+
+function refreshMapStyle() {
+    // Repaint whatever is currently on screen. The redraw paths already exist for the detail
+    // toggle and the projection toggle; this needs the same two, and no more, because everything
+    // else reads its colour from CSS at paint time.
+    try {
+        const grad = svg && svg.select && svg.select('#ocean-gradient');
+        if (grad && !grad.empty()) {
+            grad.selectAll('stop')
+                .attr('stop-color', (d, i) => mapStyle(i === 0 ? '--map-ocean-1' : '--map-ocean-2',
+                                                       i === 0 ? '#aebfca' : '#647d8d'));
+        }
+    } catch (_) { /* no map on screen */ }
+    try { if (typeof drawCountries === 'function' && gameState && gameState.countries &&
+              gameState.countries.length) drawCountries(); } catch (_) { /* not drawable yet */ }
+}
+
+function loadMapStyle() {
+    let saved = null, ink = null;
+    try {
+        saved = localStorage.getItem('geoquiz.mapStyle');
+        ink = parseFloat(localStorage.getItem('geoquiz.mapInk'));
+    } catch (_) { saved = null; }
+    if (isFinite(ink) && ink > 0) mapInkUser = Math.max(0.4, Math.min(3, ink));
+    applyMapStyle(saved || MAP_STYLE_DEFAULT, { quiet: true });
+}
+
+// The two controls in Settings ▸ Map.
+function wireMapStyleControls() {
+    const sel = document.getElementById('tune-map-style');
+    const desc = document.getElementById('tune-map-style-desc');
+    const ink = document.getElementById('tune-map-ink');
+    const inkVal = document.getElementById('tune-map-ink-val');
+    if (sel && !sel.options.length) {
+        sel.innerHTML = Object.keys(MAP_STYLES)
+            .map(k => `<option value="${k}">${MAP_STYLES[k].label}</option>`).join('');
+    }
+    const say = () => {
+        if (desc) desc.textContent = MAP_STYLES[mapStyleKey].desc;
+        if (sel) sel.value = mapStyleKey;
+        if (ink) ink.value = mapInkUser;
+        if (inkVal) inkVal.textContent = mapInkUser.toFixed(2) + '×';
+    };
+    if (sel) sel.addEventListener('change', () => { applyMapStyle(sel.value); say(); });
+    if (ink) ink.addEventListener('input', () => {
+        mapInkUser = parseFloat(ink.value) || 1;
+        applyMapStyle(mapStyleKey);
+        say();
+    });
+    say();
+}
 
 // A memo that empties itself when the world does.
 //
@@ -5644,6 +5810,8 @@ function sharePlacesLink() {
 function syncModeUrl(mode) {
     const p = new URLSearchParams();
     p.set('mode', mode);
+    // Only when it is not the default: a `?map=atlas` on every link is noise saying nothing.
+    if (mapStyleKey !== MAP_STYLE_DEFAULT) p.set('map', mapStyleKey);
     history.replaceState(null, '', location.pathname + '?' + p.toString());
 }
 
@@ -5697,6 +5865,19 @@ function showToast(text) {
 // On load, start the mode named in the URL (?mode=...). Returns true if it handled routing.
 function routeFromUrl() {
     const p = new URLSearchParams(location.search);
+    // A style travels with a link, so a screenshot or a challenge sent to somebody arrives
+    // looking the way it was sent. It is NOT saved to localStorage from here — a link should not
+    // silently redecorate the recipient's app for good — which is why it is applied after
+    // loadMapStyle rather than through it.
+    const st = p.get('map');
+    if (st && MAP_STYLES[st]) {
+        mapStyleKey = st;
+        const root = document.documentElement;
+        Object.entries(MAP_STYLES[st].tokens).forEach(([t, v]) => root.style.setProperty(t, v));
+        const si = parseFloat(MAP_STYLES[st].tokens['--map-ink'] || '1') || 1;
+        root.style.setProperty('--map-ink', String(+(si * mapInkUser).toFixed(4)));
+        root.dataset.mapStyle = st;
+    }
     const mode = p.get('mode');
     if (!mode) return false;
 
@@ -10871,7 +11052,7 @@ function buildDomeScene() {
     // what should be readable, and a wireframe just competes with them.
     s.add(new T.Mesh(
         new T.SphereGeometry(1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2),
-        new T.MeshBasicMaterial({ color: themeColor('--ocean-1', '#aebfca'), transparent: true,
+        new T.MeshBasicMaterial({ color: themeColor('--map-ocean-1', '#aebfca'), transparent: true,
                                   opacity: 0.12, side: T.DoubleSide, depthWrite: false })));
     // Kept on the state: the satellite checkbox re-textures this disc rather than rebuilding
     // the scene, and a north-up patch of real ground has to be able to follow the observer.

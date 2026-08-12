@@ -32,6 +32,48 @@
     --selected:      #4a708f;   --selected-dark: #345470;
     --partial-soft:  #f3ead2;   --partial-text: #7a5d1e; --partial-border: #cdab5e;
 
+    /* ===== Map style tokens =====
+       THEME and STYLE are two independent axes and must stay that way. The theme decides the
+       palette (Atlas parchment, Slate blue-grey); the style decides how the map is DRAWN — how
+       heavy the ink is, whether a border is a hairline or a rule, how big a dot has to be before
+       you can hit it. Asking one control to do both is what makes a "dark mode" that also
+       secretly changes your line weights.
+
+       So every map mark reads a --map-* token, and each of those falls back to the theme's own
+       colour where it is a colour. A style that only wants heavier ink sets the widths and says
+       nothing about colour, and the theme still decides how the map looks; a style that IS a look
+       (Blueprint) overrides the colours too, and that is a decision it is making on purpose.
+
+       WIDTHS ARE IN VIEWBOX UNITS, NOT PIXELS. The map svg is viewBox-scaled — 800x600 whatever
+       size it renders at — so 0.5 here is 0.5 user units and stays the same fraction of the map
+       on a phone and on a desktop. Writing `0.5px` instead would pin the stroke to the screen and
+       make every line proportionally fatter the smaller the map got. The handful of marks that
+       genuinely want screen pixels (a text halo, a non-scaling pin) say px explicitly and are not
+       tokenised here.
+
+       --map-ink multiplies every width at once, so a style can say "a bit heavier" without
+       enumerating twenty numbers, and the accessibility case (a projector, poor eyesight) is one
+       slider rather than a new style. */
+    --map-ink:         1;
+
+    --map-w-border:    0.5;    /* country and state borders */
+    --map-w-mark:      1;      /* the target, and a wrong answer */
+    --map-w-select:    1.5;    /* the one you picked */
+    --map-w-coast:     0.5;    /* lake edges, coastline overlays */
+    --map-w-dot:       1.25;   /* island / microstate markers */
+    --map-w-dot-hover: 1.75;
+    --map-w-grat:      0.3;    /* graticule, inset coastlines */
+    --map-w-pin:       2;      /* guess and answer pins, and the line between */
+    --map-w-trace:     2.2;    /* Draw the Border's ink */
+    --map-dash-border: none;   /* a dashed border is a style, not a state */
+
+    /* Colours: the theme's, unless a style says otherwise. */
+    --map-land:        var(--land);
+    --map-land-stroke: var(--land-stroke);
+    --map-land-hover:  var(--land-hover);
+    --map-ocean-1:     var(--ocean-1);
+    --map-ocean-2:     var(--ocean-2);
+
     /* Elevation */
     --shadow-sm: 0 1px 3px rgba(60, 50, 30, 0.10);
     --shadow-md: 0 2px 10px rgba(60, 50, 30, 0.12);
@@ -860,40 +902,54 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 }
 
 .country {
-    fill: var(--land);
-    stroke: var(--land-stroke);
-    stroke-width: 0.5;
+    fill: var(--map-land);
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-border) * var(--map-ink));
+    stroke-dasharray: var(--map-dash-border);
     transition: fill 0.2s ease;
     cursor: pointer;
 }
 
 .country:hover {
-    fill: var(--land-hover);
+    fill: var(--map-land-hover);
 }
 
+/* Held for two frames while a style is applied. See applyMapStyle: a transitioned property does
+   not notice the custom property behind it changing, so the land kept its old colour for good. */
+:root.map-style-swapping .country,
+:root.map-style-swapping .island-marker,
+:root.map-style-swapping .lake { transition: none !important; }
+
+/* A state is not a style: the target, the wrong answer and the one you picked keep their own
+   solid stroke whatever the style does to ordinary borders, or a dashed style would make the
+   answer look provisional. */
 .country.target {
     fill: var(--correct);
     stroke: var(--correct-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 .country.target-muted {
     fill: var(--correct);
     stroke: var(--correct-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
     opacity: 0.55;
 }
 
 .country.incorrect {
     fill: var(--incorrect);
     stroke: var(--incorrect-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 .country.selected {
     fill: var(--selected);
     stroke: var(--selected-dark);
-    stroke-width: 1.5;
+    stroke-width: calc(var(--map-w-select) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 /* "Places I've Been" category fills for country paths and island dots. Defined AFTER
@@ -910,16 +966,16 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
    as polygons at this map detail. They carry the .country class, so the
    .target / .incorrect / .selected feedback states above style them too. */
 .island-marker {
-    fill: var(--land);
-    stroke: var(--land-stroke);
-    stroke-width: 1.25;
+    fill: var(--map-land);
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-dot) * var(--map-ink));
     paint-order: stroke;
     cursor: pointer;
 }
 
 .island-marker:hover {
-    fill: var(--land-hover);
-    stroke-width: 1.75;
+    fill: var(--map-land-hover);
+    stroke-width: calc(var(--map-w-dot-hover) * var(--map-ink));
 }
 
 /* Find the Capital / Spaceship — guess pin, true-location pin, and the line between
@@ -929,7 +985,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .guess-marker {
     fill: var(--selected);
     stroke: #fff;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     vector-effect: non-scaling-stroke;
     cursor: pointer;
 }
@@ -937,13 +993,13 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .answer-marker {
     fill: var(--correct);
     stroke: #fff;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     vector-effect: non-scaling-stroke;
 }
 
 .guess-line {
     stroke: var(--incorrect);
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     stroke-dasharray: 4 3;
     vector-effect: non-scaling-stroke;
     pointer-events: none;
@@ -984,15 +1040,15 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .inset-land {
     fill: #46614a;
     stroke: #7f9b83;
-    stroke-width: 0.3;
+    stroke-width: calc(var(--map-w-grat) * var(--map-ink));
     vector-effect: non-scaling-stroke; /* crisp coastlines at any inset zoom */
 }
 
 /* Major lakes overlay (fill is set per-view in drawLakes to match the ocean).
    A thin coastline stroke mirrors the land>ocean border. */
 .lake {
-    stroke: var(--land-stroke);
-    stroke-width: 0.5;
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-coast) * var(--map-ink));
     pointer-events: none;
 }
 
@@ -1144,6 +1200,26 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     min-width: 3.2em;
     text-align: right;
     font-variant-numeric: tabular-nums;
+}
+
+.tuning-item select {
+    width: 100%;
+    font: inherit;
+    padding: 3px 5px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+}
+
+/* A style needs a sentence — the labels alone ("Fine", "Blueprint") do not say what changes. */
+.tuning-note {
+    margin: -2px 0 4px 9.5em;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    color: var(--text-muted, #666);
+    opacity: 0.85;
 }
 
 /* ---- Atmosphere gradient editor (Settings ▸ Spaceship) ---------------------------- */
@@ -1478,7 +1554,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .country.target {
     fill: var(--correct) !important;
     stroke: var(--correct-dark) !important;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-mark) * 2 * var(--map-ink));
     animation: glow 2s ease-in-out infinite;
 }
 
@@ -3108,7 +3184,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     fill: var(--accent);
     fill-opacity: 0.18;
     stroke: var(--accent);
-    stroke-width: 2.2;
+    stroke-width: calc(var(--map-w-trace) * var(--map-ink));
     stroke-linejoin: round;
     stroke-linecap: round;
     pointer-events: none;
@@ -3118,7 +3194,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     fill: var(--correct);
     fill-opacity: 0.25;
     stroke: var(--correct-dark);
-    stroke-width: 1.6;
+    stroke-width: calc(var(--map-w-trace) * 0.73 * var(--map-ink));
     pointer-events: none;
 }
 

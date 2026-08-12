@@ -1888,6 +1888,47 @@ for "is this country's framing core the whole country".
 
 Integration stays thin — the shared code gains branches, never edits: `startNewQuestion`, `maxSubForMode`, `handleMultipleChoiceAnswer`, `giveUp`, `endGame`, and the Next button (which submits for `multi`/`estimate`/`order`/`pinpoint`/`picker`/`latitude`, then advances). The pinpoint click is bound **namespaced** (`svg.on('click.sbpin', …)`), which is why `sbTeardown()` must unbind it — and must also dispose the latitude reveal's WebGL context.
 
+## Map styles
+
+**Theme and style are two axes and the point is that they stay independent.** The theme decides
+the palette — Atlas parchment, Slate blue-grey, swapped by the palette button — and the style
+decides how the map is DRAWN: how heavy the ink is, whether a border is a hairline or a rule, how
+big a dot has to be before you can hit it. One control doing both gives you a dark mode that also
+secretly changes your line weights.
+
+Every map mark in the stylesheet reads a `--map-*` token and each colour token falls back to the
+theme's own, so a style that only wants heavier ink names widths and says nothing about colour and
+the theme still decides how the map looks. Measured: Atlas and Bold both follow the theme
+(#e4d9bf → #dfe4e3 when it changes), and **Blueprint holds #123a5c under both** — which is the
+one style that is a LOOK rather than a weight, so it overrides the colours on purpose and says so
+in its own description.
+
+**Widths are in VIEWBOX UNITS, not pixels.** The map svg is 800×600 whatever size it renders at,
+so `0.5` is the same fraction of the map on a phone and on a desktop; a `px` would pin the stroke
+to the screen and make every line proportionally fatter the smaller the map got. (Inside an SVG,
+CSS `px` *is* a user unit, so `calc(0.5)` and `0.5px` compute identically — verified — which is
+what makes the tokenisation pixel-identical to the literals it replaced.)
+
+`--map-ink` multiplies every width at once, and the **Line weight** slider multiplies the style's
+own rather than replacing it. That is what keeps it a weight control instead of a fifth style
+hiding in a range input: Fine at 2× is still dotted and still light against its own borders.
+
+**A transitioned property does not notice the custom property behind it changing.** `.country`
+carries `transition: fill 0.2s` for the hover, and Chrome will not restart that transition when
+only the `var()` behind `fill` moves — so the land kept the old style's colour indefinitely while
+the stroke, which has no transition, changed instantly. Measured: still cream 1,200 ms after
+switching to Blueprint, correct the moment the transition is taken off. `applyMapStyle` suppresses
+it for two frames.
+
+**Four places CSS cannot reach**, and they read the tokens themselves through `mapStyle()`: the
+ocean gradient's stops (attributes on elements built in JS), the lake overlay's fill, the three.js
+ocean sphere's material, and the flag pattern's backing.
+
+Every token a style names is REMOVED before the next is applied, or switching from Blueprint to
+Bold would keep Blueprint's colours. The choice persists in `localStorage` and travels in a link
+as `?map=<key>` — applied but **not saved** from the link, since a link should not silently
+redecorate the recipient's app for good, and omitted from the URL when it is the default.
+
 ## Static boards, and the click at the end of a drag
 
 `isStaticMapMode()` is the list of modes whose map must not pan or zoom, and it was consulted in
