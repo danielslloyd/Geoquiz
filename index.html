@@ -106,78 +106,8 @@
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
-                <button class="mode-btn" data-mode="find">
-                    <span class="mode-icon material-symbols-outlined">search</span>
-                    <span class="mode-name">Find on the Map</span>
-                    <span class="mode-desc">Find countries or states on the globe/map</span>
-                </button>
-                <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon material-symbols-outlined">help</span>
-                    <span class="mode-name">Identify Mode</span>
-                    <span class="mode-desc">Identify highlighted locations on the map</span>
-                </button>
-                <button class="mode-btn" data-mode="name-all">
-                    <span class="mode-icon material-symbols-outlined">keyboard</span>
-                    <span class="mode-name">Name All Countries</span>
-                    <span class="mode-desc">Type as many countries as you can!</span>
-                </button>
-                <button class="mode-btn" data-mode="population-order">
-                    <span class="mode-icon material-symbols-outlined">bar_chart</span>
-                    <span class="mode-name">Order by Population</span>
-                    <span class="mode-desc">Drag countries to order them by population</span>
-                </button>
-                <button class="mode-btn" data-mode="flags">
-                    <span class="mode-icon material-symbols-outlined">flag</span>
-                    <span class="mode-name">Flags</span>
-                    <span class="mode-desc">Find the country from its flag, or match every flag at once</span>
-                </button>
-                <button class="mode-btn" data-mode="capitals">
-                    <span class="mode-icon material-symbols-outlined">star</span>
-                    <span class="mode-name">Capitals</span>
-                    <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
-                </button>
-                <button class="mode-btn" data-mode="explore">
-                    <span class="mode-icon material-symbols-outlined">explore</span>
-                    <span class="mode-name">Explore</span>
-                    <span class="mode-desc">Roam the globe, or put the world through a dozen projections</span>
-                </button>
-                <button class="mode-btn" data-mode="places">
-                    <span class="mode-icon material-symbols-outlined">push_pin</span>
-                    <span class="mode-name">Places I've Been</span>
-                    <span class="mode-desc">Fill in the map with your travels and share it</span>
-                </button>
-                <button class="mode-btn" data-mode="shapes">
-                    <span class="mode-icon material-symbols-outlined">extension</span>
-                    <span class="mode-name">Shapes</span>
-                    <span class="mode-desc">Name an outline, trace one, or drag the pieces into place</span>
-                </button>
-                <button class="mode-btn" data-mode="sb-missing">
-                    <span class="mode-icon material-symbols-outlined">search_off</span>
-                    <span class="mode-name">Who's Missing?</span>
-                    <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
-                </button>
-                <button class="mode-btn" data-mode="sun-moon">
-                    <span class="mode-icon material-symbols-outlined">wb_twilight</span>
-                    <span class="mode-name">Sun &amp; Moon</span>
-                    <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
-                </button>
-                <button class="mode-btn" data-mode="spaceship">
-                    <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                    <span class="mode-name">Where Is My Spaceship?</span>
-                    <span class="mode-desc">Guess your orbital location from the view below</span>
-                </button>
-                <button class="mode-btn" data-mode="sandbox">
-                    <span class="mode-icon material-symbols-outlined">science</span>
-                    <span class="mode-name">Sandbox</span>
-                    <span class="mode-desc">Sun &amp; moon, sun path, odd one out, draw the border</span>
-                </button>
-                <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
-                     see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
-                <!-- <button class="mode-btn" data-mode="skyline-id">
-                    <span class="mode-icon material-symbols-outlined">apartment</span>
-                    <span class="mode-name">Skyline ID</span>
-                    <span class="mode-desc">Name the city from a photo of its skyline</span>
-                </button> -->
+                <!-- Filled by renderLandingGrid() from LANDING_TILES in game.js: the grid is
+                     rebuilt from the same list every time Home is pressed, so it lives in one place. -->
             </div>
         </div>
 

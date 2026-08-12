@@ -1605,6 +1605,7 @@ async function initGame() {
     const dataLoaded = await initializeGameData();
     if (!dataLoaded) return;
 
+    renderLandingGrid();   // before the listeners: they are attached to the tiles it creates
     setupEventListeners();
 
     // Deep-link support: if the URL names a mode (from a shared/challenge link), open it.
@@ -7438,39 +7439,84 @@ function goHome() {
     document.getElementById('mode-selector').scrollTop = 0;
 }
 
+// A `data-mode` a click can carry is one of two things: a QUIZ_MODES key to start outright, or a
+// name that has to open a PICKER first because something must be chosen — a region, a difficulty,
+// which of three ways of asking the same question. There is no way to tell them apart by looking,
+// so the second kind is written down here, once.
+//
+// It has to be one table because there are three places a mode name arrives from (the landing
+// grid, that grid again after `resetModeSelector` rewrites it, and the top bar), and they were
+// three copies of the same if-chain. A tile added to one and not the others silently starts the
+// mode with whatever configuration the last visit left behind — which is exactly what `spaceship`
+// and `state-puzzle` do, since both are real mode keys AND pickers.
+// The landing grid, once. It used to exist twice — as markup in index.html and again as a
+// template string inside `resetModeSelector` — so every tile added, renamed or re-iconed had to
+// be written out in both, and a tile that made it into only one appeared on a fresh load and
+// vanished the moment anybody pressed Home.
+const LANDING_TILES = [
+    ['find', 'search', 'Find on the Map', 'Find countries or states on the globe/map'],
+    ['identify', 'help', 'Identify Mode', 'Identify highlighted locations on the map'],
+    ['name-all', 'keyboard', 'Name All Countries', 'Type as many countries as you can!'],
+    ['population-order', 'bar_chart', 'Order by Population', 'Drag countries to order them by population'],
+    ['flags', 'flag', 'Flags', 'Find the country from its flag, or match every flag at once'],
+    ['capitals', 'star', 'Capitals', 'Multiple choice, typing race, or pin it on the map'],
+    ['explore', 'explore', 'Explore', 'Roam the globe, or put the world through a dozen projections'],
+    ['places', 'push_pin', "Places I've Been", 'Fill in the map with your travels and share it'],
+    ['shapes', 'extension', 'Shapes', 'Name an outline, trace one, or drag the pieces into place'],
+    ['sb-missing', 'search_off', "Who's Missing?", 'A country has been absorbed by its neighbours — which one?'],
+    ['sun-moon', 'wb_twilight', 'Sun &amp; Moon', 'Day, night and the sunrise line at any date and time'],
+    ['spaceship', 'rocket_launch', 'Where Is My Spaceship?', 'Guess your orbital location from the view below'],
+    ['sandbox', 'science', 'Sandbox', 'Sun &amp; moon, sun path, odd one out, draw the border']
+    // Skyline ID is withheld until the photo pool is vetted — the mode itself still works in
+    // full; add ['skyline-id', 'apartment', 'Skyline ID', 'Name the city from a photo of its
+    // skyline'] here to bring it back, and nowhere else.
+];
+
+const landingTileHtml = ([mode, icon, name, desc]) =>
+    `<button class="mode-btn" data-mode="${mode}">` +
+    `<span class="mode-icon material-symbols-outlined">${icon}</span>` +
+    `<span class="mode-name">${name}</span>` +
+    `<span class="mode-desc">${desc}</span></button>`;
+
+// Fill the grid and wire it. Both callers want exactly this, and the wiring has to be redone
+// each time because the tiles are new elements.
+function renderLandingGrid() {
+    const box = document.getElementById('mode-buttons');
+    if (!box) return;
+    box.innerHTML = LANDING_TILES.map(landingTileHtml).join('');
+    box.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', e => routeMode(e.currentTarget.dataset.mode));
+    });
+}
+
+const MODE_ROUTES = {
+    'find': () => showFindModeSelector(),
+    'identify': () => showIdentifyModeSelector(),
+    'name-all': () => showNameAllModeSelector(),
+    'places': () => showPlacesModeSelector(),
+    'state-puzzle': () => showStatePuzzleSelector(),
+    'shapes': () => showShapeIdSelector(),
+    'country-shape-id': () => showShapeIdSelector(),
+    'explore': () => showExploreSelector(),
+    'capitals': () => showCapitalsSelector(),
+    'flags': () => showFlagsSelector(),
+    'spaceship': () => showSpaceshipSelector(),
+    'sandbox': () => showSandboxSelector()
+};
+
+// Follow a mode name wherever it goes. `start` is how to begin an ordinary mode, which differs by
+// caller: the landing grid starts it directly, the top bar clears the live view first.
+function routeMode(mode, start) {
+    if (!mode) return;
+    const open = MODE_ROUTES[mode];
+    if (open) { open(); return; }
+    (start || startGameWithMode)(mode);
+}
+
 // Event listeners
 function setupEventListeners() {
-    // Mode selection from main mode selector
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            if (mode === 'find') {
-                showFindModeSelector();
-            } else if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else if (mode === 'name-all') {
-                showNameAllModeSelector();
-            } else if (mode === 'places') {
-                showPlacesModeSelector();
-            } else if (mode === 'state-puzzle') {
-                showStatePuzzleSelector();
-            } else if (mode === 'shapes' || mode === 'country-shape-id') {
-                showShapeIdSelector();
-            } else if (mode === 'explore') {
-                showExploreSelector();
-            } else if (mode === 'capitals') {
-                showCapitalsSelector();
-            } else if (mode === 'flags') {
-                showFlagsSelector();
-            } else if (mode === 'spaceship') {
-                showSpaceshipSelector();
-            } else if (mode === 'sandbox') {
-                showSandboxSelector();
-            } else {
-                startGameWithMode(mode);
-            }
-        });
-    });
+    // The landing tiles are wired by `renderLandingGrid`, which builds them — there is nothing
+    // to attach here, and attaching anyway would fire every route twice.
 
     // States sub-mode selection
     document.querySelectorAll('#states-selector .mode-btn').forEach(btn => {
@@ -7574,17 +7620,11 @@ function setupEventListeners() {
     document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            // Places-been and the States Puzzle need a choice made first (region /
-            // difficulty), so open their selectors rather than starting a mode directly.
-            if (mode === 'places') { showPlacesModeSelector(); return; }
-            if (mode === 'state-puzzle') { showStatePuzzleSelector(); return; }
-            if (mode === 'shapes' || mode === 'country-shape-id') { showShapeIdSelector(); return; }
-            if (mode === 'explore') { showExploreSelector(); return; }
-            if (mode === 'capitals') { showCapitalsSelector(); return; }
-            if (mode === 'flags') { showFlagsSelector(); return; }
-            if (mode === 'spaceship') { showSpaceshipSelector(); return; }
-            if (mode === 'sandbox') { showSandboxSelector(); return; }
-            if (mode) switchToMode(mode);
+            // The one exception to the route table, and it is deliberate: the ⌨️ icon is a
+            // one-click shortcut back into Name All at whatever region you last played, where
+            // every other picker here exists because the mode cannot start without an answer.
+            if (mode === 'name-all') { switchToMode(mode); return; }
+            routeMode(mode, switchToMode);
         });
     });
 
@@ -25459,115 +25499,8 @@ function resetModeSelector() {
     // first, or its stage stays sitting on top of the menu it just returned to.
     teardownActiveGame();
     const modeSelector = document.getElementById('mode-selector');
-    modeSelector.innerHTML = `
-        <h2>Select Quiz Mode</h2>
-        <div class="mode-buttons" id="mode-buttons">
-            <button class="mode-btn" data-mode="find">
-                <span class="mode-icon material-symbols-outlined">search</span>
-                <span class="mode-name">Find on the Map</span>
-                <span class="mode-desc">Find countries or states on the globe/map</span>
-            </button>
-            <button class="mode-btn" data-mode="identify">
-                <span class="mode-icon material-symbols-outlined">help</span>
-                <span class="mode-name">Identify Mode</span>
-                <span class="mode-desc">Identify highlighted locations on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="name-all">
-                <span class="mode-icon material-symbols-outlined">keyboard</span>
-                <span class="mode-name">Name All Countries</span>
-                <span class="mode-desc">Type as many countries as you can!</span>
-            </button>
-            <button class="mode-btn" data-mode="population-order">
-                <span class="mode-icon material-symbols-outlined">bar_chart</span>
-                <span class="mode-name">Order by Population</span>
-                <span class="mode-desc">Drag countries to order them by population</span>
-            </button>
-            <button class="mode-btn" data-mode="flags">
-                <span class="mode-icon material-symbols-outlined">flag</span>
-                <span class="mode-name">Flags</span>
-                <span class="mode-desc">Find the country from its flag, or match every flag at once</span>
-            </button>
-            <button class="mode-btn" data-mode="capitals">
-                <span class="mode-icon material-symbols-outlined">star</span>
-                <span class="mode-name">Capitals</span>
-                <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="explore">
-                <span class="mode-icon material-symbols-outlined">explore</span>
-                <span class="mode-name">Explore</span>
-                <span class="mode-desc">Roam the globe, or put the world through a dozen projections</span>
-            </button>
-            <button class="mode-btn" data-mode="places">
-                <span class="mode-icon material-symbols-outlined">push_pin</span>
-                <span class="mode-name">Places I've Been</span>
-                <span class="mode-desc">Fill in the map with your travels and share it</span>
-            </button>
-            <button class="mode-btn" data-mode="shapes">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">Shapes</span>
-                <span class="mode-desc">Name an outline, trace one, or drag the pieces into place</span>
-            </button>
-            <button class="mode-btn" data-mode="sb-missing">
-                <span class="mode-icon material-symbols-outlined">search_off</span>
-                <span class="mode-name">Who's Missing?</span>
-                <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
-            </button>
-            <button class="mode-btn" data-mode="sun-moon">
-                <span class="mode-icon material-symbols-outlined">wb_twilight</span>
-                <span class="mode-name">Sun &amp; Moon</span>
-                <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
-            </button>
-            <button class="mode-btn" data-mode="spaceship">
-                <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                <span class="mode-name">Where Is My Spaceship?</span>
-                <span class="mode-desc">Guess your orbital location from the view below</span>
-            </button>
-            <button class="mode-btn" data-mode="sandbox">
-                <span class="mode-icon material-symbols-outlined">science</span>
-                <span class="mode-name">Sandbox</span>
-                <span class="mode-desc">Sun &amp; moon, sun path, odd one out, draw the border</span>
-            </button>
-            <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
-                 see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
-            <!-- <button class="mode-btn" data-mode="skyline-id">
-                <span class="mode-icon material-symbols-outlined">apartment</span>
-                <span class="mode-name">Skyline ID</span>
-                <span class="mode-desc">Name the city from a photo of its skyline</span>
-            </button> -->
-        </div>
-    `;
-
-    // Re-attach event listeners
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            if (mode === 'find') {
-                showFindModeSelector();
-            } else if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else if (mode === 'name-all') {
-                showNameAllModeSelector();
-            } else if (mode === 'places') {
-                showPlacesModeSelector();
-            } else if (mode === 'state-puzzle') {
-                showStatePuzzleSelector();
-            } else if (mode === 'shapes' || mode === 'country-shape-id') {
-                showShapeIdSelector();
-            } else if (mode === 'explore') {
-                showExploreSelector();
-            } else if (mode === 'capitals') {
-                showCapitalsSelector();
-            } else if (mode === 'flags') {
-                showFlagsSelector();
-            } else if (mode === 'spaceship') {
-                showSpaceshipSelector();
-            } else if (mode === 'sandbox') {
-                showSandboxSelector();
-            } else {
-                startGameWithMode(mode);
-            }
-        });
-    });
+    modeSelector.innerHTML = `<h2>Select Quiz Mode</h2><div class="mode-buttons" id="mode-buttons"></div>`;
+    renderLandingGrid();
 }
 
 // Initialize when DOM is ready
