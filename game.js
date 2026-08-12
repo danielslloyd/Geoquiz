@@ -6089,10 +6089,14 @@ function teardownActiveGame() {
     removePuzzleTray();
     removeFlagTray();
     removeSandboxPanel();
-    removeSunMoonPanel();
-    removeSunPathMode();
     sbTeardown();
     stopGlobeSpin();
+    // The lab panels are appended to #question-container rather than owned by a layer this
+    // function empties, so they have to be named.
+    ['lab-panel', 'airocean-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
     document.body.classList.remove('spaceship-active');
     document.body.classList.remove('state-puzzle-active');
     document.body.classList.remove('sb-tall-active');
@@ -6113,36 +6117,85 @@ function teardownActiveGame() {
     });
 }
 
-// Show the region picker (World / USA) for Places-been.
-function showPlacesModeSelector() {
+// ==================== THE PICKERS ====================
+// Every screen between the landing grid and a live mode is the same shell — tear down whatever
+// is playing, hide the top bar, show the header, write a title, some rows of tiles, and a Back
+// button — and it was written out longhand twelve times. Three of the twelve had drifted off
+// the pattern in the one place it matters: Find, Identify and Name All never called
+// teardownActiveGame, and every picker is reachable from the top bar of a LIVE mode. Measured,
+// opening Name All from Sun & Moon left two WebGL canvases still rendering behind the menu;
+// from the projection lab, Find left the map, its side layout and its panel.
+//
+// A block is one of: {sub} a line of prose, {tiles, on} a grid, {toggle} a scope switch, or
+// {html} for the one screen that needs something of its own.
+function selectorTileHtml(t, attr) {
+    const icon = t.flag
+        ? `<img class="mode-icon" src="https://flagcdn.com/${t.flag}.svg" alt="${t.label}" />`
+        : `<span class="mode-icon material-symbols-outlined">${t.icon || 'public'}</span>`;
+    return `<button class="mode-btn" ${attr}="${t.key}">${icon}` +
+        `<span class="mode-name">${t.label}</span>` +
+        `<span class="mode-desc">${t.desc || ''}</span></button>`;
+}
+
+function selectorBlockHtml(b, attr) {
+    if (b.html) return b.html;
+    if (b.sub) return `<p class="selector-sub">${b.sub}</p>`;
+    if (b.tiles) return `<div class="mode-buttons">` +
+        b.tiles.map(t => selectorTileHtml(t, attr)).join('') + `</div>`;
+    if (b.toggle) {
+        const t = b.toggle;
+        return `<div class="scope-toggle" role="group" aria-label="${t.label || 'Options'}">` +
+            (t.label ? `<span class="scope-toggle-label">${t.label}</span>` : '') +
+            t.options.map(o => `<button type="button" class="scope-btn` +
+                `${o.key === t.value ? ' active' : ''}" ${attr}="${o.key}">${o.label}</button>`).join('') +
+            `</div>` + (t.hint ? `<div class="place-setup-hint" ${attr}-hint>${t.hint}</div>` : '');
+    }
+    return '';
+}
+
+// `back` defaults to the landing grid; pass a function for a picker that came from another
+// picker, or false for a screen that offers its own way out.
+function renderSelector(o) {
     teardownActiveGame();
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Places I've Been</h2>
-        <p class="selector-sub">Fill in the map with everywhere you've been, then share it.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-places-region="world">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World</span>
-                <span class="mode-desc">Mark the countries you've been to</span>
-            </button>
-            <button class="mode-btn" data-places-region="us">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">USA</span>
-                <span class="mode-desc">Mark the US states you've been to</span>
-            </button>
-        </div>
-        <button id="back-from-places-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    modeSelector.querySelectorAll('[data-places-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => startPlacesMode(e.currentTarget.dataset.placesRegion));
+    const sel = document.getElementById('mode-selector');
+    sel.classList.remove('hidden');
+    const blocks = (o.blocks || []).filter(Boolean);
+    const attrOf = i => `data-sel${i}`;
+    sel.innerHTML = `<h2>${o.title}</h2>` +
+        blocks.map((b, i) => selectorBlockHtml(b, attrOf(i))).join('') +
+        (o.back === false ? ''
+            : `<button id="selector-back-btn" class="btn secondary" style="margin-top: 20px;">Back</button>`);
+    blocks.forEach((b, i) => {
+        const attr = attrOf(i);
+        const handler = b.on || (b.toggle && b.toggle.on);
+        if (!handler) return;
+        sel.querySelectorAll(`[${attr}]:not([${attr}-hint])`).forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (b.toggle) sel.querySelectorAll(`[${attr}]:not([${attr}-hint])`)
+                    .forEach(x => x.classList.toggle('active', x === btn));
+                handler(btn.getAttribute(attr), btn, sel.querySelector(`[${attr}-hint]`));
+            });
+        });
     });
-    document.getElementById('back-from-places-btn').addEventListener('click', resetModeSelector);
+    const back = document.getElementById('selector-back-btn');
+    if (back) back.addEventListener('click', typeof o.back === 'function' ? o.back : resetModeSelector);
+    return sel;
+}
+
+// Show the region picker (World / USA) for Places-been.
+function showPlacesModeSelector() {
+    renderSelector({
+        title: "Places I've Been",
+        blocks: [
+            { sub: 'Fill in the map with everywhere you’ve been, then share it.' },
+            { tiles: [
+                { key: 'world', icon: 'public', label: 'World', desc: 'Mark the countries you’ve been to' },
+                { key: 'us', flag: 'us', label: 'USA', desc: 'Mark the US states you’ve been to' }
+              ], on: startPlacesMode }
+        ]
+    });
 }
 
 // Show country popup with stats and flag
@@ -6786,79 +6839,37 @@ function revealShapeIdTruth() {
 // set of them into position. They were three separate landing tiles asking the same kind of
 // question, and the puzzle in particular reads as its own genre when it is really "do you know
 // this shape" with the answer given by where you put it.
+// A quiz key rendered as a tile, straight off the registry.
+const sbTileFor = k => ({ key: k, icon: SB_QUIZZES[k].icon,
+                          label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc });
+
 function showShapeIdSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const sel = document.getElementById('mode-selector');
-    sel.classList.remove('hidden');
-    sel.innerHTML = `
-        <h2>Shapes</h2>
-        <p class="selector-sub">Name an outline, trace one, or drag a set of them into place.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-shapemode="state-puzzle">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">Map Puzzle</span>
-                <span class="mode-desc">Drag every piece into place — world, US, India, Germany, England or Mexico</span>
-            </button>
-            <button class="mode-btn" data-shapemode="draw-border">
-                <span class="mode-icon material-symbols-outlined">gesture</span>
-                <span class="mode-name">Draw the Border</span>
-                <span class="mode-desc">The country is cut out of the map — trace where it goes</span>
-            </button>
-            ${SB_IN_SHAPES.map(k => `
-            <button class="mode-btn" data-shapeplain="${k}">
-                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
-                <span class="mode-name">${SB_QUIZZES[k].label}</span>
-                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
-            </button>`).join('')}
-        </div>
-        <p class="selector-sub">Or one silhouette, no map around it — how much of it do you want?</p>
-        <div class="scope-toggle" role="group" aria-label="Geography">
-            <span class="scope-toggle-label">From:</span>
-            ${SHAPE_ID_REGIONS.map(r => `<button type="button" class="scope-btn` +
-                `${r.key === shapeIdRegion ? ' active' : ''}" data-shaperegion="${r.key}">${r.label}</button>`).join('')}
-        </div>
-        <div class="mode-buttons">
-            ${Object.keys(SHAPE_ID_TIERS).map(k => `
-            <button class="mode-btn" data-shapetier="${k}">
-                <span class="mode-icon material-symbols-outlined">pentagon</span>
-                <span class="mode-name">${SHAPE_ID_TIERS[k].label}</span>
-                <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
-            </button>`).join('')}
-        </div>
-        <p class="selector-sub">Or ask a different question about the same silhouettes.</p>
-        <div class="mode-buttons">
-            ${SB_IN_SHAPE_ID.map(k => `
-            <button class="mode-btn" data-shapequiz="${k}">
-                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
-                <span class="mode-name">${SB_QUIZZES[k].label}</span>
-                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
-            </button>`).join('')}
-        </div>`;
-    sel.querySelectorAll('[data-shaperegion]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            shapeIdRegion = btn.dataset.shaperegion;
-            sel.querySelectorAll('[data-shaperegion]').forEach(b =>
-                b.classList.toggle('active', b === btn));
-        });
-    });
-    sel.querySelectorAll('[data-shapetier]').forEach(btn => {
-        btn.addEventListener('click', () => startShapeIdMode(shapeIdRegion, btn.dataset.shapetier));
-    });
-    sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
-        btn.addEventListener('click', () => startShapeQuizMode(btn.dataset.shapequiz, shapeIdRegion));
-    });
-    // These take the world and nothing else, so they start straight away.
-    sel.querySelectorAll('[data-shapeplain]').forEach(btn => {
-        btn.addEventListener('click', () => startGameWithMode(btn.dataset.shapeplain));
-    });
-    // The two that ask for a region of their own rather than taking this screen's.
-    sel.querySelectorAll('[data-shapemode]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            if (btn.dataset.shapemode === 'state-puzzle') showStatePuzzleSelector();
-            else showDrawBorderSelector();
-        });
+    renderSelector({
+        title: 'Shapes',
+        back: false,
+        blocks: [
+            { sub: 'Name an outline, trace one, or drag a set of them into place.' },
+            { tiles: [
+                { key: 'state-puzzle', icon: 'extension', label: 'Map Puzzle',
+                  desc: 'Drag every piece into place — world, US, India, Germany, England or Mexico' },
+                { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
+                  desc: 'The country is cut out of the map — trace where it goes' }
+              ].concat(SB_IN_SHAPES.map(sbTileFor)),
+              // The first two ask for a geography of their own; the rest take the world and start.
+              on: k => k === 'state-puzzle' ? showStatePuzzleSelector()
+                     : k === 'draw-border' ? showDrawBorderSelector()
+                     : startGameWithMode(k) },
+            { sub: 'Or one silhouette, no map around it — how much of it do you want?' },
+            { toggle: { label: 'From:', value: shapeIdRegion, options: SHAPE_ID_REGIONS,
+                        on: k => { shapeIdRegion = k; } } },
+            { tiles: Object.keys(SHAPE_ID_TIERS).map(k => ({
+                        key: k, icon: 'pentagon',
+                        label: SHAPE_ID_TIERS[k].label, desc: SHAPE_ID_TIERS[k].desc })),
+              on: k => startShapeIdMode(shapeIdRegion, k) },
+            { sub: 'Or ask a different question about the same silhouettes.' },
+            { tiles: SB_IN_SHAPE_ID.map(sbTileFor),
+              on: k => startShapeQuizMode(k, shapeIdRegion) }
+        ]
     });
 }
 
@@ -7929,21 +7940,9 @@ function setupEventListeners() {
     const landingHeader = document.getElementById('landing-header');
     if (landingHeader) landingHeader.addEventListener('click', goHome);
 
-    // All/Random-10 scope toggle (Find + Identify selector screens). Delegated on the
-    // persistent #mode-selector container since showFindModeSelector/showIdentifyModeSelector
-    // rewrite its innerHTML wholesale every time they're opened.
-    const modeSelectorEl = document.getElementById('mode-selector');
-    if (modeSelectorEl) {
-        modeSelectorEl.addEventListener('click', (e) => {
-            const btn = e.target.closest('.scope-btn');
-            if (!btn) return;
-            const group = btn.closest('.scope-toggle');
-            const isAll = btn.dataset.scope === 'all';
-            if (group.dataset.for === 'find') findQuizScopeAll = isAll;
-            else if (group.dataset.for === 'identify') identifyQuizScopeAll = isAll;
-            group.querySelectorAll('.scope-btn').forEach(b => b.classList.toggle('active', b === btn));
-        });
-    }
+    // The All/Random-10 scope toggle used to be delegated here, because the Find and Identify
+    // screens rewrote #mode-selector wholesale. renderSelector wires its own toggles as it
+    // builds them, so there is nothing left to delegate.
 
     // Helper to switch modes from the top bar
     function switchToMode(mode) {
@@ -14591,55 +14590,28 @@ const FLAG_SUBMODES = [
 // click things, or put the same world through a dozen projections. They belong together because
 // they are the same activity at two removes, and the View toggle carries you between them.
 function showExploreSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const sel = document.getElementById('mode-selector');
-    sel.classList.remove('hidden');
-    sel.innerHTML = `
-        <h2>Explore</h2>
-        <p class="selector-sub">No questions and no score. Once you are in either, the View button
-            carries you to the other.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-explore="free-explore">
-                <span class="mode-icon material-symbols-outlined">explore</span>
-                <span class="mode-name">The Globe</span>
-                <span class="mode-desc">Click any country for its flag, capital and population</span>
-            </button>
-            <button class="mode-btn" data-explore="projection-lab">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">Projections</span>
-                <span class="mode-desc">The same world through a dozen of them, with the distortion drawn on it</span>
-            </button>
-        </div>
-        <button id="back-from-explore-btn" class="btn secondary" style="margin-top: 20px;">Back</button>`;
-    sel.querySelectorAll('[data-explore]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.explore)));
-    document.getElementById('back-from-explore-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Explore',
+        blocks: [
+            { sub: 'No questions and no score. Once you are in either, the View button carries you to the other.' },
+            { tiles: [
+                { key: 'free-explore', icon: 'explore', label: 'The Globe',
+                  desc: 'Click any country for its flag, capital and population' },
+                { key: 'projection-lab', icon: 'public', label: 'Projections',
+                  desc: 'The same world through a dozen of them, with the distortion drawn on it' }
+              ], on: startGameWithMode }
+        ]
+    });
 }
 
 function showFlagsSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Flags</h2>
-        <p class="selector-sub">Match them to countries, catch a fake, or make one.</p>
-        <div class="mode-buttons">
-            ${FLAG_SUBMODES.map(m => `
-            <button class="mode-btn" data-flag-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-flags-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-flag-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.flagMode)));
-    document.getElementById('back-from-flags-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Flags',
+        blocks: [
+            { sub: 'Match them to countries, catch a fake, or make one.' },
+            { tiles: FLAG_SUBMODES, on: startGameWithMode }
+        ]
+    });
 }
 
 // ==================== SANDBOX CATEGORY ====================
@@ -14696,27 +14668,14 @@ const DRAW_BORDER_REGIONS = [
 ];
 
 function showDrawBorderSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Draw the Border</h2>
-        <p class="selector-sub">The shape is cut out of the map — trace where it belongs.</p>
-        <div class="mode-buttons">
-            ${DRAW_BORDER_REGIONS.map(r => `
-            <button class="mode-btn" data-draw-region="${r.key}">
-                <span class="mode-icon material-symbols-outlined">${r.icon}</span>
-                <span class="mode-name">${r.label}</span>
-                <span class="mode-desc">${r.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-draw-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-draw-region]').forEach(b =>
-        b.addEventListener('click', () => startDrawBorderMode(b.dataset.drawRegion)));
-    document.getElementById('back-from-draw-btn').addEventListener('click', showSandboxSelector);
+    renderSelector({
+        title: 'Draw the Border',
+        blocks: [
+            { sub: 'The shape is cut out of the map — trace where it belongs.' },
+            { tiles: DRAW_BORDER_REGIONS, on: startDrawBorderMode }
+        ],
+        back: showSandboxSelector
+    });
 }
 
 function startDrawBorderMode(region) {
@@ -14728,31 +14687,15 @@ function startDrawBorderMode(region) {
 }
 
 function showSandboxSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Sandbox</h2>
-        <p class="selector-sub">Experiments and tools — rougher edges than the main modes.</p>
-        <div class="mode-buttons">
-            ${SANDBOX_SUBMODES.concat(sandboxQuizTiles()).map(m => `
-            <button class="mode-btn" data-sandbox-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-sandbox-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-sandbox-mode]').forEach(b =>
-        b.addEventListener('click', () => {
-            // Draw the Border picks a geography first; the rest start straight away.
-            if (b.dataset.sandboxMode === 'draw-border') showDrawBorderSelector();
-            else startGameWithMode(b.dataset.sandboxMode);
-        }));
-    document.getElementById('back-from-sandbox-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Sandbox',
+        blocks: [
+            { sub: 'Experiments and tools — rougher edges than the main modes.' },
+            { tiles: SANDBOX_SUBMODES.concat(sandboxQuizTiles()),
+              // Draw the Border picks a geography first; the rest start straight away.
+              on: k => k === 'draw-border' ? showDrawBorderSelector() : startGameWithMode(k) }
+        ]
+    });
 }
 
 // ==================== SANDBOX QUIZZES ====================
@@ -24431,26 +24374,15 @@ function sbTeardown() {
 // ==================== ORBIT CATEGORY ====================
 // The orbital quiz. Its sandbox now lives under the Sandbox tile instead.
 function showSpaceshipSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Where Is My Spaceship?</h2>
-        <p class="selector-sub">Guess your orbital position. The seed sandbox now lives under Sandbox.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-orbit-mode="spaceship">
-                <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                <span class="mode-name">Play</span>
-                <span class="mode-desc">10 rounds from low Earth orbit</span>
-            </button>
-        </div>
-        <button id="back-from-orbit-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-orbit-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.orbitMode)));
-    document.getElementById('back-from-orbit-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Where Is My Spaceship?',
+        blocks: [
+            { sub: 'Guess your orbital position. The seed sandbox now lives under Sandbox.' },
+            { tiles: [{ key: 'spaceship', icon: 'rocket_launch', label: 'Play',
+                        desc: '10 rounds from low Earth orbit' }],
+              on: startGameWithMode }
+        ]
+    });
 }
 
 // ==================== CAPITALS CATEGORY ====================
@@ -24471,28 +24403,13 @@ const CAPITAL_SUBMODES = [
 ];
 
 function showCapitalsSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Capitals</h2>
-        <p class="selector-sub">Four ways to test the same thing — pick one.</p>
-        <div class="mode-buttons">
-            ${CAPITAL_SUBMODES.map(m => `
-            <button class="mode-btn" data-capital-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-capitals-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-capital-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.capitalMode)));
-    document.getElementById('back-from-capitals-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Capitals',
+        blocks: [
+            { sub: 'Four ways to test the same thing — pick one.' },
+            { tiles: CAPITAL_SUBMODES, on: startGameWithMode }
+        ]
+    });
 }
 
 // The geographies the puzzle can be played on. Each names the QUIZ_MODES entry its map and
@@ -24507,56 +24424,30 @@ const PUZZLE_REGIONS = [
 ];
 
 // Region + difficulty picker for the puzzle.
+const PUZZLE_DIFF_HINTS = {
+    easy: 'Every piece outlined and named on the board. Generous snap, and the piece turns green over the right spot.',
+    medium: 'Only the outer coastline — no internal borders. A fifth of the snap distance, and no green cue.',
+    hard: 'One piece at a time against the bare outline. Nothing snaps and nothing stays on the map, ' +
+          'so every piece is placed blind — scored on how far off you were and how long you took.'
+};
+
 function showStatePuzzleSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Map Puzzle</h2>
-        <p class="selector-sub">Drag every piece onto the map — they snap into place when they're close.</p>
-        <div class="place-setup">
-            <div class="place-setup-group">
-                <div class="place-setup-label">Difficulty</div>
-                <div class="scope-toggle" id="puzzle-diff">
-                    <button class="scope-btn active" data-diff="easy">Easy</button>
-                    <button class="scope-btn" data-diff="medium">Medium</button>
-                    <button class="scope-btn" data-diff="hard">Hard</button>
-                </div>
-                <div class="place-setup-hint" id="puzzle-diff-hint"></div>
-            </div>
-        </div>
-        <div class="mode-buttons">
-            ${PUZZLE_REGIONS.map(r => `
-            <button class="mode-btn" data-puzzle-region="${r.key}">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">${r.label}</span>
-                <span class="mode-desc">${r.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-puzzle-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    const hints = {
-        easy: 'Every piece outlined and named on the board. Generous snap, and the piece turns green over the right spot.',
-        medium: 'Only the outer coastline — no internal borders. A fifth of the snap distance, and no green cue.',
-        hard: 'One piece at a time against the bare outline. Nothing snaps and nothing stays on the map, ' +
-              'so every piece is placed blind — scored on how far off you were and how long you took.'
-    };
     const state = { diff: 'easy' };
-    const hintEl = document.getElementById('puzzle-diff-hint');
-    hintEl.textContent = hints.easy;
-
-    modeSelector.querySelectorAll('#puzzle-diff .scope-btn').forEach(b => b.addEventListener('click', () => {
-        state.diff = b.dataset.diff;
-        hintEl.textContent = hints[state.diff];
-        modeSelector.querySelectorAll('#puzzle-diff .scope-btn').forEach(x => x.classList.toggle('active', x === b));
-    }));
-    modeSelector.querySelectorAll('[data-puzzle-region]').forEach(b => b.addEventListener('click',
-        () => startStatePuzzleMode(b.dataset.puzzleRegion, state.diff)));
-    document.getElementById('back-from-puzzle-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Map Puzzle',
+        blocks: [
+            { sub: 'Drag every piece onto the map — they snap into place when they’re close.' },
+            { toggle: { label: 'Difficulty', value: 'easy', hint: PUZZLE_DIFF_HINTS.easy,
+                        options: [{ key: 'easy', label: 'Easy' }, { key: 'medium', label: 'Medium' },
+                                  { key: 'hard', label: 'Hard' }],
+                        on: (k, btn, hint) => {
+                            state.diff = k;
+                            if (hint) hint.textContent = PUZZLE_DIFF_HINTS[k];
+                        } } },
+            { tiles: PUZZLE_REGIONS.map(r => Object.assign({ icon: 'extension' }, r)),
+              on: k => startStatePuzzleMode(k, state.diff) }
+        ]
+    });
 }
 
 // Copy the chosen geography's map/list onto the puzzle config, then start. useGlobe is
@@ -25779,47 +25670,28 @@ function startNameAllMode(region) {
 
 // Region picker for Name All: World + continents (unchanged groups), plus one entry per
 // state-level map.
+// icon → a material-symbols glyph, flag → a flagcdn code (the convention the Find/Identify
+// region pickers use for the state-level geographies).
+const NAME_ALL_REGIONS = [
+    { key: 'world', icon: 'public', label: 'World', desc: 'Name every country on Earth' },
+    { key: 'North America', icon: 'globe', label: 'North America', desc: 'Name all North American countries' },
+    { key: 'South America', icon: 'globe', label: 'South America', desc: 'Name all South American countries' },
+    { key: 'Europe', icon: 'globe', label: 'Europe', desc: 'Name all European countries' },
+    { key: 'Africa', icon: 'globe', label: 'Africa', desc: 'Name all African countries' },
+    { key: 'Asia', icon: 'globe', label: 'Asia', desc: 'Name all Asian countries' },
+    { key: 'Oceania', icon: 'globe', label: 'Oceania', desc: 'Name all countries in Oceania' },
+    { key: 'us-states', flag: 'us', label: 'USA', desc: 'Name all US states' },
+    { key: 'indian-states', flag: 'in', label: 'India', desc: 'Name all Indian states' },
+    { key: 'german-states', flag: 'de', label: 'Germany', desc: 'Name all German Bundesländer' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England', desc: 'Name all English counties' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexico', desc: 'Name all Mexican states' }
+];
+
 function showNameAllModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    // icon: 'icon' → material-symbols glyph, 'flag' → flagcdn country flag (matches the
-    // Find/Identify region-picker convention for the state-level geographies).
-    const regions = [
-        ['world', 'icon', 'public', 'World', 'Name every country on Earth'],
-        ['North America', 'icon', 'globe', 'North America', 'Name all North American countries'],
-        ['South America', 'icon', 'globe', 'South America', 'Name all South American countries'],
-        ['Europe', 'icon', 'globe', 'Europe', 'Name all European countries'],
-        ['Africa', 'icon', 'globe', 'Africa', 'Name all African countries'],
-        ['Asia', 'icon', 'globe', 'Asia', 'Name all Asian countries'],
-        ['Oceania', 'icon', 'globe', 'Oceania', 'Name all countries in Oceania'],
-        ['us-states', 'flag', 'us', 'USA', 'Name all US states'],
-        ['indian-states', 'flag', 'in', 'India', 'Name all Indian states'],
-        ['german-states', 'flag', 'de', 'Germany', 'Name all German Bundesländer'],
-        ['uk-states', 'flag', 'gb-eng', 'England', 'Name all English counties'],
-        ['mexican-states', 'flag', 'mx', 'Mexico', 'Name all Mexican states']
-    ];
-    modeSelector.innerHTML = `
-        <h2>Name All — Choose a Region</h2>
-        <div class="mode-buttons">
-            ${regions.map(([key, iconType, iconVal, name, desc]) => `
-            <button class="mode-btn" data-nameall-region="${key}">
-                ${iconType === 'flag'
-                    ? `<img class="mode-icon" src="https://flagcdn.com/${iconVal}.svg" alt="${name}" />`
-                    : `<span class="mode-icon material-symbols-outlined">${iconVal}</span>`}
-                <span class="mode-name">${name}</span>
-                <span class="mode-desc">${desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-nameall-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    document.querySelectorAll('[data-nameall-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => startNameAllMode(e.currentTarget.dataset.nameallRegion));
+    renderSelector({
+        title: 'Name All — Choose a Region',
+        blocks: [{ tiles: NAME_ALL_REGIONS, on: startNameAllMode }]
     });
-    document.getElementById('back-from-nameall-btn').addEventListener('click', () => resetModeSelector());
 }
 
 // ---- Find/Identify "All" vs "Random 10" scope toggle --------------------------------
@@ -25831,15 +25703,6 @@ function showNameAllModeSelector() {
 let findQuizScopeAll = true;
 let identifyQuizScopeAll = false;
 
-function scopeToggleHtml(kind, isAll) {
-    return `
-        <div class="scope-toggle" data-for="${kind}" role="group" aria-label="Number of questions">
-            <span class="scope-toggle-label">Questions:</span>
-            <button type="button" class="scope-btn${isAll ? ' active' : ''}" data-scope="all">All</button>
-            <button type="button" class="scope-btn${isAll ? '' : ' active'}" data-scope="random10">Random 10</button>
-        </div>`;
-}
-
 // Override a Find-screen mode's totalQuestions per the current toggle state. Identify
 // mode computes its own totalQuestions inline (startIdentifyMode) since it always
 // reconfigures QUIZ_MODES.identify from scratch per region.
@@ -25850,132 +25713,52 @@ function applyQuizScope(mode, scopeAll) {
     }
 }
 
+const SCOPE_OPTIONS = [{ key: 'all', label: 'All' }, { key: 'random10', label: 'Random 10' }];
+
+const FIND_REGIONS = [
+    { key: 'countries', icon: 'public', label: 'World', desc: 'Find countries on the globe' },
+    { key: 'us-states', flag: 'us', label: 'USA', desc: 'Find US states on the map' },
+    { key: 'indian-states', flag: 'in', label: 'India', desc: 'Find Indian states on the map' },
+    { key: 'german-states', flag: 'de', label: 'Germany', desc: 'Find German Bundesländer on the map' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England', desc: 'Find English counties on the map' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexico', desc: 'Find Mexican states on the map' },
+    { key: 'mystery-flag', icon: 'flag', label: 'Flags', desc: 'See the flag, find the country on the globe' },
+    { key: 'find-capital', icon: 'location_city', label: 'Capitals', desc: 'Pin a capital’s location on the map by distance' }
+];
+
+const IDENTIFY_REGIONS = [
+    { key: 'countries', icon: 'public', label: 'World Countries', desc: 'Identify highlighted countries' },
+    { key: 'us-states', flag: 'us', label: 'US States', desc: 'Identify highlighted US states' },
+    { key: 'indian-states', flag: 'in', label: 'Indian States', desc: 'Identify highlighted Indian states' },
+    { key: 'german-states', flag: 'de', label: 'German States', desc: 'Identify highlighted German Bundesländer' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England Counties', desc: 'Identify highlighted English counties' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexican States', desc: 'Identify highlighted Mexican states' }
+];
+
 function showFindModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Find on the Map</h2>
-        ${scopeToggleHtml('find', findQuizScopeAll)}
-        <div class="mode-buttons">
-            <button class="mode-btn" data-mode="countries">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World</span>
-                <span class="mode-desc">Find countries on the globe</span>
-            </button>
-            <button class="mode-btn" data-mode="us-states">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">USA</span>
-                <span class="mode-desc">Find US states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="indian-states">
-                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
-                <span class="mode-name">India</span>
-                <span class="mode-desc">Find Indian states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="german-states">
-                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
-                <span class="mode-name">Germany</span>
-                <span class="mode-desc">Find German Bundesländer on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="uk-states">
-                <img class="mode-icon" src="https://flagcdn.com/gb-eng.svg" alt="England" />
-                <span class="mode-name">England</span>
-                <span class="mode-desc">Find English counties on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="mexican-states">
-                <img class="mode-icon" src="https://flagcdn.com/mx.svg" alt="Mexico" />
-                <span class="mode-name">Mexico</span>
-                <span class="mode-desc">Find Mexican states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="mystery-flag">
-                <span class="mode-icon material-symbols-outlined">flag</span>
-                <span class="mode-name">Flags</span>
-                <span class="mode-desc">See the flag, find the country on the globe</span>
-            </button>
-            <button class="mode-btn" data-mode="find-capital">
-                <span class="mode-icon material-symbols-outlined">location_city</span>
-                <span class="mode-name">Capitals</span>
-                <span class="mode-desc">Pin a capital's location on the map by distance</span>
-            </button>
-        </div>
-        <button id="back-from-find-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            applyQuizScope(mode, findQuizScopeAll);
-            startGameWithMode(mode);
-        });
-    });
-
-    document.getElementById('back-from-find-btn').addEventListener('click', () => {
-        resetModeSelector();
+    renderSelector({
+        title: 'Find on the Map',
+        blocks: [
+            { toggle: { label: 'Questions:', options: SCOPE_OPTIONS,
+                        value: findQuizScopeAll ? 'all' : 'random10',
+                        on: k => { findQuizScopeAll = k === 'all'; } } },
+            { tiles: FIND_REGIONS, on: mode => {
+                applyQuizScope(mode, findQuizScopeAll);
+                startGameWithMode(mode);
+              } }
+        ]
     });
 }
 
-// Show identify mode selector (choose region)
 function showIdentifyModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    // Create a temporary selector for identify mode regions
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    const html = `
-        <h2>Select Region for Identify Mode</h2>
-        ${scopeToggleHtml('identify', identifyQuizScopeAll)}
-        <div class="mode-buttons">
-            <button class="mode-btn" data-identify-region="countries">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World Countries</span>
-                <span class="mode-desc">Identify highlighted countries</span>
-            </button>
-            <button class="mode-btn" data-identify-region="us-states">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">US States</span>
-                <span class="mode-desc">Identify highlighted US states</span>
-            </button>
-            <button class="mode-btn" data-identify-region="indian-states">
-                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
-                <span class="mode-name">Indian States</span>
-                <span class="mode-desc">Identify highlighted Indian states</span>
-            </button>
-            <button class="mode-btn" data-identify-region="german-states">
-                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
-                <span class="mode-name">German States</span>
-                <span class="mode-desc">Identify highlighted German Bundesländer</span>
-            </button>
-            <button class="mode-btn" data-identify-region="uk-states">
-                <img class="mode-icon" src="https://flagcdn.com/gb-eng.svg" alt="England" />
-                <span class="mode-name">England Counties</span>
-                <span class="mode-desc">Identify highlighted English counties</span>
-            </button>
-            <button class="mode-btn" data-identify-region="mexican-states">
-                <img class="mode-icon" src="https://flagcdn.com/mx.svg" alt="Mexico" />
-                <span class="mode-name">Mexican States</span>
-                <span class="mode-desc">Identify highlighted Mexican states</span>
-            </button>
-        </div>
-        <button id="back-from-identify-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    modeSelector.innerHTML = html;
-
-    // Add event listeners for identify region buttons
-    document.querySelectorAll('[data-identify-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const region = e.currentTarget.dataset.identifyRegion;
-            startIdentifyMode(region);
-        });
-    });
-
-    // Back button
-    document.getElementById('back-from-identify-btn').addEventListener('click', () => {
-        resetModeSelector();
+    renderSelector({
+        title: 'Select Region for Identify Mode',
+        blocks: [
+            { toggle: { label: 'Questions:', options: SCOPE_OPTIONS,
+                        value: identifyQuizScopeAll ? 'all' : 'random10',
+                        on: k => { identifyQuizScopeAll = k === 'all'; } } },
+            { tiles: IDENTIFY_REGIONS, on: startIdentifyMode }
+        ]
     });
 }
 

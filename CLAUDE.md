@@ -2513,6 +2513,30 @@ A caution for anyone measuring this: two more modes *looked* like they leaked an
 the buttons 400 ms after a mode starts catches them before the map has loaded and the render has
 run, so the reading is the previous mode's. Wait for the round.
 
+## Every picker is the same picker
+
+Twelve screens sit between the landing grid and a live mode, and each was written out
+longhand: tear down whatever is playing, hide the top bar, show the header, a title, some rows
+of tiles, a Back button. `renderSelector({title, blocks, back})` is the one shell, and a block
+is one of `{sub}` a line of prose, `{tiles, on}` a grid, `{toggle}` a scope switch, or `{html}`
+for anything that needs its own markup.
+
+**Three of the twelve had drifted off the pattern in the one place it matters.** Find, Identify
+and Name All never called `teardownActiveGame`, and every picker is reachable from the top bar
+of a LIVE mode. Measured: opening Name All from Sun & Moon left **two WebGL canvases still
+rendering** behind the menu; opening Find from the projection lab left the map, its side layout
+and its panel. Going through one builder is what makes that unrepeatable.
+
+Two things fell out on the way. The All/Random-10 toggle was **delegated** on `#mode-selector`
+because the two screens using it rewrote that element wholesale; the builder wires its own
+toggles as it builds them, so there is nothing left to delegate. And `teardownActiveGame` now
+names the **lab panels** explicitly — they are appended to `#question-container` rather than
+living in a layer it empties, so nothing else was removing them.
+
+Verified: all 76 tiles across all twelve pickers start their mode with zero errors, the three
+toggles (puzzle difficulty, Find/Identify scope, Shape ID region) all still drive their state,
+and nothing is left behind by any picker opened from any live mode.
+
 ## One seeded stream, so a link is the game you played
 
 A share link should hand somebody the game you played, not another game in the same mode. That
