@@ -1216,6 +1216,17 @@ knows either of those things. Every pixel is attributed to the nearest of the fl
 colours, and only when it is within 40 RGB units of one, so an antialiased blend of two counts as
 neither. Portugal reads red 60% / green 37%; Brazil green 71%; India orange 35% / green 35%.
 
+The parse is not an alternative to this, it is the other half of it: `sbSvgColourNodes` walks
+every fill, stroke and inline style and is where the colour SET comes from. What it cannot give is
+how much cloth each one covers. Measured over twenty flags, parsing and rasterising **disagree
+about the principal colour on ten of them** -- Portugal's is black by node count (7 nodes of arms
+outline) against red at 60% of the cloth; Mexico's is black x261 against green at 34%; Spain's
+black x140 against red at 52%; Argentina's is the brown of the sun's face x11 against sky blue at
+69%; Nepal's is the border blue against crimson at 65%. Fixing that geometrically rather than by
+rasterising means a polygon boolean engine over arbitrary SVG -- beziers, arcs, clip paths, masks,
+`<use>`, nested transforms -- to replace one 128 px canvas read that costs 6-14 ms once per flag
+and is cached thereafter.
+
 **The swap is measured against the seed's own dominant shade**, not against the bucket's nominal
 colour, and that is the whole of what was wrong with the colours before: a seed whose red is
 #ce1126 was being shifted by (donor − pure red), which lands nowhere near the donor's colour.
