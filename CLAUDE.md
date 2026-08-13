@@ -216,6 +216,46 @@ moment the SAME world goes through a dozen of them. Fourteen d3 projections, the
 projection has (where it is centred, how it is turned), the two the conics have, and two
 instruments.
 
+### Twenty-one, and what each one is for
+
+Six more were added and each says something the original fourteen could not. **Peirce
+quincuncial** is conformal everywhere bar four points and tiles the plane. **Goode homolosine**
+gives up on being one piece. **Van der Grinten** puts the whole earth in a circle. **Hammer
+retroazimuthal** is a third kind of true after angle and area — from anywhere on it, the bearing
+back to the centre is the one you read off. **Waterman butterfly** folds the earth onto a solid
+and unfolds it flat. **Winkel tripel** minimises three distortions at once and is nobody's best
+at any of them.
+
+They need `d3-geo-projection` (and `d3-geo-polygon`), which is fetched **on demand** — nothing
+outside this one mode wants it, so the first fourteen are usable immediately and the other six
+grey out until it lands. A projection whose library never arrives draws a Mercator and the panel
+says so, rather than throwing.
+
+**The Spilhaus is not the Spilhaus, and the tile says so.** A true one is an *Adams World in a
+Square II*, which d3 does not ship; what is here is an oblique **Peirce quincuncial**, which is
+the same idea — a conformal world in a square, the ocean whole in the middle, the cut running
+through land. The orientation was found by SEARCH rather than taken from a paper: score a
+rotation by what fraction of the tear falls on land (the tear being where two points adjacent on
+the sphere land far apart in the plane, which is projection-agnostic and needs no knowledge of
+the shape of the frame), then grid-search and refine. `[-174, 26, 2]` gets **67%** of the cut
+onto land, against **12.5%** for the upright Peirce and **42.9%** for the best of the rotation
+triples in circulation. Note also that the obvious measurement — sample the border of the
+projected bounding box — is wrong here, because d3's Peirce draws a **diamond**, so most of that
+border is empty corner.
+
+**Every projection carries a verbatim sentence from its Wikipedia article, with a link.** A
+projection is a claim about what can be preserved and what must be given up, and the
+encyclopaedia says that better in one sentence than an invented caption would. All twenty were
+checked against the live article extracts at build time: **20 of 20 verbatim**, longest 23 words.
+The Spilhaus tile links to *Athelstan Spilhaus* — the person — because Wikipedia has no article
+on the projection, which is itself worth knowing.
+
+**One measured oddity is reported rather than hidden.** Goode homolosine is exactly equal-area,
+and the inflation readout gives Australia, India and the DRC 1.00× — and **Greenland 6.55×**.
+That is the measurement failing, not the projection: Greenland lies across the Atlantic
+interruption, so it is drawn in two pieces and the signed area of that path is not its area. The
+panel says so on interrupted projections.
+
 **Tissot's indicatrix** is the first: a small circle drawn on the SPHERE (4° of arc, every 30°)
 and projected like everything else, so whatever it becomes on the map is exactly what the
 projection does to a small shape there. Round means angles are kept; equal blobs mean areas are;

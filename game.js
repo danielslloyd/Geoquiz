@@ -18692,21 +18692,122 @@ function framingExport() {
 const LAB_TISSOT_RADIUS = 4;      // degrees of arc
 const LAB_TISSOT_STEP = 30;       // degrees between them
 
+// Six of these need d3-geo-projection (and, for the butterfly, d3-geo-polygon), which are
+// loaded on demand rather than on every page load — nothing outside this one mode wants them.
+const LAB_EXTRA_LIBS = [
+    'https://cdn.jsdelivr.net/npm/d3-geo-projection@4',
+    'https://cdn.jsdelivr.net/npm/d3-geo-polygon@1'
+];
+let labLibsState = 'idle';   // idle | loading | ready | failed
+
+function withLabLibs(fn) {
+    if (labLibsState === 'ready' || labLibsState === 'failed') { fn(); return; }
+    if (labLibsState === 'loading') {
+        const h = () => { window.removeEventListener('lab-libs', h); fn(); };
+        window.addEventListener('lab-libs', h);
+        return;
+    }
+    labLibsState = 'loading';
+    const load = src => new Promise((ok, no) => {
+        const s = document.createElement('script');
+        s.src = src; s.onload = ok; s.onerror = no;
+        document.head.appendChild(s);
+    });
+    // Sequential: d3-geo-polygon builds on d3-geo-projection.
+    load(LAB_EXTRA_LIBS[0]).then(() => load(LAB_EXTRA_LIBS[1]))
+        .then(() => { labLibsState = 'ready'; })
+        .catch(() => { labLibsState = 'failed'; })
+        .then(() => { window.dispatchEvent(new Event('lab-libs')); fn(); });
+}
+
+// The Spilhaus orientation, found by SEARCH rather than taken from a paper. See the note in
+// CLAUDE.md: d3 ships no Adams World in a Square II, which is what Spilhaus actually used, so
+// this is an oblique Peirce quincuncial turned until as much of the cut as possible falls on
+// land. Measured over a 2° grid, 67% of the tear runs over land against 12.5% for the upright
+// Peirce and 42.9% for the best of the rotations in circulation.
+const LAB_SPILHAUS_ROTATE = [-174, 26, 2];
+
+// Each entry carries a verbatim sentence from its Wikipedia article and a link to it. A
+// projection is a claim about what can be preserved and what must be given up, and the
+// encyclopaedia says that in one sentence better than a caption invented here would.
 const LAB_PROJECTIONS = [
-    { key: 'mercator',    label: 'Mercator',              make: () => d3.geoMercator(),            kind: 'conformal' },
-    { key: 'equirect',    label: 'Equirectangular',       make: () => d3.geoEquirectangular(),     kind: 'neither' },
-    { key: 'equalEarth',  label: 'Equal Earth',           make: () => d3.geoEqualEarth(),          kind: 'equalArea' },
-    { key: 'natural',     label: 'Natural Earth',         make: () => d3.geoNaturalEarth1(),       kind: 'neither' },
-    { key: 'ortho',       label: 'Orthographic',          make: () => d3.geoOrthographic().clipAngle(90), kind: 'neither' },
-    { key: 'azEqualArea', label: 'Azimuthal equal-area',  make: () => d3.geoAzimuthalEqualArea(),  kind: 'equalArea' },
-    { key: 'azEquidist',  label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant().clipAngle(170), kind: 'neither' },
-    { key: 'stereo',      label: 'Stereographic',         make: () => d3.geoStereographic().clipAngle(150), kind: 'conformal' },
-    { key: 'gnomonic',    label: 'Gnomonic',              make: () => d3.geoGnomonic().clipAngle(60), kind: 'neither' },
-    { key: 'transverse',  label: 'Transverse Mercator',   make: () => d3.geoTransverseMercator(),  kind: 'conformal' },
-    { key: 'conicEqArea', label: 'Conic equal-area',      make: () => d3.geoConicEqualArea(),      kind: 'equalArea', conic: true },
-    { key: 'conicConf',   label: 'Conic conformal',       make: () => d3.geoConicConformal().clipAngle(150), kind: 'conformal', conic: true },
-    { key: 'conicEqDist', label: 'Conic equidistant',     make: () => d3.geoConicEquidistant(),    kind: 'neither', conic: true },
-    { key: 'albers',      label: 'Albers',                make: () => d3.geoAlbers(),              kind: 'equalArea', conic: true }
+    { key: 'mercator', label: 'Mercator', make: () => d3.geoMercator(), kind: 'conformal',
+      wiki: 'Mercator_projection',
+      quote: 'When applied to world maps, the Mercator projection inflates the size of lands the farther they are from the equator.' },
+    { key: 'equirect', label: 'Equirectangular', make: () => d3.geoEquirectangular(), kind: 'neither',
+      wiki: 'Equirectangular_projection',
+      quote: 'a simple map projection attributed to Marinus of Tyre who, Ptolemy claims, invented the projection about AD 100.' },
+    { key: 'equalEarth', label: 'Equal Earth', make: () => d3.geoEqualEarth(), kind: 'equalArea',
+      wiki: 'Equal_Earth_projection',
+      quote: 'It is inspired by the widely used Robinson projection, but unlike the Robinson projection, it retains the relative size of areas.' },
+    { key: 'natural', label: 'Natural Earth', make: () => d3.geoNaturalEarth1(), kind: 'neither',
+      wiki: 'Natural_Earth_projection',
+      quote: 'It is neither conformal nor equal-area, but a compromise between the two.' },
+    { key: 'winkel3', label: 'Winkel tripel', kind: 'neither', lib: true,
+      make: () => d3.geoWinkel3(), wiki: 'Winkel_tripel_projection',
+      quote: 'The name tripel refers to Winkel’s goal of minimizing three kinds of distortion: area, direction, and distance.' },
+    { key: 'ortho', label: 'Orthographic', make: () => d3.geoOrthographic().clipAngle(90), kind: 'neither',
+      wiki: 'Orthographic_map_projection',
+      quote: 'It depicts a hemisphere of the globe as it appears from outer space, where the horizon is a great circle.' },
+    { key: 'azEqualArea', label: 'Azimuthal equal-area', make: () => d3.geoAzimuthalEqualArea(), kind: 'equalArea',
+      wiki: 'Lambert_azimuthal_equal-area_projection',
+      quote: 'It accurately represents area in all regions of the sphere, but it does not accurately represent angles.' },
+    { key: 'azEquidist', label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant().clipAngle(170), kind: 'neither',
+      wiki: 'Azimuthal_equidistant_projection',
+      quote: 'all points on the map are at proportionally correct distances from the center point' },
+    { key: 'stereo', label: 'Stereographic', make: () => d3.geoStereographic().clipAngle(150), kind: 'conformal',
+      wiki: 'Stereographic_map_projection',
+      quote: 'a conformal map projection whose use dates back to antiquity.' },
+    { key: 'gnomonic', label: 'Gnomonic', make: () => d3.geoGnomonic().clipAngle(60), kind: 'neither',
+      wiki: 'Gnomonic_projection',
+      quote: 'Under gnomonic projection every great circle on the sphere is projected to a straight line in the plane.' },
+    { key: 'transverse', label: 'Transverse Mercator', make: () => d3.geoTransverseMercator(), kind: 'conformal',
+      wiki: 'Transverse_Mercator_projection',
+      quote: 'the transverse Mercator delivers high accuracy in zones less than a few degrees in east-west extent.' },
+    { key: 'conicEqArea', label: 'Conic equal-area', make: () => d3.geoConicEqualArea(), kind: 'equalArea', conic: true,
+      wiki: 'Albers_projection',
+      quote: 'Although scale and shape are not preserved, distortion is minimal between the standard parallels.' },
+    { key: 'conicConf', label: 'Conic conformal', make: () => d3.geoConicConformal().clipAngle(150), kind: 'conformal', conic: true,
+      wiki: 'Lambert_conformal_conic_projection',
+      quote: 'a conic map projection used for aeronautical charts, portions of the State Plane Coordinate System, and many national and regional mapping systems.' },
+    { key: 'conicEqDist', label: 'Conic equidistant', make: () => d3.geoConicEquidistant(), kind: 'neither', conic: true,
+      wiki: 'Equidistant_conic_projection',
+      quote: 'commonly used for maps of small countries as well as for larger regions such as the continental United States that are elongated east-to-west.' },
+    { key: 'albers', label: 'Albers', make: () => d3.geoAlbers(), kind: 'equalArea', conic: true,
+      wiki: 'Albers_projection',
+      quote: 'It was first described by Heinrich Christian Albers (1773-1833) in a German geography and astronomy periodical in 1805.' },
+
+    // ---- the six added, each saying something the fourteen above cannot ----
+    { key: 'peirce', label: 'Peirce quincuncial', kind: 'conformal', lib: true,
+      make: () => d3.geoPeirceQuincuncial(), wiki: 'Peirce_quincuncial_projection',
+      quote: 'Each octant projects onto an isosceles right triangle, with eight such triangles arranged into a square.',
+      note: 'Conformal EVERYWHERE bar four points, and it tiles the plane — lay copies edge to edge and the world repeats forever.' },
+    { key: 'spilhaus', label: 'Spilhaus (ocean)', kind: 'conformal', lib: true,
+      make: () => d3.geoPeirceQuincuncial().rotate(LAB_SPILHAUS_ROTATE),
+      wiki: 'Athelstan_Spilhaus',
+      quote: 'Spilhaus is credited with proposing the establishment of Sea Grant Colleges',
+      note: 'The world cut along the LAND instead of the sea, so the ocean reads as the one body of ' +
+            'water it actually is. Not the true Spilhaus: that is an Adams World in a Square II, which ' +
+            'd3 does not ship, so this is an oblique Peirce turned until as much of the cut as possible ' +
+            'falls on land — 67% of it, measured, against 12.5% upright.' },
+    { key: 'goode', label: 'Goode homolosine', kind: 'equalArea', lib: true,
+      make: () => d3.geoInterruptedHomolosine(), wiki: 'Goode_homolosine_projection',
+      quote: 'Normally it is presented with multiple interruptions, most commonly of the major oceans.',
+      interrupted: true,
+      note: 'The map that gives up on being one piece: cut the ocean into lobes and the land keeps both its area and its shape.' },
+    { key: 'vanDerGrinten', label: 'Van der Grinten', kind: 'neither', lib: true,
+      make: () => d3.geoVanDerGrinten(), wiki: 'Van_der_Grinten_projection',
+      quote: 'Van der Grinten projects the entire Earth into a circle.',
+      note: 'National Geographic’s world map from 1922 to 1988 — a compromise drawn with compass and straightedge rather than derived.' },
+    { key: 'retro', label: 'Hammer retroazimuthal', kind: 'neither', lib: true,
+      make: () => d3.geoHammerRetroazimuthal(), wiki: 'Hammer_retroazimuthal_projection',
+      quote: 'azimuths (directions) are correct from any point to the designated center point.',
+      note: 'A third kind of true, after angle and area: from anywhere on this map, the direction ' +
+            'HOME is the bearing you read off it. The two hemispheres overlap, which is the price.' },
+    { key: 'waterman', label: 'Waterman butterfly', kind: 'neither', lib: true,
+      make: () => d3.geoPolyhedralWaterman(), wiki: 'Waterman_butterfly_projection',
+      quote: 'The arrangement is an unfolding of a polyhedral globe with the shape of a truncated octahedron',
+      note: 'Fold the earth onto a solid, then unfold the solid flat. Every cut is a choice about what to keep whole.' }
 ];
 
 const LAB_KIND_WORDS = {
@@ -18732,6 +18833,23 @@ function renderProjectionLab() {
     buildLabPanel();
     labBindMap();
     labDraw();
+    // Six of the twenty come from d3-geo-projection; fetch it in the background and repaint
+    // once it is in, so the first fourteen are usable immediately.
+    withLabLibs(() => { if (labState) { labSyncLibNotice(); labDraw(); } });
+}
+
+// Grey out what cannot be drawn yet, and say why if the fetch failed outright.
+function labSyncLibNotice() {
+    const box = document.getElementById('lab-panel');
+    if (!box) return;
+    box.querySelectorAll('[data-proj]').forEach(b => {
+        const spec = LAB_PROJECTIONS.find(p => p.key === b.dataset.proj);
+        b.classList.toggle('pending', !!(spec && spec.lib && labLibsState !== 'ready'));
+    });
+    const note = document.getElementById('lab-lib-note');
+    if (note) note.textContent = labLibsState === 'failed'
+        ? 'Six of these need d3-geo-projection, which could not be fetched — they will show a Mercator instead.'
+        : labLibsState === 'ready' ? '' : 'Fetching six more projections…';
 }
 
 function labSpec() { return LAB_PROJECTIONS.find(p => p.key === labState.proj) || LAB_PROJECTIONS[0]; }
@@ -18741,6 +18859,10 @@ function labSpec() { return LAB_PROJECTIONS.find(p => p.key === labState.proj) |
 // of, and switching between them by setting properties leaves the old ones in force.
 function labProjection() {
     const spec = labSpec();
+    // A projection whose library has not landed (or failed to) falls back to the plain Mercator
+    // rather than throwing — the panel says which one is showing either way.
+    if (spec.lib && labLibsState !== 'ready') return d3.geoMercator()
+        .fitExtent([[10, 10], [(width || 800) - 10, (height || 600) - 10]], { type: 'Sphere' });
     const p = spec.make();
     if (p.rotate) p.rotate(labState.rotate);
     if (spec.conic && p.parallels) p.parallels(labState.parallels);
@@ -18806,6 +18928,15 @@ function labReadout() {
     const spec = labSpec();
     const rows = LAB_MEASURED.map(n => ({ n, k: labInflation(n) })).filter(x => x.k && isFinite(x.k));
     el.innerHTML =
+        // Wikipedia in its own words, then the app's. The quote says what the projection IS;
+        // the note beside it says what it is FOR, which is the part a definition leaves out.
+        (spec.quote
+            ? '<blockquote class="lab-quote">“' + spec.quote + '”' +
+              '<cite><a href="https://en.wikipedia.org/wiki/' + spec.wiki +
+              '" target="_blank" rel="noopener">Wikipedia: ' +
+              spec.wiki.replace(/_/g, ' ') + '</a></cite></blockquote>'
+            : '') +
+        (spec.note ? '<div class="lab-note lab-why">' + spec.note + '</div>' : '') +
         '<div class="lab-kind">' + LAB_KIND_WORDS[spec.kind] + '</div>' +
         (rows.length
           ? '<div class="lab-rows">' + rows.map(x =>
@@ -18817,6 +18948,16 @@ function labReadout() {
             'which is exactly what "Greenland looks as big as Africa" means. On an equal-area ' +
             'projection every one reads <strong>1.00×</strong>, and that is the only claim any ' +
             'projection can make about every country at once.</div>' +
+            // Greenland reads 6.55x on an EQUAL-AREA projection, which is the measurement
+            // failing rather than the projection: it straddles the Atlantic interruption, so it
+            // is drawn as two pieces and the signed area of that path means nothing.
+            (spec.interrupted
+              ? '<div class="lab-note">A country lying across an <strong>interruption</strong> is ' +
+                'drawn in two pieces, and the area measured off that path is not its area — ' +
+                'Greenland reads far too big here on a projection that is exactly equal-area. ' +
+                'The countries away from a cut still read 1.00×, which is the projection ' +
+                'telling the truth.</div>'
+              : '') +
             '<div class="lab-note">Two ways to read low that are not the projection being kind: ' +
             'a country partly outside the clip is only partly there, and one near the centre of ' +
             'a projection with a wildly stretched rim loses share because the RIM has eaten the ' +
@@ -18838,6 +18979,7 @@ function buildLabPanel() {
             '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
             '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
         '</div>' +
+        '<div id="lab-lib-note" class="lab-note lab-lib-note"></div>' +
         '<div id="lab-readout" class="lab-readout"></div>' +
         '<label class="lab-slider"><span>Centre on longitude</span>' +
         '<input type="range" id="lab-lam" min="-180" max="180" step="1" value="0">' +
@@ -18873,6 +19015,7 @@ function buildLabPanel() {
         labSyncConic();
         labDraw();
     }));
+    labSyncLibNotice();
     const wire = (id, out, set) => {
         const el = document.getElementById(id);
         if (!el) return;

@@ -4645,6 +4645,30 @@ g.ms-story { pointer-events: none; }
 .lab-k { font-variant-numeric: tabular-nums; }
 .lab-k.bad { color: var(--incorrect, #c0503f); font-weight: 600; }
 .lab-note { font-size: 0.74rem; line-height: 1.45; opacity: 0.62; }
+/* A projection whose library has not landed yet. It still draws — as a Mercator — so this says
+   "not what you asked for" rather than disabling the button and losing the label. */
+.lab-proj.pending { opacity: 0.5; font-style: italic; }
+.lab-lib-note:empty { display: none; }
+/* Wikipedia in its own words. Serif and indented, because it is a QUOTATION sitting among the
+   app's own prose and needs to read as somebody else talking. */
+.lab-quote {
+    margin: 0;
+    padding: 0.5rem 0 0.5rem 0.7rem;
+    border-left: 2px solid var(--border, #ccc);
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+.lab-quote cite {
+    display: block;
+    margin-top: 0.35rem;
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-style: normal;
+    opacity: 0.7;
+}
+.lab-quote cite a { color: inherit; }
+.lab-why { opacity: 0.85; }
 .lab-slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 0.5rem; font-size: 0.8rem; }
 .lab-slider input[type="range"] { grid-column: 1 / 3; width: 100%; }
 .lab-slider output { grid-column: 2; font-variant-numeric: tabular-nums; opacity: 0.75; }
