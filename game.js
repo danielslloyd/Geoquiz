@@ -1008,6 +1008,20 @@ const QUIZ_MODES = {
         autoRotate: false,
         projectionLabMode: true    // the world through a menu of projections, with the distortion drawn
     },
+    'airocean-lab': {
+        name: 'Airocean World',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        airoceanMode: true         // the earth on an icosahedron, unfolded by hand
+    },
     'missing-sandbox': {
         name: "Who's Missing Sandbox",
         quizList: quizCountries,
@@ -1633,7 +1647,8 @@ function startGameWithMode(mode) {
     // The panels that are taller than a phone viewport get the app-wide `height: 100vh;
     // overflow: hidden` lifted, or their controls are simply cut off with no way to reach them.
     document.body.classList.toggle('sb-tall-active',
-        !!((modeConfig.sbQuizMode && modeConfig.sbNoMap) || modeConfig.projectionLabMode));
+        !!((modeConfig.sbQuizMode && modeConfig.sbNoMap) || modeConfig.projectionLabMode ||
+           modeConfig.airoceanMode));
     document.body.classList.toggle('sb-wide-panel',
         !!(modeConfig.sbQuizMode && modeConfig.sbEngine === 'estimate'));
     // And hand the map box back, for the same reason `sbTeardown` does: the tile-only rounds
@@ -1784,7 +1799,7 @@ function startGameWithMode(mode) {
     // mode until further down this same function, so this test still sees the PREVIOUS mode's
     // answer and a flat board can inherit a tilt button from whatever came before it.
     gammaToggle.style.display = (isGlobeView() && !modeConfig.spaceshipMode &&
-        !modeConfig.projectionLabMode && !modeConfig.framingSandboxMode &&
+        !modeConfig.projectionLabMode && !modeConfig.airoceanMode && !modeConfig.framingSandboxMode &&
         !modeConfig.missingSandboxMode && !modeConfig.sbQuizMode) ? '' : 'none';
     gammaToggle.textContent = gammaLocked ? 'Tilt: Locked' : 'Tilt: Free';
 
@@ -1795,7 +1810,8 @@ function startGameWithMode(mode) {
     if (detailToggle) {
         detailToggle.style.display = (modeConfig.mapObject === 'countries' && !modeConfig.spaceshipMode &&
             !modeConfig.sandboxMode && !modeConfig.countryShapeIdMode &&
-            !modeConfig.projectionLabMode && !modeConfig.sbQuizMode) ? '' : 'none';
+            !modeConfig.projectionLabMode && !modeConfig.airoceanMode &&
+            !modeConfig.sbQuizMode) ? '' : 'none';
         detailToggle.textContent = 'Detail: ' + mapDetail.charAt(0).toUpperCase() + mapDetail.slice(1);
     }
 
@@ -1832,7 +1848,8 @@ function startGameWithMode(mode) {
         // which of the two you want to be in.
         const explorePair = modeConfig.freeExploreMode || modeConfig.projectionLabMode;
         projToggle.style.display = (explorePair ||
-            (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.sbQuizMode)) ? '' : 'none';
+            (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.airoceanMode &&
+             !modeConfig.sbQuizMode)) ? '' : 'none';
         projToggle.textContent = explorePair
             ? (modeConfig.projectionLabMode ? 'View: Globe' : 'View: Projections')
             : (flatGlobeView ? 'View: Map' : 'View: Globe');
@@ -1881,7 +1898,7 @@ function startGameWithMode(mode) {
         if (modeConfig.framingSandboxMode) flatGlobeView = true;
         // The lab supplies its own projection every frame; the globe/flat switch would only
         // fight it.
-        if (modeConfig.projectionLabMode) flatGlobeView = true;
+        if (modeConfig.projectionLabMode || modeConfig.airoceanMode) flatGlobeView = true;
         setupGlobe();
         loadMapData();
     }
@@ -2133,7 +2150,7 @@ function isStaticMapMode(mc) {
     if (mc && mc.framingSandboxMode) return true;
     // The lab's drag is its own — it turns the WORLD under the projection rather than panning
     // the picture — so the shared pan and wheel must keep off it.
-    if (mc && mc.projectionLabMode) return true;
+    if (mc && (mc.projectionLabMode || mc.airoceanMode)) return true;
     return !!(mc && (mc.findCapitalMode || mc.statePuzzleMode || mc.countryShapeIdMode ||
                      mc.sandboxMode || mc.drawBorderMode));
 }
@@ -3035,6 +3052,7 @@ function drawCountries() {
     // Same reason as the framing sandbox: the lab owns its board and has to rebuild it from
     // state, or any caller reaching drawCountries replaces it with the ordinary world map.
     if (mc && mc.projectionLabMode) { if (labState) labDraw(); return; }
+    if (mc && mc.airoceanMode) { if (airoState) airoDraw(); return; }
 
     // Coming Into Focus draws one growing outline into countriesGroup and nothing else. The
     // shape-id branch below skips the join, so the path survives — but only if it is still
@@ -4655,6 +4673,11 @@ function startNewQuestion() {
         return;
     }
 
+    if (modeConfig.airoceanMode) {
+        renderAirocean();
+        return;
+    }
+
     // The flag workshop — no map, no target, no score.
     if (modeConfig.flagWorkshopMode) {
         renderFlagWorkshop();
@@ -6097,6 +6120,8 @@ function teardownActiveGame() {
     stopGlobeSpin();
     // The lab panels are appended to #question-container rather than owned by a layer this
     // function empties, so they have to be named.
+    airoState = null;
+    labState = null;
     ['lab-panel', 'airocean-panel'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.remove();
@@ -14822,7 +14847,9 @@ function showExploreSelector() {
                 { key: 'free-explore', icon: 'explore', label: 'The Globe',
                   desc: 'Click any country for its flag, capital and population' },
                 { key: 'projection-lab', icon: 'public', label: 'Projections',
-                  desc: 'The same world through a dozen of them, with the distortion drawn on it' }
+                  desc: 'The same world through twenty of them, with the distortion drawn on it' },
+                { key: 'airocean-lab', icon: 'deployed_code', label: 'Airocean World',
+                  desc: 'The earth on an icosahedron — cut it open and rearrange it yourself' }
               ], on: startGameWithMode }
         ]
     });
@@ -18872,6 +18899,562 @@ function framingExport() {
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     } catch (_) { /* the text is on screen either way */ }
+}
+
+// ==================== AIROCEAN WORLD ====================
+// Fuller's Dymaxion, taken apart. The earth is wrapped on an icosahedron and the solid is cut
+// open and rolled flat — and which cuts you make is the whole argument of the thing, because
+// every arrangement keeps some things together by tearing others apart. So the cuts are the
+// interaction: turn the earth inside the solid, pull a triangle off, drop it somewhere else.
+//
+// This is NOT d3.geoAirocean with knobs on. That projection bakes each face's placement at
+// construction, and three attempts to drive it from a rewritten tree produced faces sitting on
+// top of one another (17 distinct positions out of 24). The unfolding is done here instead, and
+// it is short because the geometry is kind:
+//
+//   * Every face is projected GNOMONICALLY from the centre of the earth about its own centroid.
+//     A gnomonic sends great circles to straight lines, so a spherical triangle becomes a real
+//     triangle — and since the icosahedron is regular, every face becomes the SAME triangle.
+//   * Congruent triangles mean the join is exact. A child is placed by the one rigid motion
+//     that lands its copy of the shared edge on top of the parent's already-placed copy, with
+//     the child on the far side. No fitting, no residual: the seam closes to the last decimal.
+//
+// The arrangement is therefore just a SPANNING FOREST over the icosahedron's face adjacency,
+// which is why "everything connected only through the piece you moved comes with it" is not a
+// feature that had to be written — it is what a tree is.
+const AIRO_SCALE = 200;               // gnomonic units; the same for every face, or they'd not fit
+const AIRO_SNAP = 26;                 // how near a dropped edge must be to re-attach, in those units
+// Fuller's own orientation, read off d3.geoAirocean — the earth turned inside a solid whose
+// vertices sit at the poles and on two rings at ±atan(1/2).
+const AIRO_FULLER_ROTATE = [-83.65929, 25.44458, -87.45184];
+
+let airoState = null;
+let airoSolidCache = null;
+
+// Twelve vertices, twenty faces. The faces are found by mutual adjacency rather than typed out:
+// two vertices are joined if they are among each other's five nearest, and a face is three
+// vertices that are all joined to each other.
+function airoSolid() {
+    if (airoSolidCache) return airoSolidCache;
+    const lat = Math.atan(0.5) / DEG;
+    const verts = [[0, 90], [0, -90]];
+    for (let i = 0; i < 5; i++) { verts.push([36 + i * 72, lat]); verts.push([i * 72, -lat]); }
+    const xyz = ([lo, la]) => {
+        const p = lo * DEG, q = la * DEG, c = Math.cos(q);
+        return [c * Math.cos(p), c * Math.sin(p), Math.sin(q)];
+    };
+    const V = verts.map(xyz);
+    const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+    const near = V.map((v, i) => V.map((w, j) => [j, d2(v, w)]).filter(([j]) => j !== i)
+        .sort((a, b) => a[1] - b[1]).slice(0, 5).map(([j]) => j));
+    const faces = [];
+    for (let i = 0; i < 12; i++)
+        for (const j of near[i]) if (j > i)
+            for (const k of near[j]) if (k > j && near[i].includes(k)) faces.push([i, j, k]);
+    // WIND THEM. A face falls out of the search in index order, which is the wrong way round
+    // about half the time — and a backwards spherical ring is not a triangle, it is the whole
+    // earth minus that triangle. Left unwound, every point on the globe reads as inside nine or
+    // eleven faces instead of exactly one, and each face clips to the complement of itself.
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    faces.forEach(f => {
+        const out = [0, 1, 2].map(t => (V[f[0]][t] + V[f[1]][t] + V[f[2]][t]) / 3);
+        // d3 reads a ring with the inside on its left, which for a face seen from OUTSIDE the
+        // sphere is clockwise — hence the negative test.
+        if (dot(cross(sub(V[f[1]], V[f[0]]), sub(V[f[2]], V[f[0]])), out) > 0) {
+            const t = f[1]; f[1] = f[2]; f[2] = t;
+        }
+    });
+    // Two faces are adjacent when they share two vertices; that graph is what gets spanned.
+    const adj = faces.map(() => []);
+    for (let i = 0; i < faces.length; i++)
+        for (let j = i + 1; j < faces.length; j++) {
+            const shared = faces[i].filter(v => faces[j].includes(v));
+            if (shared.length === 2) { adj[i].push(j); adj[j].push(i); }
+        }
+    airoSolidCache = { verts, V, faces, adj,
+        sharedVerts: (a, b) => faces[a].filter(v => faces[b].includes(v)) };
+    return airoSolidCache;
+}
+
+// Where a face sits on the EARTH, given the current locus. The solid is held still and the
+// world turned inside it, so a vertex's earth position is the rotation run backwards.
+function airoFaceEarth(fi) {
+    const S = airoSolid();
+    const inv = d3.geoRotation(airoState.rot).invert;
+    const ring = S.faces[fi].map(i => inv(S.verts[i]));
+    let c = [0, 0, 0];
+    S.faces[fi].forEach(i => { const v = S.V[i]; c = [c[0] + v[0], c[1] + v[1], c[2] + v[2]]; });
+    const n = Math.hypot(c[0], c[1], c[2]);
+    c = c.map(x => x / n);
+    const centre = inv([Math.atan2(c[1], c[0]) / DEG,
+                        Math.asin(Math.max(-1, Math.min(1, c[2]))) / DEG]);
+    return { ring, centre, ids: S.faces[fi] };
+}
+
+// The face's own gnomonic, clipped to the face. Every great circle becomes a straight line, so
+// the spherical triangle lands as a real one — the same real one for every face.
+function airoFaceProjection(fe) {
+    const poly = { type: 'Polygon', coordinates: [[...fe.ring, fe.ring[0]]] };
+    const p = d3.geoGnomonic().rotate([-fe.centre[0], -fe.centre[1]])
+        .scale(AIRO_SCALE).translate([0, 0]).precision(0.35);
+    if (airoCanClip()) { try { p.preclip(d3.geoClipPolygon(poly)); } catch (_) { /* no clip */ } }
+    return { proj: p, poly };
+}
+
+// One rigid motion carrying a child's copy of the shared edge onto the parent's placed copy.
+// Written with complex numbers because that is what a rigid motion of the plane IS: multiply
+// by a unit complex to turn, add one to move, and conjugate first for the mirrored case. Both
+// are tried and the one that puts the child on the FAR side of the seam is kept — the other
+// folds it back over its parent.
+function airoJoin(childA, childB, childC, placedA, placedB, parentC) {
+    const sub = (p, q) => [p[0] - q[0], p[1] - q[1]];
+    const mul = (p, q) => [p[0] * q[0] - p[1] * q[1], p[0] * q[1] + p[1] * q[0]];
+    const div = (p, q) => {
+        const d = q[0] * q[0] + q[1] * q[1];
+        return d ? [(p[0] * q[0] + p[1] * q[1]) / d, (p[1] * q[0] - p[0] * q[1]) / d] : [1, 0];
+    };
+    const side = (a, b, p) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    const want = -Math.sign(side(placedA, placedB, parentC) || 1);
+    const dAB = sub(placedB, placedA);
+    for (const flip of [false, true]) {
+        const cB = sub(childB, childA);
+        const m = div(dAB, flip ? [cB[0], -cB[1]] : cB);
+        const map = z => {
+            const d = sub(z, childA);
+            const w = mul(m, flip ? [d[0], -d[1]] : d);
+            return [placedA[0] + w[0], placedA[1] + w[1]];
+        };
+        const third = map(childC);
+        if (Math.sign(side(placedA, placedB, third) || want) === want) {
+            // As an SVG matrix. Multiplying by m is [[mx,-my],[my,mx]]; conjugating first flips
+            // the sign of the second column.
+            const a = m[0], b = m[1];
+            const M = flip ? [a, b, b, -a] : [a, b, -b, a];
+            const e = placedA[0] - (M[0] * childA[0] + M[2] * childA[1]);
+            const f = placedA[1] - (M[1] * childA[0] + M[3] * childA[1]);
+            return [M[0], M[1], M[2], M[3], e, f];
+        }
+    }
+    return null;
+}
+
+const airoApply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
+
+// Walk the forest and give every face an absolute placement. A face with no parent is a root
+// and keeps whatever matrix it was last left at; everything below it is derived, which is why
+// dragging one triangle carries its whole subtree without anything being told to follow.
+function airoLayout() {
+    const S = airoSolid();
+    const geom = S.faces.map((_, i) => {
+        const fe = airoFaceEarth(i);
+        const fp = airoFaceProjection(fe);
+        return { fe, ...fp, local: fe.ring.map(v => fp.proj(v)) };
+    });
+    const place = {};
+    const kids = S.faces.map(() => []);
+    S.faces.forEach((_, i) => {
+        const p = airoState.parent[i];
+        if (p != null) kids[p].push(i);
+    });
+    S.faces.forEach((_, i) => {
+        if (airoState.parent[i] != null) return;
+        // Roots keep their stored matrix — identity for the first one, wherever it was dropped
+        // for anything torn off since.
+        const stack = [i];
+        place[i] = (airoState.anchor[i] || [1, 0, 0, 1, 0, 0]).slice();
+        while (stack.length) {
+            const f = stack.pop();
+            kids[f].forEach(c => {
+                const sh = S.sharedVerts(f, c);
+                const iA = S.faces[f].indexOf(sh[0]), iB = S.faces[f].indexOf(sh[1]);
+                const jA = S.faces[c].indexOf(sh[0]), jB = S.faces[c].indexOf(sh[1]);
+                const other = [0, 1, 2].find(t => t !== iA && t !== iB);
+                const cOther = [0, 1, 2].find(t => t !== jA && t !== jB);
+                const m = airoJoin(geom[c].local[jA], geom[c].local[jB], geom[c].local[cOther],
+                                   airoApply(place[f], geom[f].local[iA]),
+                                   airoApply(place[f], geom[f].local[iB]),
+                                   airoApply(place[f], geom[f].local[other]));
+                if (m) { place[c] = m; stack.push(c); }
+            });
+        }
+    });
+    return { geom, place };
+}
+
+function airoComponent(fi) {
+    const S = airoSolid();
+    const out = new Set([fi]);
+    let grew = true;
+    while (grew) {
+        grew = false;
+        S.faces.forEach((_, i) => {
+            const p = airoState.parent[i];
+            if (p != null && out.has(p) && !out.has(i)) { out.add(i); grew = true; }
+        });
+    }
+    return out;
+}
+
+// Re-hang a component from `fi` by reversing the chain of parents above it, so that fi becomes
+// its root. Used ONLY when re-attaching: a dropped piece may find its home through any of its
+// faces, and the one that found it has to be the one carrying the new link.
+//
+// It must never be used on the GRAB. Reversing the chain there walks all the way to the whole
+// map's root, which makes the grabbed face the parent of everything — so cutting it loose then
+// takes the entire map with it. Grabbing simply cuts the one link above the face, and its
+// subtree follows because a subtree is what "connected to the rest only through this" means.
+function airoReroot(fi) {
+    let node = fi, par = airoState.parent[fi];
+    airoState.parent[fi] = null;
+    while (par != null) {
+        const grand = airoState.parent[par];
+        airoState.parent[par] = node;
+        node = par; par = grand;
+    }
+}
+
+function airoDefaultTree() {
+    const S = airoSolid();
+    // The default arrangement is d3's own Airocean tree, read off it once so the mode opens on
+    // Fuller's cuts rather than on an arbitrary spanning tree of my own.
+    const parent = {};
+    S.faces.forEach((_, i) => { parent[i] = null; });
+    const order = airoFullerOrder();
+    order.forEach(([c, p]) => { parent[c] = p; });
+    return parent;
+}
+
+// Fuller's unfolding, as parent links. Derived by matching d3.geoAirocean's tree onto our own
+// face numbering when the library is present, and falling back to a breadth-first spanning tree
+// from the face holding the north pole when it is not — which is a perfectly good net, just not
+// the historical one.
+let airoFullerCache = null;
+function airoFullerOrder() {
+    if (airoFullerCache) return airoFullerCache;
+    const S = airoSolid();
+    const inv = d3.geoRotation(AIRO_FULLER_ROTATE).invert;
+    const centres = S.faces.map((_, i) => {
+        let c = [0, 0, 0];
+        S.faces[i].forEach(k => { const v = S.V[k]; c = [c[0] + v[0], c[1] + v[1], c[2] + v[2]]; });
+        const n = Math.hypot(c[0], c[1], c[2]);
+        return inv([Math.atan2(c[1] / n, c[0] / n) / DEG,
+                    Math.asin(Math.max(-1, Math.min(1, c[2] / n))) / DEG]);
+    });
+    const links = [];
+    let matched = false;
+    try {
+        if (d3.geoAirocean) {
+            const root = d3.geoAirocean().tree();
+            const mine = c => {
+                let best = -1, bd = Infinity;
+                centres.forEach((q, i) => { const d = d3.geoDistance(c, q); if (d < bd) { bd = d; best = i; } });
+                return bd < 0.35 ? best : -1;
+            };
+            (function walk(n, pid) {
+                const id = mine(n.centroid);
+                if (id >= 0 && pid >= 0 && id !== pid) links.push([id, pid]);
+                (n.children || []).forEach(c => walk(c, id >= 0 ? id : pid));
+            })(root, -1);
+            // Two of d3's faces are halves of one of ours, so the walk can produce a face twice
+            // or link it to itself; keep the first sane link per face and check it spans.
+            const seen = new Set();
+            const clean = links.filter(([c, p]) => {
+                if (seen.has(c) || !S.adj[c].includes(p)) return false;
+                seen.add(c); return true;
+            });
+            if (clean.length >= 15) { airoFullerCache = clean; matched = true; }
+        }
+    } catch (_) { matched = false; }
+    if (!matched) {
+        // Breadth-first from whichever face holds the north pole.
+        const start = 0;
+        const out = [], seen = new Set([start]), q = [start];
+        while (q.length) {
+            const f = q.shift();
+            S.adj[f].forEach(n => { if (seen.has(n)) return; seen.add(n); out.push([n, f]); q.push(n); });
+        }
+        airoFullerCache = out;
+    }
+    return airoFullerCache;
+}
+
+function renderAirocean() {
+    gameState.questionType = 'airocean';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    setModeChrome({ giveUp: false, next: false });
+    const restart = document.getElementById('restart-btn');
+    if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
+    document.getElementById('question-text').innerHTML =
+        '<strong>Airocean World.</strong> Drag a triangle to tear it off and put it somewhere else.';
+    airoSolid();
+    airoState = { rot: AIRO_FULLER_ROTATE.slice(), parent: airoDefaultTree(), anchor: {},
+                  drag: null, land: true, seams: true };
+    buildAiroPanel();
+    airoDraw();
+    airoBindMap();
+    // Two things come from the libraries: the clip that cuts the world into faces
+    // (d3-geo-polygon) and Fuller's own net, read off d3-geo-projection's Airocean. Without the
+    // clip a face would draw land spilling past its own edges, so the land is held back rather
+    // than drawn wrong — the empty solid is a true picture of it and the tear-and-drop still
+    // works. Both usually arrive in a few hundred milliseconds, and instantly if the projection
+    // lab has already been opened.
+    withLabLibs(() => {
+        if (!airoState) return;
+        airoFullerCache = null;               // the fallback net was cached; Fuller's is available now
+        airoState.parent = airoDefaultTree();
+        airoState.anchor = {};
+        airoDraw();
+    });
+}
+
+// Whether a face's own outline can be used to cut the world down to it. Without it the mode
+// still draws the solid, just not the map on it.
+const airoCanClip = () => typeof d3.geoClipPolygon === 'function';
+
+function airoDraw() {
+    if (!airoState || !svg || !countriesGroup) return;
+    const S = airoSolid();
+    const { geom, place } = airoLayout();
+    countriesGroup.selectAll('*').remove();
+    svg.selectAll('g.airo-layer').remove();
+    const host = countriesGroup.node() && countriesGroup.node().parentNode
+        ? d3.select(countriesGroup.node().parentNode) : svg;
+    const layer = host.append('g').attr('class', 'airo-layer');
+
+    // Fit everything drawn into the board, once, as one outer transform.
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        geom[i].local.forEach(p => {
+            const q = airoApply(place[i], p);
+            minX = Math.min(minX, q[0]); maxX = Math.max(maxX, q[0]);
+            minY = Math.min(minY, q[1]); maxY = Math.max(maxY, q[1]);
+        });
+    });
+    const W = width || 800, H = height || 600, pad = 24;
+    const k = Math.min((W - 2 * pad) / Math.max(1, maxX - minX), (H - 2 * pad) / Math.max(1, maxY - minY));
+    const ox = (W - (maxX + minX) * k) / 2, oy = (H - (maxY + minY) * k) / 2;
+    layer.attr('transform', `translate(${ox},${oy}) scale(${k})`);
+    airoState.view = { k, ox, oy };
+
+    const land = { type: 'FeatureCollection', features: gameState.countries || [] };
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        const m = place[i];
+        const g = layer.append('g').attr('class', 'airo-face')
+            .attr('data-face', i)
+            .attr('transform', `matrix(${m.join(',')})`);
+        const p = d3.geoPath(geom[i].proj);
+        g.append('path').attr('class', 'airo-tile').attr('d', p(geom[i].poly) || '');
+        // Only once the clip is in hand: a gnomonic without it draws the whole visible
+        // hemisphere, so every face would carry land belonging to its neighbours.
+        if (airoState.land && airoCanClip()) {
+            const d = p(land);
+            if (d) g.append('path').attr('class', 'airo-land').attr('d', d);
+        }
+        g.append('path').attr('class', 'airo-edge').attr('d', p(geom[i].poly) || '');
+    });
+    airoReadout();
+}
+
+function airoReadout() {
+    const el = document.getElementById('airo-readout');
+    if (!el) return;
+    const S = airoSolid();
+    const roots = S.faces.filter((_, i) => airoState.parent[i] == null).length;
+    const cut = S.adj.reduce((s, a, i) => s + a.filter(j => j > i).length, 0)
+              - S.faces.filter((_, i) => airoState.parent[i] != null).length;
+    el.innerHTML =
+        `<div class="lab-row"><span>Pieces</span><span class="lab-k">${roots}</span></div>` +
+        `<div class="lab-row"><span>Edges joined</span><span class="lab-k">${30 - cut} of 30</span></div>` +
+        `<div class="lab-note">An icosahedron has 30 edges and only 19 of them can be joined at ` +
+        `once — a net is a spanning tree, so eleven cuts is the fewest any flat world can have. ` +
+        `Every arrangement keeps something together by tearing something else apart, and that is ` +
+        `the whole argument of a Dymaxion map.</div>`;
+}
+
+// Which face is under the pointer, and where in that face's own coordinates.
+function airoFaceAt(pt) {
+    const el = document.elementFromPoint(pt.clientX, pt.clientY);
+    const g = el && el.closest && el.closest('g.airo-face');
+    return g ? +g.getAttribute('data-face') : null;
+}
+
+function airoBindMap() {
+    if (!svg) return;
+    const node = svg.node();
+    const board = ev => {
+        const p = d3.pointer(ev, node);
+        const v = airoState.view || { k: 1, ox: 0, oy: 0 };
+        return [(p[0] - v.ox) / v.k, (p[1] - v.oy) / v.k];
+    };
+    svg.on('pointerdown.airo', function (event) {
+        const fi = airoFaceAt(event);
+        if (fi == null) {
+            // Empty board: turn the earth inside the solid. That is the LOCUS — which part of
+            // the world each triangle gets, before any of them is moved.
+            airoState.drag = { kind: 'rot', from: d3.pointer(event, node), rot: airoState.rot.slice() };
+            return;
+        }
+        // Cut the one link above this face and leave it exactly where it already is, so
+        // nothing jumps at the moment of grabbing. Its subtree comes along by construction.
+        const { place } = airoLayout();
+        airoState.parent[fi] = null;
+        airoState.anchor[fi] = (place[fi] || [1, 0, 0, 1, 0, 0]).slice();
+        airoState.drag = { kind: 'move', face: fi, from: board(event),
+                           start: airoState.anchor[fi].slice() };
+        airoDraw();
+    });
+    svg.on('pointermove.airo', function (event) {
+        const d = airoState && airoState.drag;
+        if (!d) return;
+        if (d.kind === 'rot') {
+            const p = d3.pointer(event, node), s = 0.4;
+            airoState.rot = [d.rot[0] + (p[0] - d.from[0]) * s,
+                             Math.max(-90, Math.min(90, d.rot[1] - (p[1] - d.from[1]) * s)),
+                             d.rot[2]];
+            airoSyncSliders();
+            airoDraw();
+            return;
+        }
+        const p = board(event);
+        const m = d.start.slice();
+        m[4] += p[0] - d.from[0];
+        m[5] += p[1] - d.from[1];
+        airoState.anchor[d.face] = m;
+        airoDraw();
+    });
+    const drop = () => {
+        const d = airoState && airoState.drag;
+        airoState.drag = null;
+        if (!d || d.kind !== 'move') return;
+        airoSnap(d.face);
+        airoDraw();
+    };
+    svg.on('pointerup.airo', drop);
+    svg.on('pointerleave.airo', drop);
+}
+
+// On release, look for a seam to close: any edge of the moved component that has come to rest
+// against the matching edge of a face outside it. The match is by MIDPOINT rather than by
+// endpoints, so a piece dropped the right way round but slightly turned still finds its home.
+function airoSnap(fi) {
+    const S = airoSolid();
+    const comp = airoComponent(fi);
+    const { geom, place } = airoLayout();
+    let best = null;
+    comp.forEach(a => {
+        S.adj[a].forEach(b => {
+            if (comp.has(b) || !place[a] || !place[b]) return;
+            const sh = S.sharedVerts(a, b);
+            const mid = (f, m) => {
+                const i0 = S.faces[f].indexOf(sh[0]), i1 = S.faces[f].indexOf(sh[1]);
+                const p0 = airoApply(m, geom[f].local[i0]), p1 = airoApply(m, geom[f].local[i1]);
+                return [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+            };
+            const A = mid(a, place[a]), B = mid(b, place[b]);
+            const gap = Math.hypot(A[0] - B[0], A[1] - B[1]);
+            if (gap < AIRO_SNAP && (!best || gap < best.gap)) best = { gap, a, b };
+        });
+    });
+    if (!best) return;
+    // Re-hang the moved component from the face that found a home, and attach it there.
+    airoReroot(best.a);
+    airoState.parent[best.a] = best.b;
+    delete airoState.anchor[best.a];
+}
+
+function buildAiroPanel() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    let box = document.getElementById('airocean-panel');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'airocean-panel';
+    box.className = 'lab-panel';
+    box.innerHTML =
+        '<div class="lab-note">Fuller wrapped the earth on an icosahedron and cut it open. ' +
+        'Drag a triangle to tear it off — everything hanging from it comes too — and drop it ' +
+        'against another edge to join it back on. Drag the empty board to turn the world inside ' +
+        'the solid.</div>' +
+        '<div id="airo-readout" class="lab-readout"></div>' +
+        '<label class="lab-slider"><span>Turn the world: longitude</span>' +
+        '<input type="range" id="airo-lam" min="-180" max="180" step="1" value="0">' +
+        '<output id="airo-lam-out">0°</output></label>' +
+        '<label class="lab-slider"><span>Turn the world: latitude</span>' +
+        '<input type="range" id="airo-phi" min="-90" max="90" step="1" value="0">' +
+        '<output id="airo-phi-out">0°</output></label>' +
+        '<label class="lab-slider"><span>Spin the world</span>' +
+        '<input type="range" id="airo-gam" min="-180" max="180" step="1" value="0">' +
+        '<output id="airo-gam-out">0°</output></label>' +
+        '<div class="lab-checks">' +
+        '<label><input type="checkbox" id="airo-land" checked> Land</label></div>' +
+        '<div class="lab-grid">' +
+        '<button type="button" class="lab-proj" id="airo-fuller">Fuller’s net</button>' +
+        '<button type="button" class="lab-proj" id="airo-fan">Fan it out</button>' +
+        '<button type="button" class="lab-proj" id="airo-scatter">Cut every seam</button>' +
+        '</div>';
+    host.appendChild(box);
+
+    const wire = (id, out, set) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', () => {
+            set(+el.value);
+            const o = document.getElementById(out);
+            if (o) o.textContent = el.value + '°';
+            airoDraw();
+        });
+    };
+    wire('airo-lam', 'airo-lam-out', v => { airoState.rot[0] = AIRO_FULLER_ROTATE[0] + v; });
+    wire('airo-phi', 'airo-phi-out', v => { airoState.rot[1] = AIRO_FULLER_ROTATE[1] + v; });
+    wire('airo-gam', 'airo-gam-out', v => { airoState.rot[2] = AIRO_FULLER_ROTATE[2] + v; });
+    const land = document.getElementById('airo-land');
+    if (land) land.addEventListener('change', () => { airoState.land = land.checked; airoDraw(); });
+    const reset = () => {
+        airoState.parent = airoDefaultTree();
+        airoState.anchor = {};
+        airoDraw();
+    };
+    document.getElementById('airo-fuller').addEventListener('click', reset);
+    // A fan is the other honest net: keep one face still and hang everything off it in a ring,
+    // which spreads the tearing evenly instead of hiding it in the ocean.
+    document.getElementById('airo-fan').addEventListener('click', () => {
+        const S = airoSolid();
+        const parent = {}; S.faces.forEach((_, i) => { parent[i] = null; });
+        const seen = new Set([0]), q = [0];
+        while (q.length) {
+            const f = q.shift();
+            S.adj[f].forEach(n => { if (seen.has(n)) return; seen.add(n); parent[n] = f; q.push(n); });
+        }
+        airoState.parent = parent; airoState.anchor = {};
+        airoDraw();
+    });
+    // Twenty separate triangles, laid out in a grid: the solid taken completely apart.
+    document.getElementById('airo-scatter').addEventListener('click', () => {
+        const S = airoSolid();
+        airoState.parent = {}; airoState.anchor = {};
+        S.faces.forEach((_, i) => {
+            airoState.parent[i] = null;
+            const col = i % 5, row = Math.floor(i / 5);
+            airoState.anchor[i] = [1, 0, 0, 1, (col - 2) * 300, (row - 1.5) * 260];
+        });
+        airoDraw();
+    });
+}
+
+function airoSyncSliders() {
+    const set = (id, out, v) => {
+        const el = document.getElementById(id), o = document.getElementById(out);
+        if (el) el.value = Math.round(v);
+        if (o) o.textContent = Math.round(v) + '°';
+    };
+    set('airo-lam', 'airo-lam-out', airoState.rot[0] - AIRO_FULLER_ROTATE[0]);
+    set('airo-phi', 'airo-phi-out', airoState.rot[1] - AIRO_FULLER_ROTATE[1]);
+    set('airo-gam', 'airo-gam-out', airoState.rot[2] - AIRO_FULLER_ROTATE[2]);
 }
 
 // ==================== PROJECTION LAB ====================

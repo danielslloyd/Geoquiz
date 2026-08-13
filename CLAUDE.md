@@ -284,6 +284,63 @@ point in `startGameWithMode` still answers for the PREVIOUS mode — `flatGlobeV
 the new one until further down the same function — so a flat board could inherit a tilt button
 from whatever came before it.
 
+## The Airocean, taken apart
+
+`airocean-lab`, the third Explore tile. Fuller wrapped the earth on an icosahedron and cut the
+solid open; which cuts you make is the whole argument, because every arrangement keeps some
+things together by tearing others apart. So the cuts are the interaction — turn the world inside
+the solid, pull a triangle off, drop it somewhere else.
+
+**It is not `d3.geoAirocean` with knobs on**, and the reason is worth recording because three
+attempts went that way first. That projection bakes each face's placement at construction, so a
+rewritten tree does not move anything: reusing d3's nodes, stripping their cached transforms, and
+recomputing `shared` from the geometry all produced the same picture, **17 distinct face
+positions out of 24**, with London and Sydney fifty pixels apart. The unfolding is done here
+instead, and it is short because the geometry is kind:
+
+* Each face is projected **gnomonically about its own centroid**. A gnomonic sends great circles
+  to straight lines, so a spherical triangle becomes a real triangle — and because the
+  icosahedron is regular, *every face becomes the same triangle*. Measured: all sixty sides are
+  264.634 units, to three decimals.
+* Congruent triangles mean the join is exact. A child is placed by the one rigid motion landing
+  its copy of the shared edge on the parent's already-placed copy, with the child on the far
+  side — written with complex numbers, because multiply-to-turn, add-to-move and conjugate-to-
+  mirror is what a rigid motion of the plane *is*. Both the direct and the mirrored motion are
+  tried and the one putting the child on the far side of the seam is kept; the other folds it
+  back over its parent. **Worst seam gap over the whole net: 6.4 × 10⁻¹⁴ px.**
+
+The arrangement is therefore a **spanning forest over the face adjacency**, which is why "anything
+connected to the rest only through the piece you moved comes with it" is not a feature that had to
+be written — it is what a subtree is.
+
+Three things it has to get right, and two of them were wrong first:
+
+* **The faces must be wound.** They fall out of the adjacency search in index order, which is
+  backwards about half the time, and a backwards spherical ring is not a triangle — it is the
+  whole earth minus that triangle. Unwound, every point on the globe read as inside **nine or
+  eleven faces** and each face clipped to the complement of itself. Wound: **3,000 random points,
+  every one in exactly one face.**
+* **Rerooting belongs to the re-attach, not the grab.** `airoReroot` reverses the chain of parents
+  above a face, and on a grab that walks all the way to the map's own root — making the grabbed
+  face the parent of everything, so tearing it off took the entire map. Grabbing cuts the one link
+  above the face and lets its subtree follow. Measured: grabbing carries 8 of 20 faces, all
+  translating by exactly the drag vector, with the other 12 not moving at all.
+* **A dropped piece may find its home through any of its faces**, not just the one that was cut,
+  so the re-attach reroots the component onto whichever face matched. Verified re-attaching
+  through a face that was not the old parent: 19 seams, gap 1.3 × 10⁻¹³.
+
+Snapping matches **edge midpoints** rather than endpoints, so a piece dropped the right way round
+but slightly turned still finds its home; dropped 3.6 units out, every face lands back on its
+original position to within 10⁻⁶.
+
+The clip that cuts the world down to one face is `d3.geoClipPolygon` from **d3-geo-polygon**, and
+Fuller's own net is read off d3-geo-projection's Airocean by matching face centroids. Both are
+fetched on demand through the same `withLabLibs` gate the projection lab uses; until they land the
+land is **held back rather than drawn wrong**, since a gnomonic without a clip draws the whole
+visible hemisphere and every face would carry its neighbours' geography. The fallback net, if the
+libraries never arrive, is a breadth-first spanning tree — a perfectly good net, just not the
+historical one.
+
 ## Sandbox category
 
 **The Sandbox is one flat grid.** There used to be a Quick Quizzes tile inside it that opened a

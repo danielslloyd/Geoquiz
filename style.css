@@ -1094,6 +1094,39 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     pointer-events: none;
 }
 
+/* Airocean: twenty triangles of earth. The tile is the face itself — it has to be filled and
+   not merely outlined, or there is nothing to grab hold of where the face has no land on it. */
+.airo-face { cursor: grab; }
+.airo-face:active { cursor: grabbing; }
+
+.airo-tile {
+    fill: var(--surface);
+    stroke: none;
+}
+
+.airo-land {
+    fill: var(--map-land, var(--land, #b9c9a8));
+    stroke: var(--map-land-stroke, var(--land-stroke, #7d8c6d));
+    stroke-width: 0.4;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+/* The cut edges, which are the whole subject: every one of them is somewhere the world has
+   been torn to let the rest lie flat. */
+.airo-edge {
+    fill: none;
+    stroke: var(--primary);
+    stroke-width: 1.1;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.airo-face:hover .airo-tile { fill: var(--hover, var(--surface)); }
+.airo-face:hover .airo-edge { opacity: 1; stroke-width: 1.8; }
+
 /* The ranking bar chart. Five numbers in a column are five numbers; five bars are a shape —
    this is the only place the round says whether the order was close or a landslide. */
 .sb-rank-bars {
