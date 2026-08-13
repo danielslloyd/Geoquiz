@@ -8044,7 +8044,7 @@ const LANDING_TILES = [
     ['find', 'search', 'Find on the Map', 'Find countries or states on the globe/map'],
     ['identify', 'help', 'Identify Mode', 'Identify highlighted locations on the map'],
     ['name-all', 'keyboard', 'Name All Countries', 'Type as many countries as you can!'],
-    ['population-order', 'bar_chart', 'Order by Population', 'Drag countries to order them by population'],
+    ['rank', 'bar_chart', 'Rank Them', 'Drag five into order — by people, distance, coastline or reach'],
     ['flags', 'flag', 'Flags', 'Find the country from its flag, or match every flag at once'],
     ['capitals', 'star', 'Capitals', 'Multiple choice, typing race, or pin it on the map'],
     ['explore', 'explore', 'Explore', 'Roam the globe, or put the world through a dozen projections'],
@@ -8088,8 +8088,42 @@ const MODE_ROUTES = {
     'capitals': () => showCapitalsSelector(),
     'flags': () => showFlagsSelector(),
     'spaceship': () => showSpaceshipSelector(),
-    'sandbox': () => showSandboxSelector()
+    'sandbox': () => showSandboxSelector(),
+    'rank': () => showRankSelector()
 };
+
+// RANKINGS. Every mode whose question is "put these in order" was scattered — one on the
+// landing grid, three in the sandbox — and they are one genre: a measurement, five countries,
+// and a column to drag. Gathering them is also what makes it obvious that the METRIC is the
+// variable, which is why five more of them could be added in an afternoon.
+// The four that were already written, plus the five metrics. A FUNCTION rather than a const,
+// because SB_RANK_METRICS is declared much further down the file and a const here would read it
+// during the temporal dead zone.
+const RANK_FIXED = [
+    { key: 'population-order', icon: 'groups', label: 'Order by Population',
+      desc: 'Five countries, most people first' },
+    { key: 'sb-estimate-pop', icon: 'insights', label: 'How Many People',
+      desc: 'Not an order — slide to your best guess for one country' },
+    { key: 'sb-distance-order', icon: 'sort', label: 'Near to Far',
+      desc: 'Order five by distance from one' },
+    { key: 'sb-extreme-order', icon: 'straighten', label: 'Furthest That Way',
+      desc: 'Order five by the point that reaches furthest one way' }
+];
+const rankSubmodes = () => RANK_FIXED.concat(Object.keys(SB_RANK_METRICS).map(k => ({
+    key: k, icon: SB_RANK_METRICS[k].icon,
+    label: SB_RANK_METRICS[k].label, desc: SB_RANK_METRICS[k].desc
+})));
+
+function showRankSelector() {
+    renderSelector({
+        title: 'Rank Them',
+        blocks: [
+            { sub: 'Five at a time, dragged into order. The measurement is the question — rank the ' +
+                   'same five countries by any two of these and the orders barely agree.' },
+            { tiles: rankSubmodes(), on: startGameWithMode }
+        ]
+    });
+}
 
 // Follow a mode name wherever it goes. `start` is how to begin an ordinary mode, which differs by
 // caller: the landing grid starts it directly, the top bar clears the live view first.
@@ -14837,10 +14871,13 @@ const SB_IN_FLAGS = ['sb-fake-flag'];
 // these take no region toggle: a lake is a lake and the Mercator's lie is a lie about the world.
 const SB_IN_SHAPES = ['sb-lake', 'sb-mercator-lie'];
 const SB_IN_CAPITALS = ['sb-capital-pin'];
+// And every "put these in order" round is offered under Rank, which is the genre they share.
+const SB_IN_RANK = () => rankSubmodes().map(t => t.key);
 
 function sandboxQuizTiles() {
+    const ranked = SB_IN_RANK();
     return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' &&
-            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k) &&
+            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k) && !ranked.includes(k) &&
             !SB_IN_SHAPES.includes(k) && !SB_IN_CAPITALS.includes(k)).map(k => ({
         key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
     }));
@@ -15082,6 +15119,169 @@ function sbKmApart(a, b) {
 // either, and a prompt that says "country" over a board of Idahos is simply wrong.
 function sbItemLabel() {
     return (QUIZ_MODES[gameState.mode] || {}).itemLabel || 'country';
+}
+
+// ---- five more things to rank countries by ---------------------------------------------
+// Each is deliberately unlike the others — a perimeter, a diameter, an east-west extent, an
+// offset and an intensity — so that ranking the same five countries by any two of them gives
+// orders that barely agree. That is the whole point of a ranking round: if every metric sorted
+// the world the same way there would only ever be one question.
+
+// Points along a country's outline, thinned to a budget. Every vertex against every vertex is
+// far too much at 10m, and a stride is exact to well under the separations these rounds insist
+// on — the same argument sbNearestPair makes.
+const sbCorePoints = memoByCountries(name => {
+    const f = sbFeature(name);
+    if (!f) return null;
+    const core = shapeFramingCore(f) || f;
+    const rings = featureParts(core).map(poly => poly[0]).filter(Boolean);
+    const total = rings.reduce((s, r) => s + r.length, 0);
+    if (!total) return null;
+    const stride = Math.max(1, Math.floor(total / 220));
+    const out = [];
+    rings.forEach(r => { for (let i = 0; i < r.length; i += stride) out.push(r[i]); });
+    return out.length ? out : null;
+});
+
+// The country's own diameter: the greatest distance between any two points of it. Not the same
+// question as area — Chile is small and enormously long — and not the same as the bounding box,
+// which measures a rectangle nobody's country is.
+const sbDiameterKm = memoByCountries(name => {
+    const pts = sbCorePoints(name);
+    if (!pts || pts.length < 2) return null;
+    // Cartesian on the unit sphere: the pair furthest apart in chord length is the pair
+    // furthest apart in arc length, so the great-circle call is made once at the end.
+    const xyz = pts.map(([lon, lat]) => {
+        const p = lon * DEG, q = lat * DEG, c = Math.cos(q);
+        return [c * Math.cos(p), c * Math.sin(p), Math.sin(q)];
+    });
+    let best = -1, bi = 0, bj = 0;
+    for (let i = 0; i < xyz.length; i++)
+        for (let j = i + 1; j < xyz.length; j++) {
+            const dx = xyz[i][0] - xyz[j][0], dy = xyz[i][1] - xyz[j][1], dz = xyz[i][2] - xyz[j][2];
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d > best) { best = d; bi = i; bj = j; }
+        }
+    return best > 0 ? sbKmBetween(pts[bi], pts[bj]) : null;
+});
+
+// A country's own coastline: the arcs no two countries share, restricted to this one. Exactly
+// the predicate the coastline model and Draw the Border use, pointed at a single country.
+const sbCoastlineKm = memoByCountries(name => {
+    const km = sbMeshKm((a, b) => a === b && namesMatch(sbGeomName(a), name), 'coast1:' + name);
+    return km && km > 0 ? km : null;
+});
+
+// How far the capital sits from the middle of the country. Brasília and Canberra were built in
+// the middle on purpose; Reykjavík and Buenos Aires are pressed against an edge.
+const sbCapitalOffsetKm = memoByCountries(name => {
+    const cap = sbCapitalLonLat(name), mid = getCountryCentroid(name);
+    if (!cap || !mid || !isFinite(cap[0]) || !isFinite(mid[0])) return null;
+    return sbKmBetween(cap, mid);
+});
+
+// Diameter with the SIZE divided out: a country's longest span against the square root of its
+// area, which is dimensionless and so says nothing about how big it is — only how stretched.
+const sbElongation = memoByCountries(name => {
+    const d = sbDiameterKm(name), a = sbAreaKm2(name);
+    return (d && a > 0) ? d / Math.sqrt(a) : null;
+});
+
+const sbDensity = memoByCountries(name => {
+    const p = sbPop(name), a = sbAreaKm2(name);
+    return (p && a) ? p / a : null;
+});
+
+const sbLonSpanDeg = memoByCountries(name => {
+    const f = sbFeature(name);
+    const b = f && geoBox(shapeFramingCore(f) || f);
+    // A wrapped box has no meaningful span — see geoBox. Russia is the country everyone would
+    // name for this question and it is exactly the one that cannot be asked.
+    return (b && !b.wrapped && b.lonSpan > 0) ? b.lonSpan : null;
+});
+
+const SB_RANK_METRICS = {
+    'sb-rank-coast': {
+        icon: 'waves', label: 'Most Coastline', of: sbCoastlineKm,
+        what: 'the length of its coastline', desc: 'Order five by how much shore they have',
+        unit: 'km', fmt: v => sbFormatKm(v), gapFrac: 0.28,
+        why: 'Coastline is a perimeter, not an area — a big country can have almost none of it ' +
+             'and a small scattered one can have a great deal.'
+    },
+    // Diameter ALONE is very nearly area — measured over 114 countries the two rank together at
+    // a Spearman of 0.94, so "which is longest" collapses into "which is biggest" and the round
+    // asks nothing new. Dividing by the square root of the area takes the size out and leaves
+    // the SHAPE: how stretched the country is for how much of it there is. Chile and Norway rise
+    // to the top, and the round becomes the one the label was reaching for.
+    'sb-rank-stretch': {
+        icon: 'straighten', label: 'Most Stretched Out', of: sbElongation,
+        what: 'how stretched out it is for its size',
+        desc: 'Order five by how long and thin they are',
+        unit: '×', fmt: v => v.toFixed(2) + '× its own width', gapFrac: 0.14,
+        why: 'Length on its own is very nearly just size. Length against area is a fact about the ' +
+             'SHAPE — Chile and Norway are stretched; Poland and Zimbabwe are not.'
+    },
+    'sb-rank-lonspan': {
+        icon: 'schedule', label: 'Widest East to West', of: sbLonSpanDeg,
+        what: 'how many degrees of longitude it spans',
+        desc: 'Order five by how many time zones they reach across',
+        unit: '°', fmt: v => v.toFixed(1) + '° (' + (v / 15).toFixed(1) + ' hours)', gapFrac: 0.22,
+        why: 'Fifteen degrees of longitude is an hour of sun, which is why this is the number a ' +
+             'country’s clocks are argued over.'
+    },
+    'sb-rank-capital': {
+        icon: 'location_city', label: 'Capital Off Centre', of: sbCapitalOffsetKm,
+        what: 'how far its capital is from the middle of the country',
+        desc: 'Order five by how far the capital sits from the centre',
+        unit: 'km', fmt: v => sbFormatKm(v), gapFrac: 0.35,
+        why: 'Brasília and Canberra were built in the middle on purpose. Most capitals are ' +
+             'wherever the port, the river or the old kingdom happened to be.'
+    },
+    'sb-rank-density': {
+        icon: 'groups_3', label: 'Most Crowded', of: sbDensity,
+        what: 'its population density', desc: 'Order five by people per square kilometre',
+        unit: '/km²', fmt: v => (v >= 100 ? Math.round(v) : v.toFixed(1)) + ' /km²', gapFrac: 0.4,
+        why: 'Population and density pull in opposite directions: the most populous countries are ' +
+             'usually the big ones, and the most crowded are usually the small ones.'
+    }
+};
+
+// One builder for all five. `gapFrac` is how far apart consecutive values must be, as a
+// fraction of the larger — a RATIO rather than an absolute, because these quantities live on
+// wildly different scales and "500 km apart" means nothing shared between a coastline and a
+// capital's offset.
+function sbRankQuizzes() {
+    const out = {};
+    Object.keys(SB_RANK_METRICS).forEach(key => {
+        const m = SB_RANK_METRICS[key];
+        out[key] = {
+            engine: 'order', flat: true, rank: true, icon: m.icon, label: m.label, desc: m.desc,
+            metric: key,
+            build() {
+                const pool = sbPool().filter(n => m.of(n) != null && sbAreaKm2(n) > 20000);
+                if (pool.length < 8) return null;
+                for (let t = 0; t < 30; t++) {
+                    const picks = shuffleArray(pool).slice(0, 5);
+                    if (picks.length < 5) return null;
+                    const vals = picks.map(m.of).sort((a, b) => a - b);
+                    let ok = true;
+                    for (let i = 1; i < vals.length; i++)
+                        if (vals[i] - vals[i - 1] < vals[i] * m.gapFrac) { ok = false; break; }
+                    if (!ok) continue;
+                    return {
+                        items: picks, anchor: null, barValues: true,
+                        correct: [...picks].sort((a, b) => m.of(b) - m.of(a)),
+                        prompt: `Drag these into order by <strong>${m.what}</strong> — the largest at the top.`,
+                        format: n => m.fmt(m.of(n)),
+                        value: m.of, unit: m.unit,
+                        explain: m.why
+                    };
+                }
+                return null;
+            }
+        };
+    });
+    return out;
 }
 
 // ---- the lines drawn on every globe, and what they actually cross ----------------------
@@ -22249,6 +22449,13 @@ const SB_QUIZZES = {
         }
     },
 
+    // ---------- five more measurements to rank by ----------
+    // Every "put these in order" round is the same round with a different measurement, so the
+    // measurements are a table and one builder serves all five. Each is deliberately unlike the
+    // others: a perimeter, a diameter, an east-west extent, an offset, and an intensity. Rank
+    // five countries by any two of them and the orders barely agree.
+    ...sbRankQuizzes(),
+
     // ---------- five, by an extreme point ----------
     // Two rounds became one, and the merge is what made either of them a real question. Ordering
     // by CENTRES is a question about where the middle of a country is, which is not a thing anybody
@@ -22260,18 +22467,24 @@ const SB_QUIZZES = {
         engine: 'order', flat: true, icon: 'straighten', label: 'Furthest That Way',
         desc: 'Order five countries by the point that reaches furthest one way',
         build() {
+            // `at` finds the actual VERTEX the extreme is measured at, so the reveal can put a
+            // pin on it. The bounds give the number; only a point can be drawn on a map.
             const DIRS = [
-                { key: 'n', word: 'north', pick: b => b[1][1], desc: 'northernmost', sign: -1, ns: true },
-                { key: 's', word: 'south', pick: b => b[0][1], desc: 'southernmost', sign: 1,  ns: true },
-                { key: 'e', word: 'east',  pick: b => b[1][0], desc: 'easternmost',  sign: -1, ns: false },
-                { key: 'w', word: 'west',  pick: b => b[0][0], desc: 'westernmost',  sign: 1,  ns: false }
+                { key: 'n', word: 'north', pick: b => b[1][1], desc: 'northernmost', sign: -1, ns: true,
+                  at: (p, q) => q[1] > p[1] },
+                { key: 's', word: 'south', pick: b => b[0][1], desc: 'southernmost', sign: 1,  ns: true,
+                  at: (p, q) => q[1] < p[1] },
+                { key: 'e', word: 'east',  pick: b => b[1][0], desc: 'easternmost',  sign: -1, ns: false,
+                  at: (p, q) => q[0] > p[0] },
+                { key: 'w', word: 'west',  pick: b => b[0][0], desc: 'westernmost',  sign: 1,  ns: false,
+                  at: (p, q) => q[0] < p[0] }
             ];
             const dir = sbRandom(DIRS);
             const pool = sbPool().filter(n => sbAreaKm2(n) > 40000);
             for (let t = 0; t < 30; t++) {
                 const picks = shuffleArray(pool).slice(0, 5);
                 if (picks.length < 5) return null;
-                const at = {};
+                const at = {}, where = {};
                 let bad = false;
                 picks.forEach(n => {
                     const f = sbFeature(n);
@@ -22284,6 +22497,13 @@ const SB_QUIZZES = {
                     // A wrapped box has no meaningful east or west edge, so those draws skip it.
                     if (!dir.ns && b[1][0] < b[0][0]) { bad = true; return; }
                     at[n] = dir.pick(b);
+                    // The bounds give the NUMBER; the reveal needs the POINT, so the actual
+                    // vertex the extreme sits at is found here while the core is in hand.
+                    let win = null;
+                    featureParts(core).forEach(poly => (poly[0] || []).forEach(p => {
+                        if (!win || dir.at(win, p)) win = p;
+                    }));
+                    where[n] = win;
                 });
                 if (bad) continue;
                 const vals = picks.map(n => at[n]).sort((a, b) => a - b);
@@ -22297,7 +22517,7 @@ const SB_QUIZZES = {
                     ? `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'N' : 'S'}`
                     : `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'E' : 'W'}`;
                 return {
-                    items: picks, anchor: null,
+                    items: picks, anchor: null, extremeAt: where, extremeNS: dir.ns,
                     correct: [...picks].sort((a, b) => dir.sign * (at[a] - at[b])),
                     prompt: `Drag these into order by their <strong>${dir.desc} point</strong> \u2014 ` +
                             `the one reaching furthest ${dir.word} at the top.` +
@@ -24251,14 +24471,86 @@ function sbSubmitOrder() {
     // The guess→truth grid with its connecting arrows, exactly as population-order draws it —
     // the only thing this round supplies of its own is how to print the value column.
     renderOrderingResult(userOrder, gameState.sbCorrectOrder, q.format);
+    // Two ways of showing what the five numbers actually were, and which one depends on what
+    // was being ranked. A quantity gets a BAR CHART, because five numbers in a column are five
+    // numbers and five bars are a shape. A direction gets a MAP, because "furthest north" is a
+    // claim about a place and the only honest picture of it is the point itself on the globe.
+    if (q.barValues) sbRevealRankBars(q);
+    else if (q.extremeAt) sbRevealExtremeMap(q);
     // ...and the map the whole question was about. Five names in a column say nothing about
     // where they are; five spokes off the anchor say the entire answer at a glance.
-    sbRevealDistanceMap(q);
+    else sbRevealDistanceMap(q);
 
     const nextBtn = document.getElementById('next-btn');
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     // Like population-order, the result grid IS the payoff — no timed advance pulling it away.
     clearAutoAdvance();
+}
+
+// Five numbers in a column are five numbers; five bars are a shape. The bar chart is the only
+// place the round says how far apart the answers actually were — an order can be right by a
+// hair or by a factor of ten, and the list cannot tell you which.
+//
+// Bars are drawn against the LARGEST of the five, not against zero-to-anything, so the picture
+// fills its width whatever scale the metric lives on. A country the player put out of order is
+// marked, so the chart shows the mistake as well as the answer.
+function sbRevealRankBars(q) {
+    const host = document.getElementById('ordering-container');
+    if (!host || !q.value) return;
+    const order = q.correct || q.items;
+    const vals = order.map(n => q.value(n)).filter(v => v != null && isFinite(v));
+    const max = d3.max(vals);
+    if (!max) return;
+    const mine = new Set((gameState.sbDrag ? gameState.sbDrag.getCurrentOrder() : [])
+        .filter((n, i) => !namesMatch(n, order[i])));
+    const box = document.createElement('div');
+    box.className = 'sb-rank-bars';
+    box.innerHTML = '<div class="sb-rank-title">What the numbers were</div>' +
+        order.map(n => {
+            const v = q.value(n);
+            const pct = (v == null || !isFinite(v)) ? 0 : Math.max(1.5, 100 * v / max);
+            return `<div class="sb-rank-row${mine.has(n) ? ' misplaced' : ''}">` +
+                `<span class="sb-rank-name">${displayLabelForName(n)}</span>` +
+                `<span class="sb-rank-track"><span class="sb-rank-fill" style="width:${pct.toFixed(1)}%"></span></span>` +
+                `<span class="sb-rank-val">${q.format ? q.format(n) : v}</span></div>`;
+        }).join('') +
+        (mine.size ? '<div class="sb-rank-key">Marked rows are the ones you placed out of order.</div>' : '');
+    host.appendChild(box);
+}
+
+// "Furthest north" is a claim about a PLACE, so the reveal is the place. Each country is drawn
+// with a pin on the exact point the ranking was measured at, and a parallel (or meridian) ruled
+// through the winner — the line everything else falls short of.
+function sbRevealExtremeMap(q) {
+    document.getElementById('map-container').classList.remove('hidden');
+    const names = q.correct || q.items;
+    q.boardMarks = { marks: names.reduce((m, n, i) => (m[n] = i === 0 ? 'target' : 'right', m), {}) };
+    if (!sbFitToFeatures(names, 0.1)) return;
+    drawCountries();
+    const layer = sbOverlay();
+    const ns = q.extremeNS;
+    // The winner's line first and underneath: it is the standard everything else is measured
+    // against, not another mark on top of them.
+    const top = q.extremeAt[names[0]];
+    if (top) {
+        const line = ns
+            ? { type: 'LineString', coordinates: d3.range(-180, 181, 2).map(l => [l, top[1]]) }
+            : { type: 'LineString', coordinates: d3.range(-89, 90, 2).map(p => [top[0], p]) };
+        const d = path(line);
+        if (d) layer.append('path').datum(line).attr('class', 'sb-extreme-line').attr('d', d);
+    }
+    names.forEach((n, i) => {
+        const at = q.extremeAt[n];
+        if (!at) return;
+        const pt = projection(at);
+        if (!pt || !isFinite(pt[0])) return;
+        const g = layer.append('g').datum({ at, dy: 0 })
+            .attr('class', 'sb-anchored sb-extreme-pin' + (i === 0 ? ' first' : ''))
+            .attr('transform', `translate(${pt[0]}, ${pt[1]})`);
+        g.append('circle').attr('r', 4);
+        g.append('text').attr('text-anchor', 'middle').attr('dy', -8)
+            .text(`${i + 1}. ${displayLabelForName(n)}`);
+    });
 }
 
 // ---- overlay layer (guess pins, the parallel) ----

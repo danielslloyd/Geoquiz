@@ -2066,6 +2066,41 @@ The miss list was a column of names. Two things make it useful instead:
   the same map and data; its config is rewritten in place per region, so by the time the round
   ends there is otherwise nothing left to say where it came from.
 
+## Rank Them: the measurement is the question
+
+Every "put these five in order" round was scattered — one on the landing grid, three in the
+sandbox — and they are one genre. They now share a **Rank** tile, and gathering them is what
+makes it obvious that the *metric* is the variable: five more were added in an afternoon,
+because `SB_RANK_METRICS` is a table and `sbRankQuizzes()` is one builder over it.
+
+**`gapFrac` is a RATIO, not an absolute.** These quantities live on wildly different scales and
+"500 km apart" means nothing shared between a coastline and a capital's offset, so consecutive
+values must differ by a fraction of the larger.
+
+**Two reveals, and which one depends on what was ranked.** A quantity gets a **bar chart** —
+five numbers in a column are five numbers, five bars are a shape, and it is the only place the
+round says whether the order was close or a landslide. Bars are drawn against the largest of the
+five rather than zero-to-anything, so the picture fills its width whatever scale the metric
+lives on, and a row the player put out of order is marked. A **direction** gets a **map**:
+"furthest north" is a claim about a place, so each country is pinned at the exact vertex the
+ranking was measured at, with the winner's parallel ruled through as the line the others fall
+short of. Finding that vertex is extra work the bounds do not do — the bounds give the number,
+and only a point can be drawn.
+
+**A metric that ranks like area is not a new question, and one of them did.** Measured over 114
+countries by Spearman rank correlation, plain **diameter against area was 0.94** — "which is
+longest" collapsing into "which is biggest". Dividing by the square root of the area takes the
+size out and leaves the shape, and the correlation falls to **−0.14**: Solomon Islands, Chile,
+Indonesia and Malaysia at the top, Sierra Leone, Suriname, Algeria and Uruguay at the bottom,
+which is the round the label was reaching for. The five against area now read **stretch −0.14,
+density −0.33, coastline 0.54, capital offset 0.70, longitude span 0.88**.
+
+That last one is the honest weak point and is worth stating: **east-west span really does track
+area at 0.88**, so a player who simply picks the biggest will often be right. It is kept because
+it asks for a different kind of knowledge — how many hours of sun a country spans is a thing
+people half-remember about Russia and Canada — and because the exceptions (Chile against
+Kazakhstan) are exactly where it bites.
+
 ## Water is a geography
 
 Lakes and major rivers are a pool the silhouette rounds play over, alongside the world and the

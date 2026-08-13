@@ -1094,6 +1094,77 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     pointer-events: none;
 }
 
+/* The ranking bar chart. Five numbers in a column are five numbers; five bars are a shape —
+   this is the only place the round says whether the order was close or a landslide. */
+.sb-rank-bars {
+    margin: 14px auto 0;
+    max-width: 620px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.sb-rank-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    opacity: 0.75;
+    margin-bottom: 2px;
+}
+
+.sb-rank-row {
+    display: grid;
+    grid-template-columns: 8.5rem 1fr auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.82rem;
+}
+
+.sb-rank-name { text-align: right; opacity: 0.85; }
+
+.sb-rank-track {
+    height: 13px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.sb-rank-fill {
+    display: block;
+    height: 100%;
+    background: var(--primary);
+    border-radius: 3px;
+}
+
+.sb-rank-val { font-variant-numeric: tabular-nums; opacity: 0.8; white-space: nowrap; }
+
+/* A row the player put out of order — the chart shows the mistake as well as the answer. */
+.sb-rank-row.misplaced .sb-rank-fill { background: var(--incorrect, #c0503f); }
+.sb-rank-row.misplaced .sb-rank-name { font-weight: 700; opacity: 1; }
+
+.sb-rank-key { font-size: 0.72rem; opacity: 0.6; margin-top: 3px; }
+
+/* The winner's parallel (or meridian) on the Furthest That Way reveal: the standard everything
+   else falls short of, so it is a rule rather than another mark. */
+.sb-extreme-line {
+    fill: none;
+    stroke: var(--primary);
+    stroke-width: 1.2;
+    stroke-dasharray: 5 4;
+    opacity: 0.7;
+    vector-effect: non-scaling-stroke;
+}
+
+.sb-extreme-pin circle { fill: var(--surface); stroke: var(--primary); stroke-width: 1.6; }
+.sb-extreme-pin.first circle { fill: var(--primary); }
+.sb-extreme-pin text {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11px;
+    fill: var(--text);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
+}
+
 /* A river on a solo board: the same blue the lake fill uses, as a line. */
 .sb-solo-river {
     fill: none;
