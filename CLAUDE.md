@@ -2026,6 +2026,57 @@ The miss list was a column of names. Two things make it useful instead:
   the same map and data; its config is rewritten in place per region, so by the time the round
   ends there is otherwise nothing left to say where it came from.
 
+## Water is a geography
+
+Lakes and major rivers are a pool the silhouette rounds play over, alongside the world and the
+five state maps. Nothing in those rounds had to learn what water is: `sbPool()` and `sbFeature()`
+read `gameState.currentQuizList` and `gameState.countries` and have never asked where either
+came from, so water only has to arrive in those two places — which `waterRegionConfig` and one
+branch in `loadMapData` do.
+
+**A river is a LINE, and that is the only thing that genuinely differs.** It has no area, so
+anything measuring one measures its length instead, and it is stroked rather than filled. Three
+places needed telling:
+
+* **The shape descriptor.** Size becomes length SQUARED, which is in the same units as an area
+  and so puts a long river and a large lake on one scale; compactness becomes STRAIGHTNESS —
+  how far the river gets from where it started, as a fraction of its own length — which is a
+  real property of a river and lands in the same 0..1 range. Neither the descriptor's callers
+  nor its distance metric change, so shape-similar distractors work unaltered.
+* **Coming Into Focus.** Visvalingam–Whyatt on an open polyline is the ORIGINAL case rather than
+  a special one, so a river unfolds like anything else — except that here the endpoint Infinity
+  **stands**: the mouth and the source are where the river actually ends, where a ring's "ends"
+  are an artefact of where the atlas started the arc and are demoted. Without this the river was
+  drawn at full detail on the first frame, which gives the answer away.
+* **Out of Scale and Upside Down** are lakes only, and not by exclusion: both filter on area, so
+  rivers fall out on their own.
+
+**The pool is 24 lakes and 84 rivers.** Lakes as before — names from the bundled 110m file,
+geometry from 10m. Rivers come from Natural Earth's 10m centerlines, `featurecla === 'River'`
+(the `Lake Centerline` rows are the line *through* a lake, which is already in the pool as a
+polygon), merged on **`name_en` rather than `name`** — that is what folds Donau into Danube and
+Jinsha and Chang Jiang into the Yangtze. It does not catch everything, and two options that are
+the same river is the one thing this round must never deal, so the stragglers are named in
+`WATER_RIVER_ALIASES`. Kept at scalerank ≤ 5 and ≥ 700 km. Verified: **no duplicate names**, and
+Name the Water never deals a mixed option set — the three wrong answers are always the same kind
+as the right one, because a line on the board against three lake names answers itself.
+
+## Turned is Upside Down now
+
+Shape ID's "Turned" tier — the whole outline at an unknown angle — was the same question Upside
+Down asks, so the arbitrary angles moved into that quiz's transform vocabulary and the tier is
+gone. `SB_SHAPE_TRANSFORMS` is now the two mirrors plus every turn in 15° steps **from 45° to
+315°**.
+
+**The exclusion below 45° is the whole of what makes the merge work.** The selection rule takes
+whichever transform leaves the silhouette looking MOST like its true self, and with tiny
+rotations available that rule has a degenerate optimum: a 15° turn barely changes any shape, so
+it wins nearly every time. Measured with 15° in the vocabulary, **88 of 120 eligible countries
+were dealt a 15° turn** — which is not a question about which way a country points, it is a
+question about whether you can see 15°. With the floor at 45°: **46 mirrors, 39 half-turns and
+35 odd angles out of 120**, and the odd angles cluster around 165–210°, which is "almost upside
+down" — the least detectable free rotation there is.
+
 ## Shape ID difficulty
 
 `SHAPE_ID_TIERS` — **Outline** (as before), **Turned** (the whole outline at a random angle),

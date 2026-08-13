@@ -2574,7 +2574,11 @@ function loadMapData() {
 
     // World modes pick their resolution from the detail toggle; others use their fixed URL.
     const mapUrl = (modeConfig.mapObject === 'countries') ? worldCountriesUrl() : modeConfig.mapUrl;
-    const loader = (modeConfig.mapObject === 'countries') ? fetchWorldTopo(mapUrl) : d3.json(mapUrl);
+    // Water is assembled in JS out of two fetched files rather than being one map, so it hands
+    // the collection straight over and takes the plain-GeoJSON branch below like any other.
+    const loader = modeConfig.waterPool
+        ? Promise.resolve({ type: 'FeatureCollection', features: waterFeatures() || [] })
+        : (modeConfig.mapObject === 'countries') ? fetchWorldTopo(mapUrl) : d3.json(mapUrl);
     loader
         .then(data => {
             // Check mapObject to determine how to process the data
@@ -3434,6 +3438,14 @@ function setModeChrome(o) {
 const BORROWED_KEYS = ['quizList', 'dataObjKey', 'useGlobe', 'mapUrl', 'mapObject',
                        'itemLabel', 'itemLabelPlural'];
 function borrowRegion(target, region, fallback) {
+    // Water is a pool rather than a mode, so it has no QUIZ_MODES entry to borrow from — see
+    // waterRegionConfig.
+    if (region === 'water') {
+        const w = waterRegionConfig();
+        Object.assign(target, w);
+        return w;
+    }
+    target.waterPool = false;
     const base = QUIZ_MODES[region] || QUIZ_MODES[fallback || 'countries'];
     BORROWED_KEYS.forEach(k => { target[k] = base[k]; });
     target.useAlbersUsa = !!base.useAlbersUsa;
@@ -6374,7 +6386,15 @@ let shapeDescriptorCache = null;
 // framing core, so an offshore speck can't report South Africa as a tall, mostly-empty box.
 function computeShapeDescriptor(feature) {
     const f = shapeFramingCore(feature);
-    const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
+    const river = isRiverFeature(feature);
+    // A river has no area at all, so both size and compactness need a different measure — and
+    // there is a natural one for each. SIZE is its length squared, which is in the same units as
+    // an area and so puts a long river and a large lake on one scale. COMPACTNESS becomes
+    // STRAIGHTNESS: how much of its own length the river actually gets away from where it
+    // started, which is a real property of a river's shape and lands in the same 0..1 range the
+    // area version does. Neither the descriptor's callers nor its distance metric change.
+    const len = river ? d3.geoLength(f.geometry || f) : 0;
+    const area = river ? len * len : d3.geoArea(f);       // steradians (spherical area, 0..4π)
     const bb = geoBox(f) || { s: 0, n: 0, lonSpan: 0, midLat: 0 };
     const { s, n, lonSpan, midLat } = bb;
     const width = lonSpan * Math.cos(midLat * Math.PI / 180); // physical width (deg-equiv)
@@ -6383,7 +6403,9 @@ function computeShapeDescriptor(feature) {
     // Spherical bounding-box area, for a size-independent compactness ratio.
     const bboxArea = Math.abs((lonSpan * Math.PI / 180) *
         (Math.sin(n * Math.PI / 180) - Math.sin(s * Math.PI / 180)));
-    const compactness = bboxArea > 0 ? area / bboxArea : 0;   // fraction of bbox filled
+    const compactness = river
+        ? Math.min(1, Math.hypot(width, height) * Math.PI / 180 / Math.max(len, 1e-6))
+        : (bboxArea > 0 ? area / bboxArea : 0);               // fraction of bbox filled
     return { logArea: Math.log(Math.max(area, 1e-6)), logAspect: Math.log(Math.max(aspect, 1e-3)), compactness };
 }
 
@@ -6514,20 +6536,28 @@ function generateShapeIdOptions(correctAnswer) {
 // Three ways to show one silhouette, from the outline plainly to a scrap of it at an angle.
 // Nothing about the QUESTION changes — same countries, same shape-similar distractors — only
 // how much of the shape you are given to work from.
+// "Turned" — the whole outline at an unknown angle — is gone from here. It was the same
+// question Upside Down asks, and asking it twice on one screen only split the answer between
+// two tiles; the arbitrary angles now live in that quiz's transform vocabulary instead.
 const SHAPE_ID_TIERS = {
-    outline: { label: 'Outline', desc: 'The country, upright and whole' },
-    turned:  { label: 'Turned',  desc: 'The whole outline, at an unknown angle', rotate: true },
+    outline: { label: 'Outline', desc: 'The shape, upright and whole' },
     // Starts as a handful of corners and grows back into the real coastline while you watch.
     // Answer whenever you are sure; the score is how little of it you needed.
-    unfold:  { label: 'Coming Into Focus', desc: 'A few corners, sharpening to the true coastline — name it as early as you dare', unfold: true }
+    unfold:  { label: 'Coming Into Focus', desc: 'A few corners, sharpening to the true outline — name it as early as you dare', unfold: true }
 };
 let shapeIdTier = 'outline';
 
-// Which geography the silhouettes are cut from. Every tier works over either — a state is as
-// hard to name from its outline as a country is, and rather harder for the rectangular ones.
+// Which geography the silhouettes are cut from. Every tier works over any of them — a state is
+// as hard to name from its outline as a country is, and rather harder for the rectangular ones,
+// and a lake or a river is a shape like any other.
 const SHAPE_ID_REGIONS = [
-    { key: 'countries', label: 'World',     icon: 'public',  desc: 'Every country' },
-    { key: 'us-states', label: 'US States', icon: 'flag',    desc: 'All fifty' }
+    { key: 'countries',      label: 'World',   desc: 'Every country' },
+    { key: 'us-states',      label: 'USA',     desc: 'All fifty states' },
+    { key: 'indian-states',  label: 'India',   desc: 'States and union territories' },
+    { key: 'german-states',  label: 'Germany', desc: 'The sixteen Bundesländer' },
+    { key: 'uk-states',      label: 'England', desc: 'Ceremonial counties' },
+    { key: 'mexican-states', label: 'Mexico',  desc: 'The thirty-two states' },
+    { key: 'water',          label: 'Water',   desc: 'Lakes and major rivers' }
 ];
 let shapeIdRegion = 'countries';
 
@@ -6537,22 +6567,41 @@ let shapeIdRegion = 'countries';
 // live in insets at their own scales), and Shape ID wants a plain Mercator fitted to whatever
 // it is showing; and the round count is capped at the list length, since the fifty states are
 // not the two hundred countries.
+// Water arrives over the network, and its quizList IS the fetched pool — so a mode played over
+// it cannot be configured until the pool has landed. Everything else starts straight away.
+function withWaterRegion(region, cb) {
+    if (region !== 'water') { cb(); return; }
+    if (waterFeatures()) { cb(); return; }
+    const t0 = Date.now();
+    const tick = () => {
+        if (waterFeatures()) { cb(); return; }
+        if (Date.now() - t0 > 15000) { cb(); return; }   // give up and let the mode say so
+        setTimeout(tick, 120);
+    };
+    setTimeout(tick, 120);
+}
+
 function startShapeIdMode(region, tier) {
-    const m = QUIZ_MODES['country-shape-id'];
-    const base = borrowRegion(m, region);
-    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
-    shapeIdTier = tier || shapeIdTier;
-    m.shapeIdRegion = shapeIdRegion;
-    m.useGlobe = false;
-    m.useAlbersUsa = false;
-    // The world silhouettes are judged on the outline, so they force 10m through
-    // worldCountriesUrl(); every other region ships one resolution and uses its own URL.
-    m.mapUrl = base.mapObject === 'countries'
-        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json'
-        : base.mapUrl;
-    m.totalQuestions = Math.min(10, base.quizList.length);
-    shapeDescriptorCache = null;   // descriptors are keyed by name, and the pool just changed
-    startGameWithMode('country-shape-id');
+    withWaterRegion(region, () => {
+        const m = QUIZ_MODES['country-shape-id'];
+        const base = borrowRegion(m, region);
+        shapeIdRegion = (QUIZ_MODES[region] || region === 'water') ? region : 'countries';
+        shapeIdTier = tier || shapeIdTier;
+        m.shapeIdRegion = shapeIdRegion;
+        m.useGlobe = false;
+        m.useAlbersUsa = false;
+        // The world silhouettes are judged on the outline, so they force 10m through
+        // worldCountriesUrl(); every other region ships one resolution and uses its own URL.
+        // Water has no URL at all — it is assembled in JS (see waterFeatures).
+        if (!base.waterPool) {
+            m.mapUrl = base.mapObject === 'countries'
+                ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json'
+                : base.mapUrl;
+        }
+        m.totalQuestions = Math.min(10, base.quizList.length);
+        shapeDescriptorCache = null;   // descriptors are keyed by name, and the pool just changed
+        startGameWithMode('country-shape-id');
+    });
 }
 
 // The two sandbox quizzes that live under Name the Shape take a region the same way, and by the
@@ -6566,23 +6615,27 @@ function startShapeIdMode(region, tier) {
 function startShapeQuizMode(key, region) {
     const m = QUIZ_MODES[key];
     if (!m) return;
-    const base = borrowRegion(m, region);
-    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
-    m.useAlbersUsa = false;
-    // NOT the region's. Every sandbox round is declared `useGlobe: true` and reaches its flat
-    // board through `sbFlat` instead, so borrowing `false` from the state maps would send it down
-    // the regional-flat-map path rather than the sandbox's own. This is the one key the borrow
-    // must not carry here.
-    m.useGlobe = true;
-    // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
-    // every other region ships one resolution and uses its own URL.
-    m.mapUrl = base.mapObject === 'countries'
-        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
-        : base.mapUrl;
-    m.totalQuestions = Math.min(10, base.quizList.length);
-    shapeDescriptorCache = null;
-    sbWholeCache.clear();
-    startGameWithMode(key);
+    withWaterRegion(region, () => {
+        const base = borrowRegion(m, region);
+        shapeIdRegion = (QUIZ_MODES[region] || region === 'water') ? region : 'countries';
+        m.useAlbersUsa = false;
+        // NOT the region's. Every sandbox round is declared `useGlobe: true` and reaches its flat
+        // board through `sbFlat` instead, so borrowing `false` from the state maps would send it
+        // down the regional-flat-map path rather than the sandbox's own. This is the one key the
+        // borrow must not carry here.
+        m.useGlobe = true;
+        // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
+        // every other region ships one resolution and uses its own URL. Water has none.
+        if (!base.waterPool) {
+            m.mapUrl = base.mapObject === 'countries'
+                ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+                : base.mapUrl;
+        }
+        m.totalQuestions = Math.min(10, base.quizList.length);
+        shapeDescriptorCache = null;
+        sbWholeCache.clear();
+        startGameWithMode(key);
+    });
 }
 
 function renderCountryShapeIdQuestion() {
@@ -6594,8 +6647,6 @@ function renderCountryShapeIdQuestion() {
     const what = (QUIZ_MODES['country-shape-id'] || {}).itemLabel || 'country';
     document.getElementById('question-text').innerHTML = tier.unfold
         ? `Name it as soon as you can.`
-        : tier.rotate
-        ? `Which ${what} is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
         : `Which ${what} is highlighted?`;
     const flagDisplay = document.getElementById('flag-display');
     if (flagDisplay) flagDisplay.style.display = 'none';
@@ -6619,40 +6670,16 @@ function renderCountryShapeIdQuestion() {
     countriesGroup.selectAll('path').remove();
     g.selectAll('g.shape-id-layer').remove();
     if (target) {
-        // The harder tiers wrap the silhouette in a group that is rotated about the viewport
-        // centre. Rotating in SCREEN space rather than re-projecting is what keeps the framing
-        // identical across tiers — re-projecting would refit the country to its new bounding
-        // box, so the amount of the viewport it fills would itself become a clue.
-        let host = countriesGroup;
         // The unfolding tier draws itself, frame by frame, and owns the path for the round.
         // It must NOT return out of the whole function — the answer list is still to come.
         if (tier.unfold) startShapeUnfold(target);
-        else if (tier.rotate) {
-            const ang = Math.round(rnd() * 360);
-            // Shrink far enough that the TURNED shape still fits. The projection was fitted to
-            // the country upright, so a tall one spun a quarter turn needs the viewport's width
-            // for its height and runs off the edge — Tonga came out 1,064 px tall in a 600 px
-            // box. The room a w x h box needs at angle a is (w|cos|+h|sin|) by (w|sin|+h|cos|).
-            let f = 1;
-            try {
-                const b = path.bounds(shapeFramingCore(target) || target);
-                const w0 = b[1][0] - b[0][0], h0 = b[1][1] - b[0][1];
-                const r = ang * DEG, ca = Math.abs(Math.cos(r)), sa = Math.abs(Math.sin(r));
-                const pad2 = Math.min(width, height) * 0.12;
-                f = Math.min(1, (width - 2 * pad2) / (w0 * ca + h0 * sa),
-                                (height - 2 * pad2) / (w0 * sa + h0 * ca));
-            } catch (_) { f = 1; }
-            gameState.shapeIdAngle = ang;
-            gameState.shapeIdFit = f;
-            host = g.append('g').attr('class', 'shape-id-layer')
-                .attr('transform', `rotate(${ang}, ${width / 2}, ${height / 2}) ` +
-                                   `translate(${width / 2},${height / 2}) scale(${f}) translate(${-width / 2},${-height / 2})`);
-        }
-        if (!tier.unfold) {
+        else {
             gameState.shapeIdTarget = target;
-            host.append('path')
+            // A river is a LINE: it has no inside, so it is stroked rather than filled. Same
+            // path, same fit, same class for everything else about it.
+            countriesGroup.append('path')
                 .datum(target)
-                .attr('class', 'country shape-target')
+                .attr('class', 'country shape-target' + (isRiverFeature(target) ? ' shape-line' : ''))
                 .attr('d', path(target));
         }
     }
@@ -6724,7 +6751,23 @@ function startShapeUnfold(target) {
     stopShapeUnfold();
     gameState.shapeIdTarget = target;
     const R2 = EARTH_R2_KM2;
-    let rings = featureParts(target)
+    // A river is a LINE, and Visvalingam–Whyatt on an open polyline is the original case rather
+    // than a special one — the difference is only that the result is stroked instead of closed,
+    // and that the two ends genuinely cannot be dropped (see the endpoint note below, which
+    // exists because a RING's ends are an artefact and a river's are the river).
+    const line = isRiverFeature(target);
+    let rings;
+    if (line) {
+        const geom = target.geometry || target;
+        const parts = geom.type === 'LineString' ? [geom.coordinates] : (geom.coordinates || []);
+        rings = parts.filter(r => r && r.length > 2).map(r => ({ ring: r, km2: 0 }));
+        if (!rings.length) {
+            countriesGroup.append('path').datum(target)
+                .attr('class', 'country shape-target shape-line').attr('d', path(target));
+            return;
+        }
+    } else {
+    rings = featureParts(target)
         .map(poly => poly[0])
         .filter(r => r && r.length > 4)
         .map(r => ({ ring: r, km2: d3.geoArea({ type: 'Polygon', coordinates: [r] }) * R2 }))
@@ -6740,6 +6783,7 @@ function startShapeUnfold(target) {
         all.sort((x, y) => y.length - x.length);
         rings = [{ ring: all[0], km2: 0 }];
     }
+    }
 
     // One global ordering of every point in every kept ring, by VW weight.
     //
@@ -6751,6 +6795,10 @@ function startShapeUnfold(target) {
     // own heaviest finite weight instead: important within their ring, ordinary globally.
     const prepared = rings.map(({ ring }) => {
         const w = vwWeights(ring);
+        // On a LINE the Infinity stands: the mouth and the source are where the river actually
+        // ends, so they are the two points that must always be there. On a ring they are an
+        // artefact of where the atlas started the arc and are demoted.
+        if (line) return { ring, w: Array.from(w) };
         let maxFinite = 0;
         for (let i = 0; i < w.length; i++) if (isFinite(w[i]) && w[i] > maxFinite) maxFinite = w[i];
         const fixed = Array.from(w, v => (isFinite(v) ? v : (maxFinite || 1)));
@@ -6758,11 +6806,15 @@ function startShapeUnfold(target) {
     });
     const order = [];
     prepared.forEach((pr, ri) => {
-        for (let i = 0; i < pr.ring.length - 1; i++) order.push({ ri, i, w: pr.w[i] });
+        // A ring repeats its first point as its last, so the closing copy is skipped; a line
+        // does not, so its final point is a real one and has to be offered.
+        const n = line ? pr.ring.length : pr.ring.length - 1;
+        for (let i = 0; i < n; i++) order.push({ ri, i, w: pr.w[i] });
     });
     order.sort((x, y) => y.w - x.w);
 
-    const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
+    const layer = countriesGroup.append('path')
+        .attr('class', 'country shape-target shape-unfold' + (line ? ' shape-line' : ''));
     // ONE POINT PER PRESS on the state maps. The growth rule is right for countries and wrong
     // for states, and the reason is the shapes: a country's outline runs to hundreds or
     // thousands of points, so equal absolute steps stop meaning anything and a ratio is the only
@@ -6772,8 +6824,11 @@ function startShapeUnfold(target) {
     // Measured at the 10m detail this mode forces: the states' median outline is 166 points
     // against 899 for the countries pool, a factor of 5.4, and the smallest state is 34 points
     // against a smallest country of 8.
-    const oneAtATime = !!(QUIZ_MODES[shapeIdRegion] && QUIZ_MODES[shapeIdRegion].mapObject !== 'countries');
-    shapeUnfold = { target, prepared, order, total: order.length, layer, oneAtATime,
+    // Water goes one at a time for the same reason the states do: a lake or a river is a short
+    // outline, and the ratio skips the whole interesting range in three presses.
+    const oneAtATime = shapeIdRegion === 'water' ||
+        !!(QUIZ_MODES[shapeIdRegion] && QUIZ_MODES[shapeIdRegion].mapObject !== 'countries');
+    shapeUnfold = { target, prepared, order, total: order.length, layer, oneAtATime, line,
                     points: SHAPE_UNFOLD_START, gap: 4 };
     drawShapeUnfold(SHAPE_UNFOLD_START);
 }
@@ -6815,25 +6870,27 @@ function drawShapeUnfold(n) {
     }
     const polys = [];
     keep.forEach((idxs, ri) => {
-        // A ring needs three distinct points to enclose anything. Below that it has not earned
-        // its place and simply is not drawn — which is what makes the islands arrive one at a
-        // time rather than all at once as slivers.
-        if (idxs.length < 3) return;
+        // A ring needs three distinct points to enclose anything; a LINE needs only two to be a
+        // line. Below that it has not earned its place and simply is not drawn — which is what
+        // makes the islands arrive one at a time rather than all at once as slivers.
+        if (idxs.length < (shapeUnfold.line ? 2 : 3)) return;
         idxs.sort((x, y) => x - y);
         const ring = shapeUnfold.prepared[ri].ring;
         const pts = idxs.map(i => ring[i]);
-        pts.push(pts[0]);
-        polys.push([pts]);
+        if (!shapeUnfold.line) pts.push(pts[0]);   // a ring closes; a river does not
+        polys.push(shapeUnfold.line ? pts : [pts]);
     });
     if (!polys.length) {
         const ring = shapeUnfold.prepared[0].ring;
         const step = Math.max(1, Math.floor(ring.length / 4));
         const pts = [];
         for (let i = 0; i < ring.length && pts.length < 3; i += step) pts.push(ring[i]);
-        pts.push(pts[0]);
-        polys.push([pts]);
+        if (!shapeUnfold.line) pts.push(pts[0]);
+        polys.push(shapeUnfold.line ? pts : [pts]);
     }
-    shapeUnfold.layer.attr('d', path({ type: 'MultiPolygon', coordinates: polys }) || '');
+    shapeUnfold.layer.attr('d', path(shapeUnfold.line
+        ? { type: 'MultiLineString', coordinates: polys }
+        : { type: 'MultiPolygon', coordinates: polys }) || '');
 }
 
 function stopShapeUnfold() {
@@ -6861,18 +6918,8 @@ function revealShapeIdTruth() {
         }
         return;
     }
-    if (!tier || !tier.rotate || !g || !gameState.shapeIdTarget) return;
-    const layer = g.select('g.shape-id-layer');
-    if (layer.empty()) return;
-    layer.select('path.shape-target').attr('d', path(gameState.shapeIdTarget));
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const dur = reduce ? 0 : 700;
-    const end = `rotate(0, ${width / 2}, ${height / 2}) ` +
-                `translate(${width / 2},${height / 2}) scale(1) translate(${-width / 2},${-height / 2})`;
-    if (dur) layer.transition().duration(dur).ease(d3.easeCubicInOut).attr('transform', end);
-    // d3 transitions are rAF-driven and a backgrounded tab never fires it, so the finished
-    // state is set unconditionally — the same backstop the puzzle's piece `settle` documents.
-    setTimeout(() => { if (layer.node() && layer.node().isConnected) { layer.interrupt(); layer.attr('transform', end); } }, dur + 60);
+    // Nothing else to reveal: the Outline tier already shows the shape as it really is, and
+    // the "Turned" tier that needed un-turning is gone — its question is Upside Down's now.
 }
 
 // One tile per tier, in the same shape as the puzzle's difficulty picker, with the geography
@@ -6886,34 +6933,134 @@ function revealShapeIdTruth() {
 const sbTileFor = k => ({ key: k, icon: SB_QUIZZES[k].icon,
                           label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc });
 
+// ---- the geography strip ---------------------------------------------------------------
+// A screen about outlines should pick its geography by outline. The names are the same six
+// words on every picker in the app and they say nothing; the shapes say everything, and they
+// are the very thing the modes behind them are about.
+//
+// They are CUT FROM THE ATLAS rather than hand-authored, so they are the real countries at the
+// resolution the app already has cached, and a region added later needs no path data drawn for
+// it. Water is the exception — there is no one lake that means "water", so it gets a drawn
+// glyph of a lake with a river running out of it.
+const REGION_GLYPH_BOX = 40;
+const REGION_GLYPH_OF = {
+    'us-states': 'United States of America', 'indian-states': 'India',
+    'german-states': 'Germany', 'uk-states': 'United Kingdom', 'mexican-states': 'Mexico'
+};
+const WORLD_TOPO_110M = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+
+// A lake with a river leaving it. Two paths, drawn rather than measured, because no real body
+// of water reads as "water in general".
+const WATER_GLYPH =
+    '<path class="rg-fill" d="M7 13c2-4 7-5 11-3 3 1.6 6 1 8-1 2.4-2.4 6-1.6 6 1.6 0 3.2-2 6-6 7' +
+    '-4.4 1.2-8 0-11-1.6-3-1.6-6-1.2-8 0.4-1.6 1.2-2.4-1.2 0-3.4z"/>' +
+    '<path class="rg-line" d="M4 34c4-1 6-4 10-4.6 4-0.6 6 2 10 1.4 3.4-0.6 5-3 8-3.4"/>';
+
+// A shape fitted to the glyph box. `d3.geoIdentity().reflectY` is the plain planar fit — the
+// features arrive already projected by the Mercator, so there is nothing spherical left to do.
+function regionGlyphMarkup(key, topo) {
+    const B = REGION_GLYPH_BOX;
+    if (key === 'water') return WATER_GLYPH;
+    if (!topo) return '';
+    let feats;
+    try { feats = topojson.feature(topo, topo.objects.countries).features; }
+    catch (_) { return ''; }
+    // The world is the whole earth seen from space, which is the one honest icon for "world"
+    // and is the same machinery pointed at every feature at once.
+    if (key === 'countries') {
+        const proj = d3.geoOrthographic().rotate([-10, -15]).clipAngle(90)
+            .fitExtent([[2, 2], [B - 2, B - 2]], { type: 'Sphere' });
+        const p = d3.geoPath(proj);
+        const land = { type: 'FeatureCollection', features: feats };
+        return `<circle class="rg-globe" cx="${B / 2}" cy="${B / 2}" r="${B / 2 - 2}"/>` +
+               `<path class="rg-fill" d="${p(land) || ''}"/>`;
+    }
+    const want = REGION_GLYPH_OF[key];
+    if (!want) return '';
+    const f = feats.find(x => namesMatch(getCountryName(x.id), want) ||
+                              namesMatch((x.properties || {}).name, want));
+    if (!f) return '';
+    // The framing core, for the same reason every other fit here uses it: the United States
+    // reaches Guam and the box would be mostly Pacific.
+    const core = coreCollection(f);
+    const proj = d3.geoMercator().fitExtent([[3, 3], [B - 3, B - 3]], core || f);
+    return `<path class="rg-fill" d="${d3.geoPath(proj)(f) || ''}"/>`;
+}
+
+function regionGlyphHtml(r, active) {
+    return `<button type="button" class="region-glyph${active ? ' active' : ''}" ` +
+        `data-region="${r.key}" title="${r.desc}" aria-pressed="${active}">` +
+        `<svg viewBox="0 0 ${REGION_GLYPH_BOX} ${REGION_GLYPH_BOX}" aria-hidden="true" ` +
+        `data-glyph="${r.key}"></svg><span>${r.label}</span></button>`;
+}
+
+// Fill the strip's svgs once the atlas is in hand. It is cached after the first visit, so this
+// is instant on every later one; before then the buttons are their labels, which is what they
+// used to be anyway.
+function paintRegionGlyphs(host) {
+    fetchWorldTopo(WORLD_TOPO_110M).then(topo => {
+        (host || document).querySelectorAll('svg[data-glyph]').forEach(svgEl => {
+            if (svgEl.childElementCount) return;
+            svgEl.innerHTML = regionGlyphMarkup(svgEl.dataset.glyph, topo);
+        });
+    }).catch(() => { /* labels alone still work */ });
+}
+
+// Which modes make sense over which geography. A lake has no capital and no neighbours, the
+// Mercator's lie is a lie about the WORLD, and there is no jigsaw of rivers — so rather than
+// offering a tile that fails, the screen shows only what the current pick can actually play.
+const SHAPE_MODE_REGIONS = {
+    'state-puzzle':   k => k !== 'water',
+    'draw-border':    k => k !== 'water',
+    'sb-lake':        k => k === 'water' || k === 'countries',
+    'sb-mercator-lie': k => k === 'countries'
+};
+const shapeModeFits = (key, region) =>
+    !SHAPE_MODE_REGIONS[key] || SHAPE_MODE_REGIONS[key](region);
+
 function showShapeIdSelector() {
-    renderSelector({
+    const region = shapeIdRegion;
+    const fits = k => shapeModeFits(k, region);
+    // The two that ask for a geography of their own rather than taking this screen's, plus the
+    // world-only quizzes. Filtered, not greyed: a tile that cannot be played is not a choice.
+    const others = [
+        { key: 'state-puzzle', icon: 'extension', label: 'Map Puzzle',
+          desc: 'Drag every piece into place' },
+        { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
+          desc: 'The shape is cut out of the map — trace where it goes' }
+    ].concat(SB_IN_SHAPES.map(sbTileFor)).filter(t => fits(t.key));
+
+    const sel = renderSelector({
         title: 'Shapes',
         back: false,
         blocks: [
-            { sub: 'Name an outline, trace one, or drag a set of them into place.' },
-            { tiles: [
-                { key: 'state-puzzle', icon: 'extension', label: 'Map Puzzle',
-                  desc: 'Drag every piece into place — world, US, India, Germany, England or Mexico' },
-                { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
-                  desc: 'The country is cut out of the map — trace where it goes' }
-              ].concat(SB_IN_SHAPES.map(sbTileFor)),
-              // The first two ask for a geography of their own; the rest take the world and start.
-              on: k => k === 'state-puzzle' ? showStatePuzzleSelector()
-                     : k === 'draw-border' ? showDrawBorderSelector()
-                     : startGameWithMode(k) },
-            { sub: 'Or one silhouette, no map around it — how much of it do you want?' },
-            { toggle: { label: 'From:', value: shapeIdRegion, options: SHAPE_ID_REGIONS,
-                        on: k => { shapeIdRegion = k; } } },
+            { sub: 'Everything whose question is an outline. Pick what the outlines are cut from.' },
+            { html: `<div class="region-strip" role="group" aria-label="Geography">` +
+                    SHAPE_ID_REGIONS.map(r => regionGlyphHtml(r, r.key === region)).join('') +
+                    `</div>` },
+            { sub: 'One silhouette, no map around it — how much of it do you want?' },
             { tiles: Object.keys(SHAPE_ID_TIERS).map(k => ({
                         key: k, icon: 'pentagon',
                         label: SHAPE_ID_TIERS[k].label, desc: SHAPE_ID_TIERS[k].desc })),
-              on: k => startShapeIdMode(shapeIdRegion, k) },
+              on: k => startShapeIdMode(region, k) },
             { sub: 'Or ask a different question about the same silhouettes.' },
-            { tiles: SB_IN_SHAPE_ID.map(sbTileFor),
-              on: k => startShapeQuizMode(k, shapeIdRegion) }
+            { tiles: SB_IN_SHAPE_ID.map(sbTileFor).filter(t => fits(t.key)),
+              on: k => startShapeQuizMode(k, region) },
+            others.length ? { sub: 'Or a whole set of them at once.' } : null,
+            others.length ? { tiles: others,
+              on: k => k === 'state-puzzle' ? showStatePuzzleSelector()
+                     : k === 'draw-border' ? showDrawBorderSelector()
+                     : startGameWithMode(k) } : null
         ]
     });
+
+    // The strip is its own control rather than a renderSelector block, because picking a region
+    // changes WHICH TILES the screen has — so it re-opens the screen rather than toggling a class.
+    sel.querySelectorAll('[data-region]').forEach(b => b.addEventListener('click', () => {
+        shapeIdRegion = b.dataset.region;
+        showShapeIdSelector();
+    }));
+    paintRegionGlyphs(sel);
 }
 
 // ==================== SKYLINE ID MODE ====================
@@ -15468,25 +15615,115 @@ function sbCountriesAlong(a, b, skip) {
 // are near-identical blobs and the round is unanswerable, so the NAMES come from that list and
 // the GEOMETRY comes from 10m. Taking the whole 10m list instead would deal obscure reservoirs
 // nobody could name; taking 110m geometry would deal shapes nobody could tell apart.
-function sbLakeFeatures() {
-    if (window.__sbLakes) return window.__sbLakes.length ? window.__sbLakes : null;
-    if (!window.__sbLakesPending) {
-        window.__sbLakesPending = true;
-        const lakeName = f => (f.properties && (f.properties.name || f.properties.Name)) || null;
-        Promise.all([
-            d3.json(lakesUrlForRes('10m')).catch(() => null),
-            d3.json('data/lakes.geo.json').catch(() => null)
-        ]).then(([hi, base]) => {
-            const baseNames = new Set((base && base.features || [])
-                .map(f => normalizeName(lakeName(f) || '')).filter(Boolean));
-            const hiFeats = (hi && hi.features) || [];
-            let out = hiFeats.filter(f => baseNames.has(normalizeName(lakeName(f) || '')));
-            // Offline, or a 10m file that names things differently: fall back to what we have.
-            if (out.length < 4) out = hiFeats.length >= 4 ? hiFeats : ((base && base.features) || []);
-            window.__sbLakes = out;
+// ==================== WATER AS A GEOGRAPHY ====================
+// Lakes and rivers as a pool the silhouette rounds can be played over, alongside the world and
+// the fifty states. Nothing in those rounds had to learn what water is: `sbPool()` and
+// `sbFeature()` read `gameState.currentQuizList` and `gameState.countries` and have never asked
+// where either came from, so water only has to arrive in those two places.
+//
+// The one thing that genuinely differs is that a river is a LINE. It has no area, so anything
+// measuring one has to measure its length instead, and it is drawn stroked rather than filled.
+const WATER_RIVERS_URL = 'https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/' +
+                         '10m/physical/ne_10m_rivers_lake_centerlines.json';
+// Natural Earth's scalerank says at what map scale a river earns its label; 0–5 is roughly
+// "on a world map". The length floor then drops the short ones that rank highly for local
+// reasons. Together they leave about ninety rivers, all of them real rivers of substance.
+const WATER_RIVER_MAX_RANK = 5;
+const WATER_RIVER_MIN_KM = 700;
+
+// Natural Earth ships a river as many features, and the merge key is `name_en` rather than
+// `name` — that is what folds Donau into Danube and Jinsha and Chang Jiang into the Yangtze.
+// It does not catch everything, and two options that are the same river is the one thing this
+// round must never deal, so the stragglers are named here.
+const WATER_RIVER_ALIASES = {
+    'Yellow': 'Huang', 'Tongtian': 'Yangtze', 'Ertis': 'Irtysh', 'Firat': 'Euphrates',
+    'Nu': 'Salween', 'Damqogkanbab': 'Brahmaputra', 'Verkhniy Yenisey': 'Yenisey',
+    'Irrawaddy Delta': 'Irrawaddy', 'Maquan': 'Brahmaputra', 'Yarlung': 'Brahmaputra',
+    'Lancang': 'Mekong', 'Heilong Jiang': 'Amur', 'Argun’': 'Ergun', 'Abay': 'Blue Nile'
+};
+
+const riverKey = p => {
+    const raw = (p.name_en || p.name || '').replace(/\s+/g, ' ').trim();
+    return WATER_RIVER_ALIASES[raw] || raw;
+};
+
+let waterCache = null, waterPending = false;
+
+// The pool, or null while it is still in flight — the same readiness contract sbLakeFeatures
+// has, so a round can gate on it with `preload`.
+function waterFeatures() {
+    if (waterCache) return waterCache.length ? waterCache : null;
+    if (waterPending) return null;
+    waterPending = true;
+    Promise.all([
+        fetchLakePool(),
+        d3.json(WATER_RIVERS_URL).catch(() => null)
+    ]).then(([lakes, riversRaw]) => {
+        const out = [];
+        (lakes || []).forEach(f => {
+            const n = f.properties && (f.properties.name || f.properties.Name);
+            if (!n) return;
+            out.push({ type: 'Feature', geometry: f.geometry,
+                       properties: { name: n, waterKind: 'lake' } });
         });
-    }
+        // One feature per river, its scattered stretches gathered into a MultiLineString.
+        const byName = new Map();
+        ((riversRaw && riversRaw.features) || []).forEach(f => {
+            const p = f.properties || {}, g = f.geometry;
+            // `Lake Centerline` is the line THROUGH a lake, not a river, and the lake itself is
+            // already in the pool as a polygon.
+            if (!p.name || !g || p.featurecla !== 'River') return;
+            const n = riverKey(p);
+            if (!n) return;
+            const e = byName.get(n) || { lines: [], rank: p.scalerank };
+            e.rank = Math.min(e.rank, p.scalerank);
+            (g.type === 'LineString' ? [g.coordinates] : g.coordinates).forEach(l => e.lines.push(l));
+            byName.set(n, e);
+        });
+        byName.forEach((e, n) => {
+            if (e.rank > WATER_RIVER_MAX_RANK) return;
+            const geometry = { type: 'MultiLineString', coordinates: e.lines };
+            const km = d3.geoLength(geometry) * EARTH_R_KM;
+            if (km < WATER_RIVER_MIN_KM) return;
+            out.push({ type: 'Feature', geometry,
+                       properties: { name: n, waterKind: 'river', lengthKm: km } });
+        });
+        waterCache = out;
+    }).catch(() => { waterCache = []; });
     return null;
+}
+
+const waterNames = () => (waterCache || []).map(f => f.properties.name);
+const isRiverFeature = f => !!(f && f.properties && f.properties.waterKind === 'river');
+
+// The region config the silhouette modes borrow, in the shape borrowRegion hands back. It is
+// not a QUIZ_MODES entry because water is not a mode — it is a pool three modes can be played
+// over, and giving it an entry of its own would put an unplayable tile in every region picker.
+function waterRegionConfig() {
+    return { quizList: waterNames(), dataObjKey: null, useGlobe: false, useAlbersUsa: false,
+             mapUrl: null, mapObject: null, waterPool: true,
+             itemLabel: 'body of water', itemLabelPlural: 'bodies of water' };
+}
+
+// The lakes worth asking about are the ones the map itself shows by default — the bundled 110m
+// set, i.e. the Great Lakes, Victoria, Baikal and their peers. But at 110m their outlines are
+// near-identical blobs and a round about the shape is unanswerable, so the NAMES come from that
+// list and the GEOMETRY comes from 10m. Taking the whole 10m list instead would deal obscure
+// reservoirs nobody could name; taking 110m geometry would deal shapes nobody could tell apart.
+function fetchLakePool() {
+    const lakeName = f => (f.properties && (f.properties.name || f.properties.Name)) || null;
+    return Promise.all([
+        d3.json(lakesUrlForRes('10m')).catch(() => null),
+        d3.json('data/lakes.geo.json').catch(() => null)
+    ]).then(([hi, base]) => {
+        const baseNames = new Set((base && base.features || [])
+            .map(f => normalizeName(lakeName(f) || '')).filter(Boolean));
+        const hiFeats = (hi && hi.features) || [];
+        let out = hiFeats.filter(f => baseNames.has(normalizeName(lakeName(f) || '')));
+        // Offline, or a 10m file that names things differently: fall back to what we have.
+        if (out.length < 4) out = hiFeats.length >= 4 ? hiFeats : ((base && base.features) || []);
+        return out;
+    }).catch(() => []);
 }
 
 // ==================== WHO'S MISSING: EATING A COUNTRY ====================
@@ -21417,33 +21654,40 @@ const SB_QUIZZES = {
 
     // ---------- the sky ----------
     'sb-lake': {
-        engine: 'fact', hiRes: true, flat: true, icon: 'water_drop', label: 'Name the Lake',
-        desc: 'One outline, no map to help you',
-        preload: () => !!sbLakeFeatures(),      // the lakes file is fetched lazily
+        engine: 'fact', hiRes: true, flat: true, icon: 'water_drop', label: 'Name the Water',
+        desc: 'One lake or river, alone on the board',
+        preload: () => !!waterFeatures(),      // lakes and rivers are both fetched lazily
         build() {
-            const lakes = sbLakeFeatures();
-            if (!lakes || lakes.length < 4) return null;
-            const named = lakes.filter(f => f.properties && (f.properties.name || f.properties.Name));
-            if (named.length < 4) return null;
-            const lakeName = f => f.properties.name || f.properties.Name;
-            // There are only two dozen lakes worth asking about, so a ten-round set draws a
-            // repeat by chance more often than not. Answers are held for the game and only
-            // released when the pool runs dry.
+            const pool = waterFeatures();
+            if (!pool || pool.length < 8) return null;
+            const nameOf = f => f.properties.name;
+            // There are only a couple of dozen lakes worth asking about, so a ten-round set
+            // draws a repeat by chance more often than not. Answers are held for the game and
+            // only released when the pool runs dry.
             const used = gameState.sbUsedLakes || (gameState.sbUsedLakes = new Set());
-            let avail = named.filter(f => !used.has(lakeName(f)));
-            if (avail.length < 1) { used.clear(); avail = named; }
+            let avail = pool.filter(f => !used.has(nameOf(f)));
+            if (avail.length < 1) { used.clear(); avail = pool; }
             const pick = sbRandom(avail);
-            used.add(lakeName(pick));
-            const others = named.filter(f => lakeName(f) !== lakeName(pick));
+            if (!pick) return null;
+            used.add(nameOf(pick));
+            // The three wrong answers are the SAME KIND as the right one. A line on the board
+            // against three lake names and one river name answers itself — the shape says which
+            // sort of thing it is before it says which one.
+            const kind = pick.properties.waterKind;
+            const others = pool.filter(f => f.properties.waterKind === kind && nameOf(f) !== nameOf(pick));
+            if (others.length < 3) return null;
+            const word = kind === 'river' ? 'river' : 'lake';
             // Shown alone rather than highlighted on the world map: with the continents around
             // it, "which lake" was really "which lake is in North America", and the shape — the
             // one thing that actually distinguishes them — was a few pixels wide.
             return {
-                highlight: [], solo: { feature: pick, kind: 'lake' },
-                correct: lakeName(pick),
-                options: shuffleArray([pick, ...shuffleArray(others).slice(0, 3)].map(lakeName)),
-                prompt: 'Which lake is this?',
-                explain: `${lakeName(pick)}.`
+                highlight: [], solo: { feature: pick, kind },
+                correct: nameOf(pick),
+                options: shuffleArray([pick, ...shuffleArray(others).slice(0, 3)].map(nameOf)),
+                prompt: `Which ${word} is this?`,
+                explain: kind === 'river'
+                    ? `${nameOf(pick)} — ${sbFormatKm(pick.properties.lengthKm)} of it.`
+                    : `${nameOf(pick)}.`
             };
         }
     },
@@ -23245,13 +23489,41 @@ function sbRenderRouteOptions(routes, correct) {
 // ---- silhouette transforms ----
 // The five ways a country outline can be turned or flipped and still be the same outline.
 // y runs DOWN in projected space, so `mirrorUD` is the one that negates y.
-const SB_SHAPE_TRANSFORMS = [
-    { key: 'rot90cw',  mat: [0, -1, 1, 0],  say: 'turned a quarter-turn clockwise' },
-    { key: 'rot90ccw', mat: [0, 1, -1, 0],  say: 'turned a quarter-turn anticlockwise' },
-    { key: 'rot180',   mat: [-1, 0, 0, -1], say: 'turned upside down' },
-    { key: 'mirrorLR', mat: [-1, 0, 0, 1],  say: 'mirrored left-to-right' },
-    { key: 'mirrorUD', mat: [1, 0, 0, -1],  say: 'mirrored top-to-bottom' }
-];
+// Screen coordinates have y DOWN, so a clockwise turn by t is [cos, -sin, sin, cos] — which is
+// where the quarter-turn's [0,-1,1,0] comes from.
+function sbRotMat(deg) {
+    const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    const z = v => Math.abs(v) < 1e-12 ? 0 : v;
+    return [z(c), z(-s), z(s), z(c)];
+}
+
+// The two mirrors, and every turn in 15° steps FROM 45° TO 315°. The odd angles are what the
+// Shape ID "Turned" tier used to ask on its own — a whole outline at an unknown angle — and it
+// is the same question as this one, so it is asked here instead of on a screen of its own.
+//
+// The small angles are excluded and that exclusion is the whole of what makes the merge work.
+// The selection rule below takes whichever transform leaves the silhouette looking MOST like
+// its true self, and with tiny rotations available that rule has a degenerate optimum: a 15°
+// turn barely changes any shape, so it wins nearly every time. Measured with 15° in the
+// vocabulary, **88 of 120 eligible countries** were dealt a 15° turn — and a 15° turn is not a
+// question about which way a country points, it is a question about whether you can see 15°.
+// Below 45° there is nothing to recognise; at 45° and beyond the shape is visibly not upright
+// and the question is the one this round exists to ask.
+const SB_SHAPE_MIN_TURN = 45;
+const SB_SHAPE_TRANSFORMS = (() => {
+    const out = [
+        { key: 'mirrorLR', mat: [-1, 0, 0, 1], say: 'mirrored left-to-right' },
+        { key: 'mirrorUD', mat: [1, 0, 0, -1], say: 'mirrored top-to-bottom' }
+    ];
+    for (let d = SB_SHAPE_MIN_TURN; d <= 360 - SB_SHAPE_MIN_TURN; d += 15) {
+        const say = d === 90 ? 'turned a quarter-turn clockwise'
+                  : d === 180 ? 'turned upside down'
+                  : d === 270 ? 'turned a quarter-turn anticlockwise'
+                  : `turned ${d <= 180 ? d + '° clockwise' : (360 - d) + '° anticlockwise'}`;
+        out.push({ key: 'rot' + d, mat: sbRotMat(d), say });
+    }
+    return out;
+})();
 
 // Project a feature to the plane once, then apply a 2x2 matrix to the RESULT.
 //
@@ -23997,6 +24269,9 @@ function sbSoloDraw() {
     if (lakesGroup) { lakesGroup.remove(); lakesGroup = null; }
 
     if (solo.kind === 'lake') sbDrawSoloLake(solo.feature);
+    // A river has no inside to fade inward from, so it is simply the line it is.
+    else if (solo.kind === 'river')
+        countriesGroup.append('path').attr('class', 'sb-solo-river').attr('d', path(solo.feature));
     else countriesGroup.append('path').attr('class', 'country sb-solo-shape').attr('d', path(solo.feature));
     return true;
 }
