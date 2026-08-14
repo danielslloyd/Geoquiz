@@ -227,8 +227,25 @@ function cutLakeFromPoly(poly, lake) {
     return null;
 }
 
+// ---- the hole and the sticker are the same lake ----
+// A lake is drawn twice over: once as a HOLE stamped out of the countries, and once as a polygon
+// laid on top of them. Those two have to be the same shape, because anything the hole takes that
+// the polygon does not put back is a piece of the page showing through the middle of a continent.
+// They were not the same shape in two independent ways, and both were visible on the Great Lakes:
+//
+//   * The cut always used the bundled 110m file while the overlay follows the detail level, so at
+//     high detail a COARSE hole sat under a FINE polygon and the difference showed as blue round
+//     every shore and between islands the coarse file does not have.
+//   * The overlay drops any lake under `MIN_LAKE_DIAM_KM` and the cut dropped nothing, so every
+//     lake too small to draw was a blue speck with nothing over it at all.
+//
+// So there is now ONE decision about which lakes exist — `lakesForDrawing()` — and both the hole
+// and the sticker are made from its answer. That gives an invariant worth stating: the cut set is
+// the drawn set, so every hole is covered by the polygon it was cut for, and no arrangement of
+// resolutions or thresholds can put the background back on screen.
 const lakeCutCache = new WeakMap();
 let lakeCutRings = null;         // the lakes to cut with, once they have arrived
+let lakeCutRes = null;           // the resolution those rings came from
 let lakeCutStats = null;
 
 // Every lake as a plain ring with its bounding box, biggest first. Small ones are skipped: a
@@ -238,13 +255,21 @@ function lakeCutPrepare(feats) {
     (feats || []).forEach(f => {
         const parts = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : (f.geometry.coordinates || []);
         parts.forEach(pp => {
-            const ring = (pp[0] || []).slice();
-            if (ring.length > 3 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+            const open = r => {
+                const c = (r || []).slice();
+                if (c.length > 3 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1]) c.pop();
+                return c;
+            };
+            const ring = open(pp[0]);
             if (ring.length < 8) return;
             let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
             ring.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]);
                                 x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
-            out.push({ ring, bb: [x0, y0, x1, y1], area: Math.abs(ghRingArea(ring)) });
+            // The lake's own ISLANDS ride along. Cutting the outer ring alone takes the islands
+            // with it, and the polygon drawn on top has those same holes — so each island came out
+            // as a speck of background in the middle of a lake. They are handed back as land below.
+            out.push({ ring, holes: pp.slice(1).map(open).filter(h => h.length >= 3),
+                       bb: [x0, y0, x1, y1], area: Math.abs(ghRingArea(ring)) });
         });
     });
     out.sort((a, b) => b.area - a.area);
@@ -256,7 +281,10 @@ function lakeCutPrepare(feats) {
 // dearer than that.
 function cutLakesFromFeatures(features) {
     if (!lakeCutRings || !lakeCutRings.length) return features;
-    if (lakeCutCache.has(features)) return lakeCutCache.get(features);
+    // Memoised against the feature array AND the resolution it was cut at, since the detail
+    // toggle changes the second without necessarily changing the first.
+    const hit = lakeCutCache.get(features);
+    if (hit && hit.res === lakeCutRes) return hit.out;
     const stats = { clipped: 0, holed: 0, failed: 0, pairs: 0 };
     const out = features.map(f => {
         const g = f.geometry;
@@ -301,6 +329,14 @@ function cutLakesFromFeatures(features) {
                 const want = Math.sign(ghRingArea(open)) || 1;
                 const turn = (ring, sgn) => (Math.sign(ghRingArea(ring)) || 1) === sgn ? ring : ring.slice().reverse();
                 const out2 = ring => (wrapped ? ring.map(rewrap) : ring);
+                // An island in the lake is land, and it is land belonging to whichever country
+                // actually held it — a lake can straddle a border and its islands do not, so the
+                // island only goes back to the part that contained it.
+                (lk.holes || []).forEach(h => {
+                    if (!ghPointIn(unwrap(h[0]), open)) return;
+                    const t2 = turn(h, want);
+                    next.push([t2.concat([t2[0]])]);
+                });
                 if (r.holes && r.holes.length) {
                     stats.holed++;
                     next.push([outer].concat(pp.slice(1),
@@ -321,35 +357,35 @@ function cutLakesFromFeatures(features) {
         return { ...f, geometry: { type: 'MultiPolygon', coordinates: parts } };
     });
     lakeCutStats = stats;
-    lakeCutCache.set(features, out);
+    lakeCutCache.set(features, { res: lakeCutRes, out });
     return out;
 }
 
 // The lakes arrive over the network (or out of the bundled file), so the first world drawn may
 // have none. Rather than blocking the map on them, the cut is applied when they land and the map
-// redrawn once — the same shape as the coastline model's own readiness gate.
-let lakeCutPending = false;
+// redrawn once — the same shape as the coastline model's own readiness gate. The same happens
+// when the detail toggle asks for a resolution that has not been fetched yet.
 function ensureLakeCut() {
-    if (lakeCutRings || lakeCutPending) return;
-    lakeCutPending = true;
-    const done = feats => {
-        lakeCutRings = lakeCutPrepare(feats);
-        lakeCutPending = false;
-        // Redrawing is a convenience, not a requirement: any later redraw picks the cut up from
-        // the memo anyway. So it is skipped whenever the map is not plainly idle — a reload
-        // fired into a mode that is still building its board replaces the features under it, and
-        // the mode has no way to know that happened.
-        try {
-            const mc = QUIZ_MODES[gameState && gameState.mode];
-            const idle = mc && mc.mapObject === 'countries' && !mc.sbQuizMode &&
-                         gameState.countries && gameState.countries.length && countriesGroup;
-            if (idle && typeof reloadWorldDetail === 'function') reloadWorldDetail();
-        } catch (_) { /* the next redraw will do it */ }
-    };
-    if (lakesCache['110m']) { done(lakesCache['110m']); return; }
-    d3.json('data/lakes.geo.json')
-        .then(d => { lakesCache['110m'] = (d && d.features) || []; done(lakesCache['110m']); })
-        .catch(() => { lakeCutRings = []; lakeCutPending = false; });
+    const res = lakesResForDetail();
+    if (lakeCutRes === res) return;
+    const feats = lakesForDrawing();
+    if (!feats) { ensureLakeData(res); return; }   // not here yet; it comes back round on arrival
+    lakeCutRings = lakeCutPrepare(feats);
+    lakeCutRes = res;
+}
+
+// What to do when a lake file lands. Redrawing the overlay is not enough on its own: the cut is
+// baked into the world's FEATURES, so those have to be rebuilt, which only the detail reload
+// does. It is skipped whenever the map is not plainly idle — a reload fired into a mode still
+// building its board replaces the features under it, and the mode has no way to know.
+function onLakesArrived() {
+    try {
+        const mc = QUIZ_MODES[gameState && gameState.mode];
+        const idle = mc && mc.mapObject === 'countries' && !mc.sbQuizMode &&
+                     gameState.countries && gameState.countries.length && countriesGroup;
+        if (idle && typeof reloadWorldDetail === 'function') reloadWorldDetail();
+        else if (typeof drawLakes === 'function' && g) { drawLakes(); updateIslandMarkers(); }
+    } catch (_) { /* the next redraw will do it */ }
 }
 
 function worldFeaturesFromTopology(data) {
@@ -1836,22 +1872,27 @@ function startGameWithMode(mode) {
         colourBtn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
     }
 
+    // `flatGlobeView` is one flag shared by every globe mode and it is never reset, so a mode
+    // entered straight after a flat one inherits the flat view. For a quiz that is harmless — the
+    // toggle is right there. For Free Explore it was not: its toggle had been repurposed as a
+    // door to the projection lab, so "Explore the Globe" opened on a Mercator with no way back to
+    // a globe at all. It owns its own answer now, and says so on entry.
+    if (modeConfig.freeExploreMode) flatGlobeView = exploreProj() !== 'globe';
+
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
     if (projToggle) {
         // The quick quizzes each present themselves one way on purpose — a lone silhouette,
         // a flat pair, a coastline-only world — and none of them is answerable any better on
         // the other projection, so the toggle is only a way to break the framing.
-        // In the Explore pair the button is not a projection toggle at all: it is the door
-        // between the two halves of the folder. Free Explore has one view (a globe you turn) and
-        // the lab has fourteen, so "flat or round" was never the question there — the question is
-        // which of the two you want to be in.
-        const explorePair = modeConfig.freeExploreMode || modeConfig.projectionLabMode;
-        projToggle.style.display = (explorePair ||
+        // In the projection lab the button is not a projection toggle at all: that mode supplies
+        // its own projection and has no globe, so the only thing "View: Globe" can usefully mean
+        // there is the way back to Free Explore.
+        projToggle.style.display = (modeConfig.projectionLabMode ||
             (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.airoceanMode &&
              !modeConfig.sbQuizMode)) ? '' : 'none';
-        projToggle.textContent = explorePair
-            ? (modeConfig.projectionLabMode ? 'View: Globe' : 'View: Projections')
+        projToggle.textContent = modeConfig.projectionLabMode
+            ? 'View: Globe'
             : (flatGlobeView ? 'View: Map' : 'View: Globe');
     }
 
@@ -2059,9 +2100,130 @@ function mercatorY(latDeg) {
 }
 
 // True when showing the wrapping flat world (a globe mode, in map view, world geometry).
+// ---- Free Explore's projections ----
+// Every other globe mode has exactly two views because a quiz only ever needs one honest picture
+// and its flat counterpart. Free Explore has no question in it at all — turning the world over and
+// looking at it IS the mode — so the projection is worth having as a choice rather than as a
+// toggle between round and Mercator.
+//
+// These are the projections d3 ships in the base bundle, so the dropdown works with nothing
+// fetched. The projection lab's other six need d3-geo-projection, and the lab is where they live.
+// Nothing here is a lab exhibit: there is no Tissot's indicatrix and no inflation readout, only a
+// world you can turn.
+const EXPLORE_PROJECTIONS = {
+    'globe':        { label: 'Globe', globe: true },
+    'mercator':     { label: 'Mercator', mercator: true },
+    'equal-earth':  { label: 'Equal Earth', make: () => d3.geoEqualEarth() },
+    'natural':      { label: 'Natural Earth', make: () => d3.geoNaturalEarth1() },
+    'equirect':     { label: 'Equirectangular', make: () => d3.geoEquirectangular() },
+    'azim-equal':   { label: 'Azimuthal equal-area', make: () => d3.geoAzimuthalEqualArea() },
+    'azim-dist':    { label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant() },
+    'stereo':       { label: 'Stereographic', make: () => d3.geoStereographic().clipAngle(120) },
+    'conic-equal':  { label: 'Conic equal-area', make: () => d3.geoConicEqualArea() },
+    'conic-dist':   { label: 'Conic equidistant', make: () => d3.geoConicEquidistant() },
+    'transverse':   { label: 'Transverse Mercator', make: () => d3.geoTransverseMercator() }
+};
+const EXPLORE_PROJ_DEFAULT = 'globe';
+let exploreProjKey = EXPLORE_PROJ_DEFAULT;
+
+const exploreMode = () => {
+    const mc = QUIZ_MODES[gameState.mode];
+    return !!(mc && mc.freeExploreMode);
+};
+// Which projection Free Explore is on — 'mercator' everywhere else, so every other mode reads
+// exactly what it always did.
+const exploreProj = () => (exploreMode() ? exploreProjKey : 'mercator');
+// A flat Free Explore projection that is not the Mercator: the one case the shared map machinery
+// has never seen.
+const exploreCustomFlat = () => {
+    const k = exploreProj();
+    return k !== 'mercator' && k !== 'globe' && !!EXPLORE_PROJECTIONS[k];
+};
+
+// The Mercator crop band, the rotate-to-pan wrap and the cursor-anchored longitude zoom are all
+// facts about the MERCATOR — its x is proportional to longitude and it tiles east to west. None
+// of that is true of an Equal Earth or an azimuthal, so those fall through to the plain
+// translate pan every regional map uses, which is correct for any projection at all.
 function isFlatWorldView() {
     const mc = QUIZ_MODES[gameState.mode];
-    return !!(mc && mc.useGlobe && flatGlobeView && mc.mapObject === 'countries');
+    return !!(mc && mc.useGlobe && flatGlobeView && mc.mapObject === 'countries' &&
+              !exploreCustomFlat());
+}
+
+// TWO GESTURES, because there are two genuinely different questions to ask of a flat projection
+// and only one of them is about where the picture is.
+//
+// LEFT turns the world under a frame that does not move. On the Mercator that is already what a
+// horizontal pan does — its x is proportional to longitude, so rotating and translating look the
+// same and the wrap comes free. On an Equal Earth or an azimuthal they are not the same at all: a
+// translate slides the whole outline about, leaving a rounded rectangle adrift in the corner of
+// the board, while a rotation keeps the outline nailed where it was fitted and moves the geography
+// through it. That is what "pan with a wrapping effect, never move the frame" is.
+//
+// RIGHT moves the projection's own focus — the point it is centred on, which is what decides where
+// it is honest and where it lies. Left is the picture, right is the instrument.
+//
+// The sensitivity comes from the drawn width of the world rather than from a constant over the
+// scale: dragging by the width of the world should turn it exactly once round, whatever aspect
+// this particular projection happens to have.
+function exploreDragFlat(dx, dy, button, world) {
+    const w = (world && world.w) || (2 * Math.PI * projection.scale());
+    const h = (world && world.h) || w / 2;
+    const r = projection.rotate();
+    if (button === 2) {
+        projection.rotate([r[0] + dx * 360 / w,
+                           Math.max(-90, Math.min(90, r[1] - dy * 180 / h)), r[2]]);
+        return;
+    }
+    projection.rotate([r[0] + dx * 360 / w, r[1], r[2]]);
+    // Vertical only once the map is bigger than the board — at the fit scale there is nowhere for
+    // it to go and moving the frame is the one thing this gesture must not do. Clamped so the
+    // world's own outline always still crosses the middle of the frame, which is a rule any
+    // outline can satisfy without knowing what shape it is.
+    if (dy && projection.scale() > (gameState.initialScale || 0) * 1.01) {
+        const t = projection.translate();
+        projection.translate([t[0], t[1] + dy]);
+        try {
+            const b = path.bounds({ type: 'Sphere' });
+            const mid = height / 2;
+            const fix = b[0][1] > mid ? mid - b[0][1] : (b[1][1] < mid ? mid - b[1][1] : 0);
+            if (fix) projection.translate([t[0], t[1] + dy + fix]);
+        } catch (_) { /* an outline that will not measure keeps the pan it was given */ }
+    }
+}
+
+// Whether the view is where the mode opened it. Rotation is the whole of "orientation", and the
+// zoom is included because a reset that left the map at 6x would not read as one.
+function exploreIsDefault() {
+    if (!projection || !projection.rotate) return true;
+    const r = projection.rotate();
+    const rot = Math.abs(r[0]) + Math.abs(r[1]) + Math.abs(r[2]);
+    const s0 = gameState.initialScale || projection.scale();
+    return rot < 0.01 && Math.abs(projection.scale() - s0) < 0.5;
+}
+
+function syncExploreReset() {
+    const btn = document.getElementById('explore-reset');
+    if (btn) btn.disabled = exploreIsDefault();
+}
+
+function resetExploreView() {
+    if (!exploreMode()) return;
+    reprojectMap();                       // rebuilds the projection, which is the reset
+    gameState.initialScale = projection.scale();
+    r_unconstrained = projection.rotate ? projection.rotate().slice() : null;
+    syncExploreReset();
+}
+
+// Fitted to the SPHERE, not to a crop band. Each of these has its own natural outline and aspect
+// — Mollweide is an ellipse, the azimuthals are discs, Equal Earth is a rounded 2.05:1 — and a
+// band chosen to make Mercator behave says nothing about any of them.
+function fitExploreWorld(proj) {
+    const pad = 10;
+    try {
+        proj.rotate([0, 0, 0]);
+        proj.fitExtent([[pad, pad], [width - pad, height - pad]], { type: 'Sphere' });
+    } catch (_) { /* a projection that will not fit keeps whatever scale it had */ }
 }
 
 // Scale that fills the container for the crop band (also the zoom-out floor).
@@ -2195,6 +2357,8 @@ function setupGlobe() {
     } else if (modeConfig.useAlbersUsa) {
         // Albers USA composite projection — AK and HI insets are built in
         projection = d3.geoAlbersUsa();
+    } else if (exploreCustomFlat()) {
+        projection = EXPLORE_PROJECTIONS[exploreProj()].make();
     } else {
         // Mercator projection for regional maps (India, Germany, etc.) and the flat world view.
         // precision(0) disables D3's adaptive great-circle resampling, which would otherwise
@@ -2245,6 +2409,16 @@ function setupGlobe() {
             .attr('fill', 'url(#ocean-gradient)')
             .attr('stroke', ocean2)
             .attr('stroke-width', 1.5);
+    } else if (exploreCustomFlat()) {
+        // These projections have an OUTLINE — an ellipse, a disc, a rounded rectangle — and it is
+        // half of what distinguishes one from another. A Mercator can get away with letting the
+        // page background be the sea, because its edge is the edge of the board; a Mollweide
+        // cannot, because most of what is outside it is not sea at all. Drawn empty and given its
+        // `d` on every re-path, since the projection is not fitted until the world has loaded.
+        g.append('path').attr('class', 'explore-sphere')
+            .attr('fill', 'url(#ocean-gradient)')
+            .attr('stroke', ocean2)
+            .attr('stroke-width', 1.5);
     }
 
     // Group for countries
@@ -2275,13 +2449,39 @@ function setupGlobe() {
         svg.call(drag);
     } else if (modeConfig.useGlobe) {
         // Flat (Mercator) view of a globe mode: drag to pan
-        let panLast = null;
+        let panLast = null, panBtn = 0, panWorld = null;
         const flatDrag = d3.drag()
-            .on('start', (event) => { panLast = staticNow() ? null : [event.x, event.y]; })
+            // The right button is admitted only where it means something — Free Explore's
+            // non-Mercator projections, where left turns the world under the frame and right
+            // moves the frame's own centre. d3-drag's default filter drops everything but
+            // button 0, which is right for every other map here.
+            .filter(ev => !ev.ctrlKey && (ev.button === 0 ||
+                          (ev.button === 2 && exploreCustomFlat() && !staticNow())))
+            .on('start', (event) => {
+                panLast = staticNow() ? null : [event.x, event.y];
+                panBtn = (event.sourceEvent && event.sourceEvent.button) || 0;
+                // How wide the whole world is drawn, measured once: a drag of that many pixels
+                // should turn it exactly once round. Only rotate changes during the drag and
+                // neither rotation moves the outline's width, so it cannot go stale mid-gesture.
+                panWorld = null;
+                if (exploreCustomFlat()) {
+                    try {
+                        const b = path.bounds({ type: 'Sphere' });
+                        panWorld = { w: b[1][0] - b[0][0], h: b[1][1] - b[0][1] };
+                    } catch (_) { panWorld = null; }
+                }
+            })
             .on('drag', (event) => {
                 if (gameState.scrollLocked || !panLast || staticNow()) return;
                 const dx = event.x - panLast[0];
                 const dy = event.y - panLast[1];
+                if (exploreCustomFlat()) {
+                    exploreDragFlat(dx, dy, panBtn, panWorld);
+                    panLast = [event.x, event.y];
+                    countriesGroup.selectAll('path').attr('d', path);
+                    updateIslandMarkers();
+                    return;
+                }
                 if (isFlatWorldView()) {
                     // Horizontal pan rotates the projection's longitude → seamless wrap.
                     const dLon = dx * 360 / (2 * Math.PI * projection.scale());
@@ -2299,6 +2499,8 @@ function setupGlobe() {
                 updateIslandMarkers();
             });
         svg.call(flatDrag);
+        // Without this the right-drag ends in a context menu over the map.
+        svg.on('contextmenu', ev => { if (exploreCustomFlat()) ev.preventDefault(); });
     }
 
     // Find-the-Capital / Place-the-Countries: clicking the static map drops/moves a guess marker.
@@ -2469,7 +2671,7 @@ function setupGlobe() {
             const p = svgPoint(e.touches[0]);
             r0 = projection.rotate();
             v0 = versor.cartesian(projection.invert(p));
-            q0 = versor(r_unconstrained || r0);
+            q0 = dragBaseQuaternion(r0);
         }
     }, { passive: false });
 
@@ -2627,6 +2829,8 @@ function loadMapData() {
                     // non-globe `countries` map keeps Mercator's default scale of 1 and the
                     // whole board collapses to a dot.
                     fitCapitalWorld(projection); // static full-width world for guessing
+                } else if (exploreCustomFlat()) {
+                    fitExploreWorld(projection);
                 } else if (flatGlobeView) {
                     fitFlatWorld(projection);
                 }
@@ -3028,6 +3232,46 @@ function lakesUrlForRes(res) {
         : `https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/${res}/physical/ne_${res}_lakes.json`;
 }
 
+// ONE fetch path, so the overlay and the cut can never end up looking at different files.
+// `undefined` in the cache means untouched, `null` means a fetch is in flight.
+function ensureLakeData(res) {
+    if (lakesCache[res] !== undefined) return lakesCache[res];
+    lakesCache[res] = null;
+    const land = feats => {
+        lakesCache[res] = feats || [];
+        lakeCutRes = null;                  // whatever the cut was made from, it is stale now
+        onLakesArrived();
+    };
+    d3.json(lakesUrlForRes(res))
+        .then(d => land((d && d.features) || []))
+        // Fall back to the bundled 110m file so lakes still render.
+        .catch(() => d3.json('data/lakes.geo.json')
+            .then(d => land((d && d.features) || []))
+            .catch(() => land([])));
+    return null;
+}
+
+// WHICH LAKES EXIST, for this detail level — the single answer both the overlay and the cut are
+// made from. Filtered by the diameter of the largest circle that fits inside each lake (its
+// "fatness"), so long-thin lakes read as small; the Winnipeg system shares one metric (its
+// largest member) so its parts pass and fail together.
+const lakeDrawCache = new WeakMap();
+function lakesForDrawing() {
+    const feats = lakesCache[lakesResForDetail()];
+    if (!feats) return feats;                       // undefined = untouched, null = in flight
+    if (lakeDrawCache.has(feats)) return lakeDrawCache.get(feats);
+    const nameOf = f => f && f.properties && f.properties.name;
+    const groupDiam = feats
+        .filter(f => WINNIPEG_GROUP.has(nameOf(f)))
+        .reduce((m, f) => Math.max(m, lakeInscribedDiamKm(f)), 0);
+    const out = feats.filter(f => {
+        const d = WINNIPEG_GROUP.has(nameOf(f)) ? groupDiam : lakeInscribedDiamKm(f);
+        return d >= MIN_LAKE_DIAM_KM;
+    });
+    lakeDrawCache.set(feats, out);
+    return out;
+}
+
 // Draw countries on the globe
 function drawCountries() {
     const mc = QUIZ_MODES[gameState.mode];
@@ -3188,33 +3432,9 @@ function drawLakes() {
     if (!g || !lakesMode || lakesMode.mapObject !== 'countries' || lakesMode.countryShapeIdMode) return;
     if (lakesMode.spaceshipMode) return; // lakes project to infinity under the tilt camera
 
-    const res = lakesResForDetail();
-    const feats = lakesCache[res];
-    if (feats === undefined) {
-        lakesCache[res] = null; // mark in-flight to avoid duplicate fetches
-        d3.json(lakesUrlForRes(res))
-            .then(data => { lakesCache[res] = (data && data.features) || []; drawLakes(); updateIslandMarkers(); })
-            .catch(() => {
-                // Fall back to the bundled 110m file so lakes still render.
-                d3.json('data/lakes.geo.json')
-                    .then(d => { lakesCache[res] = (d && d.features) || []; drawLakes(); updateIslandMarkers(); })
-                    .catch(() => { lakesCache[res] = []; });
-            });
-        return;
-    }
-    if (feats === null) return; // still loading this resolution
-
-    // Filter by the diameter of the largest circle that fits inside each lake (its
-    // "fatness"), so long-thin lakes read as small. The Winnipeg system shares one
-    // metric (its largest member) so its parts pass/fail together.
-    const nameOf = f => f && f.properties && f.properties.name;
-    const groupDiam = feats
-        .filter(f => WINNIPEG_GROUP.has(nameOf(f)))
-        .reduce((m, f) => Math.max(m, lakeInscribedDiamKm(f)), 0);
-    const visibleFeats = feats.filter(f => {
-        const d = WINNIPEG_GROUP.has(nameOf(f)) ? groupDiam : lakeInscribedDiamKm(f);
-        return d >= MIN_LAKE_DIAM_KM;
-    });
+    // The same list the cut is made from, so every hole has its own polygon over it.
+    const visibleFeats = lakesForDrawing();
+    if (!visibleFeats) { ensureLakeData(lakesResForDetail()); return; }
 
     // Match the surrounding ocean: the shaded gradient on the globe/orbit views,
     // the flat-map surface colour on Mercator (where the card backdrop is the ocean).
@@ -3381,6 +3601,14 @@ function refreshMapStyle() {
     try { if (typeof drawCountries === 'function' && gameState && gameState.countries &&
               gameState.countries.length) drawCountries(); } catch (_) { /* not drawable yet */ }
 }
+
+// How the palette menu tells the map that the colours moved. That menu lives in the page's own
+// script because it has to work before game.js has parsed; this is the one thing it needs from
+// here. Swapping the theme changes only CSS variables, and CSS repaints itself — but the four
+// marks built in JS (the ocean gradient's stops, the lake fill, the three.js ocean material and
+// the flag pattern's backing) read those variables once, at build time, and cannot hear them
+// change.
+window.geoquizThemeChanged = function () { refreshMapStyle(); };
 
 function loadMapStyle() {
     let saved = null, ink = null;
@@ -3754,8 +3982,19 @@ function drawIslandMarkers() {
 function syncOceanGradient() {
     if (!svg) return;
     const grad = svg.select('#ocean-gradient');
-    if (grad.empty() || !isGlobeView()) return;
-    grad.attr('cx', width / 2).attr('cy', height / 2).attr('r', projection.scale());
+    if (grad.empty()) return;
+    if (isGlobeView()) {
+        grad.attr('cx', width / 2).attr('cy', height / 2).attr('r', projection.scale());
+        return;
+    }
+    // Free Explore's other projections draw their own outline, so the sphere is re-pathed here
+    // (it moves with every pan and zoom) and the gradient is centred on the board rather than on
+    // a globe that is not there.
+    const sph = svg.select('path.explore-sphere');
+    if (sph.empty()) return;
+    try { sph.attr('d', path({ type: 'Sphere' }) || ''); } catch (_) { sph.attr('d', ''); }
+    grad.attr('cx', width / 2).attr('cy', height / 2)
+        .attr('r', Math.max(width, height) * 0.62);
 }
 
 // Per redraw: keep the ocean gradient + lakes in sync, then decide for each
@@ -3775,8 +4014,14 @@ function updateIslandMarkers() {
     if (!islandMarkersGroup) return;
 
     const globe = isGlobeView();
-    // Only the orthographic globe has .rotate() and a far side to hide.
-    const center = globe ? (() => { const r = projection.rotate(); return [-r[0], -r[1]]; })() : null;
+    // ANY projection with a clip angle has a far side, not only the orthographic. d3 clips the
+    // PATHS, but `projection(point)` happily returns a coordinate for a point beyond the clip —
+    // a stereographic cut at 120° puts one a few hundred units out — so the dot for a country on
+    // the far side was drawn floating in the ocean outside the map's own outline. The
+    // orthographic's own far-side test is exactly this rule with the angle at 90.
+    const clipDeg = (projection.clipAngle ? projection.clipAngle() : null) || null;
+    const center = (clipDeg && projection.rotate)
+        ? (() => { const r = projection.rotate(); return [-r[0], -r[1]]; })() : null;
     const dotted = new Set();
     const shown = [];      // visible dots, collected so overlapping ones can be spread apart
     const obstacles = [];  // small outline polygons a dot should not cover
@@ -3784,7 +4029,7 @@ function updateIslandMarkers() {
     islandMarkersGroup.selectAll('circle').each(function (d) {
         const sel = d3.select(this);
         const xy = projection(d.lonlat);
-        const offGlobe = globe && d3.geoDistance(d.lonlat, center) > Math.PI / 2;
+        const offGlobe = !!center && d3.geoDistance(d.lonlat, center) > clipDeg * Math.PI / 180;
         const valid = xy && !isNaN(xy[0]) && !offGlobe;
         let showDot = true;
         if (d.feature) {
@@ -3948,19 +4193,76 @@ function drawDebugBoundingBoxes(d) {
 // map, preserving the in-progress question.
 function toggleFlatGlobe() {
     const mc = QUIZ_MODES[gameState.mode];
-    // In the Explore folder this button is the door between its two halves rather than a
-    // projection switch: Free Explore has one view and the lab has fourteen, so "flat or round"
-    // is not the question there. Which of the two you want to be in is.
-    if (mc && mc.freeExploreMode) { startGameWithMode('projection-lab'); return; }
+    // The lab's half of the old door stays: it is a mode with fourteen projections of its own and
+    // no globe, so "back to the globe" is the only thing that button could usefully mean there.
+    // Free Explore's half is gone — it now HAS a globe/flat toggle and a projection of its own to
+    // choose, which is what the button says, and reaching the lab through it meant Free Explore
+    // had no way back to the globe at all once anything had left `flatGlobeView` set.
     if (mc && mc.projectionLabMode) { startGameWithMode('free-explore'); return; }
     if (!mc || !mc.useGlobe) return; // Only globe-capable modes can switch projection
     flatGlobeView = !flatGlobeView;
+    // Coming back to the globe from, say, an azimuthal has to put the picker back in step, and
+    // going flat from the globe has to leave a flat projection selected rather than 'globe'.
+    if (mc.freeExploreMode)
+        exploreProjKey = flatGlobeView
+            ? (exploreProjKey === 'globe' ? 'mercator' : exploreProjKey)
+            : 'globe';
     reprojectMap();
+    syncProjectionChrome();
+}
 
+// The projection toggle, the tilt lock and Free Explore's picker all say the same thing about the
+// same state, so they are written in one place rather than three.
+function syncProjectionChrome() {
+    const mc = QUIZ_MODES[gameState.mode] || {};
     const btn = document.getElementById('projection-toggle');
-    if (btn) btn.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
+    if (btn && !mc.projectionLabMode)
+        btn.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
     const gammaToggle = document.getElementById('gamma-lock-toggle');
     if (gammaToggle) gammaToggle.style.display = isGlobeView() ? '' : 'none';
+    const sel = document.getElementById('explore-proj');
+    if (sel) sel.value = exploreProj();
+}
+
+// Free Explore's picker. It lives in the floating overlay panel with the prompt, because that is
+// where this mode keeps everything, and it includes the globe as an entry — one control that
+// answers "what am I looking at" beats a toggle and a dropdown that can disagree.
+function buildExplorePanel() {
+    const host = document.getElementById('globe-side-panel') ||
+                 document.getElementById('question-container');
+    if (!host) return;
+    const old = document.getElementById('explore-panel');
+    if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'explore-panel';
+    box.className = 'explore-proj-panel';
+    box.innerHTML = '<label class="explore-proj-row"><span>Projection</span>' +
+        '<select id="explore-proj">' +
+        Object.keys(EXPLORE_PROJECTIONS)
+            .map(k => `<option value="${k}">${EXPLORE_PROJECTIONS[k].label}</option>`).join('') +
+        '</select></label>' +
+        '<button id="explore-reset" class="explore-reset" title="Back to the opening view" ' +
+        'disabled>Reset view</button>' +
+        '<div class="explore-hint">Drag to turn · right-drag to move the centre</div>';
+    host.appendChild(box);
+    const reset = document.getElementById('explore-reset');
+    if (reset) reset.addEventListener('click', resetExploreView);
+    const sel = document.getElementById('explore-proj');
+    sel.value = exploreProj();
+    sel.addEventListener('change', () => {
+        exploreProjKey = sel.value;
+        flatGlobeView = exploreProjKey !== 'globe';
+        // The zoom floor is the scale the map opened at, and every projection opens at its own —
+        // carrying the last one's over would either lock the zoom out or let it run away.
+        reprojectMap();
+        gameState.initialScale = projection.scale();
+        syncProjectionChrome();
+        // After the fit, not during it: the redraw inside reprojectMap syncs the button while
+        // `initialScale` still holds the PREVIOUS projection's fit, so every switch left the
+        // reset lit up over a view nobody had touched.
+        syncExploreReset();
+    });
+    syncExploreReset();
 }
 
 // Rebuild the map for the current projection without changing the question.
@@ -3976,7 +4278,8 @@ function reprojectMap() {
 
     // Flat world view: crop/fill/wrap; the globe keeps its fixed scale.
     if (flatGlobeView && QUIZ_MODES[gameState.mode].mapObject === 'countries') {
-        fitFlatWorld(projection);
+        if (exploreCustomFlat()) fitExploreWorld(projection);
+        else fitFlatWorld(projection);
     }
 
     drawCountries();
@@ -5675,6 +5978,8 @@ function renderFreeExploreMode() {
     document.getElementById('restart-btn').textContent = 'Exit Explore';
     document.getElementById('restart-btn').onclick = exitFreeExplore;
     document.getElementById('restart-btn').style.display = 'inline-block';
+    buildExplorePanel();
+    syncProjectionChrome();
 }
 
 // Handle exit from free explore mode
@@ -6121,8 +6426,10 @@ function teardownActiveGame() {
     // The lab panels are appended to #question-container rather than owned by a layer this
     // function empties, so they have to be named.
     airoState = null;
+    airoGeomCache = null;
     labState = null;
-    ['lab-panel', 'airocean-panel'].forEach(id => {
+    framingState = null;
+    ['lab-panel', 'airocean-panel', 'fr-panel', 'explore-panel'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.remove();
     });
@@ -7700,6 +8007,27 @@ let v0, r0, q0;
 let r_unconstrained = null;  // Track unconstrained rotation for quaternion continuity
 let gammaLocked = true;  // When true, gamma (tilt/roll) is locked to 0 (north-up). Default on so the globe stays upright.
 
+// The quaternion a drag starts from. `r_unconstrained` exists for continuity between drags and
+// is only ever a snapshot of the rotation the last one finished at — but it is module-level and
+// OUTLIVES THE GLOBE IT WAS TAKEN FROM. `setupGlobe` builds a fresh projection at [0, 0, 0], and
+// nothing resets the snapshot, so the first drag on the new globe is seeded from a rotation the
+// world is no longer in and the first pixel of movement teleports it there. Measured: a 6 px drag
+// in Free Explore, entered after spinning any other globe mode, jumped 86°.
+//
+// The invariant is that the snapshot describes the rotation the projection is ACTUALLY in, and
+// that is what is checked — on the quaternions, so a ±360° difference or a second Euler triple
+// for the same rotation still counts as agreement. Checking rather than resetting is what makes
+// this immune to the recurring trap the other way round: a caller that moves `projection.rotate`
+// and forgets the snapshot now falls back to the truth instead of dragging from a ghost.
+function dragBaseQuaternion(r0) {
+    if (r_unconstrained) {
+        const a = versor(r_unconstrained), b = versor(r0);
+        if (Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 0.999999)
+            return a;
+    }
+    return versor(r0);
+}
+
 function dragStart(event) {
     // Don't allow dragging if scrolling is locked
     if (gameState.scrollLocked) return;
@@ -7711,7 +8039,7 @@ function dragStart(event) {
     const p = d3.pointer(event, this);
     r0 = projection.rotate();
     v0 = versor.cartesian(projection.invert(p));
-    q0 = versor(r_unconstrained || r0);
+    q0 = dragBaseQuaternion(r0);
 }
 
 function dragging(event) {
@@ -7973,6 +8301,15 @@ function appendChallengeButton(feedback) {
 
 // Restart game
 function restartGame() {
+    // The three labs relabel this button "Exit" and then inherited the restart handler, so it
+    // said Exit and rebuilt the mode instead — the one thing it must not do, since these have no
+    // round to restart and no other way out.
+    const mc = QUIZ_MODES[gameState.mode];
+    if (mc && (mc.airoceanMode || mc.projectionLabMode || mc.framingSandboxMode)) {
+        teardownActiveGame();
+        goHome();
+        return;
+    }
     const currentMode = gameState.mode;
     const currentDataObj = gameState.currentDataObj;
     const currentQuizList = gameState.currentQuizList;
@@ -8030,6 +8367,18 @@ function goHome() {
     // Tear down the Places panel and return to a clean, mode-less URL.
     const placesPanel = document.getElementById('places-panel');
     if (placesPanel) placesPanel.remove();
+
+    // The lab panels are appended to #question-container rather than owned by a layer this
+    // function empties, so going home merely HID them along with it — and the next mode to
+    // unhide that container inherited somebody else's panel.
+    airoState = null;
+    airoGeomCache = null;
+    labState = null;
+    framingState = null;
+    ['lab-panel', 'airocean-panel', 'fr-panel', 'explore-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
     history.replaceState(null, '', location.pathname);
 
     document.getElementById('top-bar').style.display = 'none';
@@ -10430,6 +10779,8 @@ function updateModeOverlays() {
     }
     if (mc.sbQuizMode) sbUpdateOverlay();
     if (mc.missingSandboxMode) msDrawStory();
+    // Every re-path goes through here, which is the one place that knows the view has moved.
+    if (mc.freeExploreMode) syncExploreReset();
 }
 
 // ---- satellite ----
@@ -10779,7 +11130,6 @@ function halfDayAngle(latDeg, decDeg) {
     return { deg: Math.acos(c) / DEG, polar: null };
 }
 
-function riseAngle(latDeg) { return 90 - Math.abs(latDeg); }
 
 // The live state, as one object every pane reads.
 function sunPathNow() {
@@ -10804,6 +11154,13 @@ const SUNPATH_PANES = [
     { key: 'ground', cell: 'sun-path-horizon-cell', label: 'POV' },
     { key: 'map',    cell: 'sun-path-map-cell',     label: 'Map' }
 ];
+
+// TRACKING IS PER PANE, because it means something different in each of them and there is no
+// reason to want it everywhere at once. The dome swings round to face the sun's bearing, the
+// ground camera locks onto the sun, the globe changes which of the two bodies is held still, and
+// the map re-centres on the sub-solar meridian. So the switch lives in the corner of the pane it
+// governs rather than in a list where you have to remember which panes it reaches.
+const spTrack = pane => !!(sunPathState && sunPathState.track && sunPathState.track[pane] !== false);
 
 // Show or hide the cells and let what is left fill the stage. The count goes on the stage as a
 // data attribute and the CSS does the rest; the only thing that cannot be expressed in CSS is
@@ -10925,10 +11282,15 @@ function renderSunPathMode() {
     if (!sunPathState) {
         sunPathState = { lat: 51, lon: 0, day, hour: 12, playing: false, raf: null, mode: 'day',
                          panes: { dome: true, globe: true, ground: true, map: true },
-                         trackSun: true, showMoon: false, satellite: false, figure: 'pin',
-                         tropics: true, dayLengths: true, zones: false };
+                         track: { dome: true, globe: true, ground: true, map: true },
+                         // The pictogram, not the pin: a shadow is only worth casting from
+                         // something shaped like the thing casting it.
+                         showMoon: false, satellite: false, figure: 'person',
+                         dayGain: 1, nightGain: 2.4,
+                         tropics: true, dayLengths: true };
     }
     if (!sunPathState.panes) sunPathState.panes = { dome: true, globe: true, ground: true, map: true };
+    if (!sunPathState.track) sunPathState.track = { dome: true, globe: true, ground: true, map: true };
     buildSunPathStage();
     buildSunPathPanel();
     syncSunPathPanes();
@@ -10950,26 +11312,73 @@ function buildSunPathStage() {
     const stage = document.createElement('div');
     stage.id = 'sun-path-stage';
     stage.className = 'sun-path-stage';
+    // Each pane carries its OWN tracking switch, in its own corner. Tracking means a different
+    // thing in each of them, so a single switch in a list somewhere else was asking people to
+    // remember which four things it did; here the control is on the thing it governs. Day lengths
+    // goes with the Map for the same reason — the bars it draws are on the map and nowhere else.
+    const trackBox = (key, extra) =>
+        `<div class="sp-pane-tools">` +
+        `<label class="sp-pane-check" title="Follow the sun in this view"><input type="checkbox" ` +
+        `id="sp-track-${key}" checked> Track sun</label>${extra || ''}</div>`;
     stage.innerHTML = `
         <div class="sun-path-cell" id="sun-path-dome-cell">
             <div class="sun-path-cap">Skydome<span id="sun-path-dome-note"></span></div>
+            ${trackBox('dome', '<button class="sp-north" id="sp-dome-north" ' +
+                'title="Face north"><svg viewBox="0 0 24 24" aria-hidden="true">' +
+                '<circle class="sp-north-ring" cx="12" cy="12" r="9"/>' +
+                '<g id="sp-dome-needle"><path class="sp-north-n" d="M12 3.6 L15.4 12 L12 10.2 Z"/>' +
+                '<path class="sp-north-s" d="M12 20.4 L8.6 12 L12 13.8 Z"/>' +
+                '<path class="sp-north-n" d="M12 3.6 L8.6 12 L12 10.2 Z" opacity="0.55"/>' +
+                '<path class="sp-north-s" d="M12 20.4 L15.4 12 L12 13.8 Z" opacity="0.55"/>' +
+                '</g></svg></button>')}
         </div>
         <div class="sun-path-cell" id="sun-path-globe-cell">
             <div class="sun-path-cap">Globe<span id="sun-path-globe-note"></span></div>
-            <button class="sp-view-reset" id="sun-path-view-reset"
-                    title="Back to the default view: edge-on to the sunlight">Reset view</button>
+            ${trackBox('globe', '<button class="sp-view-reset" id="sun-path-view-reset" ' +
+                'title="Back to the default view: edge-on to the sunlight">Reset view</button>')}
         </div>
         <div class="sun-path-cell" id="sun-path-horizon-cell">
             <div class="sun-path-cap" id="sun-path-horizon-cap">POV<span id="sun-path-horizon-note"></span></div>
+            ${trackBox('ground')}
             <svg id="sun-path-horizon" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <div class="sun-path-cell" id="sun-path-map-cell">
             <div class="sun-path-cap">Map<span id="sun-path-map-note"></span></div>
+            ${trackBox('map', '<label class="sp-pane-check" title="Label each parallel with its ' +
+                'hours of daylight"><input type="checkbox" id="sp-daylen" checked> Day lengths</label>')}
             <svg id="sun-path-map" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>`;
     host.appendChild(stage);
     const resetBtn = document.getElementById('sun-path-view-reset');
     if (resetBtn) resetBtn.addEventListener('click', resetSunPathView);
+    const northBtn = document.getElementById('sp-dome-north');
+    if (northBtn) northBtn.addEventListener('click', faceSunPathNorth);
+    SUNPATH_PANES.forEach(v => {
+        const box = document.getElementById('sp-track-' + v.key);
+        if (!box) return;
+        box.checked = spTrack(v.key);
+        box.addEventListener('change', function () {
+            sunPathState.track[v.key] = this.checked;
+            // Handing the camera over WHERE IT IS rather than snapping: turning tracking off
+            // leaves it exactly where tracking had it, so the switch reads as "stop following"
+            // rather than as a jump to somewhere else.
+            if (v.key === 'ground' && !this.checked) {
+                const n = sunPathNow();
+                sunPathState.groundAz = n.az;
+                sunPathState.groundEl = n.alt;
+            }
+            if (v.key === 'dome') applySunPathDomeCamera();
+            updateSunPath();
+        });
+    });
+    const dayLen = document.getElementById('sp-daylen');
+    if (dayLen) {
+        dayLen.checked = sunPathState.dayLengths !== false;
+        dayLen.addEventListener('change', function () {
+            sunPathState.dayLengths = this.checked;
+            updateSunPath();
+        });
+    }
     buildSunPathMap();
     wireSunPathGroundDrag();
     withThree(() => { ensureSunPathThree(); updateSunPath(); });
@@ -11000,7 +11409,7 @@ function wireSunPathGroundDrag() {
     let from = null;
     el.style.touchAction = 'none';
     el.addEventListener('pointerdown', e => {
-        if (!sunPathState || sunPathState.trackSun) return;
+        if (!sunPathState || spTrack('ground')) return;
         const r = el.getBoundingClientRect();
         from = { x: e.clientX, y: e.clientY, w: r.width || 1,
                  az: sunPathState.groundAz == null ? sunPathNow().az : sunPathState.groundAz,
@@ -11244,7 +11653,7 @@ function applySunPathDomeCamera() {
     // MINUS the azimuth. The camera's own angle is measured the other way round from a compass
     // bearing — azimuth runs clockwise from north and this angle runs anticlockwise from +Z — so
     // adding it turned the dome the wrong way and the sun crossed the sky backwards.
-    const track = sunPathState.trackSun ? -(sunPathState.sunAz || 0) : 0;
+    const track = spTrack('dome') ? -(sunPathState.sunAz || 0) : 0;
     const az = (o.az + track) * DEG, el = Math.max(-85, Math.min(85, o.el)) * DEG;
     const d = th.frameDist || th.camera.position.length() || 4.4;
     th.camera.position.set(Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
@@ -11252,6 +11661,49 @@ function applySunPathDomeCamera() {
     th.camera.lookAt(0, 0, 0);
     th.camera.updateProjectionMatrix();
     th.frameDist = 0;      // the fit depends on the view direction, so let it re-solve
+}
+
+// THE COMPASS, as Google Maps has one: a needle that turns to say where north has got to, and
+// that puts it back on top when pressed.
+//
+// The dome's camera bearing is the drag offset PLUS whatever tracking is adding, and tracking is
+// a thing that turns the view continuously — so "face north" has to switch it off as well, or
+// the next tick would take the view straight back off north. That is the same bargain Google's
+// compass makes with a rotated map: pressing it ends the rotation.
+//
+// Where the needle points falls out of one identity. With the camera at bearing A the world
+// direction that appears to run up the screen is (-sin A, 0, -cos A) and its right is
+// (-cos A, 0, sin A), so north (0, 0, -1) reads at clockwise angle atan2(-sin A, cos A) = -A from
+// straight up. One rotation, no trigonometry at draw time.
+function sunPathDomeBearing() {
+    const o = (sunPathState && sunPathState.domeView) || SUNPATH_DOME_DEFAULT;
+    const track = spTrack('dome') ? -(sunPathState && sunPathState.sunAz || 0) : 0;
+    return ((o.az + track) % 360 + 360) % 360;
+}
+
+function syncSunPathNorth() {
+    const btn = document.getElementById('sp-dome-north');
+    const needle = document.getElementById('sp-dome-needle');
+    if (!btn || !needle) return;
+    const a = sunPathDomeBearing();
+    needle.setAttribute('transform', `rotate(${(-a).toFixed(2)} 12 12)`);
+    // Off-north is the state the button is FOR, so it is the state it advertises. Dimmed rather
+    // than hidden: a control that appears out of nowhere is one nobody knows exists.
+    const off = Math.min(a, 360 - a) > 1.5;
+    btn.classList.toggle('off-north', off);
+}
+
+function faceSunPathNorth() {
+    if (!sunPathState) return;
+    if (spTrack('dome')) {
+        sunPathState.track.dome = false;
+        const box = document.getElementById('sp-track-dome');
+        if (box) box.checked = false;
+    }
+    const el = (sunPathState.domeView || SUNPATH_DOME_DEFAULT).el;
+    sunPathState.domeView = { az: 0, el };
+    applySunPathDomeCamera();
+    updateSunPath();
 }
 
 // DOUBLE-CLICK THE GLOBE TO STAND THERE. The map below can already be clicked, but the globe is
@@ -11297,7 +11749,7 @@ function wireSunPathGlobePick(v) {
         const rel = Math.atan2(-local.z, local.x) / DEG;
         // And back to an absolute longitude by adding whatever that frame measures from: the
         // sub-solar meridian while tracking, the observer's own while the earth is held still.
-        const track = sunPathState.trackSun !== false;
+        const track = spTrack('globe');
         const now = sunPathNow();
         const origin0 = track ? (now.lon - now.H) : now.lon;
         const lo = rel + origin0;
@@ -11382,7 +11834,7 @@ function themeColor(name, fallback) {
 // Unbolded serif, like every other label in this mode: these are annotations on a diagram, not
 // interface chrome, and a bold sans sprite sits on top of the picture rather than in it.
 const SUNPATH_LABEL_FONT = "Georgia, 'Iowan Old Style', 'Palatino Linotype', Palatino, serif";
-function makeLabel(text, colour, scale) {
+function makeLabel(text, colour, scale, halo) {
     const T = window.THREE;
     const pad = 8, font = 40;
     const meas = document.createElement('canvas').getContext('2d');
@@ -11394,8 +11846,12 @@ function makeLabel(text, colour, scale) {
     ctx.font = `${font}px ${SUNPATH_LABEL_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = 'rgba(8,12,20,0.7)';
+    // A label in the SKY has to survive whatever is behind it and gets a heavy dark outline; one
+    // lying on the ground may be read against a cream disc, against Blue Marble, or against the
+    // pane outside the disc, and the outline has to change sides to suit. Hence the parameters.
+    const h = halo || {};
+    ctx.lineWidth = h.w == null ? 5 : h.w;
+    ctx.strokeStyle = h.colour || 'rgba(8,12,20,0.7)';
     ctx.strokeText(text, cv.width / 2, cv.height / 2);
     ctx.fillStyle = colour || '#eef2fa';
     ctx.fillText(text, cv.width / 2, cv.height / 2);
@@ -11406,6 +11862,50 @@ function makeLabel(text, colour, scale) {
     sp.scale.set(s * cv.width / cv.height, s, 1);
     sp.userData.labelW = sp.scale.x;      // callers that left-align need the width
     return sp;
+}
+
+// The same text LYING IN THE GROUND, as a piece of the diagram rather than a card floating over
+// it. A sprite always faces the camera, which is right for a label naming something in the sky
+// and wrong for one naming a direction on the ground: the compass letters and the rise/set
+// bearings belong to the ground plane the way the rose painted on an airfield does, and a sprite
+// makes them read as interface hovering above the picture.
+//
+// The canvas is the same one `makeLabel` builds; only the carrier differs. A PlaneGeometry faces
+// +Z with its top at +Y, so one turn of -90° about X lays it flat with its top pointing north
+// (-Z) — the printed-rose convention, where every letter reads the same way up rather than each
+// one facing outward. `renderOrder` rather than `depthTest: false`, or it would draw straight
+// through the dome and the sun; the ground disc is transparent, so without it the sort by
+// centroid distance can hide a label out at the rim behind a disc centred on the origin.
+// Which way round to draw it. INSIDE the horizon ring the background is the ground disc, which is
+// cream by default and very nearly black under Blue Marble; OUTSIDE it there is no disc at all and
+// the background is the pane, which is the theme's own surface whatever the satellite switch says.
+// So the one case wanting pale ink on a dark halo is a label on the disc with imagery under it,
+// and everything else wants the theme's ink on a pale one.
+function groundInk(onDisc, colour) {
+    const satellite = !!(sunPathState && sunPathState.satellite && sunPathSat.day);
+    return (onDisc && satellite)
+        ? { ink: colour, halo: { w: 4, colour: 'rgba(8,12,20,0.8)' } }
+        : { ink: themeColor('--text', '#2a3140').getStyle(),
+            halo: { w: 4.5, colour: 'rgba(255,255,255,0.8)' } };
+}
+
+function makeGroundLabel(text, colour, height, opts) {
+    const T = window.THREE;
+    const o = opts || {};
+    const ink = groundInk(!!o.onDisc, colour);
+    const src = makeLabel(text, ink.ink, height, ink.halo);
+    const aspect = src.scale.x / src.scale.y;
+    const geo = new T.PlaneGeometry(height * aspect, height);
+    geo.rotateX(-Math.PI / 2);
+    if (o.yaw) geo.rotateY(o.yaw);
+    const m = new T.Mesh(geo, new T.MeshBasicMaterial({
+        map: src.material.map, transparent: true, depthWrite: false,
+        depthTest: false, side: T.DoubleSide
+    }));
+    src.material.dispose();               // the sprite was only ever a way to draw the canvas
+    m.renderOrder = 3;
+    m.userData.labelW = height * aspect;
+    return m;
 }
 
 // The five fixed parallels every view shares. The observer's own latitude is added as a sixth
@@ -11449,6 +11949,18 @@ function dashedFrom(points, colour, opacity) {
         new T.LineBasicMaterial({ color: colour, transparent: true, opacity: opacity == null ? 0.6 : opacity }));
 }
 
+// The dial's scale, all of it outside the horizon ring at 1.0 and in this order outward:
+// the cardinal letters, then the rise/set marks, then the arc of the sun's bearing with its
+// hours, then the rise/set bearings themselves.
+// The cardinals go back INSIDE, onto the disc, where a printed compass rose puts them — which
+// leaves the whole of the outside for the dial and stops the rise/set bearings having to be
+// pushed out past everything else to clear them.
+const SP_CARDINAL_R = 0.76;
+const SP_MARK_R = [1.0, 1.13];        // the rise/set marks, lying in the ground
+const SP_DAY_ARC_R = 1.13;            // the marks touch it, so they read as ticks on the dial
+const SP_ARC_LAB_R = 1.25;
+const SP_RISE_LAB_R = 1.25;
+
 // --- SKY: the celestial dome ---
 function buildDomeScene() {
     const T = window.THREE;
@@ -11484,9 +11996,9 @@ function buildDomeScene() {
     s.add(rose);
 
     [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([txt, az]) => {
-        const v = altAzVector(0, az).multiplyScalar(1.14);
-        const sp = makeLabel(txt, '#f2f5fa', 0.19);
-        sp.position.set(v.x, 0.06, v.z);
+        const v = altAzVector(0, az).multiplyScalar(SP_CARDINAL_R);
+        const sp = makeGroundLabel(txt, '#f2f5fa', 0.22, { onDisc: true });
+        sp.position.set(v.x, 0.014, v.z);
         s.add(sp);
     });
 
@@ -11558,30 +12070,70 @@ function updateDomeScene(now) {
     const longestRun = lit => runs.filter(r => r.lit === lit && r.pts.length > 2)
         .sort((a, b) => b.pts.length - a.pts.length)[0];
 
-    // Where it rises and sets, and how long each arc lasts.
+    // EVERYTHING ABOUT THE HORIZON GOES OUTSIDE THE RING. The rise and set marks, the arc of the
+    // sun's bearing and the hours it lasts are all statements about the edge of the sky, and
+    // inside the ring they sat on top of the ground the observer is standing on — over the
+    // compass rose, over the satellite imagery, and (for the arc) across the middle of the disc,
+    // which is the one part of the picture that is about the place rather than about the sun.
+    // Out here the ring reads as a dial with its scale printed round the outside.
+    //
+    // The rise and set marks lie IN the ground too. They were upright posts — the goalposts — and
+    // an upright mark in a pane whose whole subject is what happens at the horizon is a thing
+    // sticking up through the horizon.
     if (!now.hd.polar) {
         [[-now.hd.deg, 'Sunrise'], [now.hd.deg, 'Sunset']].forEach(([H, txt]) => {
             const az = sunAzimuth(now.lat, now.dec, H);
             const v = altAzVector(0, az);
-            th.dyn.add(lineFrom([v.clone().setY(0.004), v.clone().setY(0.26)], 0xd05c4a, 0.95));
-            const lab = makeLabel(`${txt} ${Math.round(az)}°`, '#ffd9d2', 0.115);
-            lab.position.set(v.x * 1.05, 0.34, v.z * 1.05);
+            const mark = [SP_MARK_R[0], SP_MARK_R[1]].map(r =>
+                new T.Vector3(v.x * r, 0.006, v.z * r));
+            th.dyn.add(lineFrom(mark, 0xd05c4a, 0.95));
+            const lab = makeGroundLabel(`${txt} ${Math.round(az)}°`, '#ffd9d2', 0.15);
+            lab.position.set(v.x * SP_RISE_LAB_R, 0.014, v.z * SP_RISE_LAB_R);
             th.dyn.add(lab);
         });
     }
+
+    // THE DAY, AS AN ARC ON THE GROUND. The sky track says where the sun goes; its shadow on the
+    // compass says which way you would have to face to follow it, and the length of that arc is
+    // the length of the day. It is not a second copy of the track — it is the track's bearing,
+    // which is the one component of it the rose can be read against.
+    //
+    // Built from the SAME runs as the sky track rather than from a second sweep, so the two can
+    // never disagree about where the sun is up. A point directly overhead has no bearing at all,
+    // so anything within a whisker of the zenith is dropped rather than normalised into a NaN.
+    const groundArc = pts3 => {
+        const out = [];
+        pts3.forEach(v => {
+            const h = Math.hypot(v.x, v.z);
+            if (h < 1e-6) return;
+            out.push(new T.Vector3(v.x / h * SP_DAY_ARC_R, 0.008, v.z / h * SP_DAY_ARC_R));
+        });
+        return out;
+    };
+    runs.forEach(r => {
+        const a = groundArc(r.pts);
+        if (a.length < 2) return;
+        th.dyn.add(r.lit ? lineFrom(a, 0xf0a92b, 0.85) : dashedFrom(a, 0x8f97a8, 0.35));
+    });
     // Arc labels: the lit arc and the dark one, placed on their own halves of the track.
     const dayH = now.hd.polar === 'day' ? 24 : now.hd.polar === 'night' ? 0 : now.hd.deg / 15 * 2;
     const dayRun = longestRun(true), nightRun = longestRun(false);
-    if (dayRun) {
-        const lab = makeLabel(`${dayH.toFixed(1)} h of daylight`, '#ffe6b0', 0.12);
-        lab.position.copy(dayRun.pts[Math.floor(dayRun.pts.length / 2)].clone().multiplyScalar(1.16));
+    // THE HOURS GO ON THE GROUND ARCS, not on the track. They used to hang off the track itself,
+    // which put the same sentence twice on the screen once the ground arc existed — and put the
+    // night one UNDER THE FLOOR, since the midpoint of the dark run is below the horizon by
+    // construction, where it showed through the translucent disc as a smear in the middle of the
+    // rose. On the arc each one labels a length you can actually see.
+    const arcLabel = (run, text, colour) => {
+        const g = groundArc(run.pts);
+        if (g.length < 4) return;
+        const mid = g[Math.floor(g.length / 2)];
+        const h = Math.hypot(mid.x, mid.z) || 1;
+        const lab = makeGroundLabel(text, colour, 0.135, { onDisc: true });
+        lab.position.set(mid.x / h * SP_ARC_LAB_R, 0.014, mid.z / h * SP_ARC_LAB_R);
         th.dyn.add(lab);
-    }
-    if (nightRun) {
-        const lab = makeLabel(`${(24 - dayH).toFixed(1)} h of night`, '#b9c4d6', 0.12);
-        lab.position.copy(nightRun.pts[Math.floor(nightRun.pts.length / 2)].clone().multiplyScalar(1.16));
-        th.dyn.add(lab);
-    }
+    };
+    if (dayRun) arcLabel(dayRun, `${dayH.toFixed(1)} h of daylight`, '#ffe6b0');
+    if (nightRun) arcLabel(nightRun, `${(24 - dayH).toFixed(1)} h of night`, '#cdd6e4');
 
     // The moon, on the same dome and at the same instant, when it is asked for. Pale and small:
     // it is here to say where it is relative to the sun, which is the thing about the moon that
@@ -11626,7 +12178,9 @@ function updateDomeScene(now) {
     const eye = new T.Vector3(0, SUNPATH_FIGURE_H * 0.55, 0);
     if (now.alt > 0) {
         th.dyn.add(lineFrom([p, eye], 0xf0a92b, 0.5));
-        th.dyn.add(sunPathShadow(now.alt, now.az, SUNPATH_FIGURE_H, 0.95));
+        const sh = sunPathShadowHull(th.figure, altAzVector(now.alt, now.az).normalize(),
+                                     { maxLen: 0.95 });
+        if (sh) th.dyn.add(sh);
     } else {
         // Same ray, dotted, so the link to the figure survives the night.
         const seg = [];
@@ -11674,12 +12228,32 @@ function makeSunPathFigure(height, colour, style) {
             add(new T.CylinderGeometry(h * 0.05, h * 0.22, h * 0.80, 10), h * 0.40);
             add(new T.SphereGeometry(h * 0.09, 10, 8), h * 0.86);
             break;
-        default:
-            // Solid silhouette: tapered legs, a broader chest, a round head. Holds its shape
-            // when it shrinks, which the stick figure does not.
-            add(new T.CylinderGeometry(h * 0.10, h * 0.15, h * 0.45, 8), h * 0.225);
-            add(new T.CylinderGeometry(h * 0.17, h * 0.13, h * 0.34, 8), h * 0.62);
-            add(new T.SphereGeometry(h * 0.17, 10, 8), h * 0.90);
+        default: {
+            // THE BATHROOM SIGN, in low poly. The pictogram is the most legible human silhouette
+            // there is, and what makes it one is the shape rather than the detail: a round head
+            // clear of the body, shoulders that slope straight out into the arms, and two legs
+            // splayed from a narrow waist. Six primitives with six or eight sides each, so it
+            // still reads as that outline from any bearing the dome can be turned to — a flat
+            // pictogram would vanish edge-on, and the stick figure it replaces went sub-pixel.
+            const seg = 6;
+            const limb = (r0, r1, len, x, y, z, tilt) => {
+                const m = add(new T.CylinderGeometry(r0, r1, len, seg), y);
+                m.position.set(x, y, z);
+                m.rotation.z = tilt;
+                return m;
+            };
+            // Legs, splayed a little from the waist.
+            limb(h * 0.075, h * 0.105, h * 0.46, -h * 0.075, h * 0.23, 0, 0.13);
+            limb(h * 0.075, h * 0.105, h * 0.46, h * 0.075, h * 0.23, 0, -0.13);
+            // Torso: wide at the shoulders, narrow at the waist.
+            add(new T.CylinderGeometry(h * 0.21, h * 0.115, h * 0.34, seg), h * 0.60);
+            // Arms, angled down and out — the pictogram's most recognisable line.
+            limb(h * 0.055, h * 0.075, h * 0.30, -h * 0.20, h * 0.60, 0, 0.42);
+            limb(h * 0.055, h * 0.075, h * 0.30, h * 0.20, h * 0.60, 0, -0.42);
+            // The head, sitting clear of the shoulders on a short neck.
+            add(new T.SphereGeometry(h * 0.155, 8, 6), h * 0.90);
+            break;
+        }
     }
     return g;
 }
@@ -11695,26 +12269,93 @@ function rebuildSunPathDomeFigure() {
     th.scene.add(th.figure);
 }
 
-function sunPathShadow(altDeg, azDeg, height, maxLen) {
+// THE SHADOW IS CAST, not drawn to look like one.
+//
+// Every vertex of the figure is pushed down the sun's own ray until it reaches the ground, and
+// what lands there is the shadow. So it is the figure's silhouette from the sun's direction: it
+// stretches and swings as the sun moves because that is what the geometry does, not because a
+// length and a bearing were computed and a quadrilateral drawn from them. The trapezoid it
+// replaces could only ever be a tapered sliver however the figure was shaped, and the arms of a
+// pictogram are exactly the part it could not say anything about.
+//
+// The outline is the CONVEX HULL of the projected points. A true silhouette would need the union
+// of six overlapping projected solids, and a union of translucent polygons is not something three
+// can draw in one pass — every overlap would double the darkness. The hull is one polygon, so it
+// has no overlap to compound, and at the size this is drawn (a figure a tenth of the dome's
+// radius) the only thing it fills in is the gap between the legs.
+// `o` gives the ground: its `origin`, its `up`, and two unit vectors spanning it. The dome's
+// ground is the world XZ plane; the globe pane's is the tangent plane at the observer, tipped
+// wherever on the earth they are standing. Same construction either way.
+function sunPathShadowHull(figure, toSun, o) {
     const T = window.THREE;
-    const away = altAzVector(0, (azDeg + 180) % 360).normalize();
-    const side = new T.Vector3(0, 1, 0).cross(away).normalize();
-    const len = Math.min(maxLen, height / Math.max(0.09, Math.tan(Math.max(0.5, altDeg) * DEG)));
-    // CONSTANT width. The sun is a far-off source, so a shadow lengthens without spreading —
-    // tying width to length made a low-sun shadow fan out like a torch beam. The earlier
-    // complaint that it looked faint before noon was never the opacity (which never changed):
-    // it was a ~2px hairline. The answer is a wider constant width and more contrast, not taper.
-    const w0 = height * 0.30, w1 = w0 * 0.86;
-    const y = 0.004;
-    const a = side.clone().multiplyScalar(w0), b = side.clone().multiplyScalar(-w0);
-    const tip = away.clone().multiplyScalar(len);
-    const c = tip.clone().add(side.clone().multiplyScalar(-w1));
-    const d = tip.clone().add(side.clone().multiplyScalar(w1));
-    const pts = [a, b, c, a, c, d].map(v => new T.Vector3(v.x, y, v.z));
-    const geo = new T.BufferGeometry().setFromPoints(pts);
-    return new T.Mesh(geo, new T.MeshBasicMaterial({
-        color: 0x33291c, transparent: true, opacity: 0.58, side: T.DoubleSide, depthWrite: false
-    }));
+    if (!figure || !toSun) return null;
+    const up = o.up || new T.Vector3(0, 1, 0);
+    const origin = o.origin || new T.Vector3(0, 0, 0);
+    const denom = toSun.dot(up);
+    if (denom <= 0.004) return null;                    // the sun is on or below the horizon
+    // Two axes in the ground, to hull in. Any pair will do — the hull is the same set of points.
+    const ax = o.ax || new T.Vector3(1, 0, 0);
+    const az2 = new T.Vector3().crossVectors(up, ax).normalize();
+    const ax2 = new T.Vector3().crossVectors(az2, up).normalize();
+    const pts = [];
+    const v = new T.Vector3(), rel = new T.Vector3();
+    figure.updateMatrixWorld(true);
+    figure.traverse(m => {
+        if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+        const pos = m.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+            rel.subVectors(v, origin);
+            // Slide down the ray until the point is in the plane.
+            const k = rel.dot(up) / denom;
+            rel.addScaledVector(toSun, -k);
+            pts.push([rel.dot(ax2), rel.dot(az2)]);
+        }
+    });
+    if (pts.length < 3) return null;
+    // A shadow the length of the whole dome is not a shadow, it is a stripe: the low-sun case is
+    // clamped, about the figure's own foot, so it keeps its direction and its shape.
+    const maxLen = o.maxLen || 0.95;
+    const far = Math.max(...pts.map(p => Math.hypot(p[0], p[1])));
+    if (far > maxLen) { const s = maxLen / far; pts.forEach(p => { p[0] *= s; p[1] *= s; }); }
+
+    const hull = convexHull2D(pts);
+    if (hull.length < 3) return null;
+    const lift = up.clone().multiplyScalar(o.lift == null ? 0.005 : o.lift);
+    const at = p => origin.clone().add(lift)
+        .addScaledVector(ax2, p[0]).addScaledVector(az2, p[1]);
+    const tri = [];
+    for (let i = 1; i + 1 < hull.length; i++)
+        tri.push(at(hull[0]), at(hull[i]), at(hull[i + 1]));
+    const mesh = new T.Mesh(new T.BufferGeometry().setFromPoints(tri),
+        new T.MeshBasicMaterial({ color: 0x2b2318, transparent: true,
+                                  opacity: o.opacity == null ? 0.5 : o.opacity,
+                                  side: T.DoubleSide, depthWrite: false }));
+    // ABOVE THE GROUND DISC, explicitly. Both are transparent, so three sorts them by distance
+    // from the camera — and the shadow's centroid swings round the disc's with the sun, so it
+    // landed in front of the disc for half the day and behind it for the other half, where the
+    // disc's own 92% fill washed it out. That is the shadow "switching between dark and faint",
+    // and no amount of opacity would have fixed it: it was a sort order that depended on the time
+    // of day.
+    mesh.renderOrder = 2;
+    return mesh;
+}
+
+// Andrew's monotone chain. Returns the hull counter-clockwise, first point repeated at neither end.
+function convexHull2D(pts) {
+    const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const build = src => {
+        const h = [];
+        for (const q of src) {
+            while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], q) <= 0) h.pop();
+            h.push(q);
+        }
+        h.pop();
+        return h;
+    };
+    return build(p).concat(build(p.slice().reverse()));
 }
 
 // --- SPACE: the earth, its tilt, and the observer's horizon ---
@@ -11727,6 +12368,7 @@ function buildGlobeScene() {
     const built = buildEarthInSpace(th.scene);
     th.holder = built.holder;
     th.earth = built.earth;
+    th.night = built.night;
     th.dyn = built.dyn;
     th.holderDyn = built.holderDyn;
     // The light and the sun's two marks, so the pane can move them when the earth is held still.
@@ -11757,6 +12399,82 @@ function buildGlobeScene() {
 // lights. `scripts/build-earth-night.py` fetches the real one for anybody who wants it, and it
 // is picked up automatically if it is there.
 const SUNPATH_DAY_TEX = 'data/textures/earth-bmng-2048.jpg';
+
+// ---- Blue Marble, month by month ----
+// Blue Marble Next Generation is TWELVE images, one per month, and the differences between them
+// are most of what the dataset is for: the snow line marching up and down two continents, the
+// Sahel greening and going again, the sea ice opening and closing. A satellite view that always
+// shows June is showing a season rather than the earth.
+//
+// June is nevertheless the FLOOR, and stays committed to the repository, because a satellite view
+// has to have something to draw before any network call returns — and because twelve copies of it
+// is twenty megabytes charged to every visitor for the eleven they will not look at. So the local
+// one paints immediately and the month that was actually asked for is fetched alongside and
+// swapped in when it lands.
+//
+// Which month is asked for depends on what the view is claiming. The orbital and Airocean views
+// are pictures of the earth NOW, so they ask for the current month. Sun & Moon is a picture of a
+// particular day, so it asks for that day's month and follows the dial as it is moved.
+const NASA_BMNG_BASE = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base';
+const BMNG_MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
+                     'july', 'august', 'september', 'october', 'november', 'december'];
+const BMNG_LOCAL_MONTH = 6;                       // the committed texture IS June
+const bmngClampMonth = m => Math.min(12, Math.max(1, Math.round(m) || BMNG_LOCAL_MONTH));
+const bmngStamp = m => '2004' + String(bmngClampMonth(m)).padStart(2, '0');
+const bmngDir = m => `${NASA_BMNG_BASE}/${BMNG_MONTHS[bmngClampMonth(m) - 1]}`;
+const bmngNowMonth = () => new Date().getUTCMonth() + 1;
+// 5400x2700 is 1.6 MB and about eight times the detail of the committed 2048 — the right trade
+// for something fetched on a whim. The 21600 globe and the 500 m tiles are the orbital view's
+// business and it asks for those itself.
+const bmngGlobeUrl = m => `${bmngDir(m)}/world.${bmngStamp(m)}.3x5400x2700.jpg`;
+
+const bmngCache = new Map();                      // month -> Image, or 'pending' / 'failed'
+function ensureBmngMonth(m, cb) {
+    m = bmngClampMonth(m);
+    const hit = bmngCache.get(m);
+    if (hit && hit.width) { if (cb) cb(hit); return hit; }
+    if (hit) return null;                         // pending, or failed and not worth hammering
+    bmngCache.set(m, 'pending');
+    const im = new Image();
+    im.crossOrigin = 'anonymous';                 // it is read back out of a canvas
+    im.onload = () => { bmngCache.set(m, im); if (cb) cb(im); };
+    im.onerror = () => { bmngCache.set(m, 'failed'); };
+    im.src = bmngGlobeUrl(m);
+    return null;
+}
+
+// The satellite views share ONE loaded month, which is safe because only one of them is ever on
+// screen. Everything downstream holds its own copy of the pixels — a read-back buffer for the
+// Airocean's per-face reprojection, a rendered ground for the panorama, a three.js texture for
+// the earth in space — so a new month has to invalidate all of them.
+// Every one of these holds its own copy of last month's pixels, and each keys itself on something
+// that a change of month does not move — the observer's position, the map's centre longitude, a
+// mere `!!sunPathSat.day`. So each has to be told outright, and missing one shows as a pane that
+// stays on the old month while its neighbours change: the sunrise-line map was doing exactly that,
+// because its cache key is the centre longitude and swapping the image does not move the centre.
+function bmngInvalidate() {
+    airoSatSrc = null;
+    if (sunPathGroundCache) sunPathGroundCache.key = null;
+    sunPathDomeGroundAt = null;
+    if (typeof sunPathMap !== 'undefined' && sunPathMap) sunPathMap.satDirty = true;
+    if (typeof airoState !== 'undefined' && airoState && airoState.geomRef)
+        airoState.geomRef.forEach(g => { g.satUrl = null; g.satPx = 0; });
+}
+
+function useBmngMonth(m, after) {
+    m = bmngClampMonth(m);
+    if (!sunPathSat.day || sunPathSat.month === m) return;
+    const swap = img => {
+        sunPathSat.day = img;
+        sunPathSat.month = m;
+        bmngInvalidate();
+        if (after) after();
+    };
+    // June is the one month with nothing to fetch: it is the file already in hand.
+    if (m === BMNG_LOCAL_MONTH && sunPathSat.local) { swap(sunPathSat.local); return; }
+    const im = ensureBmngMonth(m, swap);
+    if (im) swap(im);
+}
 // The night side comes from NASA's own servers rather than from this repository. It is a several
 // megabyte image that one checkbox in one mode wants, so committing it would cost every visitor
 // who never ticks that box; fetched lazily it costs only the people who do. A LOCAL copy wins if
@@ -11764,13 +12482,24 @@ const SUNPATH_DAY_TEX = 'data/textures/earth-bmng-2048.jpg';
 // on a third party need not.
 //
 // Two remote candidates, tried in order, because over the life of a static site a URL eventually
-// moves.
+// moves. Both must be CORS-open, since the image is drawn into a canvas and read back.
+//
+// THE REMOTE CANDIDATES BOTH HAD TO GO. NASA's own `eoimages.gsfc.nasa.gov` serves no
+// `Access-Control-Allow-Origin` at all, so every attempt died on the CORS check and fell through
+// to the last entry — which was `2_no_clouds_4k.jpg`, a DAY texture. So the one case the fallback
+// existed for, it answered with the wrong picture, and the night side would have lit up as
+// daylight rather than as cities. Measured: mean brightness 122 with the Sahara at (199,182,158),
+// against 21 and near-black for a real night image.
+//
+// The two here are both genuine Black Marble derivatives on jsdelivr, which sends
+// `Access-Control-Allow-Origin: *` and pins by tag: mean brightness 21.6 and 20.5, Sahara dark in
+// both. The first is 4096x2048 and the smaller file of the two.
 const SUNPATH_NIGHT_TEX = [
     'data/textures/earth-night-2048.jpg',
-    'https://eoimages.gsfc.nasa.gov/images/imagerecords/79000/79765/dnb_land_ocean_ice.2012.3600x1800.jpg',
-    'https://cdn.jsdelivr.net/gh/turban/webgl-earth@master/images/2_no_clouds_4k.jpg'
+    'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/earth-night.jpg',
+    'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_lights_2048.png'
 ];
-let sunPathSat = { day: null, night: null, tried: false, nightTried: false };
+let sunPathSat = { day: null, local: null, month: 0, night: null, tried: false, nightTried: false };
 
 // Calls back ONLY when the image arrives. A failed load calls back never, and that is the point:
 // the caller's callback re-runs the draw, so calling it on failure with nothing loaded sends it
@@ -11781,7 +12510,14 @@ function ensureSunPathSat(cb) {
     if (sunPathSat.tried) return;
     sunPathSat.tried = true;
     const im = new Image();
-    im.onload = () => { sunPathSat.day = im; if (cb) cb(); };
+    // `local` is kept separately from `day` so that asking for June again is free rather than a
+    // second trip to NASA for a month already sitting in the repository.
+    im.onload = () => {
+        sunPathSat.day = im;
+        sunPathSat.local = im;
+        sunPathSat.month = BMNG_LOCAL_MONTH;
+        if (cb) cb();
+    };
     im.onerror = () => { /* left tried: retrying every frame would hammer a 404 */ };
     im.src = SUNPATH_DAY_TEX;
     // The night image blocks nobody, so it is fetched alongside and simply turns up.
@@ -11950,6 +12686,7 @@ function sunPathLocalMap(lat, lon, px) {
             }
         }
         ctx.putImageData(out, 0, 0);
+        spDrawLocalTropics(ctx, proj, N);
         return cv;
     }
 
@@ -11964,7 +12701,30 @@ function sunPathLocalMap(lat, lon, px) {
     ctx.lineWidth = Math.max(1, N / 340);
     ctx.strokeStyle = '#a79c78';
     ctx.stroke();
+    spDrawLocalTropics(ctx, proj, N);
     return cv;
+}
+
+// The five fixed parallels on the ground the observer is standing on. The disc is an azimuthal
+// equidistant map about them, so a tropic is a curve across it rather than a straight line — and
+// whether one is in view at all is a fact about where you are, which is the point of drawing it
+// there. Only reaches the ground within SUNPATH_LOCAL_SPAN_KM, so most locations show none.
+function spDrawLocalTropics(ctx, proj, N) {
+    if (!sunPathState || sunPathState.tropics === false) return;
+    const pth = d3.geoPath(proj, ctx);
+    ctx.save();
+    ctx.lineWidth = Math.max(1, N / 400);
+    ctx.setLineDash([N / 90, N / 110]);
+    [[0, '#ffffff'], [OBLIQUITY_DEG, '#d9a441'], [-OBLIQUITY_DEG, '#d9a441'],
+     [90 - OBLIQUITY_DEG, '#7fb6d9'], [-(90 - OBLIQUITY_DEG), '#7fb6d9']].forEach(([lat, col]) => {
+        ctx.beginPath();
+        pth({ type: 'LineString',
+              coordinates: d3.range(-180, 181, 2).map(l => [l, lat]) });
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = 0.75;
+        ctx.stroke();
+    });
+    ctx.restore();
 }
 
 function sunPathEarthCanvas(features) {
@@ -11994,6 +12754,93 @@ function sunPathEarthCanvas(features) {
     ctx.stroke();
     ctx.restore();
     return cv;
+}
+
+// CITY LIGHTS, as a shell just above the surface.
+//
+// The earth's own texture is the DAY image and the scene's directional light is what makes half
+// of it dark — but dark is not the same picture as lit up, and the Black Marble is a second image
+// that belongs only on the night side. It cannot be composited into the day canvas, because the
+// terminator moves with the hour while that canvas is rebuilt only when the geography changes.
+//
+// So: a sphere a thousandth of a radius out, alpha-blended over the earth, opaque where the
+// surface faces away from the sun and clear where it faces it. The night side is then the Black
+// Marble itself rather than the day image with lights sprinkled on, and the fade between them
+// spans the terminator out to about 12° past it, which is roughly the twilight the lights would
+// come on through.
+//
+// ADDITIVE WAS TRIED FIRST and is the wrong tool here, for a reason particular to this pane: its
+// ambient is deliberately bright — the default view is edge-on to the sunlight, so with a darker
+// one the middle of the visible face reads as an unlit ball — and against an ambient-lit
+// continent the lights simply do not carry. Measured, the whole night side lifted from a mean of
+// 33.6 to 41 and not one city was visible.
+//
+// The sun is passed in the SHELL's own frame, so the shader needs to know nothing about how the
+// earth is turned or how the holder is tilted.
+//
+// The texture is left in the default colour space deliberately: a raw ShaderMaterial gets neither
+// the input decode nor the output encode chunk, so an untagged texture goes to the screen exactly
+// as it came out of the file. Tagging it sRGB would decode without re-encoding and wash it out.
+const SP_NIGHT_VERT = `
+    varying vec3 vN; varying vec2 vUv;
+    void main() {
+        vN = normalize(normal); vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`;
+// `smoothstep`'s edges must ASCEND — GLSL leaves the result undefined when edge0 >= edge1, and
+// ANGLE returns a flat zero, so writing the fade as smoothstep(0.02, -0.26, d) produced a shell
+// that was present, textured, visible and completely black. It is written the way round the
+// language wants and subtracted instead.
+const SP_NIGHT_FRAG = `
+    uniform sampler2D uMap; uniform vec3 uSun; uniform float uGain;
+    varying vec3 vN; varying vec2 vUv;
+    void main() {
+        float d = dot(normalize(vN), normalize(uSun));
+        float a = 1.0 - smoothstep(-0.21, 0.0, d);
+        gl_FragColor = vec4(texture2D(uMap, vUv).rgb * uGain, a);
+    }`;
+function makeNightShell() {
+    const T = window.THREE;
+    const mat = new T.ShaderMaterial({
+        uniforms: { uMap: { value: null }, uSun: { value: new T.Vector3(1, 0, 0) },
+                    // Black Marble is a dark image and this pane draws the earth about 250 px
+                    // across, where a city is a fraction of a pixel. At unity the brightest of
+                    // them came out at 98 of 255 and the picture read as simply black. This is
+                    // only the starting value — the Night slider owns it from here.
+                    uGain: { value: 2.4 } },
+        vertexShader: SP_NIGHT_VERT, fragmentShader: SP_NIGHT_FRAG,
+        transparent: true, depthWrite: false
+    });
+    const m = new T.Mesh(new T.SphereGeometry(1.001, 64, 48), mat);
+    m.visible = false;
+    m.userData.noFrame = true;              // the auto-framing must not see a second earth
+    return m;
+}
+
+// Point the shell's sun at where the light actually is, and show it only when there is both a
+// reason to (satellite on) and something to show (the image has landed).
+function syncNightShell(th, sunDir) {
+    const T = window.THREE;
+    if (!th || !th.night) return;
+    const want = !!(sunPathState && sunPathState.satellite);
+    if (want && !sunPathSat.night) ensureSunPathNight();
+    const on = want && !!sunPathSat.night;
+    th.night.visible = on;
+    if (!on) return;
+    th.night.material.uniforms.uGain.value = spNightGain();
+    const u = th.night.material.uniforms;
+    if (u.uMap.value !== th.nightTex || !th.nightTex) {
+        const tex = new T.Texture(sunPathSat.night);
+        tex.needsUpdate = true;
+        if (u.uMap.value) u.uMap.value.dispose();
+        th.nightTex = tex;
+        u.uMap.value = tex;
+    }
+    // The shell hangs off the earth, so it carries the earth's spin and the holder's tilt. One
+    // inverse turns the world-space sun direction into the frame the shader is reasoning in.
+    th.earth.updateMatrixWorld(true);
+    u.uSun.value.copy(sunDir).transformDirection(
+        new T.Matrix4().copy(th.earth.matrixWorld).invert());
 }
 
 // Paint that canvas onto an earth mesh.
@@ -12045,7 +12892,8 @@ function refreshSunPathDomeGround(force) {
     const disc = sunPathState && sunPathState.domeGround;
     if (!T || !disc) return;
     const key = [sunPathState.lat.toFixed(3), sunPathState.lon.toFixed(3),
-                 !!sunPathState.satellite, !!sunPathSat.day].join('|');
+                 !!sunPathState.satellite, sunPathSat.month,
+                 sunPathState.tropics !== false].join('|');
     if (!force && sunPathDomeGroundAt === key) return;
     sunPathDomeGroundAt = key;
     // Drawn whenever there is anything to draw it FROM — the vector world always, the imagery when
@@ -12092,6 +12940,9 @@ function buildEarthInSpace(scene, opts) {
         new T.MeshLambertMaterial({ color: 0x9fb8cc }));
     holder.add(earth);
     applyEarthTexture(earth, sunPathEarthCanvas(o.features));
+    // A child of the earth, so it turns with it and needs no bookkeeping of its own.
+    const night = makeNightShell();
+    earth.add(night);
 
     const sun = new T.DirectionalLight(0xffffff, 2.6);
     sun.position.set(5, 0, 0);
@@ -12119,17 +12970,62 @@ function buildEarthInSpace(scene, opts) {
         scene.add(sunRay);
     }
 
-    // Fixed furniture on the globe: the axis, the equator, the tropics and polar circles.
+    // Fixed furniture on the globe: the axis, the equator, the tropics and polar circles. The
+    // five parallels are tagged so the Tropic lines switch can reach them — they are the same
+    // five the map draws bars along, so one control governs both.
     holder.add(lineFrom([new T.Vector3(0, -1.5, 0), new T.Vector3(0, 1.5, 0)], 0xffd28a, 0.9));
-    holder.add(parallelRing(0, 0xffffff, 0.8));
-    [OBLIQUITY_DEG, -OBLIQUITY_DEG].forEach(l => holder.add(parallelRing(l, 0xd9a441, 0.6)));
-    [90 - OBLIQUITY_DEG, -(90 - OBLIQUITY_DEG)].forEach(l => holder.add(parallelRing(l, 0x7fb6d9, 0.6)));
+    const tropicRing = (lat, colour, opacity) => {
+        const r = parallelRing(lat, colour, opacity);
+        r.userData.tropic = true;
+        holder.add(r);
+    };
+    tropicRing(0, 0xffffff, 0.8);
+    [OBLIQUITY_DEG, -OBLIQUITY_DEG].forEach(l => tropicRing(l, 0xd9a441, 0.6));
+    [90 - OBLIQUITY_DEG, -(90 - OBLIQUITY_DEG)].forEach(l => tropicRing(l, 0x7fb6d9, 0.6));
 
     const dyn = new T.Group();
     scene.add(dyn);          // horizon plane + angle marks live in WORLD space, not the tilted frame
     const holderDyn = new T.Group();
     holder.add(holderDyn);
-    return { holder, earth, dyn, holderDyn, light: sun, sunBall, sunRay };
+    return { holder, earth, night, dyn, holderDyn, light: sun, sunBall, sunRay };
+}
+
+// The two exposures, applied wherever each image is drawn.
+//
+// On the GLOBE the day image is a texture on a Lambert material, so the material's own colour is
+// the multiplier — no canvas to redraw and no cache to invalidate — and the night image is a
+// shader whose gain is already a uniform. On the MAP both are SVG <image> elements, so a CSS
+// brightness filter is the same multiplication by another route. Four places, one pair of numbers.
+const spDayGain = () => (sunPathState && sunPathState.dayGain) || 1;
+const spNightGain = () => (sunPathState && sunPathState.nightGain != null ? sunPathState.nightGain : 2.4);
+
+function syncSunPathGain() {
+    if (!sunPathState) return;
+    const box = document.getElementById('sp-sat-gain');
+    if (box) box.style.display = sunPathState.satellite ? '' : 'none';
+    const th = sunPathState.three && sunPathState.three.globe;
+    if (th && th.earth && th.earth.material) {
+        // Only when there is imagery to brighten: the vector map is drawn in its own colours and
+        // a gain on those is just a wrong palette.
+        const k = (sunPathState.satellite && sunPathSat.day) ? spDayGain() : 1;
+        th.earth.material.color.setScalar(k);
+        th.earth.material.needsUpdate = true;
+    }
+    if (th && th.night) th.night.material.uniforms.uGain.value = spNightGain();
+    if (sunPathMap) {
+        sunPathMap.sat.attr('style', `filter: brightness(${spDayGain()})`);
+        sunPathMap.svg.selectAll('.sp-map-sat-night')
+            .attr('style', `filter: brightness(${spNightGain()})`);
+    }
+}
+
+// The Tropic lines switch, reaching the earth in space. The rings are built once as fixed
+// furniture, so this is a visibility flip rather than a rebuild.
+function syncSunPathTropics() {
+    const th = sunPathState && sunPathState.three && sunPathState.three.globe;
+    if (!th || !th.holder) return;
+    const on = sunPathState.tropics !== false;
+    th.holder.traverse(o => { if (o.userData && o.userData.tropic) o.visible = on; });
 }
 
 // Leader lines out to a left-hand column, one per parallel that is actually facing us.
@@ -12225,7 +13121,7 @@ function updateGlobeScene(now) {
     // latitude about that axis, which is exactly what a diurnal circle is. Physically the same
     // picture; the difference is only which of the two is held still, and that is the whole of
     // what somebody switching this off is asking to see.
-    const track = sunPathState.trackSun !== false;
+    const track = spTrack('globe');
     th.holder.rotation.set(0, 0, track ? -now.dec * DEG : 0);
     // SphereGeometry places an unmirrored equirectangular map's longitude L at mesh angle -L.
     // Tracking, the sub-solar longitude (lon - H) has to land at +X; held still, the observer's
@@ -12245,6 +13141,7 @@ function updateGlobeScene(now) {
                         Math.sin(now.dec * DEG),
                         Math.cos(now.dec * DEG) * Math.sin(now.H * DEG));
     if (th.light) th.light.position.copy(sunDir.clone().multiplyScalar(5));
+    syncNightShell(th, sunDir);
     if (th.sunBall) th.sunBall.position.copy(sunDir.clone().multiplyScalar(3.3));
     if (th.sunRay) {
         const pts = [sunDir.clone().multiplyScalar(3.0), sunDir.clone().multiplyScalar(1.02)];
@@ -12363,25 +13260,17 @@ function updateGlobeScene(now) {
     fig.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), up);
     th.holderDyn.add(fig);
     if (now.alt > 0) {
-        const awayAz = (now.az + 180) % 360;
-        const away = north.clone().multiplyScalar(Math.cos(awayAz * DEG))
-            .add(east.clone().multiplyScalar(Math.sin(awayAz * DEG))).normalize();
-        const side = up.clone().cross(away).normalize();
-        const len = Math.min(DOME_R * 0.92, FIG_H / Math.max(0.09, Math.tan(Math.max(0.5, now.alt) * DEG)));
-        const w0 = FIG_H * 0.30, w1 = w0 * 0.86;      // constant width — see sunPathShadow
-        const o0 = base.clone().add(up.clone().multiplyScalar(0.0015));
-        const tip = o0.clone().add(away.clone().multiplyScalar(len));
-        const pts = [
-            o0.clone().add(side.clone().multiplyScalar(w0)),
-            o0.clone().add(side.clone().multiplyScalar(-w0)),
-            tip.clone().add(side.clone().multiplyScalar(-w1)),
-            o0.clone().add(side.clone().multiplyScalar(w0)),
-            tip.clone().add(side.clone().multiplyScalar(-w1)),
-            tip.clone().add(side.clone().multiplyScalar(w1))
-        ];
-        th.holderDyn.add(new T.Mesh(new T.BufferGeometry().setFromPoints(pts),
-            new T.MeshBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.62,
-                                      side: T.DoubleSide, depthWrite: false })));
+        // Cast the same way as the dome's, onto the tangent plane the observer is standing on
+        // rather than onto the world's own XZ — which is the whole reason the helper takes a
+        // ground rather than assuming one.
+        const toSun = up.clone().multiplyScalar(Math.sin(now.alt * DEG))
+            .add(east.clone().multiplyScalar(Math.cos(now.alt * DEG) * Math.sin(now.az * DEG)))
+            .add(north.clone().multiplyScalar(Math.cos(now.alt * DEG) * Math.cos(now.az * DEG)))
+            .normalize();
+        const sh = sunPathShadowHull(fig, toSun, {
+            origin: base, up, ax: east, maxLen: DOME_R * 0.92, lift: 0.0015, opacity: 0.6
+        });
+        if (sh) th.holderDyn.add(sh);
     }
 
     // Latitude, marked as the angle from the equatorial plane up to the observer.
@@ -12498,8 +13387,8 @@ function drawSunPathHorizon(now) {
     // Where the camera looks. Tracking, it is locked on the sun and the sun sits dead centre;
     // not tracking, it is a compass bearing and an elevation the viewer sets by dragging, and the
     // sun crosses the frame the way it crosses a window.
-    const camAlt = sunPathState.trackSun ? now.alt : (sunPathState.groundEl || 0);
-    const camAz = sunPathState.trackSun ? now.az
+    const camAlt = spTrack('ground') ? now.alt : (sunPathState.groundEl || 0);
+    const camAz = spTrack('ground') ? now.az
         : ((sunPathState.groundAz == null ? now.az : sunPathState.groundAz) + 360) % 360;
     const altR = camAlt * DEG, azR = camAz * DEG;
     const dirOf = (aAlt, aAz) => {                          // unit vector in (east, north, up)
@@ -12699,23 +13588,103 @@ function drawSunPathHorizon(now) {
 // four turning points marked and the earth on it for the current date. Heliocentric longitude
 // is taken as a linear walk of the year anchored so day 79 (the March equinox) is 0 — good to a
 // couple of days, which is inside the width of the dot.
+// ---- the orbit IS the date control ----
+// A slider for the date and four buttons for the turning points were two controls saying the same
+// thing as the picture beside them. The orbit already shows where in the year we are; dragging
+// the earth round it is the same gesture as reading it, and the turning points are places on the
+// ring rather than a separate row of buttons.
+// The ring carries a CALENDAR on the outside of it. "Day 214" is not a date anybody holds in
+// their head, so the one thing the ring could not say was the one thing you are setting; a band
+// of months round the outside turns a bare angle into a place in the year, and it costs nothing
+// to read because it is where you were already looking.
+const SP_ORB = { cx: 60, cy: 60, R: 34, band: [35.5, 45], lab: 21 };
+const SP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// First day-of-year of each month, common year — a day either way is well inside the width of
+// the boundary line.
+const SP_MONTH_START = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366];
+const spOrbAngle = d => ((d - 79) / 365.25) * 360;              // degrees round the orbit
+const spOrbAt = (d, r) => [SP_ORB.cx + Math.cos(spOrbAngle(d) * DEG) * r,
+                           SP_ORB.cy - Math.sin(spOrbAngle(d) * DEG) * r];
+// An annular sector between two days. Screen y runs down while the angle runs anticlockwise, so
+// the outward arc takes sweep 0 and the return arc sweep 1.
+function spOrbWedge(d0, d1, rIn, rOut) {
+    const a = spOrbAt(d0, rOut), b = spOrbAt(d1, rOut);
+    const c = spOrbAt(d1, rIn), e = spOrbAt(d0, rIn);
+    const big = Math.abs(spOrbAngle(d1) - spOrbAngle(d0)) > 180 ? 1 : 0;
+    return `M${a[0]},${a[1]}A${rOut},${rOut} 0 ${big} 0 ${b[0]},${b[1]}` +
+           `L${c[0]},${c[1]}A${rIn},${rIn} 0 ${big} 1 ${e[0]},${e[1]}Z`;
+}
+// Which preset the pointer is near, and which one is currently holding the earth. Kept out here
+// rather than as classes on the elements because the whole inset is redrawn on every clock tick
+// — sixty times a second under Play — so anything written onto a node is gone by the next frame.
+let spOrbHover = null;
+let spOrbGrab = null;
+const spDayOfToday = () => {
+    const t = new Date();
+    return Math.floor((t - new Date(t.getUTCFullYear(), 0, 0)) / 86400000);
+};
+
+// The inverse of the drawing, with the snap. Solstices, equinoxes and today are the days anybody
+// actually wants to land on exactly, and by hand you would never hit day 172 rather than 171.
+const SP_ORB_SNAP_DAYS = 4;
+// Returns the day the pointer is asking for AND which preset, if any, took hold of it — the
+// second half being what lets the drawing show the grab rather than only obey it.
+function spOrbResolve(x, y) {
+    const a = Math.atan2(SP_ORB.cy - y, x - SP_ORB.cx) / DEG;
+    let day = 79 + (a / 360) * 365.25;
+    day = ((day - 1) % 365.25 + 365.25) % 365.25 + 1;
+    let best = null;
+    spOrbStops().forEach(s => {
+        // Round the ring, so late December is close to early January.
+        const d = Math.abs(((s.day - day + 547.875) % 365.25) - 182.625);
+        if (d <= SP_ORB_SNAP_DAYS && (!best || d < best.d)) best = { d, day: s.day };
+    });
+    return best ? { day: best.day, stop: best.day } : { day, stop: null };
+}
+
+const spOrbStops = () => SUNPATH_STOPS.concat([{ day: spDayOfToday(), short: 'today', today: true }]);
+
 function drawSunPathOrbitInset(now) {
     const svg = d3.select('#sun-path-orbit-inset');
     if (svg.empty()) return;
     svg.selectAll('*').remove();
-    const cx = 60, cy = 60, R = 40;
-    const ang = d => ((d - 79) / 365.25) * 360;                 // degrees round the orbit
-    const at = (d, r) => [cx + Math.cos(ang(d) * DEG) * r, cy - Math.sin(ang(d) * DEG) * r];
+    const { cx, cy, R, band, lab } = SP_ORB;
+    const at = spOrbAt;
+
+    // The calendar, outermost: twelve wedges, alternately tinted so the boundaries read without
+    // needing a line at each one, each carrying its own name.
+    const months = svg.append('g').attr('class', 'sp-orb-months');
+    for (let m = 0; m < 12; m++) {
+        const d0 = SP_MONTH_START[m], d1 = SP_MONTH_START[m + 1];
+        months.append('path')
+            .attr('class', 'sp-orb-month' + (m % 2 ? ' alt' : ''))
+            .attr('d', spOrbWedge(d0, d1, band[0], band[1]));
+        const lp = at((d0 + d1) / 2, (band[0] + band[1]) / 2);
+        months.append('text').attr('class', 'sp-orb-month-lab')
+            .attr('x', lp[0]).attr('y', lp[1] + 1.9).attr('text-anchor', 'middle')
+            .text(SP_MONTHS[m]);
+    }
 
     svg.append('circle').attr('class', 'sp-orb-path').attr('cx', cx).attr('cy', cy).attr('r', R);
     svg.append('circle').attr('class', 'sp-orb-sun').attr('cx', cx).attr('cy', cy).attr('r', 6);
-    SUNPATH_STOPS.forEach(s => {
+    spOrbStops().forEach(s => {
         const p = at(s.day, R);
-        svg.append('circle').attr('class', 'sp-orb-stop').attr('cx', p[0]).attr('cy', p[1]).attr('r', 2.4);
-        const lp = at(s.day, R + 11);
-        svg.append('text').attr('class', 'sp-orb-lab')
+        // A stop is HOT when the pointer is close enough that letting go would land on it, and
+        // HELD while it actually has the date. Both are the same fact — that this preset has
+        // caught the pointer — said before and during the drag.
+        const held = spOrbGrab === s.day;
+        const hot = held || spOrbHover === s.day;
+        const cls = 'sp-orb-stop' + (s.today ? ' today' : '') + (hot ? ' hot' : '') + (held ? ' held' : '');
+        if (hot)
+            svg.append('circle').attr('class', 'sp-orb-stop-halo' + (s.today ? ' today' : ''))
+                .attr('cx', p[0]).attr('cy', p[1]).attr('r', 6.6);
+        svg.append('circle').attr('class', cls)
+            .attr('cx', p[0]).attr('cy', p[1]).attr('r', hot ? 3.4 : (s.today ? 2.8 : 2.4));
+        const lp = at(s.day, lab);
+        svg.append('text').attr('class', 'sp-orb-lab' + (s.today ? ' today' : '') + (hot ? ' hot' : ''))
             .attr('x', lp[0]).attr('y', lp[1] + 2.5).attr('text-anchor', 'middle')
-            .text(s.short.split(' ')[1] === 'solstice' ? 'sol' : 'eq');
+            .text(s.today ? 'today' : (s.short.split(' ')[1] === 'solstice' ? 'sol' : 'eq'));
     });
     const e = at(now.day, R);
     // The axis keeps a FIXED direction in space — that is the whole reason the seasons happen —
@@ -12725,7 +13694,60 @@ function drawSunPathOrbitInset(now) {
     svg.append('line').attr('class', 'sp-orb-axis')
         .attr('x1', e[0] - tiltDir[0] * 7).attr('y1', e[1] - tiltDir[1] * 7)
         .attr('x2', e[0] + tiltDir[0] * 7).attr('y2', e[1] + tiltDir[1] * 7);
-    svg.append('circle').attr('class', 'sp-orb-earth').attr('cx', e[0]).attr('cy', e[1]).attr('r', 4.5);
+    svg.append('circle')
+        .attr('class', 'sp-orb-earth' + (spOrbGrab != null ? ' held' : ''))
+        .attr('cx', e[0]).attr('cy', e[1]).attr('r', 4.5);
+}
+
+// A press anywhere on the ring jumps the date there and starts a drag, because aiming at a 4.5px
+// earth is not a gesture anybody should have to make. The pointer is converted through the SVG's
+// own coordinate system rather than by measuring the element, so it stays right at any size the
+// panel happens to give it.
+function wireSunPathOrbit() {
+    const el = document.getElementById('sun-path-orbit-inset');
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = '1';
+    el.style.touchAction = 'none';
+    let dragging = false;
+    const setFrom = event => {
+        const p = d3.pointer(event, el);
+        const r = spOrbResolve(p[0], p[1]);
+        spOrbGrab = r.stop;
+        spOrbHover = r.stop;
+        sunPathState.day = r.day;
+        updateSunPath();
+    };
+    el.addEventListener('pointerdown', e => {
+        if (!sunPathState) return;
+        dragging = true;
+        try { el.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+        e.preventDefault();
+        setFrom(e);
+    });
+    el.addEventListener('pointermove', e => {
+        if (!sunPathState) return;
+        if (dragging) { setFrom(e); return; }
+        // Not dragging: say in advance which preset would catch this press. Only the inset is
+        // redrawn — the panes have not changed and re-rendering three WebGL scenes to light up
+        // a 3 px dot would be absurd.
+        const p = d3.pointer(e, el);
+        const near = spOrbResolve(p[0], p[1]).stop;
+        if (near !== spOrbHover) { spOrbHover = near; drawSunPathOrbitInset(sunPathNow()); }
+    });
+    el.addEventListener('pointerleave', () => {
+        if (spOrbHover == null || dragging) return;
+        spOrbHover = null;
+        if (sunPathState) drawSunPathOrbitInset(sunPathNow());
+    });
+    const up = e => {
+        if (!dragging) return;
+        dragging = false;
+        spOrbGrab = null;
+        try { el.releasePointerCapture(e.pointerId); } catch (_) { /* fine */ }
+        if (sunPathState) drawSunPathOrbitInset(sunPathNow());
+    };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
 }
 
 
@@ -12744,7 +13766,12 @@ function buildSunPathMap() {
     svgM.selectAll('*').remove();
     const proj = d3.geoEquirectangular().scale(W / (2 * Math.PI)).translate([W / 2, H / 2]).precision(0);
     const p = d3.geoPath().projection(proj);
-    svgM.append('rect').attr('width', W).attr('height', H).attr('class', 'sp-map-ocean');
+    // The sea stops where the world does. 360° of longitude spans the pane's WIDTH, which pins
+    // 180° of latitude to half of it — so a rect filling the pane paints ocean across 20 px of
+    // nothing above the north pole and below the south. Same rectangle the imagery uses.
+    const oceanTop = proj([0, 90])[1], oceanBot = proj([0, -90])[1];
+    svgM.append('rect').attr('y', oceanTop).attr('width', W).attr('height', oceanBot - oceanTop)
+        .attr('class', 'sp-map-ocean');
     // The satellite basemap sits UNDER the vector coastlines rather than replacing them: the
     // twilight caps drawn on top are what make it a day/night picture, and an outline still helps
     // at this size. Its href is set per draw, since the projection may be rotated to follow the
@@ -12817,6 +13844,18 @@ function buildSunPathMap() {
 // The night side needs no image of its own: the twilight caps drawn over the top ARE the night.
 // Where a real Black Marble is present it is clipped to the 90 degree cap and laid under them, so
 // the dark half shows city lights instead of only being dark.
+// WHERE THE IMAGE GOES, and it is not the pane. The projection is fitted so a full 360° of
+// longitude spans the pane's WIDTH, which on an equirectangular pins 180° of latitude to half
+// that — 200 px in a pane 220 tall. Drawn at the pane's own height the imagery was therefore 10%
+// too tall and 10 px too high, so every coastline sat several degrees off the land it belongs to
+// (5 px at 45°, which is 4.5° of latitude). The image is placed on the SPHERE's own projected
+// rectangle instead, which is right whatever aspect the pane happens to be.
+function spSatRect() {
+    const m = sunPathMap;
+    const top = m.proj([0, 90]), bot = m.proj([0, -90]);
+    return { y: top[1], h: bot[1] - top[1] };
+}
+
 function sunPathDrawSatellite(c0) {
     const m = sunPathMap;
     if (!m) return;
@@ -12836,19 +13875,22 @@ function sunPathDrawSatellite(c0) {
     m.satAt = c0;
     m.sat.selectAll('*').remove();
     const W = m.W, H = m.H;
+    const rect = spSatRect();
     // A rotation of c0 degrees east shifts the image left by that fraction of its width; two
     // copies side by side cover whatever wraps round the edge.
     const dx = -c0 / 360 * W;
     const put = (href, cls) => {
         [-1, 0, 1].forEach(k => {
             m.sat.append('image').attr('class', cls)
-                .attr('href', href).attr('x', dx + k * W).attr('y', 0)
-                .attr('width', W).attr('height', H)
+                .attr('href', href).attr('x', dx + k * W).attr('y', rect.y)
+                .attr('width', W).attr('height', rect.h)
                 .attr('preserveAspectRatio', 'none');
         });
     };
     put(sunPathSat.day.src, 'sp-map-sat-day');
-    m.sat.append('rect').attr('width', W).attr('height', H).attr('class', 'sp-map-sat-veil');
+    m.sat.append('rect').attr('y', rect.y).attr('width', W).attr('height', rect.h)
+        .attr('class', 'sp-map-sat-veil');
+    syncSunPathGain();          // the layer was just rebuilt; the exposure is not part of it
 }
 
 function drawSunPathMap(now) {
@@ -12858,7 +13900,7 @@ function drawSunPathMap(now) {
     // TRACK SUN centres the map on the sub-solar meridian, so the sunrise line stands still and
     // the earth slides underneath it. Off, the map is the map and the line sweeps across it.
     // Everything downstream measures longitude relative to `c0`, which is the centre either way.
-    const c0 = sunPathState.trackSun ? (((now.lon - now.H) + 540) % 360) - 180 : 0;
+    const c0 = spTrack('map') ? (((now.lon - now.H) + 540) % 360) - 180 : 0;
     if ((sunPathMap.rot || 0) !== c0) {
         sunPathMap.rot = c0;
         proj.rotate([-c0, 0]);
@@ -12894,10 +13936,10 @@ function drawSunPathMap(now) {
             if (defs.empty()) defs = sunPathMap.svg.append('defs');
             defs.selectAll('#' + cid).remove();
             defs.append('clipPath').attr('id', cid).append('path').attr('d', capD);
-            const W = sunPathMap.W, H = sunPathMap.H, dx = -c0 / 360 * W;
+            const W = sunPathMap.W, dx = -c0 / 360 * W, rect = spSatRect();
             const gN = dyn.append('g').attr('clip-path', `url(#${cid})`).attr('class', 'sp-map-sat-night');
             [-1, 0, 1].forEach(k => gN.append('image').attr('href', sunPathSat.night.src)
-                .attr('x', dx + k * W).attr('y', 0).attr('width', W).attr('height', H)
+                .attr('x', dx + k * W).attr('y', rect.y).attr('width', W).attr('height', rect.h)
                 .attr('preserveAspectRatio', 'none'));
         }
     }
@@ -13020,6 +14062,16 @@ function drawSunPathMap(now) {
 // ---- one update, every pane ----
 function updateSunPath() {
     if (!sunPathState) return;
+    // The imagery follows the DATE on the dial. These panes are a picture of one particular day,
+    // and Blue Marble has a picture of that day's month — so walking a year through Play now
+    // walks the snow line down and back up with it, which is the same fact the day-length bars
+    // are reporting and a good deal easier to see.
+    if (sunPathState.satellite)
+        useBmngMonth(sunPathDate(sunPathState).getUTCMonth() + 1, () => {
+            if (!sunPathState) return;
+            refreshSunPathEarthTexture(true);
+            updateSunPath();
+        });
     const now = sunPathNow();
 
     drawSunPathHorizon(now);
@@ -13033,10 +14085,12 @@ function updateSunPath() {
         // than only when somebody drags it.
         const wasAz = sunPathState.sunAz;
         sunPathState.sunAz = now.az;
-        if (sunPathState.trackSun && Math.abs((wasAz == null ? 1e9 : wasAz) - now.az) > 0.05)
+        if (spTrack('dome') && Math.abs((wasAz == null ? 1e9 : wasAz) - now.az) > 0.05)
             applySunPathDomeCamera();
         updateDomeScene(now);
         updateGlobeScene(now);
+        syncSunPathTropics();
+        syncSunPathNorth();
         sunPathAutoFrame();          // both panes zoom to whatever is actually in them
         renderSunPathThree();
     }
@@ -13051,14 +14105,14 @@ function updateSunPath() {
     set('sun-path-globe-note', ` · sun overhead at ${now.dec.toFixed(1)}°`);
     set('sun-path-horizon-note', ` · sun ${now.alt.toFixed(0)}° at ${Math.round(now.az)}°`);
     set('sun-path-map-note', ' · click to move');
+    // Where and when, and nothing else. Everything the readout used to add — the hours of
+    // daylight, the sun's altitude, the angle the track meets the horizon at — is already said by
+    // the pane captions or by the picture itself, and four lines of it above the orbit left the
+    // orbit no room to be the size it needs to be.
     set('sun-path-readout',
         `<strong>${dateStr}, ${clock}</strong> local solar time<br>` +
         `<strong>${Math.abs(now.lat).toFixed(1)}°${now.lat >= 0 ? 'N' : 'S'} ` +
-        `${Math.abs(now.lon).toFixed(1)}°${now.lon >= 0 ? 'E' : 'W'}</strong><br>` +
-        `Daylight: <strong>${now.hd.polar ? (now.hd.polar === 'day' ? '24 h' : '0 h') : dayH.toFixed(1) + ' h'}</strong> · ` +
-        `sun now <strong>${now.alt.toFixed(1)}°</strong><br>` +
-        `<span class="sandbox-note">Track meets the horizon at ${riseAngle(now.lat).toFixed(0)}° — ` +
-        `steep at the equator, shallow near the poles.</span>`);
+        `${Math.abs(now.lon).toFixed(1)}°${now.lon >= 0 ? 'E' : 'W'}</strong>`);
 
     const sync = (id, val, label) => {
         const el = document.getElementById(id);
@@ -13070,18 +14124,15 @@ function updateSunPath() {
     const spLab = document.getElementById('sun-path-speed-val');
     if (spLab) spLab.textContent = (sp < 1 ? sp.toFixed(2) : sp.toFixed(1)) + '×';
 
-    // Light up whichever turning point we are sitting on, and whichever clock is running. The
-    // year snaps exactly onto these days, so an exact-ish match is the right test.
-    document.querySelectorAll('#sun-path-stops button').forEach(b => {
-        b.classList.toggle('active', Math.abs(+b.dataset.stopDay - sunPathState.day) < 0.75);
-    });
     const dayBtn = document.getElementById('sun-path-play-day');
     const yearBtn = document.getElementById('sun-path-play-year');
     if (dayBtn) dayBtn.classList.toggle('active', !!sunPathState.playing && sunPathState.mode === 'day');
     if (yearBtn) yearBtn.classList.toggle('active', !!sunPathState.playing && sunPathState.mode === 'year');
-    sync('sun-path-lat', sunPathState.lat, `${Math.abs(sunPathState.lat).toFixed(0)}°${sunPathState.lat >= 0 ? 'N' : 'S'}`);
-    sync('sun-path-day', sunPathState.day, dateStr);
     sync('sun-path-hour', sunPathState.hour, clock);
+    SUNPATH_PANES.forEach(v => {
+        const b = document.getElementById('sp-track-' + v.key);
+        if (b) b.checked = spTrack(v.key);
+    });
 }
 
 // ---- panel ----
@@ -13093,25 +14144,17 @@ function buildSunPathPanel() {
         panel.className = 'sandbox-panel';
         panel.innerHTML = `
             <div class="sandbox-title">Sun Path</div>
-            <div class="sp-orbit-row">
-                <svg class="sp-orbit-inset" id="sun-path-orbit-inset" viewBox="0 0 120 120"
-                     preserveAspectRatio="xMidYMid meet"></svg>
-                <div class="sandbox-readout" id="sun-path-readout"></div>
-            </div>
+            <div class="sandbox-readout" id="sun-path-readout"></div>
+            <svg class="sp-orbit-inset" id="sun-path-orbit-inset" viewBox="0 0 120 120"
+                 preserveAspectRatio="xMidYMid meet"
+                 aria-label="Orbit: drag the earth round it to change the date"></svg>
             <div class="sandbox-edit">
-                <label class="sandbox-slider"><span>Lat</span>
-                    <input type="range" id="sun-path-lat" min="-89" max="89" step="1" value="51">
-                    <span class="sandbox-note" id="sun-path-lat-val"></span></label>
-                <label class="sandbox-slider"><span>Date</span>
-                    <input type="range" id="sun-path-day" min="1" max="365" step="1" value="1">
-                    <span class="sandbox-note" id="sun-path-day-val"></span></label>
                 <label class="sandbox-slider"><span>Hour</span>
                     <input type="range" id="sun-path-hour" min="0" max="24" step="0.25" value="12">
                     <span class="sandbox-note" id="sun-path-hour-val"></span></label>
                 <label class="sandbox-slider"><span>Speed</span>
                     <input type="range" id="sun-path-speed" min="-20" max="20" step="1" value="0">
                     <span class="sandbox-note" id="sun-path-speed-val"></span></label>
-                <div class="sandbox-nudge" id="sun-path-stops"></div>
                 <div class="sp-panes" id="sun-path-panes">
                     <span class="sp-group-lab">Views</span>
                     ${SUNPATH_PANES.map(v => `<label class="sandbox-check">` +
@@ -13119,22 +14162,24 @@ function buildSunPathPanel() {
                 </div>
                 <div class="sp-panes">
                     <span class="sp-group-lab">Show</span>
-                    <label class="sandbox-check"><input type="checkbox" id="sp-track-sun" checked>
-                        Track sun</label>
                     <label class="sandbox-check"><input type="checkbox" id="sp-show-moon">
                         Show moon</label>
                     <label class="sandbox-check"><input type="checkbox" id="sp-satellite">
                         Satellite</label>
                     <label class="sandbox-check"><input type="checkbox" id="sp-tropics" checked>
                         Tropic lines</label>
-                    <label class="sandbox-check"><input type="checkbox" id="sp-daylen" checked>
-                        Day lengths</label>
-                    <label class="sandbox-check"><input type="checkbox" id="sp-zones">
-                        Time zones</label>
                 </div>
                 <label class="sandbox-check"><span>Figure</span>
                     <select id="sun-path-figure">${SUNPATH_FIGURE_STYLES.map(f =>
                         `<option value="${f.key}">${f.label}</option>`).join('')}</select></label>
+                <div class="sp-sat-gain" id="sp-sat-gain">
+                    <label class="sandbox-slider"><span>Day</span>
+                        <input type="range" id="sp-gain-day" min="0.3" max="2.5" step="0.05" value="1">
+                        <span class="sandbox-note" id="sp-gain-day-val">1.00×</span></label>
+                    <label class="sandbox-slider"><span>Night</span>
+                        <input type="range" id="sp-gain-night" min="0.2" max="3" step="0.05" value="2.4">
+                        <span class="sandbox-note" id="sp-gain-night-val">2.40×</span></label>
+                </div>
             </div>
             <div class="sandbox-actions">
                 <button class="btn secondary" id="sun-path-here">My latitude</button>
@@ -13144,12 +14189,7 @@ function buildSunPathPanel() {
             <div class="sandbox-status" id="sun-path-status" role="status"></div>`;
         (document.getElementById('globe-side-panel') || document.body).appendChild(panel);
 
-        document.getElementById('sun-path-lat').addEventListener('input', function () {
-            sunPathState.lat = +this.value; updateSunPath();
-        });
-        document.getElementById('sun-path-day').addEventListener('input', function () {
-            sunPathState.day = +this.value; updateSunPath();
-        });
+        wireSunPathOrbit();
         document.getElementById('sun-path-hour').addEventListener('input', function () {
             sunPathState.hour = +this.value; updateSunPath();
         });
@@ -13188,25 +14228,39 @@ function buildSunPathPanel() {
                 updateSunPath();
             });
         };
-        flag('sp-track-sun', 'trackSun', () => {
-            // Handing over where it is rather than snapping: turning tracking off leaves the
-            // camera exactly where tracking had it, so the switch reads as "stop following"
-            // rather than as a jump to somewhere else.
-            if (!sunPathState.trackSun) {
-                const n = sunPathNow();
-                sunPathState.groundAz = n.az;
-                sunPathState.groundEl = n.alt;
-            }
-            applySunPathDomeCamera();
-        });
         flag('sp-show-moon', 'showMoon');
         flag('sp-satellite', 'satellite', () => {
             refreshSunPathEarthTexture(true);
             refreshSunPathDomeGround(true);
+            syncSunPathGain();
         });
-        flag('sp-tropics', 'tropics');
-        flag('sp-daylen', 'dayLengths');
-        flag('sp-zones', 'zones');
+        // Blue Marble and Black Marble are two photographs by two instruments of two different
+        // things, and nothing makes their exposures agree. How bright the lights should be against
+        // the daylight is a matter of taste rather than of fact, so it is a pair of knobs.
+        const gain = (id, key, after) => {
+            const el = document.getElementById(id);
+            const out = document.getElementById(id + '-val');
+            if (!el) return;
+            el.value = sunPathState[key];
+            if (out) out.textContent = (+el.value).toFixed(2) + '×';
+            el.addEventListener('input', function () {
+                sunPathState[key] = +this.value;
+                if (out) out.textContent = sunPathState[key].toFixed(2) + '×';
+                if (after) after();
+                syncSunPathGain();
+                updateSunPath();
+            });
+        };
+        gain('sp-gain-day', 'dayGain', () => { if (sunPathMap) sunPathMap.satDirty = true; });
+        gain('sp-gain-night', 'nightGain');
+        syncSunPathGain();
+        // Tropic lines are the same five parallels wherever they are drawn, so one switch reaches
+        // all three views that can show them: the map's bars, the rings round the earth in space,
+        // and the ground the observer is standing on.
+        flag('sp-tropics', 'tropics', () => {
+            syncSunPathTropics();
+            refreshSunPathDomeGround(true);
+        });
         document.getElementById('sun-path-play-day').addEventListener('click', () => toggleSunPathPlay('day'));
         document.getElementById('sun-path-play-year').addEventListener('click', () => toggleSunPathPlay('year'));
         document.getElementById('sun-path-here').addEventListener('click', () => {
@@ -13220,16 +14274,6 @@ function buildSunPathPanel() {
                        st.textContent = ''; updateSunPath(); },
                 e => { st.textContent = 'Location unavailable (' + e.message + ').'; },
                 { timeout: 10000, maximumAge: 600000 });
-        });
-        const stops = document.getElementById('sun-path-stops');
-        SUNPATH_STOPS.forEach(s => {
-            const b = document.createElement('button');
-            b.className = 'btn secondary';
-            b.textContent = s.short || s.label;
-            b.dataset.stopDay = String(s.day);
-            b.title = s.label;
-            b.addEventListener('click', () => { sunPathState.day = s.day; updateSunPath(); });
-            stops.appendChild(b);
         });
     }
     panel.style.display = '';
@@ -18905,7 +19949,8 @@ function framingExport() {
 // Fuller's Dymaxion, taken apart. The earth is wrapped on an icosahedron and the solid is cut
 // open and rolled flat — and which cuts you make is the whole argument of the thing, because
 // every arrangement keeps some things together by tearing others apart. So the cuts are the
-// interaction: turn the earth inside the solid, pull a triangle off, drop it somewhere else.
+// interaction: turn the earth inside the solid, and choose edge by edge which of them is a
+// seam and which is a tear.
 //
 // This is NOT d3.geoAirocean with knobs on. That projection bakes each face's placement at
 // construction, and three attempts to drive it from a rewritten tree produced faces sitting on
@@ -18919,88 +19964,392 @@ function framingExport() {
 //     that lands its copy of the shared edge on top of the parent's already-placed copy, with
 //     the child on the far side. No fitting, no residual: the seam closes to the last decimal.
 //
-// The arrangement is therefore just a SPANNING FOREST over the icosahedron's face adjacency,
-// which is why "everything connected only through the piece you moved comes with it" is not a
-// feature that had to be written — it is what a tree is.
+// THE MAP IS NEVER IN PIECES. The arrangement is a SPANNING TREE over the icosahedron's face
+// adjacency — 19 of the 30 edges joined, always — held as an edge SET rather than as parent
+// pointers, because every operation here is "add this edge, drop that one" and a tree that is
+// edited as a set can never come apart. The parent links the placement walk needs are derived
+// from the set by breadth-first search each time, so connectivity is not a property that has to
+// be maintained: it is a property of the only representation there is.
 const AIRO_SCALE = 200;               // gnomonic units; the same for every face, or they'd not fit
-const AIRO_SNAP = 26;                 // how near a dropped edge must be to re-attach, in those units
 // Fuller's own orientation, read off d3.geoAirocean — the earth turned inside a solid whose
 // vertices sit at the poles and on two rings at ±atan(1/2).
 const AIRO_FULLER_ROTATE = [-83.65929, 25.44458, -87.45184];
+const AIRO_GLOBE_SIZE = 214;          // the inset that shows the solid over the earth
 
 let airoState = null;
-let airoSolidCache = null;
+const airoEdgeKey = (a, b) => (a < b ? a + ':' + b : b + ':' + a);
 
-// Twelve vertices, twenty faces. The faces are found by mutual adjacency rather than typed out:
-// two vertices are joined if they are among each other's five nearest, and a face is three
-// vertices that are all joined to each other.
-function airoSolid() {
-    if (airoSolidCache) return airoSolidCache;
+// ---- the solids ----
+// Six of them, and none is typed out as a face list. Each is a bare bag of POINTS and the faces
+// are worked out by `airoBuildSolid`, because a face list is the part that is tedious to type and
+// impossible to check by eye — a single transposed index gives a solid that looks almost right
+// and unfolds into nonsense. A point list is short, and it is the form every published set of
+// coordinates comes in.
+const AIRO_PHI = (1 + Math.sqrt(5)) / 2;
+
+function airoDedupe(pts) {
+    const seen = new Set(), out = [];
+    pts.forEach(p => {
+        // -0 and 0 must key the same, or a coordinate that is zero doubles every point on it
+        const k = p.map(v => (Math.abs(v) < 1e-9 ? 0 : v).toFixed(6)).join(',');
+        if (seen.has(k)) return;
+        seen.add(k); out.push(p);
+    });
+    return out;
+}
+
+// Cyclic (even) permutations of each triple, with every combination of signs — which is how
+// nearly every published coordinate set for these solids is written.
+function airoCyc(triples) {
+    const out = [];
+    triples.forEach(t => {
+        [[t[0], t[1], t[2]], [t[1], t[2], t[0]], [t[2], t[0], t[1]]].forEach(p => {
+            for (let m = 0; m < 8; m++)
+                out.push([p[0] * ((m & 1) ? -1 : 1), p[1] * ((m & 2) ? -1 : 1), p[2] * ((m & 4) ? -1 : 1)]);
+        });
+    });
+    return airoDedupe(out);
+}
+
+// The snub cube is CHIRAL, and its coordinates say so: the even permutations take an even number
+// of minus signs and the odd permutations an odd number. Take all 48 and you get a different,
+// non-uniform solid; take the wrong parity and you get the mirror image, which is equally valid
+// and not what the rest of the numbers describe.
+function airoSnubCubeVerts() {
+    const t = 1.8392867552141612;      // tribonacci constant, t³ = t² + t + 1
+    const a = 1, b = 1 / t, c = t;
+    const even = [[a, b, c], [b, c, a], [c, a, b]];
+    const odd = [[a, c, b], [c, b, a], [b, a, c]];
+    const out = [];
+    const push = (p, wantOdd) => {
+        for (let m = 0; m < 8; m++) {
+            const neg = (m & 1 ? 1 : 0) + (m & 2 ? 1 : 0) + (m & 4 ? 1 : 0);
+            if ((neg % 2 === 1) !== wantOdd) continue;
+            out.push([p[0] * ((m & 1) ? -1 : 1), p[1] * ((m & 2) ? -1 : 1), p[2] * ((m & 4) ? -1 : 1)]);
+        }
+    };
+    even.forEach(p => push(p, false));
+    odd.forEach(p => push(p, true));
+    return airoDedupe(out);
+}
+
+// THE ICOSAHEDRAL SOLIDS ARE ALL PUT IN ONE FRAME, and it is d3's. Fuller's orientation is the
+// three numbers in AIRO_FULLER_ROTATE, and they are stated in the frame d3's Airocean builds its
+// solid in — an icosahedron with VERTICES AT THE POLES and two rings at ±atan(1/2). The
+// published Cartesian coordinates for these solids use a different orientation of the same
+// icosahedron, the cyclic permutations of (0, ±1, ±φ), which has no vertex at either pole.
+//
+// Quoting them verbatim therefore silently broke Fuller's net: `airoFullerOrder` matches d3's
+// tree onto our faces by direction, and with the solid turned the match ran to the wrong faces
+// every time. It did not look like a failure — every link it produced was between genuinely
+// adjacent faces, so the tree was a perfectly good net, just not the historical one. Measured
+// against d3's own tree: 8 of 19 seams in common. Aligned, all 19.
+//
+// The rotation is found rather than typed: the icosahedron's symmetry group is transitive on
+// (vertex, incident edge) pairs, so carrying ANY such pair of one copy onto any such pair of the
+// other carries the whole solid onto the whole solid.
+let airoAlignCache = null;
+function airoAlignIcosahedral(pts) {
+    if (!airoAlignCache) {
+        const nz = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+        const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        // An orthonormal frame from a vertex and its nearest neighbour.
+        const frame = set => {
+            const V = set.map(nz);
+            const v = V[0];
+            let best = null;
+            V.forEach((w, i) => {
+                if (i === 0) return;
+                const d = dot(v, w);
+                if (!best || d > best.d) best = { d, w };
+            });
+            const t = nz([best.w[0] - v[0] * best.d, best.w[1] - v[1] * best.d, best.w[2] - v[2] * best.d]);
+            return [v, t, cross(v, t)];
+        };
+        const A = frame(airoCyc([[0, 1, AIRO_PHI]]));   // the published frame
+        const B = frame(airoIcoVerts());                // d3's, and Fuller's
+        // R = B·Aᵀ, written out: a source point's components in A become the same components in B.
+        airoAlignCache = [0, 1, 2].map(r => [0, 1, 2].map(c =>
+            B[0][r] * A[0][c] + B[1][r] * A[1][c] + B[2][r] * A[2][c]));
+    }
+    const M = airoAlignCache;
+    return pts.map(p => [M[0][0] * p[0] + M[0][1] * p[1] + M[0][2] * p[2],
+                         M[1][0] * p[0] + M[1][1] * p[1] + M[1][2] * p[2],
+                         M[2][0] * p[0] + M[2][1] * p[1] + M[2][2] * p[2]]);
+}
+
+// The icosahedron with vertices at the poles: d3's frame, and the one Fuller's three numbers are
+// stated in.
+function airoIcoVerts() {
     const lat = Math.atan(0.5) / DEG;
-    const verts = [[0, 90], [0, -90]];
-    for (let i = 0; i < 5; i++) { verts.push([36 + i * 72, lat]); verts.push([i * 72, -lat]); }
-    const xyz = ([lo, la]) => {
+    const ll = [[0, 90], [0, -90]];
+    for (let i = 0; i < 5; i++) { ll.push([36 + i * 72, lat]); ll.push([i * 72, -lat]); }
+    return ll.map(([lo, la]) => {
         const p = lo * DEG, q = la * DEG, c = Math.cos(q);
         return [c * Math.cos(p), c * Math.sin(p), Math.sin(q)];
-    };
-    const V = verts.map(xyz);
-    const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
-    const near = V.map((v, i) => V.map((w, j) => [j, d2(v, w)]).filter(([j]) => j !== i)
-        .sort((a, b) => a[1] - b[1]).slice(0, 5).map(([j]) => j));
-    const faces = [];
-    for (let i = 0; i < 12; i++)
-        for (const j of near[i]) if (j > i)
-            for (const k of near[j]) if (k > j && near[i].includes(k)) faces.push([i, j, k]);
-    // WIND THEM. A face falls out of the search in index order, which is the wrong way round
-    // about half the time — and a backwards spherical ring is not a triangle, it is the whole
-    // earth minus that triangle. Left unwound, every point on the globe reads as inside nine or
-    // eleven faces instead of exactly one, and each face clips to the complement of itself.
-    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    faces.forEach(f => {
-        const out = [0, 1, 2].map(t => (V[f[0]][t] + V[f[1]][t] + V[f[2]][t]) / 3);
-        // d3 reads a ring with the inside on its left, which for a face seen from OUTSIDE the
-        // sphere is clockwise — hence the negative test.
-        if (dot(cross(sub(V[f[1]], V[f[0]]), sub(V[f[2]], V[f[0]])), out) > 0) {
-            const t = f[1]; f[1] = f[2]; f[2] = t;
-        }
     });
-    // Two faces are adjacent when they share two vertices; that graph is what gets spanned.
-    const adj = faces.map(() => []);
-    for (let i = 0; i < faces.length; i++)
-        for (let j = i + 1; j < faces.length; j++) {
-            const shared = faces[i].filter(v => faces[j].includes(v));
-            if (shared.length === 2) { adj[i].push(j); adj[j].push(i); }
+}
+
+// The rhombic triacontahedron is DERIVED rather than quoted, because the published coordinate
+// sets for it pair an icosahedron with a dodecahedron at a particular relative radius and of a
+// particular chirality, and getting either wrong gives 32 points whose hull is not rhombic at
+// all. Its 30 faces correspond one for one to the icosahedron's 30 EDGES: each rhombus is that
+// edge's two endpoints (the short diagonal) together with the two points sitting over the faces
+// either side of it (the long diagonal). Requiring the diagonals to bisect each other — which is
+// what makes it a rhombus rather than a kite — puts those points at the face's vertex sum over
+// φ², and nothing has to be looked up.
+//
+// Checked on one face: (0,1,φ), (0,-1,φ), (±1/φ, 0, φ) all lie in the plane z = φ, with diagonals
+// 2 and 2/φ — a ratio of exactly φ, which is the golden rhombus this solid is made of.
+function airoRhombicVerts() {
+    const ico = airoIcoVerts();
+    const S = airoBuildSolid(ico);
+    const out = ico.slice();
+    S.faces.forEach(f => {
+        const s = [0, 1, 2].map(k => f.reduce((acc, vi) => acc + ico[vi][k], 0));
+        out.push(s.map(v => v / (AIRO_PHI * AIRO_PHI)));
+    });
+    return out;
+}
+
+const AIRO_SOLIDS = {
+    icosahedron: {
+        label: 'Icosahedron', note: '20 triangles — Fuller’s own',
+        verts: airoIcoVerts
+    },
+    dodecahedron: {
+        label: 'Dodecahedron', note: '12 pentagons',
+        // The dual: one vertex over each face of the icosahedron, which puts it in the same
+        // frame for free rather than needing the published coordinates turned to match.
+        verts: () => {
+            const ico = airoIcoVerts();
+            return airoBuildSolid(ico).faces.map(f =>
+                [0, 1, 2].map(k => f.reduce((a, vi) => a + ico[vi][k], 0)));
         }
-    airoSolidCache = { verts, V, faces, adj,
-        sharedVerts: (a, b) => faces[a].filter(v => faces[b].includes(v)) };
+    },
+    'truncated-icosahedron': {
+        label: 'Truncated icosahedron', note: '12 pentagons, 20 hexagons — the football',
+        verts: () => airoAlignIcosahedral(airoCyc([[0, 1, 3 * AIRO_PHI],
+                              [1, 2 + AIRO_PHI, 2 * AIRO_PHI],
+                              [AIRO_PHI, 2, 2 * AIRO_PHI + 1]]))
+    },
+    'truncated-icosidodecahedron': {
+        label: 'Truncated icosidodecahedron', note: '30 squares, 20 hexagons, 12 decagons',
+        verts: () => {
+            const P = AIRO_PHI, q = 1 / P;
+            return airoAlignIcosahedral(airoCyc([[q, q, 3 + P], [2 * q, P, 1 + 2 * P],
+                            [q, P * P, 3 * P - 1], [2 * P - 1, 2, 2 + P], [P, 3, 2 * P]]));
+        }
+    },
+    'snub-cube': {
+        label: 'Snub cube', note: '32 triangles, 6 squares — chiral',
+        verts: airoSnubCubeVerts
+    },
+    'rhombic-triacontahedron': {
+        label: 'Rhombic triacontahedron', note: '30 golden rhombi',
+        verts: airoRhombicVerts
+    }
+};
+const AIRO_DEFAULT_SOLID = 'icosahedron';
+
+// Turn a bag of points into a solid: which of them are corners of which face, wound the way d3
+// wants, with the edge table the interaction is built on.
+//
+// The faces are found from SUPPORTING PLANES rather than by any hull algorithm, and the candidate
+// planes come from the vertices themselves: every face containing a vertex v contains exactly two
+// of v's edge-neighbours, and those three points are never collinear, so v with each pair of its
+// neighbours enumerates every face of the solid several times over. A plane is kept when no
+// vertex lies outside it. That is 360 candidates for the largest solid here rather than the
+// 280,000 triples a blind search would try, and it needs no tolerance tuning beyond "on the
+// plane".
+//
+// Two things it must NOT do. It must not normalise the points onto the unit sphere: a Catalan
+// solid like the rhombic triacontahedron genuinely has its vertices at two different radii, and
+// flattening them destroys the solid. And it must not assume every face is the same distance
+// from the centre — see airoFaceProjection, where that distance is the whole of what makes an
+// Archimedean net close up.
+function airoBuildSolid(P) {
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const norm = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+    // Scale so the outermost vertex sits on the unit sphere, keeping the RELATIVE radii intact.
+    const R = Math.max(...P.map(p => Math.hypot(p[0], p[1], p[2])));
+    const V = P.map(p => [p[0] / R, p[1] / R, p[2] / R]);
+    const n = V.length;
+
+    const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+    let e2 = Infinity;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) e2 = Math.min(e2, d2(V[i], V[j]));
+    const nb = V.map((v, i) => V.map((_, j) => j).filter(j => j !== i && Math.abs(d2(v, V[j]) - e2) < e2 * 1e-6));
+
+    const faces = [], fn = [], fr = [], seen = new Set();
+    for (let i = 0; i < n; i++)
+        for (let x = 0; x < nb[i].length; x++)
+            for (let y = x + 1; y < nb[i].length; y++) {
+                let m = cross(sub(V[nb[i][x]], V[i]), sub(V[nb[i][y]], V[i]));
+                if (Math.hypot(m[0], m[1], m[2]) < 1e-9) continue;
+                m = norm(m);
+                let off = dot(m, V[i]);
+                if (off < 0) { m = m.map(t => -t); off = -off; }
+                if (off < 1e-6) continue;
+                let ok = true; const on = [];
+                for (let k = 0; k < n; k++) {
+                    const s = dot(m, V[k]) - off;
+                    if (s > 1e-6) { ok = false; break; }
+                    if (s > -1e-6) on.push(k);
+                }
+                if (!ok || on.length < 3) continue;
+                // THE FACE IS ITS SET OF CORNERS, and that is what identifies it. Keying on the
+                // rounded normal instead is the same face found from two different corners of
+                // itself producing two different strings, because -1e-17 formats as "-0.00000"
+                // and +1e-17 as "0.00000" — so any face whose normal lies on an axis with a zero
+                // component was collected TWICE. That is exactly the 12 pentagons of the
+                // truncated icosahedron (which sit on the five-fold axes) and the 12 decagons of
+                // the truncated icosidodecahedron: 44 faces instead of 32, every vertex claimed
+                // by four faces instead of three, and an Euler characteristic of 74. A set of
+                // integers has no such question about it.
+                const key = on.slice().sort((a, b) => a - b).join(',');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                faces.push(airoOrderRing(on, m, V));
+                fn.push(m);
+                fr.push(off);
+            }
+
+    // WIND THEM. d3 reads a ring with the inside on its left, which for a face seen from OUTSIDE
+    // the sphere is clockwise. Left the other way round a face is not a face at all, it is the
+    // whole earth minus that face, and every point on the globe reads as inside all but one of
+    // them while each clips to the complement of itself.
+    faces.forEach((f, i) => {
+        if (dot(cross(sub(V[f[1]], V[f[0]]), sub(V[f[2]], V[f[0]])), fn[i]) > 0) f.reverse();
+    });
+
+    // Adjacency and the edge table, straight off the rings: two faces meet along an edge exactly
+    // when they list the same pair of vertices consecutively.
+    const at = new Map();
+    faces.forEach((f, i) => f.forEach((v, k) => {
+        const w = f[(k + 1) % f.length];
+        const key = v < w ? v + ':' + w : w + ':' + v;
+        if (!at.has(key)) at.set(key, []);
+        at.get(key).push({ f: i, v, w });
+    }));
+    const adj = faces.map(() => []);
+    const edges = [], edgeAt = new Map(), faceEdges = faces.map(() => []);
+    at.forEach((use) => {
+        if (use.length !== 2) return;
+        const a = use[0].f, b = use[1].f, e = edges.length;
+        edges.push({ i: e, a, b, verts: [use[0].v, use[0].w] });
+        edgeAt.set(airoEdgeKey(a, b), e);
+        faceEdges[a].push(e); faceEdges[b].push(e);
+        adj[a].push(b); adj[b].push(a);
+    });
+
+    const verts = V.map(v => {
+        const u = norm(v);
+        return [Math.atan2(u[1], u[0]) / DEG, Math.asin(Math.max(-1, Math.min(1, u[2]))) / DEG];
+    });
+    return { verts, V, faces, fn, fr, adj, edges, edgeAt, faceEdges };
+}
+
+// Put a face's vertices in order round its own plane. They arrive in whatever order the vertex
+// list happened to be in, and a polygon read out of order is a star rather than a face.
+function airoOrderRing(ids, nrm, V) {
+    const c = [0, 1, 2].map(k => ids.reduce((a, i) => a + V[i][k], 0) / ids.length);
+    let u = Math.abs(nrm[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const nz = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+    const e1 = nz(cross(nrm, u)), e2 = cross(nrm, e1);
+    const ang = i => {
+        const d = [V[i][0] - c[0], V[i][1] - c[1], V[i][2] - c[2]];
+        return Math.atan2(d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2],
+                          d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2]);
+    };
+    return ids.slice().sort((a, b) => ang(a) - ang(b));
+}
+
+let airoSolidCache = null, airoSolidKey = '';
+function airoSolid() {
+    const key = (airoState && airoState.solid) || AIRO_DEFAULT_SOLID;
+    if (airoSolidCache && airoSolidKey === key) return airoSolidCache;
+    airoSolidKey = key;
+    airoSolidCache = airoBuildSolid((AIRO_SOLIDS[key] || AIRO_SOLIDS[AIRO_DEFAULT_SOLID]).verts());
     return airoSolidCache;
 }
 
 // Where a face sits on the EARTH, given the current locus. The solid is held still and the
 // world turned inside it, so a vertex's earth position is the rotation run backwards.
+//
+// The centre is the face's PLANE NORMAL, not the average of its corners. They coincide for a
+// regular polygon and the difference only shows on a face that is not one — but the gnomonic has
+// to be aimed square at the plane or the face does not project to its own shape, and a rhombus
+// is not a regular polygon.
+// THE GNOMONIC IS AIMED IN THE SOLID'S FRAME, NOT THE EARTH'S, and that is what makes the net's
+// shape a genuine constant. Aiming it at the face's centre in earth coordinates — `rotate([-lon,
+// -lat])` on a centre that moves as the world turns — leaves the in-plane orientation to be
+// settled by whatever the local north happens to be there, so every tile quietly SPUN IN PLACE as
+// the world was turned. Nothing looked broken, and the shape of the net really was the same
+// triangle throughout; each copy of it was drawn at a different angle.
+//
+// Composed the other way round — turn the earth into the solid, THEN bring this face's normal to
+// the origin — the second half is a constant of the solid, so a face's projected corners are pure
+// polyhedron and do not depend on the orientation at all. Three things fall out of that. The
+// placement walk and the board's fit stop depending on the orientation, so turning the world no
+// longer makes the net jump. Dragging becomes exact rather than approximate, because the
+// projection now factors as (something fixed) ∘ (the rotation being dragged), which is the one
+// assumption the versor formula rests on. And a drag frame has only the LAND to redraw.
 function airoFaceEarth(fi) {
     const S = airoSolid();
     const inv = d3.geoRotation(airoState.rot).invert;
     const ring = S.faces[fi].map(i => inv(S.verts[i]));
-    let c = [0, 0, 0];
-    S.faces[fi].forEach(i => { const v = S.V[i]; c = [c[0] + v[0], c[1] + v[1], c[2] + v[2]]; });
-    const n = Math.hypot(c[0], c[1], c[2]);
-    c = c.map(x => x / n);
-    const centre = inv([Math.atan2(c[1], c[0]) / DEG,
-                        Math.asin(Math.max(-1, Math.min(1, c[2]))) / DEG]);
-    return { ring, centre, ids: S.faces[fi] };
+    const m = S.fn[fi];
+    const nLon = Math.atan2(m[1], m[0]) / DEG;
+    const nLat = Math.asin(Math.max(-1, Math.min(1, m[2]))) / DEG;
+    const centre = inv([nLon, nLat]);
+    // `multiply(a, b)` applies b first, so this is: the world's orientation inside the solid,
+    // then the fixed turn that puts this face's normal at the origin.
+    const aim = versor.rotation(versor.multiply(versor([-nLon, -nLat, 0]), versor(airoState.rot)));
+    return { ring, centre, aim, r: S.fr[fi], ids: S.faces[fi] };
 }
 
 // The face's own gnomonic, clipped to the face. Every great circle becomes a straight line, so
-// the spherical triangle lands as a real one — the same real one for every face.
+// the spherical polygon lands as a real one — and at the face's own TRUE SIZE, which is the
+// whole of what lets an Archimedean net close up.
+//
+// THE SCALE IS THE FACE'S OWN DISTANCE FROM THE CENTRE. A gnomonic at scale k sends a direction
+// θ off the axis to k·tan θ, while the real face — which lies in a plane at distance d — puts it
+// at d·tan θ. So k = S·d draws the face at exactly S times its real self, and two faces sharing
+// an edge draw that edge at exactly the same length however different they are.
+//
+// On a Platonic solid every d is equal and this is one constant, which is why it never had to be
+// thought about. On an Archimedean one it is not: the truncated icosahedron's pentagons sit at
+// 0.9393 of its circumradius and its hexagons at 0.9150, so a single scale draws every shared
+// pentagon-hexagon edge 2.7% longer on one side than the other. `airoJoin` maps corner to corner
+// regardless, so nothing would look broken — it would quietly stop being a rigid motion and
+// start being a similarity, shrinking every hexagon by that much and compounding it down the
+// tree.
+//
+// THE CLIP POLYGON IS IN ROTATED COORDINATES, and that one word is the whole of what made this
+// mode unreadable. d3's pipeline runs rotate → preclip → project, so a preclip is handed points
+// that have ALREADY been turned by the projection's own rotation; a clip ring given in raw
+// lon/lat is therefore a ring somewhere else entirely. It did not fail loudly — it clipped each
+// face to a region beside itself, so all twenty faces drew land belonging to their neighbours,
+// overlapping, and the board came out as one smear of coastline with the triangles lost inside
+// it. Measured on face 0: the raw ring draws land across [-18,-356]..[322,-8] with the triangle
+// at [-119,-151]..[142,95] — wholly outside it — and the rotated ring draws it across
+// [-113,-150]..[121,87], which is inside the triangle, as a face of a polyhedron must be.
 function airoFaceProjection(fe) {
-    const poly = { type: 'Polygon', coordinates: [[...fe.ring, fe.ring[0]]] };
-    const p = d3.geoGnomonic().rotate([-fe.centre[0], -fe.centre[1]])
-        .scale(AIRO_SCALE).translate([0, 0]).precision(0.35);
-    if (airoCanClip()) { try { p.preclip(d3.geoClipPolygon(poly)); } catch (_) { /* no clip */ } }
-    return { proj: p, poly };
+    const rot = d3.geoRotation(fe.aim);
+    const spun = fe.ring.map(rot);
+    const p = d3.geoGnomonic().rotate(fe.aim)
+        .scale(AIRO_SCALE * fe.r).translate([0, 0]).precision(0.35);
+    if (airoCanClip()) {
+        try {
+            p.preclip(d3.geoClipPolygon({ type: 'Polygon', coordinates: [[...spun, spun[0]]] }));
+        } catch (_) { /* no clip */ }
+    }
+    return { proj: p, poly: { type: 'Polygon', coordinates: [[...fe.ring, fe.ring[0]]] } };
 }
 
 // One rigid motion carrying a child's copy of the shared edge onto the parent's placed copy.
@@ -19042,105 +20391,206 @@ function airoJoin(childA, childB, childC, placedA, placedB, parentC) {
 
 const airoApply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
 
-// Walk the forest and give every face an absolute placement. A face with no parent is a root
-// and keeps whatever matrix it was last left at; everything below it is derived, which is why
-// dragging one triangle carries its whole subtree without anything being told to follow.
-function airoLayout() {
+// The gnomonic faces, cached against the solid and the orientation they were built at. Turning
+// the world inside the solid is the only thing that changes them — folding the net about an edge
+// does not, because a face is the same shape whatever it is holding — so the whole expensive
+// half of a redraw (a clipped world path per face, and the satellite raster if it is on) is
+// skipped on every fold.
+let airoGeomCache = null, airoGeomKey = '';
+function airoGeom() {
     const S = airoSolid();
-    const geom = S.faces.map((_, i) => {
+    const key = airoSolidKey + '|' + airoState.rot.map(v => v.toFixed(4)).join(',') +
+                '|' + airoCanClip() + '|' + ((gameState.countries || []).length);
+    if (airoGeomCache && airoGeomKey === key) return airoGeomCache;
+    airoGeomKey = key;
+    airoGeomCache = S.faces.map((_, i) => {
         const fe = airoFaceEarth(i);
         const fp = airoFaceProjection(fe);
-        return { fe, ...fp, local: fe.ring.map(v => fp.proj(v)) };
+        // The face's own bounding cap, about its centre rather than about the average of its
+        // corners: the centre is where the gnomonic is aimed, so it is the axis the corners are
+        // actually spread around.
+        const ax = versor.cartesian(fe.centre);
+        let lo = 1;
+        fe.ring.forEach(v => {
+            const c = versor.cartesian(v);
+            const d = ax[0] * c[0] + ax[1] * c[1] + ax[2] * c[2];
+            if (d < lo) lo = d;
+        });
+        const cap = { ax, ang: Math.acos(Math.max(-1, Math.min(1, lo))) };
+        return { fe, cap, ...fp, local: fe.ring.map(v => fp.proj(v)) };
     });
-    const place = {};
-    const kids = S.faces.map(() => []);
-    S.faces.forEach((_, i) => {
-        const p = airoState.parent[i];
-        if (p != null) kids[p].push(i);
-    });
-    S.faces.forEach((_, i) => {
-        if (airoState.parent[i] != null) return;
-        // Roots keep their stored matrix — identity for the first one, wherever it was dropped
-        // for anything torn off since.
-        const stack = [i];
-        place[i] = (airoState.anchor[i] || [1, 0, 0, 1, 0, 0]).slice();
-        while (stack.length) {
-            const f = stack.pop();
-            kids[f].forEach(c => {
-                const sh = S.sharedVerts(f, c);
-                const iA = S.faces[f].indexOf(sh[0]), iB = S.faces[f].indexOf(sh[1]);
-                const jA = S.faces[c].indexOf(sh[0]), jB = S.faces[c].indexOf(sh[1]);
-                const other = [0, 1, 2].find(t => t !== iA && t !== iB);
-                const cOther = [0, 1, 2].find(t => t !== jA && t !== jB);
-                const m = airoJoin(geom[c].local[jA], geom[c].local[jB], geom[c].local[cOther],
-                                   airoApply(place[f], geom[f].local[iA]),
-                                   airoApply(place[f], geom[f].local[iB]),
-                                   airoApply(place[f], geom[f].local[other]));
-                if (m) { place[c] = m; stack.push(c); }
-            });
-        }
-    });
-    return { geom, place };
+    return airoGeomCache;
 }
 
-function airoComponent(fi) {
+// Parent links, derived from the edge set by breadth-first search rather than stored. The set is
+// a spanning tree by invariant, so every face is reached and the walk cannot leave anything
+// stranded — which is the whole reason the tree is kept as a set of edges.
+function airoParents() {
+    const S = airoSolid();
+    const parent = S.faces.map(() => null);
+    const seen = new Set([airoState.root]);
+    const q = [airoState.root];
+    while (q.length) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            if (!airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (seen.has(n)) return;
+            seen.add(n); parent[n] = f; q.push(n);
+        });
+    }
+    return parent;
+}
+
+// Walk the tree and give every face an absolute placement. The root sits at the identity and
+// everything else is derived from its parent by the one rigid motion that lands the shared edge
+// on the shared edge — so folding an edge moves everything hanging beyond it without anything
+// being told to follow.
+function airoLayout() {
+    const S = airoSolid();
+    const geom = airoGeom();
+    const parent = airoParents();
+    const kids = S.faces.map(() => []);
+    parent.forEach((p, i) => { if (p != null) kids[p].push(i); });
+    const place = {};
+    place[airoState.root] = [1, 0, 0, 1, 0, 0];
+    const stack = [airoState.root];
+    while (stack.length) {
+        const f = stack.pop();
+        kids[f].forEach(c => {
+            // The point deciding which side the child lands on is its CENTROID, not "the other
+            // vertex" — a triangle has exactly one of those and a decagon has eight.
+            const e = S.edges[S.edgeAt.get(airoEdgeKey(f, c))];
+            const iA = S.faces[f].indexOf(e.verts[0]), iB = S.faces[f].indexOf(e.verts[1]);
+            const jA = S.faces[c].indexOf(e.verts[0]), jB = S.faces[c].indexOf(e.verts[1]);
+            const m = airoJoin(geom[c].local[jA], geom[c].local[jB], airoMid(geom[c].local),
+                               airoApply(place[f], geom[f].local[iA]),
+                               airoApply(place[f], geom[f].local[iB]),
+                               airoApply(place[f], airoMid(geom[f].local)));
+            if (m) { place[c] = m; stack.push(c); }
+        });
+    }
+    return { geom, place, parent };
+}
+
+const airoMid = pts => [pts.reduce((a, p) => a + p[0], 0) / pts.length,
+                        pts.reduce((a, p) => a + p[1], 0) / pts.length];
+
+// The faces reachable from `fi` through tree edges, with edge `skip` pretended cut. Dropping an
+// edge splits a tree in exactly two, and which side a face fell on is what every edit here has
+// to know: a replacement edge may only run between the two sides, or it makes a cycle rather
+// than a map.
+function airoSide(fi, skip) {
     const S = airoSolid();
     const out = new Set([fi]);
-    let grew = true;
-    while (grew) {
-        grew = false;
-        S.faces.forEach((_, i) => {
-            const p = airoState.parent[i];
-            if (p != null && out.has(p) && !out.has(i)) { out.add(i); grew = true; }
+    const q = [fi];
+    while (q.length) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            if (ei === skip || !airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (!out.has(n)) { out.add(n); q.push(n); }
         });
     }
     return out;
 }
 
-// Re-hang a component from `fi` by reversing the chain of parents above it, so that fi becomes
-// its root. Used ONLY when re-attaching: a dropped piece may find its home through any of its
-// faces, and the one that found it has to be the one carrying the new link.
-//
-// It must never be used on the GRAB. Reversing the chain there walks all the way to the whole
-// map's root, which makes the grabbed face the parent of everything — so cutting it loose then
-// takes the entire map with it. Grabbing simply cuts the one link above the face, and its
-// subtree follows because a subtree is what "connected to the rest only through this" means.
-function airoReroot(fi) {
-    let node = fi, par = airoState.parent[fi];
-    airoState.parent[fi] = null;
-    while (par != null) {
-        const grand = airoState.parent[par];
-        airoState.parent[par] = node;
-        node = par; par = grand;
+// The tree edges between two faces, in order from `a`. Adding a cut edge closes exactly one
+// cycle, and this is that cycle: one of these has to go.
+function airoTreePath(a, b) {
+    const S = airoSolid();
+    const from = new Map([[a, null]]);
+    const q = [a];
+    while (q.length) {
+        const f = q.shift();
+        if (f === b) break;
+        S.faceEdges[f].forEach(ei => {
+            if (!airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (!from.has(n)) { from.set(n, { prev: f, edge: ei }); q.push(n); }
+        });
     }
+    const out = [];
+    let cur = b;
+    while (cur !== a) {
+        const step = from.get(cur);
+        if (!step) return [];
+        out.unshift(step.edge);
+        cur = step.prev;
+    }
+    return out;
 }
 
+// The default arrangement is d3's own Airocean tree, read off it once so the mode opens on
+// Fuller's cuts rather than on an arbitrary spanning tree of my own. Only the icosahedron has
+// one; every other solid opens on a breadth-first net, which `airoRepairTree` supplies for free
+// from an empty set.
 function airoDefaultTree() {
     const S = airoSolid();
-    // The default arrangement is d3's own Airocean tree, read off it once so the mode opens on
-    // Fuller's cuts rather than on an arbitrary spanning tree of my own.
-    const parent = {};
-    S.faces.forEach((_, i) => { parent[i] = null; });
-    const order = airoFullerOrder();
-    order.forEach(([c, p]) => { parent[c] = p; });
-    return parent;
+    const tree = new Set();
+    if (airoSolidKey === 'icosahedron')
+        airoFullerOrder().forEach(([c, p]) => {
+            const ei = S.edgeAt.get(airoEdgeKey(c, p));
+            if (ei != null) tree.add(ei);
+        });
+    return airoUnoverlap(airoRepairTree(tree));
+}
+
+// Whatever a tree is built from, it leaves here spanning. Anything short of nineteen edges is
+// topped up breadth-first and anything that closes a cycle is refused, so no caller can put a
+// broken arrangement on the board — including a Fuller net read off a library that answered
+// only partly.
+function airoRepairTree(tree) {
+    const S = airoSolid();
+    const comp = S.faces.map((_, i) => i);
+    const find = x => { while (comp[x] !== x) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; };
+    const out = new Set();
+    const tryAdd = ei => {
+        const e = S.edges[ei], ra = find(e.a), rb = find(e.b);
+        if (ra === rb) return false;
+        comp[ra] = rb; out.add(ei); return true;
+    };
+    tree.forEach(tryAdd);
+    // Topped up BREADTH-FIRST from face 0 rather than in edge-index order. Both give a spanning
+    // tree, but index order gives a straggling one, and this is what a solid with no historical
+    // net of its own opens on.
+    const seen = new Set([0]), q = [0];
+    while (q.length && out.size < S.faces.length - 1) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            tryAdd(ei);
+            if (!seen.has(n)) { seen.add(n); q.push(n); }
+        });
+    }
+    S.edges.forEach((_, ei) => { if (out.size < S.faces.length - 1) tryAdd(ei); });
+    return out;
 }
 
 // Fuller's unfolding, as parent links. Derived by matching d3.geoAirocean's tree onto our own
 // face numbering when the library is present, and falling back to a breadth-first spanning tree
 // from the face holding the north pole when it is not — which is a perfectly good net, just not
 // the historical one.
+//
+// THE MATCH IS MADE IN THE SOLID'S FRAME, not the earth's. d3's tree nodes carry a `centroid` in
+// the coordinates of the icosahedron itself — its own projection carries the rotation that puts
+// the world inside it, and the tree is built downstream of that. Rotating OUR centroids into
+// earth coordinates before comparing therefore measured every face against a face somewhere
+// else: 10 of 19 links came out non-adjacent, the mismatched ones were dropped, and the net was
+// topped up arbitrarily into a pinwheel that is nobody's Dymaxion map. Compared in the frame
+// they are both already in, all twenty whole faces match at a distance of exactly 0 — the two
+// entries at 0.23 rad are the pair of faces Fuller SPLIT IN HALF, whose halves legitimately sit
+// off-centre, and which is why d3's tree has 24 nodes for 20 faces of ours.
 let airoFullerCache = null;
 function airoFullerOrder() {
     if (airoFullerCache) return airoFullerCache;
     const S = airoSolid();
-    const inv = d3.geoRotation(AIRO_FULLER_ROTATE).invert;
     const centres = S.faces.map((_, i) => {
         let c = [0, 0, 0];
         S.faces[i].forEach(k => { const v = S.V[k]; c = [c[0] + v[0], c[1] + v[1], c[2] + v[2]]; });
         const n = Math.hypot(c[0], c[1], c[2]);
-        return inv([Math.atan2(c[1] / n, c[0] / n) / DEG,
-                    Math.asin(Math.max(-1, Math.min(1, c[2] / n))) / DEG]);
+        return [Math.atan2(c[1] / n, c[0] / n) / DEG,
+                Math.asin(Math.max(-1, Math.min(1, c[2] / n))) / DEG];
     });
     const links = [];
     let matched = false;
@@ -19157,14 +20607,14 @@ function airoFullerOrder() {
                 if (id >= 0 && pid >= 0 && id !== pid) links.push([id, pid]);
                 (n.children || []).forEach(c => walk(c, id >= 0 ? id : pid));
             })(root, -1);
-            // Two of d3's faces are halves of one of ours, so the walk can produce a face twice
-            // or link it to itself; keep the first sane link per face and check it spans.
+            // A split face turns up twice, so the walk can produce a face twice or link it to
+            // itself; keep the first sane link per face and check it very nearly spans.
             const seen = new Set();
             const clean = links.filter(([c, p]) => {
                 if (seen.has(c) || !S.adj[c].includes(p)) return false;
                 seen.add(c); return true;
             });
-            if (clean.length >= 15) { airoFullerCache = clean; matched = true; }
+            if (clean.length >= 17) { airoFullerCache = clean; matched = true; }
         }
     } catch (_) { matched = false; }
     if (!matched) {
@@ -19188,24 +20638,37 @@ function renderAirocean() {
     const restart = document.getElementById('restart-btn');
     if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
     document.getElementById('question-text').innerHTML =
-        '<strong>Airocean World.</strong> Drag a triangle to tear it off and put it somewhere else.';
+        '<strong>Airocean World.</strong> Click an edge to fold the world open along it, or to ' +
+        'close it up again.';
     airoSolid();
-    airoState = { rot: AIRO_FULLER_ROTATE.slice(), parent: airoDefaultTree(), anchor: {},
-                  drag: null, land: true, seams: true };
+    airoGeomCache = null;
+    airoState = { solid: AIRO_DEFAULT_SOLID, rot: AIRO_FULLER_ROTATE.slice(), root: 0,
+                  gview: [0, 0, 0], spin: 0, zoom: 1, pan: [0, 0],
+                  sat: false, hoverEdge: null, drag: null, turn: null };
+    airoSolidCache = null;
+    airoState.tree = airoDefaultTree();
+    airoState.spin = airoBestSpin();
     buildAiroPanel();
+    airoSyncSpin();
     airoDraw();
     airoBindMap();
     // Two things come from the libraries: the clip that cuts the world into faces
     // (d3-geo-polygon) and Fuller's own net, read off d3-geo-projection's Airocean. Without the
     // clip a face would draw land spilling past its own edges, so the land is held back rather
-    // than drawn wrong — the empty solid is a true picture of it and the tear-and-drop still
-    // works. Both usually arrive in a few hundred milliseconds, and instantly if the projection
-    // lab has already been opened.
+    // than drawn wrong — the empty solid is a true picture of it and the folding still works.
+    // Both usually arrive in a few hundred milliseconds, and instantly if the projection lab has
+    // already been opened.
     withLabLibs(() => {
         if (!airoState) return;
         airoFullerCache = null;               // the fallback net was cached; Fuller's is available now
-        airoState.parent = airoDefaultTree();
-        airoState.anchor = {};
+        airoGeomCache = null;
+        // Unless the libraries were slow and somebody has already started folding: swapping the
+        // net out from under a hand that is using it is worse than opening on the fallback.
+        if (!airoState.touched) {
+            airoState.tree = airoDefaultTree();
+            airoState.spin = airoBestSpin();
+            airoSyncSpin();
+        }
         airoDraw();
     });
 }
@@ -19213,6 +20676,422 @@ function renderAirocean() {
 // Whether a face's own outline can be used to cut the world down to it. Without it the mode
 // still draws the solid, just not the map on it.
 const airoCanClip = () => typeof d3.geoClipPolygon === 'function';
+
+// ---- which countries can possibly show on a face ----
+// The clipped world path is the expensive half of a redraw, and it was being paid in full on
+// every face: d3 is handed the whole world once per face and walks all of it once per face, when
+// a face of the truncated icosidodecahedron covers a sixtieth of the sphere and cannot touch all
+// but a handful of countries. So each feature gets a bounding CAP once — an axis and the angle
+// out to its furthest point — and a face is handed only the features whose cap meets its own.
+//
+// The clip itself is untouched, so this is a pure speed-up rather than an approximation, and the
+// path string it produces is the same one: verified byte-identical on every face of all six
+// solids, at 3.6x to 7.9x the speed (the 62-face solid 798 ms -> 101 ms, the icosahedron
+// 238 -> 65). That is what makes turning the world inside the solid something you can watch
+// happen rather than something you wait for.
+//
+// The axis is the normalised mean of the feature's own points and the radius is its worst point
+// against that axis, which is a loose cap rather than the smallest one. Loose is the safe
+// direction — it can only hand a face a country it did not need — and a feature whose points
+// average out to nothing (one spread over the whole sphere) falls back to a cap covering
+// everything, so nothing can be wrongly dropped.
+const AIRO_THIN_STEP = 4;             // vertices kept, one in N, while the world is being dragged
+let airoCapCache = null, airoCapKey = null;
+
+function airoCapOf(pts) {
+    let x = 0, y = 0, z = 0;
+    pts.forEach(v => { x += v[0]; y += v[1]; z += v[2]; });
+    const L = Math.hypot(x, y, z);
+    const ax = L > 1e-9 ? [x / L, y / L, z / L] : [0, 0, 1];
+    let lo = 1;
+    pts.forEach(v => { const d = ax[0] * v[0] + ax[1] * v[1] + ax[2] * v[2]; if (d < lo) lo = d; });
+    return { ax, ang: L > 1e-9 ? Math.acos(Math.max(-1, Math.min(1, lo))) : Math.PI };
+}
+
+// Every ring of a feature, as unit vectors, so a cap can be measured without going through
+// d3.geoBounds — which reports a wrapped box for anything straddling the antimeridian and has no
+// meaning on a sphere-wide feature. Three-vectors have no antimeridian.
+function airoRingPoints(geom) {
+    const out = [];
+    if (!geom) return out;
+    const polys = geom.type === 'Polygon' ? [geom.coordinates]
+                : geom.type === 'MultiPolygon' ? geom.coordinates : [];
+    polys.forEach(poly => poly.forEach(ring => ring.forEach(p => out.push(versor.cartesian(p)))));
+    return out;
+}
+
+function airoLandCaps() {
+    const feats = gameState.countries || [];
+    if (airoCapCache && airoCapKey === feats) return airoCapCache;
+    airoCapKey = feats;
+    // The thinned copy is built alongside, because it is wanted at exactly the moments there is
+    // no time to build it — every frame of a drag.
+    const thinRing = r => {
+        if (r.length <= 8) return r;
+        const o = [];
+        for (let i = 0; i < r.length - 1; i += AIRO_THIN_STEP) o.push(r[i]);
+        o.push(r[r.length - 1]);
+        return o.length >= 4 ? o : r;
+    };
+    airoCapCache = feats.map(f => {
+        const pts = airoRingPoints(f.geometry);
+        if (!pts.length) return null;
+        let thin = f;
+        const g = f.geometry;
+        if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+            const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+            const cut = polys.map(poly => poly.map(thinRing).filter(r => r.length >= 4))
+                             .filter(poly => poly.length);
+            if (cut.length)
+                thin = { type: 'Feature', properties: f.properties,
+                         geometry: { type: g.type,
+                                     coordinates: g.type === 'Polygon' ? cut[0] : cut } };
+        }
+        return { ...airoCapOf(pts), f, thin };
+    }).filter(Boolean);
+    return airoCapCache;
+}
+
+// The features a face could possibly draw, as a collection ready for `d3.geoPath`.
+function airoLandFor(cap, thin) {
+    if (!cap) return { type: 'FeatureCollection', features: gameState.countries || [] };
+    const feats = [];
+    airoLandCaps().forEach(c => {
+        const d = c.ax[0] * cap.ax[0] + c.ax[1] * cap.ax[1] + c.ax[2] * cap.ax[2];
+        if (Math.acos(Math.max(-1, Math.min(1, d))) < c.ang + cap.ang) feats.push(thin ? c.thin : c.f);
+    });
+    return { type: 'FeatureCollection', features: feats };
+}
+
+// ---- satellite: Blue Marble, reprojected onto each face ----
+// The imagery is equirectangular and each face is a gnomonic, so the only way across is to walk
+// the DESTINATION pixels and invert: for every pixel of a face, ask the projection which point of
+// the earth is there and read that point out of the texture. Forward-mapping the source instead
+// would leave gaps wherever the projection stretches.
+//
+// It is rasterised per face rather than per board, because a face's imagery does not depend on
+// how the net is folded — only on the orientation of the world inside the solid. So it rides in
+// `airoGeomCache` alongside the geometry, and folding, spinning and refitting all reuse it: the
+// cost is paid once per turn of the globe.
+//
+// Pixels outside the face are left transparent instead of being clipped by SVG, which is a
+// convexity test per pixel and saves a clip path per face; the test also runs FIRST, so the
+// expensive inverse projection is only done for pixels that will be kept.
+// How finely a face is rasterised follows how big it is ON SCREEN, so zooming in gets more
+// imagery rather than bigger pixels of the imagery it already had. Bounded at both ends: below,
+// because a face the size of a postage stamp gains nothing from more; above, because a data URL
+// per face is memory and `toDataURL` is the slow half of making one.
+const AIRO_SAT_PX_MIN = 0.9, AIRO_SAT_PX_MAX = 3.2;
+const AIRO_SAT_MAX = 700;             // longest edge of one face's canvas, in pixels
+const airoSatPx = () =>
+    Math.max(AIRO_SAT_PX_MIN, Math.min(AIRO_SAT_PX_MAX, airoScreenK() * 1.3));
+let airoSatSrc = null;
+
+function airoSatData() {
+    if (airoSatSrc) return airoSatSrc;
+    const im = sunPathSat.day;
+    if (!im || !im.width) return null;
+    const c = document.createElement('canvas');
+    c.width = im.width; c.height = im.height;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(im, 0, 0);
+    try {
+        airoSatSrc = { d: x.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+    } catch (_) { airoSatSrc = null; }      // tainted canvas; the vector map still works
+    return airoSatSrc;
+}
+
+function airoSatFace(g) {
+    if (g.satUrl) return g.satUrl;
+    const src = airoSatData();
+    if (!src) return null;          // NOT memoised: the texture may simply not have landed yet
+    const pts = g.local;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    pts.forEach(p => { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]);
+                       y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
+    // Room for the bleed below: a canvas cut to the polygon's exact bounds has nowhere to put
+    // the spill on the edges that touch those bounds.
+    const grow = 0.02 * Math.max(x1 - x0, y1 - y0);
+    x0 -= grow; y0 -= grow; x1 += grow; y1 += grow;
+    const w = x1 - x0, h = y1 - y0;
+    const k = Math.min(airoSatPx(), AIRO_SAT_MAX / Math.max(w, h));
+    g.satPx = k;
+    const cw = Math.max(8, Math.round(w * k)), ch = Math.max(8, Math.round(h * k));
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    const out = ctx.createImageData(cw, ch);
+    const O = out.data;
+    // Edge half-planes, once, for the inside test. The ring is wound one way throughout, so a
+    // point is inside when it is on the same side of every edge. The normals are UNIT length, so
+    // the quantity is a signed distance in board units and the bleed below means what it says.
+    const n = pts.length, ex = [], ey = [], ec = [];
+    for (let i = 0; i < n; i++) {
+        const p = pts[i], q = pts[(i + 1) % n];
+        const L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+        const nx = -(q[1] - p[1]) / L, ny = (q[0] - p[0]) / L;
+        ex.push(nx); ey.push(ny); ec.push(nx * p[0] + ny * p[1]);
+    }
+    let flip = 0;
+    { const c0 = airoMid(pts);
+      flip = (ex[0] * c0[0] + ey[0] * c0[1] - ec[0]) < 0 ? -1 : 1; }
+    // Painted a little PAST the face's own edge. Stopping exactly on it leaves the background
+    // showing through as a hairline down every seam, because the raster's pixels are square and
+    // the edge is not: half a pixel of each boundary pixel falls outside and is dropped. The
+    // spill lands under the neighbouring face, which is drawn from the same imagery and agrees
+    // with it, so a seam closes invisibly instead of glowing.
+    const bleed = 2 * Math.max(w / cw, h / ch);
+    for (let yy = 0; yy < ch; yy++) {
+        const Y = y0 + (yy + 0.5) * h / ch;
+        for (let xx = 0; xx < cw; xx++) {
+            const X = x0 + (xx + 0.5) * w / cw;
+            let inside = true;
+            for (let i = 0; i < n; i++)
+                if ((ex[i] * X + ey[i] * Y - ec[i]) * flip < -bleed) { inside = false; break; }
+            if (!inside) continue;
+            const ll = g.proj.invert && g.proj.invert([X, Y]);
+            if (!ll) continue;
+            const sx = Math.min(src.w - 1, Math.max(0, Math.floor((ll[0] + 180) / 360 * src.w)));
+            const sy = Math.min(src.h - 1, Math.max(0, Math.floor((90 - ll[1]) / 180 * src.h)));
+            const s = (sy * src.w + sx) * 4, d = (yy * cw + xx) * 4;
+            O[d] = src.d[s]; O[d + 1] = src.d[s + 1]; O[d + 2] = src.d[s + 2]; O[d + 3] = 255;
+        }
+    }
+    ctx.putImageData(out, 0, 0);
+    g.satBox = [x0, y0, w, h];
+    return (g.satUrl = cv.toDataURL('image/png'));
+}
+
+// Rasterising every face again is far too slow to do while the wheel is still turning, so it
+// happens once the zoom has settled — and only when the change is worth paying for, which a third
+// again of detail is and a nudge of the wheel is not. Zooming back OUT never triggers it: the
+// imagery in hand is finer than needed, which costs nothing to look at.
+let airoSatTimer = null;
+function airoSatWatch() {
+    clearTimeout(airoSatTimer);
+    if (!airoState || !airoState.sat) return;
+    airoSatTimer = setTimeout(() => {
+        if (!airoState || !airoState.sat || !airoState.geomRef) return;
+        const px = airoSatPx();
+        if (!airoState.geomRef.some(g => g.satUrl && g.satPx < px / 1.35)) return;
+        airoState.geomRef.forEach(g => { g.satUrl = null; g.satPx = 0; });
+        airoDraw();
+    }, 260);
+}
+
+// Which faces have folded on top of one another. On a PLATONIC solid the answer is always none:
+// Horiyama and Shoji proved in 2011 that no edge unfolding of one ever overlaps, and it was
+// checked here before being relied on — 300 random spanning trees of the icosahedron's face
+// graph, zero overlapping. That is not true of the others. An Archimedean or Catalan net can and
+// does fold back over itself, so the test has to be a real one.
+//
+// It is the separating axis theorem, which is the whole of what convex-versus-convex overlap is:
+// two convex polygons miss each other exactly when some edge normal of one of them separates
+// them. Faces sharing an edge are skipped — they touch along it by construction — and the pairs
+// are filtered on bounding circles first, so 62 faces cost a few hundred real tests rather than
+// 1,891.
+function airoOverlaps(geom, place) {
+    const S = airoSolid();
+    const poly = [], cen = [], rad = [];
+    S.faces.forEach((_, i) => {
+        if (!place[i]) { poly.push(null); cen.push(null); rad.push(0); return; }
+        const t = geom[i].local.map(p => airoApply(place[i], p));
+        const c = airoMid(t);
+        poly.push(t); cen.push(c);
+        rad.push(Math.max(...t.map(p => Math.hypot(p[0] - c[0], p[1] - c[1]))));
+    });
+    const gap = (A, B) => {                       // is there a separating edge normal of A?
+        for (let k = 0; k < A.length; k++) {
+            const p = A[k], q = A[(k + 1) % A.length];
+            const nx = -(q[1] - p[1]), ny = q[0] - p[0];
+            let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+            A.forEach(v => { const d = v[0] * nx + v[1] * ny; aMin = Math.min(aMin, d); aMax = Math.max(aMax, d); });
+            B.forEach(v => { const d = v[0] * nx + v[1] * ny; bMin = Math.min(bMin, d); bMax = Math.max(bMax, d); });
+            const slack = 1e-6 * (Math.abs(nx) + Math.abs(ny));
+            if (aMax <= bMin + slack || bMax <= aMin + slack) return true;
+        }
+        return false;
+    };
+    const dup = new Set();
+    for (let i = 0; i < poly.length; i++) {
+        if (!poly[i]) continue;
+        for (let j = i + 1; j < poly.length; j++) {
+            if (!poly[j] || S.adj[i].includes(j)) continue;
+            if (Math.hypot(cen[i][0] - cen[j][0], cen[i][1] - cen[j][1]) > rad[i] + rad[j]) continue;
+            if (gap(poly[i], poly[j]) || gap(poly[j], poly[i])) continue;
+            dup.add(i); dup.add(j);
+        }
+    }
+    return dup;
+}
+
+// ---- overlap is REFUSED, not reported ----
+// Marking the clash in red says the map is wrong and leaves it wrong. On a Platonic solid there
+// is nothing to say — no unfolding of one ever overlaps — but on the other four the folding can
+// walk a face straight on top of another, and a flat world with two countries drawn over each
+// other is not a picture of anything.
+//
+// Refusing is affordable because no edit here has only one answer. Adding an edge to a spanning
+// tree closes exactly one cycle and ANY edge on that cycle may give way; tearing a seam leaves
+// the loose face a choice of every other edge it owns. The pointer only says which is PREFERRED.
+// So the candidates are walked in the order the pointer asked for and the first arrangement with
+// nothing on top of anything is taken — the click lands where you aimed it whenever it can, and
+// somewhere else rather than nowhere when it cannot.
+//
+// A tree that will not lay out at all counts as infinitely bad, which folds two failures into
+// one test: a join that cannot be built and a join that overlaps are both simply not taken.
+function airoClashCount(tree) {
+    const save = airoState.tree;
+    airoState.tree = tree;
+    let n = Infinity;
+    try {
+        const L = airoLayout();
+        if (Object.keys(L.place).length === airoSolid().faces.length)
+            n = airoOverlaps(L.geom, L.place).size;
+    } catch (_) { /* an arrangement that will not lay out is no arrangement */ }
+    airoState.tree = save;
+    return n;
+}
+
+// Walk a list of [drop, add] swaps in preference order; return the first clean tree, or null.
+function airoPickEdit(swaps) {
+    for (const [drop, add] of swaps) {
+        const t = new Set(airoState.tree);
+        t.delete(drop); t.add(add);
+        if (airoClashCount(t) === 0) return t;
+    }
+    return null;
+}
+
+// A tree arriving from somewhere other than a fold — the historical net, the fan, the default for
+// a solid just picked — has not been through the rule above, so it is walked clean here: take a
+// face that is sitting on another, try re-hanging it on each of its other edges, and keep
+// whichever leaves the fewest clashes. A hill-climb, bounded, returning the best it reached
+// rather than looping; the six defaults are all clean already, so in practice it does nothing.
+function airoUnoverlap(tree) {
+    const S = airoSolid(), save = airoState.tree;
+    let cur = tree, best = airoClashCount(cur);
+    for (let pass = 0; pass < 40 && best > 0; pass++) {
+        airoState.tree = cur;
+        let L = null;
+        try { L = airoLayout(); } catch (_) { break; }
+        const bad = L ? airoOverlaps(L.geom, L.place) : new Set();
+        if (!bad.size) { best = 0; break; }
+        let moved = null;
+        for (const f of bad) {
+            const par = L.parent[f];
+            if (par == null) continue;                    // the root is held by nothing
+            const hinge = S.edgeAt.get(airoEdgeKey(f, par));
+            if (hinge == null) continue;
+            for (const x of S.faceEdges[f]) {
+                if (x === hinge || cur.has(x)) continue;
+                const t = new Set(cur); t.delete(hinge); t.add(x);
+                const n = airoClashCount(t);
+                if (n < best) { best = n; moved = t; if (!n) break; }
+            }
+            if (moved) break;
+        }
+        if (!moved) break;
+        cur = moved;
+    }
+    airoState.tree = save;
+    return cur;
+}
+
+// Which way up to hang the net. Nothing about the arrangement decides this — the root face is
+// placed at the identity and its own gnomonic settles the angle, which is arbitrary — so the
+// frame is turned to whichever angle fills the board best. That leaves TWO answers, since a
+// bounding box is the same under a half-turn, and the tie is broken by asking that north come
+// out up.
+//
+// NORTH IS AVERAGED OVER ALL TWENTY FACES, not read off the poles. A net is folded, so "up" is
+// not one direction on it: measured face by face, the mean of the twenty unit north vectors has
+// length 3.43 out of a possible 20, which is how weakly coherent the thing is. Two points are
+// therefore no evidence at all — the north and south poles happen to sit on faces folded against
+// the bulk of the map, so a pole-above-pole test chooses -67° and puts Africa upside down, while
+// the average chooses 113°, the layout everyone knows: North America upper left, Antarctica
+// lower left, Australia lower right. Measured, the mean north vector spun by 113° is (-0.1,
+// -3.4) — straight up the screen — against (0.1, 3.4) at -67°.
+function airoBestSpin() {
+    const S = airoSolid();
+    const { geom, place } = airoLayout();
+    const pts = [];
+    let ux = 0, uy = 0;
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        geom[i].local.forEach(p => pts.push(airoApply(place[i], p)));
+        const c = geom[i].fe.centre;
+        const a = airoApply(place[i], geom[i].proj(c));
+        const b = airoApply(place[i], geom[i].proj([c[0], Math.min(89.5, c[1] + 0.5)]));
+        const n = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        ux += (b[0] - a[0]) / n; uy += (b[1] - a[1]) / n;
+    });
+    if (!pts.length) return 0;
+    const W = width || 800, H = height || 600, pad = 26;
+    let best = 0, bk = -Infinity;
+    for (let a = 0; a < 180; a++) {
+        const r = a * DEG, cs = Math.cos(r), sn = Math.sin(r);
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        pts.forEach(p => {
+            const x = p[0] * cs - p[1] * sn, y = p[0] * sn + p[1] * cs;
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        });
+        const k = Math.min((W - 2 * pad) / (x1 - x0), (H - 2 * pad) / (y1 - y0));
+        if (k > bk) { bk = k; best = a; }
+    }
+    const r = best * DEG;
+    return (ux * Math.sin(r) + uy * Math.cos(r)) < 0 ? best : best - 180;
+}
+
+// ---- the board's own transform ----
+// Three things stacked in one matrix, in the order they were decided: the fit that puts the whole
+// net on the board, the frame's own rotation, and then the zoom and pan the reader has asked for.
+// Zoom and pan sit OUTSIDE the fit deliberately — the fit is recomputed whenever the net changes
+// shape, and a zoom taken before a fold would otherwise mean something different after it.
+function airoFitBoard(place, geom) {
+    const S = airoSolid();
+    const a = airoState.spin * DEG, cs = Math.cos(a), sn = Math.sin(a);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        geom[i].local.forEach(p => {
+            const q = airoApply(place[i], p);
+            const x = q[0] * cs - q[1] * sn, y = q[0] * sn + q[1] * cs;
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        });
+    });
+    const W = width || 800, H = height || 600, pad = 26;
+    const k = Math.min((W - 2 * pad) / Math.max(1, maxX - minX),
+                       (H - 2 * pad) / Math.max(1, maxY - minY));
+    const ox = (W - (maxX + minX) * k) / 2, oy = (H - (maxY + minY) * k) / 2;
+    // Where the net lands on the board before any zoom — which is what the pan is bounded against.
+    return { k, ox, oy, box: [minX * k + ox, minY * k + oy, maxX * k + ox, maxY * k + oy] };
+}
+
+function airoTransform() {
+    const v = airoState.view, p = airoState.pan, z = airoState.zoom;
+    return `translate(${p[0]},${p[1]}) scale(${z}) ` +
+           `translate(${v.ox},${v.oy}) scale(${v.k}) rotate(${airoState.spin})`;
+}
+
+// Screen pixels per board unit: what a stroke width is divided by so it comes out the same size
+// on screen however far in the picture is zoomed.
+const airoScreenK = () =>
+    Math.max(0.05, (airoState.view ? airoState.view.k : 1) * (airoState.zoom || 1));
+
+// The pan is bounded by the NET rather than by the viewport: it may be pushed to the edge of the
+// board but not off it, so there is always something to take hold of and no way to mislay the map.
+function airoClampPan() {
+    const v = airoState.view;
+    if (!v) return;
+    if (!(airoState.zoom > 1.0001)) { airoState.zoom = 1; airoState.pan = [0, 0]; return; }
+    const W = width || 800, H = height || 600, z = airoState.zoom, b = v.box, keep = 0.25;
+    airoState.pan = [
+        Math.max(W * keep - z * b[2], Math.min(W * (1 - keep) - z * b[0], airoState.pan[0])),
+        Math.max(H * keep - z * b[3], Math.min(H * (1 - keep) - z * b[1], airoState.pan[1]))
+    ];
+}
 
 function airoDraw() {
     if (!airoState || !svg || !countriesGroup) return;
@@ -19222,149 +21101,620 @@ function airoDraw() {
     svg.selectAll('g.airo-layer').remove();
     const host = countriesGroup.node() && countriesGroup.node().parentNode
         ? d3.select(countriesGroup.node().parentNode) : svg;
-    const layer = host.append('g').attr('class', 'airo-layer');
+    // While the world is being turned the imagery cannot keep up — a raster per face is tens of
+    // times the cost of a frame — so the vector map stands in for it until the hand stops.
+    const sat = airoState.sat && !airoState.turning;
+    const layer = host.append('g').attr('class', 'airo-layer' + (sat ? ' airo-sat-on' : ''));
+    const defs = layer.append('defs');
 
-    // Fit everything drawn into the board, once, as one outer transform.
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    airoState.view = airoFitBoard(place, geom);
+    airoClampPan();
+    layer.attr('transform', airoTransform());
+
+    const dup = airoOverlaps(geom, place);
+    const faces = layer.append('g').attr('class', 'airo-faces');
     S.faces.forEach((_, i) => {
         if (!place[i]) return;
-        geom[i].local.forEach(p => {
-            const q = airoApply(place[i], p);
-            minX = Math.min(minX, q[0]); maxX = Math.max(maxX, q[0]);
-            minY = Math.min(minY, q[1]); maxY = Math.max(maxY, q[1]);
+        const g = faces.append('g')
+            .attr('class', 'airo-face' + (dup.has(i) ? ' airo-clash' : ''))
+            .attr('data-face', i)
+            .attr('transform', `matrix(${place[i].join(',')})`);
+        // The tile is drawn from the projected vertices rather than through the clipped path
+        // generator: a gnomonic face IS a straight-sided polygon, so its corners say it exactly
+        // and there is nothing for the clip to round off.
+        const outline = 'M' + geom[i].local.map(p => p.join(',')).join('L') + 'Z';
+        g.append('path').attr('class', 'airo-tile').attr('d', outline);
+        const url = sat ? airoSatFace(geom[i]) : null;
+        if (url) {
+            // CLIPPED BY SVG, not by where the raster's own pixels happen to stop. A raster edge
+            // is a staircase at the resolution it was rasterised at, and the net's outline and
+            // every tear are precisely the places where no neighbouring face covers that
+            // staircase — so the imagery ended in visible steps against the background. The
+            // tile's own polygon is the true edge and the browser draws it antialiased at the
+            // resolution of the SCREEN, whatever the raster's happens to be.
+            const cid = 'airo-clip-' + i;
+            defs.append('clipPath').attr('id', cid).append('path').attr('d', outline);
+            g.append('image').attr('class', 'airo-sat').attr('href', url)
+                .attr('clip-path', `url(#${cid})`)
+                .attr('x', geom[i].satBox[0]).attr('y', geom[i].satBox[1])
+                .attr('width', geom[i].satBox[2]).attr('height', geom[i].satBox[3])
+                .attr('preserveAspectRatio', 'none');
+        } else if (airoCanClip()) {
+            // The vector map, and also what satellite falls back to while Blue Marble is still
+            // in flight — a face with neither is a blank tile, which reads as the mode breaking
+            // rather than as an image loading.
+            //
+            // Cached on the face. Clipping the world to a face is the expensive half of a
+            // redraw and it does not depend on how the net is FOLDED, so paying it per fold was
+            // pure waste: the truncated icosidodecahedron's 62 faces cost 972 ms a click.
+            if (airoState.turning)
+                g.append('path').attr('class', 'airo-land')
+                    .attr('d', d3.geoPath(geom[i].proj)(airoLandFor(geom[i].cap, true)) || '');
+            else {
+                if (geom[i].landPath === undefined)
+                    geom[i].landPath = d3.geoPath(geom[i].proj)(airoLandFor(geom[i].cap)) || null;
+                if (geom[i].landPath)
+                    g.append('path').attr('class', 'airo-land').attr('d', geom[i].landPath);
+            }
+        }
+    });
+
+    // The edges, in the net's own coordinates rather than inside the faces, because a cut edge
+    // has TWO drawings — one on each of the faces it used to join — and they belong to each
+    // other rather than to the triangles they sit on.
+    const eg = layer.append('g').attr('class', 'airo-edges');
+    airoState.edgeNode = eg.node();
+    const copies = [];
+    S.edges.forEach((e, ei) => {
+        const joined = airoState.tree.has(ei);
+        [e.a, e.b].forEach(f => {
+            if (!place[f]) return;
+            const k0 = S.faces[f].indexOf(e.verts[0]), k1 = S.faces[f].indexOf(e.verts[1]);
+            copies.push({ ei, face: f, joined,
+                          p0: airoApply(place[f], geom[f].local[k0]),
+                          p1: airoApply(place[f], geom[f].local[k1]) });
         });
     });
-    const W = width || 800, H = height || 600, pad = 24;
-    const k = Math.min((W - 2 * pad) / Math.max(1, maxX - minX), (H - 2 * pad) / Math.max(1, maxY - minY));
-    const ox = (W - (maxX + minX) * k) / 2, oy = (H - (maxY + minY) * k) / 2;
-    layer.attr('transform', `translate(${ox},${oy}) scale(${k})`);
-    airoState.view = { k, ox, oy };
+    airoState.copies = copies;
+    airoState.place = place;
+    airoState.geomRef = geom;
 
-    const land = { type: 'FeatureCollection', features: gameState.countries || [] };
-    S.faces.forEach((_, i) => {
-        if (!place[i]) return;
-        const m = place[i];
-        const g = layer.append('g').attr('class', 'airo-face')
-            .attr('data-face', i)
-            .attr('transform', `matrix(${m.join(',')})`);
-        const p = d3.geoPath(geom[i].proj);
-        g.append('path').attr('class', 'airo-tile').attr('d', p(geom[i].poly) || '');
-        // Only once the clip is in hand: a gnomonic without it draws the whole visible
-        // hemisphere, so every face would carry land belonging to its neighbours.
-        if (airoState.land && airoCanClip()) {
-            const d = p(land);
-            if (d) g.append('path').attr('class', 'airo-land').attr('d', d);
-        }
-        g.append('path').attr('class', 'airo-edge').attr('d', p(geom[i].poly) || '');
-    });
-    airoReadout();
+    const line = sel => sel.attr('x1', d => d.p0[0]).attr('y1', d => d.p0[1])
+                           .attr('x2', d => d.p1[0]).attr('y2', d => d.p1[1]);
+    line(eg.selectAll('line.airo-edge').data(copies).enter().append('line')
+        .attr('class', d => 'airo-edge ' + (d.joined ? 'seam' : 'cut')));
+    line(eg.selectAll('line.airo-hit').data(copies).enter().append('line')
+        .attr('class', 'airo-hit')
+        .style('stroke-width', 16 / airoScreenK())
+        .on('pointerenter', (ev, d) => airoSetHover(d.ei))
+        .on('pointerleave', () => airoSetHover(null))
+        // A double-click resets the zoom, and on an edge that would be two folds and a reset at
+        // once — three things nobody asked for from one gesture.
+        .on('dblclick', ev => ev.stopPropagation())
+        // The board is one big handle for turning the frame, and everything else on it is
+        // pointer-transparent — so without this a press on an edge would start a frame drag
+        // underneath the fold it was meant to be. The right button is let through on purpose:
+        // turning the world is the same gesture wherever on the board it starts.
+        .on('pointerdown', ev => { if (ev.button !== 2) ev.stopPropagation(); })
+        .on('click', (ev, d) => { ev.stopPropagation(); airoEdgeClick(ev, d); }));
+
+    airoPaintHover();
+    airoReadout(dup.size);
+    airoGlobeDraw();
 }
 
-function airoReadout() {
+// Turning the frame moves nothing but the outer matrix: the net's shape does not depend on the
+// angle it is looked at, so refitting and rewriting one transform is the whole of it. Redrawing
+// instead would rebuild twenty clipped world paths on every pointermove of a spin.
+function airoApplyFrame() {
+    if (!airoState || !svg) return;
+    const layer = svg.select('g.airo-layer');
+    if (layer.empty() || !airoState.place || !airoState.geomRef) { airoDraw(); return; }
+    airoState.view = airoFitBoard(airoState.place, airoState.geomRef);
+    airoClampPan();
+    layer.attr('transform', airoTransform());
+    svg.selectAll('line.airo-hit').style('stroke-width', 16 / airoScreenK());
+}
+
+// One frame of a turn of the world. The net's shape, its placement, the edges and the board's fit
+// are all constants of the solid and the tree — which is exactly what aiming each face's gnomonic
+// in the solid's own frame bought — so a frame rewrites one `d` per face and touches nothing
+// else. No relayout, no refit, no rebuilt edges, no rebuilt hit lines.
+//
+// Two economies make it a frame rate rather than a slideshow. Each face is handed only the
+// countries whose bounding cap meets its own, and while the hand is moving it is handed a copy of
+// them with one vertex in four: at that speed nobody can see the difference and everybody can see
+// the motion. Full detail comes back the moment the hand stops, which is the moment it is worth
+// looking at closely.
+function airoDragRedraw() {
+    if (!airoState || !svg) return;
+    const layer = svg.select('g.airo-layer');
+    if (layer.empty()) return;
+    const geom = airoGeom();
+    airoState.geomRef = geom;
+    layer.selectAll('image.airo-sat').style('display', 'none');
+    layer.classed('airo-sat-on', false);
+    const NS = 'http://www.w3.org/2000/svg';
+    layer.selectAll('g.airo-face').each(function () {
+        const i = +this.getAttribute('data-face');
+        const g = geom[i];
+        if (!g || !airoCanClip()) return;
+        let p = this.querySelector('path.airo-land');
+        if (!p) {
+            p = document.createElementNS(NS, 'path');
+            p.setAttribute('class', 'airo-land');
+            this.appendChild(p);
+        }
+        p.setAttribute('d', d3.geoPath(g.proj)(airoLandFor(g.cap, true)) || '');
+    });
+}
+
+// Hover marks the edge AND its twin, because for a cut edge those are two places on the map that
+// are one place on the earth — which is the single fact a flat world has to hide and this mode
+// exists to show.
+function airoSetHover(ei) {
+    if (!airoState || airoState.hoverEdge === ei) return;
+    airoState.hoverEdge = ei;
+    airoPaintHover();
+    airoGlobeDraw();
+}
+
+function airoPaintHover() {
+    if (!airoState || !airoState.edgeNode) return;
+    const ei = airoState.hoverEdge;
+    d3.select(airoState.edgeNode).selectAll('line.airo-edge')
+        .classed('hot', d => ei != null && d.ei === ei);
+    const hint = document.getElementById('airo-hint');
+    if (!hint) return;
+    if (ei == null) { hint.textContent = ''; hint.classList.remove('on'); return; }
+    hint.classList.add('on');
+    hint.textContent = airoState.tree.has(ei)
+        ? 'Joined. Click to tear it open — the triangle you click will swing round onto whichever of its other two edges you clicked nearest.'
+        : 'Torn. The two highlighted edges are the same edge of the solid. Click to close it up.';
+}
+
+// Distance from a point to an edge as it is drawn on one particular face.
+function airoEdgeDist(ei, face, pt) {
+    const c = (airoState.copies || []).find(x => x.ei === ei && x.face === face);
+    if (!c) return Infinity;
+    const dx = c.p1[0] - c.p0[0], dy = c.p1[1] - c.p0[1];
+    const L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((pt[0] - c.p0[0]) * dx + (pt[1] - c.p0[1]) * dy) / L)) : 0;
+    return Math.hypot(pt[0] - (c.p0[0] + t * dx), pt[1] - (c.p0[1] + t * dy));
+}
+
+function airoFaceCentre(f) {
+    const g = airoState.geomRef, p = airoState.place;
+    if (!g || !p || !p[f]) return [0, 0];
+    const t = g[f].local.map(q => airoApply(p[f], q));
+    return [(t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3];
+}
+
+// Close a tear. Adding an edge to a spanning tree closes exactly one cycle, so exactly one edge
+// on that cycle has to go — and the one taken is the hinge holding the CLICKED triangle where it
+// is. That makes the motion the one the eye expects: the piece you pointed at lets go of what it
+// was attached to and swings round to meet its twin, bringing whatever hangs off it.
+// The cycle is walked in order — the hinge holding the clicked face first, then outward — and the
+// first arrangement that does not fold a face onto another is taken, so the piece you pointed at
+// is the piece that lets go whenever letting go of it works.
+function airoConnect(ei, face) {
+    const S = airoSolid(), e = S.edges[ei];
+    const far = e.a === face ? e.b : e.a;
+    const path = airoTreePath(face, far);
+    if (!path.length) return false;
+    const t = airoPickEdit(path.map(drop => [drop, ei]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+// Tear a seam open. The map may never come apart, so the face that lets go has to take hold
+// again immediately — with whichever of its OTHER edges the pointer was nearer. (Two others on a
+// triangle, nine on a decagon; the rule is the same and only the count changes.) Only an edge
+// running to the FAR side of the cut will do: one leading back into the piece that came away
+// with this face closes a cycle instead of holding anything.
+function airoDisconnect(ei, face, pt) {
+    const S = airoSolid();
+    const side = airoSide(face, ei);
+    const cand = S.faceEdges[face].filter(x => {
+        if (x === ei) return false;
+        const o = S.edges[x];
+        return !side.has(o.a === face ? o.b : o.a);
+    });
+    if (!cand.length) return false;
+    cand.sort((x, y) => airoEdgeDist(x, face, pt) - airoEdgeDist(y, face, pt));
+    const t = airoPickEdit(cand.map(add => [ei, add]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+// When neither face of the seam can swing, SOMETHING else still can, and a dead click is the one
+// outcome this mode cannot afford. A face whose every edge is a seam is a hinge for that many
+// subtrees and cannot itself be the thing that moves — six of the icosahedron's twenty faces are
+// like that under Fuller's net, which is why five of its nineteen seams refused outright before
+// this existed. So the loose side is re-hung at whichever torn edge spanning the two sides is
+// nearest the click, which is the same "nearest to the pointer" rule one step further out.
+//
+// It can always be done, and that is a fact about polyhedra rather than luck: by Steinitz's
+// theorem the face adjacency graph of any convex polyhedron is 3-connected, so removing one edge
+// from it never separates anything. There is always another edge across the cut.
+function airoRehang(ei, pt) {
+    const S = airoSolid(), e = S.edges[ei];
+    const side = airoSide(e.a, ei);
+    const cand = [];
+    S.edges.forEach((o, x) => {
+        if (x === ei || airoState.tree.has(x)) return;
+        if (side.has(o.a) === side.has(o.b)) return;      // must span the cut
+        cand.push({ d: Math.min(airoEdgeDist(x, o.a, pt), airoEdgeDist(x, o.b, pt)), x });
+    });
+    if (!cand.length) return false;
+    cand.sort((a, b) => a.d - b.d);
+    const t = airoPickEdit(cand.map(c => [ei, c.x]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+function airoEdgeClick(event, copy) {
+    if (!airoState) return;
+    airoState.touched = true;
+    const S = airoSolid(), e = S.edges[copy.ei];
+    const pt = d3.pointer(event, airoState.edgeNode);
+    let ok;
+    if (airoState.tree.has(copy.ei)) {
+        // A seam is one line with a triangle on either side of it, so which of them was clicked
+        // is a question about the pointer rather than about which copy caught the event.
+        const da = Math.hypot(...airoFaceCentre(e.a).map((v, i) => v - pt[i]));
+        const db = Math.hypot(...airoFaceCentre(e.b).map((v, i) => v - pt[i]));
+        const first = da <= db ? e.a : e.b, second = da <= db ? e.b : e.a;
+        ok = airoDisconnect(copy.ei, first, pt) || airoDisconnect(copy.ei, second, pt) ||
+             airoRehang(copy.ei, pt);
+    } else {
+        ok = airoConnect(copy.ei, copy.face);
+    }
+    // Every way of making this fold would have put one face on top of another. Say so, rather
+    // than doing nothing (which reads as a broken click) or doing it anyway (which is the thing
+    // the rule exists to prevent).
+    if (!ok) { airoRefuse(copy.ei); return; }
+    airoState.hoverEdge = null;
+    airoDraw();
+}
+
+// The one piece of feedback a refused fold gets: the hint line says why, and the edge flashes so
+// it is clear WHICH fold was refused when the board has not changed at all.
+let airoRefuseTimer = null;
+function airoRefuse(ei) {
+    const hint = document.getElementById('airo-hint');
+    if (hint) {
+        hint.classList.add('on', 'bad');
+        hint.textContent = 'No. Every way of making that fold puts one face on top of another.';
+    }
+    if (airoState.edgeNode)
+        d3.select(airoState.edgeNode).selectAll('line.airo-edge')
+            .classed('refused', d => d.ei === ei);
+    clearTimeout(airoRefuseTimer);
+    airoRefuseTimer = setTimeout(() => {
+        if (hint) hint.classList.remove('bad');
+        if (airoState && airoState.edgeNode)
+            d3.select(airoState.edgeNode).selectAll('line.airo-edge').classed('refused', false);
+        airoPaintHover();
+    }, 1400);
+}
+
+function airoReadout(clashes) {
     const el = document.getElementById('airo-readout');
     if (!el) return;
     const S = airoSolid();
-    const roots = S.faces.filter((_, i) => airoState.parent[i] == null).length;
-    const cut = S.adj.reduce((s, a, i) => s + a.filter(j => j > i).length, 0)
-              - S.faces.filter((_, i) => airoState.parent[i] != null).length;
+    const F = S.faces.length, E = S.edges.length, V = S.verts.length;
+    const seams = F - 1, tears = E - seams;
+    const r = airoState.rot.map(v => Math.round(v));
+    // Face types, by corner count — which is what tells a truncated icosahedron from a football
+    // at a glance, and there is no other place the solid says what it is made of.
+    const kinds = {};
+    S.faces.forEach(f => { kinds[f.length] = (kinds[f.length] || 0) + 1; });
+    const NAME = { 3: 'triangles', 4: 'quadrilaterals', 5: 'pentagons', 6: 'hexagons',
+                   8: 'octagons', 10: 'decagons' };
+    const made = Object.keys(kinds).sort((a, b) => a - b)
+        .map(k => `${kinds[k]} ${NAME[k] || k + '-gons'}`).join(', ');
+    const platonic = Object.keys(kinds).length === 1;
     el.innerHTML =
-        `<div class="lab-row"><span>Pieces</span><span class="lab-k">${roots}</span></div>` +
-        `<div class="lab-row"><span>Edges joined</span><span class="lab-k">${30 - cut} of 30</span></div>` +
-        `<div class="lab-note">An icosahedron has 30 edges and only 19 of them can be joined at ` +
-        `once — a net is a spanning tree, so eleven cuts is the fewest any flat world can have. ` +
-        `Every arrangement keeps something together by tearing something else apart, and that is ` +
-        `the whole argument of a Dymaxion map.</div>`;
+        `<div class="lab-row"><span>Faces</span><span class="lab-k">${made}</span></div>` +
+        `<div class="lab-row"><span>Seams</span><span class="lab-k">${seams} of ${E}</span></div>` +
+        `<div class="lab-row"><span>Tears</span><span class="lab-k">${tears}</span></div>` +
+        `<div class="lab-row"><span>Orientation</span><span class="lab-k">${r[0]}°, ${r[1]}°, ${r[2]}°</span></div>` +
+        (clashes
+            ? `<div class="lab-row"><span>Overlapping</span><span class="lab-k bad">${clashes} faces</span></div>`
+            : '') +
+        `<div class="lab-note">${V} corners, ${E} edges, ${F} faces. A net is a spanning tree, so ` +
+        `exactly ${seams} edges can be joined at once and ${tears} must be torn — the fewest any ` +
+        `flat world made on this solid can have. Every arrangement keeps something together by ` +
+        `tearing something else apart, and that is the whole argument of a Dymaxion map.` +
+        (platonic
+            ? ' Which tears you make is free here: no net of a Platonic solid ever overlaps ' +
+              'itself, which Horiyama and Shoji proved in 2011.'
+            : ' On a solid with more than one kind of face that freedom runs out — some ' +
+              'arrangements fold back over themselves. A fold with no arrangement that avoids ' +
+              'it is refused rather than drawn, so the net you are looking at never overlaps.') +
+        `</div>`;
 }
 
-// Which face is under the pointer, and where in that face's own coordinates.
-function airoFaceAt(pt) {
-    const el = document.elementFromPoint(pt.clientX, pt.clientY);
-    const g = el && el.closest && el.closest('g.airo-face');
-    return g ? +g.getAttribute('data-face') : null;
+// ---- the globe, with the solid over it ----
+// The wireframe is drawn STATIC and the earth turns under it, which is the honest picture of what
+// the mode does: the solid is a fixed thing and the world is what gets turned inside it. That
+// falls out of one identity rather than out of any bookkeeping — a solid vertex v corresponds to
+// the earth point inv(v), and an orthographic carrying the same rotation sends inv(v) straight
+// back to v. So the earth's projection takes the rotation and the solid's takes none, and the two
+// agree on where every vertex belongs.
+function airoGlobeDraw() {
+    const el = d3.select('#airo-globe');
+    if (el.empty() || !airoState) return;
+    const S = airoSolid();
+    const sz = AIRO_GLOBE_SIZE, c = sz / 2, R = c - 5;
+    const earth = d3.geoOrthographic().rotate(airoEarthRot()).clipAngle(90).scale(R).translate([c, c]);
+    const solid = d3.geoOrthographic().rotate(airoState.gview).clipAngle(90).scale(R).translate([c, c]);
+    airoState.globeProj = earth;
+    const pe = d3.geoPath(earth), ps = d3.geoPath(solid);
+    el.selectAll('*').remove();
+    el.append('circle').attr('class', 'airo-g-ocean').attr('cx', c).attr('cy', c).attr('r', R);
+    el.append('path').attr('class', 'airo-g-grat').attr('d', pe(d3.geoGraticule10()) || '');
+    el.append('path').attr('class', 'airo-g-land')
+        .attr('d', pe({ type: 'FeatureCollection', features: gameState.countries || [] }) || '');
+    // The whole wireframe first, then the near half over it. An orthographic IS the see-through
+    // view — a point on the far side projects exactly where it would appear through a glass
+    // globe — so dropping the clip draws the back of the solid correctly rather than as a
+    // reflection. Without it a hovered edge on the far side had nothing to highlight and the
+    // hover simply did nothing: of the eleven tears, only the ones facing you answered.
+    const behind = d3.geoOrthographic().rotate(airoState.gview).clipAngle(null).scale(R).translate([c, c]);
+    const pb = d3.geoPath(behind);
+    [[pb, ' ghost'], [ps, '']].forEach(([gen, extra]) => {
+        const wire = el.append('g');
+        S.edges.forEach((e, ei) => {
+            const d = gen({ type: 'LineString', coordinates: [S.verts[e.verts[0]], S.verts[e.verts[1]]] });
+            if (!d) return;
+            wire.append('path')
+                .attr('class', 'airo-g-edge ' + (airoState.tree.has(ei) ? 'seam' : 'cut') +
+                               (airoState.hoverEdge === ei ? ' hot' : '') + extra)
+                .attr('d', d);
+        });
+    });
+    el.append('circle').attr('class', 'airo-g-rim').attr('cx', c).attr('cy', c).attr('r', R);
 }
 
+// The inset carries TWO rotations because it shows two things that have to agree: the solid, and
+// the earth turned to whatever orientation it holds inside the solid. The view rotation is
+// applied to both, so it changes where you are standing and nothing else; the world's own
+// orientation is applied to the earth alone, and moving it is what moves the cuts.
+//
+// `multiply(a, b)` applies b first, so the earth's screen rotation is the world's orientation
+// followed by the view. That one identity is the whole of what separates the two gestures below:
+// hold the earth's screen rotation still while the view moves, and the world's orientation is
+// forced to whatever keeps the equation true — which is the same as saying the cage turned and
+// the earth did not.
+const airoQinv = q => [q[0], -q[1], -q[2], -q[3]];
+const airoEarthRot = () =>
+    versor.rotation(versor.multiply(versor(airoState.gview || [0, 0, 0]), versor(airoState.rot)));
+
+function airoBindGlobe() {
+    const el = d3.select('#airo-globe');
+    if (el.empty()) return;
+    const node = el.node();
+    const sz = AIRO_GLOBE_SIZE, c = sz / 2, R = c - 5;
+    const proj = () => d3.geoOrthographic().clipAngle(90).scale(R).translate([c, c]);
+    let drag = null;
+    // A right-drag that ends in a popup menu is not a drag.
+    el.on('contextmenu', ev => ev.preventDefault());
+    el.on('pointerdown', function (event) {
+        if (!airoState) return;
+        const p = d3.pointer(event, node);
+        const g0 = (airoState.gview || [0, 0, 0]).slice();
+        // Both gestures take hold of the SOLID — in the left one the earth simply comes with it —
+        // so both invert through the solid's own projection, and both keep inverting through the
+        // rotation it had at the START, which is what makes the grabbed point track the pointer
+        // rather than accelerate away from it.
+        const inv = proj().rotate(g0).invert(p);
+        if (!inv) return;
+        drag = { cut: event.button === 2, g0, q0: versor(g0),
+                 v0: versor.cartesian(inv), earth: airoEarthRot() };
+        try { node.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
+        event.preventDefault();
+    });
+    el.on('pointermove', function (event) {
+        if (!drag || !airoState) return;
+        const inv = proj().rotate(drag.g0).invert(d3.pointer(event, node));
+        if (!inv) return;
+        airoState.gview = versor.rotation(
+            versor.multiply(drag.q0, versor.delta(drag.v0, versor.cartesian(inv))));
+        if (drag.cut) {
+            // The earth is pinned where it was on screen, so turning the view IS turning the
+            // solid against the world.
+            airoState.rot = versor.rotation(
+                versor.multiply(airoQinv(versor(airoState.gview)), versor(drag.earth)));
+            airoState.touched = true;
+        }
+        // The net's clipped world paths are the expensive half of a redraw, so the inset alone
+        // follows the hand and the net is rebuilt on release. A left-drag changes no part of the
+        // net at all, so there is nothing to rebuild for it either way.
+        airoGlobeDraw();
+    });
+    const up = function (event) {
+        if (!drag) return;
+        const cut = drag.cut;
+        drag = null;
+        try { node.releasePointerCapture(event.pointerId); } catch (_) { /* fine */ }
+        if (airoState && cut) airoDraw();
+    };
+    el.on('pointerup', up);
+    el.on('pointercancel', up);
+}
+
+// ---- the board ----
+// Is this point inside a face? A face of a convex solid is a convex polygon, so it is one sign
+// test per edge and the answer is the same sign for all of them.
+function airoPointInPoly(poly, pt) {
+    let sign = 0;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const s = (b[0] - a[0]) * (pt[1] - a[1]) - (b[1] - a[1]) * (pt[0] - a[0]);
+        if (!s) continue;
+        if (!sign) sign = Math.sign(s);
+        else if (Math.sign(s) !== sign) return false;
+    }
+    return true;
+}
+
+// Which face the pointer is over — tested geometrically rather than by asking what caught the
+// event, because the tiles are deliberately pointer-transparent so the board can be one big
+// handle. A press in the gap outside the net falls back to the nearest face, so a right-drag
+// started anywhere at all still turns the world.
+function airoFaceUnder(event) {
+    const S = airoSolid(), place = airoState.place, geom = airoState.geomRef;
+    if (!place || !geom || !airoState.edgeNode) return null;
+    const pt = d3.pointer(event, airoState.edgeNode);
+    let near = null, nearD = Infinity;
+    for (let i = 0; i < S.faces.length; i++) {
+        if (!place[i]) continue;
+        const poly = geom[i].local.map(p => airoApply(place[i], p));
+        if (airoPointInPoly(poly, pt)) return i;
+        const c = airoMid(poly);
+        const d = Math.hypot(c[0] - pt[0], c[1] - pt[1]);
+        if (d < nearD) { nearD = d; near = i; }
+    }
+    return near;
+}
+
+// The point of the EARTH under the pointer, through a particular face: undo that face's placement
+// to get into the face's own plane, then ask its gnomonic. The placement is an affine matrix, so
+// undoing it is one 2x2 inverse.
+function airoGrabPoint(turn, event) {
+    const m = turn.mat, det = m[0] * m[3] - m[1] * m[2];
+    if (!det) return null;
+    const pt = d3.pointer(event, airoState.edgeNode);
+    const dx = pt[0] - m[4], dy = pt[1] - m[5];
+    const local = [(dx * m[3] - dy * m[2]) / det, (dy * m[0] - dx * m[1]) / det];
+    return turn.proj.invert ? turn.proj.invert(local) : null;
+}
+
+// Right-drag on the board turns the world inside the solid, and it is a GRAB: the point of the
+// earth under the pointer stays under the pointer, so the map slides across the tiles while the
+// cage holds still. That is the same relative motion as dragging the wireframe over the inset
+// globe, seen from the other side — there the earth is the fixed thing and the cage moves, here
+// the cage is the frame and the earth moves. Each grabs whatever it is you are touching.
+//
+// The projection and the placement are frozen at the moment of the press and inverted through
+// throughout, which is what the versor formula assumes and what makes the grab exact rather than
+// merely close.
+function airoBoardTurnStart(event, node) {
+    const face = airoFaceUnder(event);
+    if (face == null || !airoState.geomRef[face]) return false;
+    const turn = { face, proj: airoState.geomRef[face].proj, mat: airoState.place[face],
+                   q0: versor(airoState.rot) };
+    const ll = airoGrabPoint(turn, event);
+    if (!ll) return false;
+    turn.v0 = versor.cartesian(ll);
+    airoState.turn = turn;
+    airoState.turning = true;
+    airoState.touched = true;
+    try { node.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
+    event.preventDefault();
+    return true;
+}
+
+function airoBoardTurnMove(event) {
+    const t = airoState.turn;
+    const ll = airoGrabPoint(t, event);
+    if (!ll) return;
+    airoState.rot = versor.rotation(
+        versor.multiply(t.q0, versor.delta(t.v0, versor.cartesian(ll))));
+    airoDragRedraw();
+    airoGlobeDraw();
+}
+
+function airoBoardTurnEnd(event, node) {
+    if (!airoState.turn) return;
+    airoState.turn = null;
+    airoState.turning = false;
+    try { if (node) node.releasePointerCapture(event.pointerId); } catch (_) { /* fine */ }
+    airoDraw();
+}
+
+// Three gestures, and each takes hold of a different thing. The left button turns the FRAME — the
+// picture, not the world. The right button turns the WORLD inside the solid, which moves the cuts
+// and re-cuts the map. The wheel zooms into whatever is under the cursor, and once there is
+// something to move about in, shift or the middle button pans.
+const AIRO_ZOOM_MAX = 14;
 function airoBindMap() {
     if (!svg) return;
     const node = svg.node();
-    const board = ev => {
+    const angle = ev => {
         const p = d3.pointer(ev, node);
-        const v = airoState.view || { k: 1, ox: 0, oy: 0 };
-        return [(p[0] - v.ox) / v.k, (p[1] - v.oy) / v.k];
+        return Math.atan2(p[1] - (height || 600) / 2, p[0] - (width || 800) / 2) / DEG;
     };
+    svg.on('contextmenu.airo', ev => { if (airoState) ev.preventDefault(); });
+
     svg.on('pointerdown.airo', function (event) {
-        const fi = airoFaceAt(event);
-        if (fi == null) {
-            // Empty board: turn the earth inside the solid. That is the LOCUS — which part of
-            // the world each triangle gets, before any of them is moved.
-            airoState.drag = { kind: 'rot', from: d3.pointer(event, node), rot: airoState.rot.slice() };
+        if (!airoState) return;
+        if (event.button === 2) { airoBoardTurnStart(event, node); return; }
+        if (event.button === 1 || event.shiftKey) {
+            airoState.drag = { kind: 'pan', from: d3.pointer(event, node),
+                               pan: airoState.pan.slice() };
+            event.preventDefault();
             return;
         }
-        // Cut the one link above this face and leave it exactly where it already is, so
-        // nothing jumps at the moment of grabbing. Its subtree comes along by construction.
-        const { place } = airoLayout();
-        airoState.parent[fi] = null;
-        airoState.anchor[fi] = (place[fi] || [1, 0, 0, 1, 0, 0]).slice();
-        airoState.drag = { kind: 'move', face: fi, from: board(event),
-                           start: airoState.anchor[fi].slice() };
-        airoDraw();
+        airoState.drag = { kind: 'spin', from: angle(event), spin: airoState.spin };
     });
     svg.on('pointermove.airo', function (event) {
-        const d = airoState && airoState.drag;
+        if (!airoState) return;
+        if (airoState.turn) { airoBoardTurnMove(event); return; }
+        const d = airoState.drag;
         if (!d) return;
-        if (d.kind === 'rot') {
-            const p = d3.pointer(event, node), s = 0.4;
-            airoState.rot = [d.rot[0] + (p[0] - d.from[0]) * s,
-                             Math.max(-90, Math.min(90, d.rot[1] - (p[1] - d.from[1]) * s)),
-                             d.rot[2]];
-            airoSyncSliders();
-            airoDraw();
+        if (d.kind === 'pan') {
+            const p = d3.pointer(event, node);
+            airoState.pan = [d.pan[0] + p[0] - d.from[0], d.pan[1] + p[1] - d.from[1]];
+            airoClampPan();
+            airoApplyFrame();
             return;
         }
-        const p = board(event);
-        const m = d.start.slice();
-        m[4] += p[0] - d.from[0];
-        m[5] += p[1] - d.from[1];
-        airoState.anchor[d.face] = m;
-        airoDraw();
+        airoState.spin = d.spin + (angle(event) - d.from);
+        airoState.touched = true;
+        airoSyncSpin();
+        airoApplyFrame();
     });
-    const drop = () => {
-        const d = airoState && airoState.drag;
+    const drop = event => {
+        if (!airoState) return;
+        if (airoState.turn) airoBoardTurnEnd(event, node);
         airoState.drag = null;
-        if (!d || d.kind !== 'move') return;
-        airoSnap(d.face);
-        airoDraw();
     };
     svg.on('pointerup.airo', drop);
-    svg.on('pointerleave.airo', drop);
-}
+    svg.on('pointercancel.airo', drop);
+    svg.on('pointerleave.airo', event => { drop(event); airoSetHover(null); });
 
-// On release, look for a seam to close: any edge of the moved component that has come to rest
-// against the matching edge of a face outside it. The match is by MIDPOINT rather than by
-// endpoints, so a piece dropped the right way round but slightly turned still finds its home.
-function airoSnap(fi) {
-    const S = airoSolid();
-    const comp = airoComponent(fi);
-    const { geom, place } = airoLayout();
-    let best = null;
-    comp.forEach(a => {
-        S.adj[a].forEach(b => {
-            if (comp.has(b) || !place[a] || !place[b]) return;
-            const sh = S.sharedVerts(a, b);
-            const mid = (f, m) => {
-                const i0 = S.faces[f].indexOf(sh[0]), i1 = S.faces[f].indexOf(sh[1]);
-                const p0 = airoApply(m, geom[f].local[i0]), p1 = airoApply(m, geom[f].local[i1]);
-                return [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
-            };
-            const A = mid(a, place[a]), B = mid(b, place[b]);
-            const gap = Math.hypot(A[0] - B[0], A[1] - B[1]);
-            if (gap < AIRO_SNAP && (!best || gap < best.gap)) best = { gap, a, b };
-        });
+    // Anchored on the cursor, so zooming in on a tear keeps that tear under the pointer instead
+    // of sending it off the edge.
+    svg.on('wheel.airo', function (event) {
+        if (!airoState || !airoState.view) return;
+        event.preventDefault();
+        const p = d3.pointer(event, node);
+        const z0 = airoState.zoom;
+        const z1 = Math.max(1, Math.min(AIRO_ZOOM_MAX, z0 * Math.exp(-event.deltaY * 0.0016)));
+        if (z1 === z0) return;
+        airoState.zoom = z1;
+        airoState.pan = [p[0] - (z1 / z0) * (p[0] - airoState.pan[0]),
+                         p[1] - (z1 / z0) * (p[1] - airoState.pan[1])];
+        airoClampPan();
+        airoApplyFrame();
+        airoSatWatch();
     });
-    if (!best) return;
-    // Re-hang the moved component from the face that found a home, and attach it there.
-    airoReroot(best.a);
-    airoState.parent[best.a] = best.b;
-    delete airoState.anchor[best.a];
+    // The way back out, without hunting for a control: the picture is the thing being looked at,
+    // so double-clicking it is where a reset belongs.
+    svg.on('dblclick.airo', function (event) {
+        if (!airoState) return;
+        event.preventDefault();
+        airoState.zoom = 1;
+        airoState.pan = [0, 0];
+        airoApplyFrame();
+        airoSatWatch();
+    });
 }
 
 function buildAiroPanel() {
@@ -19376,85 +21726,140 @@ function buildAiroPanel() {
     box.id = 'airocean-panel';
     box.className = 'lab-panel';
     box.innerHTML =
-        '<div class="lab-note">Fuller wrapped the earth on an icosahedron and cut it open. ' +
-        'Drag a triangle to tear it off — everything hanging from it comes too — and drop it ' +
-        'against another edge to join it back on. Drag the empty board to turn the world inside ' +
-        'the solid.</div>' +
+        '<div class="lab-note">Fuller wrapped the earth on an icosahedron and cut the solid open. ' +
+        'Which cuts you make is the whole argument, so the cuts are the interaction: hover an edge ' +
+        'to see it and its twin, and click to fold the world open along it or close it up again. ' +
+        'The map is never in pieces, and it never overlaps itself. Drag the board to turn the ' +
+        'frame, <b>right-drag</b> it to turn the world inside the solid, and use the wheel to ' +
+        'zoom (shift-drag to pan, double-click to come back out).</div>' +
+        '<label class="lab-slider"><span>Solid</span></label>' +
+        '<select id="airo-solid" class="airo-select">' +
+        Object.keys(AIRO_SOLIDS).map(k =>
+            `<option value="${k}">${AIRO_SOLIDS[k].label}</option>`).join('') +
+        '</select>' +
+        '<div id="airo-solid-note" class="lab-note airo-globe-note"></div>' +
+        `<svg id="airo-globe" class="airo-globe" width="${AIRO_GLOBE_SIZE}" height="${AIRO_GLOBE_SIZE}" ` +
+        `viewBox="0 0 ${AIRO_GLOBE_SIZE} ${AIRO_GLOBE_SIZE}"></svg>` +
+        '<div class="lab-note airo-globe-note">Drag to turn the globe and the solid together — ' +
+        'the same arrangement, looked at from somewhere else. <b>Right-drag</b> to turn the ' +
+        'wireframe alone against a held earth, which moves the cut points and re-cuts the map.' +
+        '</div>' +
+        '<button type="button" class="lab-proj" id="airo-default">Default orientation</button>' +
+        '<div id="airo-hint" class="airo-hint"></div>' +
         '<div id="airo-readout" class="lab-readout"></div>' +
-        '<label class="lab-slider"><span>Turn the world: longitude</span>' +
-        '<input type="range" id="airo-lam" min="-180" max="180" step="1" value="0">' +
-        '<output id="airo-lam-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Turn the world: latitude</span>' +
-        '<input type="range" id="airo-phi" min="-90" max="90" step="1" value="0">' +
-        '<output id="airo-phi-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Spin the world</span>' +
-        '<input type="range" id="airo-gam" min="-180" max="180" step="1" value="0">' +
-        '<output id="airo-gam-out">0°</output></label>' +
-        '<div class="lab-checks">' +
-        '<label><input type="checkbox" id="airo-land" checked> Land</label></div>' +
+        '<label class="lab-slider"><span>Turn the frame</span>' +
+        '<input type="range" id="airo-spin" min="-180" max="180" step="1" value="0">' +
+        '<output id="airo-spin-out">0°</output></label>' +
         '<div class="lab-grid">' +
-        '<button type="button" class="lab-proj" id="airo-fuller">Fuller’s net</button>' +
+        '<button type="button" class="lab-proj" id="airo-map">Map</button>' +
+        '<button type="button" class="lab-proj" id="airo-sat">Satellite</button>' +
+        '</div>' +
+        '<div class="lab-grid">' +
+        '<button type="button" class="lab-proj" id="airo-fuller">Default net</button>' +
         '<button type="button" class="lab-proj" id="airo-fan">Fan it out</button>' +
-        '<button type="button" class="lab-proj" id="airo-scatter">Cut every seam</button>' +
         '</div>';
     host.appendChild(box);
 
-    const wire = (id, out, set) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', () => {
-            set(+el.value);
-            const o = document.getElementById(out);
-            if (o) o.textContent = el.value + '°';
+    const solid = document.getElementById('airo-solid');
+    if (solid) {
+        solid.value = airoState.solid;
+        solid.addEventListener('change', () => {
+            // A new solid is a new everything: different faces, so a tree over the old ones is
+            // meaningless and both caches are stale.
+            airoState.solid = solid.value;
+            airoSolidCache = null;
+            airoGeomCache = null;
+            airoState.tree = airoDefaultTree();
+            airoState.root = 0;
+            airoState.hoverEdge = null;
+            airoState.spin = airoBestSpin();
+            airoSyncSpin();
+            airoSyncSolidNote();
             airoDraw();
         });
-    };
-    wire('airo-lam', 'airo-lam-out', v => { airoState.rot[0] = AIRO_FULLER_ROTATE[0] + v; });
-    wire('airo-phi', 'airo-phi-out', v => { airoState.rot[1] = AIRO_FULLER_ROTATE[1] + v; });
-    wire('airo-gam', 'airo-gam-out', v => { airoState.rot[2] = AIRO_FULLER_ROTATE[2] + v; });
-    const land = document.getElementById('airo-land');
-    if (land) land.addEventListener('change', () => { airoState.land = land.checked; airoDraw(); });
-    const reset = () => {
-        airoState.parent = airoDefaultTree();
-        airoState.anchor = {};
+    }
+    airoSyncSolidNote();
+
+    const spin = document.getElementById('airo-spin');
+    if (spin) spin.addEventListener('input', () => {
+        airoState.spin = +spin.value;
+        const o = document.getElementById('airo-spin-out');
+        if (o) o.textContent = spin.value + '°';
+        airoApplyFrame();
+    });
+    // Blue Marble is fetched only when it is first asked for — several megabytes that the vector
+    // map never needs — and `ensureSunPathSat` calls back ONLY on success, so a missing file
+    // leaves the button unlit rather than looping.
+    const setSurface = sat => {
+        airoState.sat = sat;
+        airoSyncSurface();
+        if (sat) {
+            // This view claims to be the earth, not the earth last June, so it asks for the month
+            // it is being looked at in. The committed June image draws in the meantime.
+            ensureSunPathSat(() => {
+                if (!airoState) return;
+                useBmngMonth(bmngNowMonth(), () => { if (airoState) airoDraw(); });
+                airoDraw();
+            });
+            useBmngMonth(bmngNowMonth(), () => { if (airoState) airoDraw(); });
+        }
         airoDraw();
     };
-    document.getElementById('airo-fuller').addEventListener('click', reset);
+    document.getElementById('airo-map').addEventListener('click', () => setSurface(false));
+    document.getElementById('airo-sat').addEventListener('click', () => setSurface(true));
+    airoSyncSurface();
+    document.getElementById('airo-default').addEventListener('click', () => {
+        airoState.rot = AIRO_FULLER_ROTATE.slice();
+        airoState.gview = [0, 0, 0];
+        airoState.zoom = 1;
+        airoState.pan = [0, 0];
+        airoState.tree = airoDefaultTree();
+        airoGeomCache = null;
+        airoState.spin = airoBestSpin();
+        airoSyncSpin();
+        airoDraw();
+    });
+    document.getElementById('airo-fuller').addEventListener('click', () => {
+        airoState.tree = airoDefaultTree();
+        airoState.spin = airoBestSpin();
+        airoSyncSpin();
+        airoDraw();
+    });
     // A fan is the other honest net: keep one face still and hang everything off it in a ring,
     // which spreads the tearing evenly instead of hiding it in the ocean.
     document.getElementById('airo-fan').addEventListener('click', () => {
         const S = airoSolid();
-        const parent = {}; S.faces.forEach((_, i) => { parent[i] = null; });
-        const seen = new Set([0]), q = [0];
+        const tree = new Set(), seen = new Set([airoState.root]), q = [airoState.root];
         while (q.length) {
             const f = q.shift();
-            S.adj[f].forEach(n => { if (seen.has(n)) return; seen.add(n); parent[n] = f; q.push(n); });
+            S.faceEdges[f].forEach(ei => {
+                const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+                if (seen.has(n)) return;
+                seen.add(n); tree.add(ei); q.push(n);
+            });
         }
-        airoState.parent = parent; airoState.anchor = {};
+        airoState.tree = airoUnoverlap(airoRepairTree(tree));
         airoDraw();
     });
-    // Twenty separate triangles, laid out in a grid: the solid taken completely apart.
-    document.getElementById('airo-scatter').addEventListener('click', () => {
-        const S = airoSolid();
-        airoState.parent = {}; airoState.anchor = {};
-        S.faces.forEach((_, i) => {
-            airoState.parent[i] = null;
-            const col = i % 5, row = Math.floor(i / 5);
-            airoState.anchor[i] = [1, 0, 0, 1, (col - 2) * 300, (row - 1.5) * 260];
-        });
-        airoDraw();
-    });
+    airoBindGlobe();
 }
 
-function airoSyncSliders() {
-    const set = (id, out, v) => {
-        const el = document.getElementById(id), o = document.getElementById(out);
-        if (el) el.value = Math.round(v);
-        if (o) o.textContent = Math.round(v) + '°';
-    };
-    set('airo-lam', 'airo-lam-out', airoState.rot[0] - AIRO_FULLER_ROTATE[0]);
-    set('airo-phi', 'airo-phi-out', airoState.rot[1] - AIRO_FULLER_ROTATE[1]);
-    set('airo-gam', 'airo-gam-out', airoState.rot[2] - AIRO_FULLER_ROTATE[2]);
+function airoSyncSpin() {
+    const el = document.getElementById('airo-spin'), o = document.getElementById('airo-spin-out');
+    const v = Math.round(((airoState.spin % 360) + 540) % 360 - 180);
+    if (el) el.value = v;
+    if (o) o.textContent = v + '°';
+}
+
+function airoSyncSolidNote() {
+    const el = document.getElementById('airo-solid-note');
+    if (el) el.textContent = (AIRO_SOLIDS[airoState.solid] || {}).note || '';
+}
+
+function airoSyncSurface() {
+    const m = document.getElementById('airo-map'), s = document.getElementById('airo-sat');
+    if (m) m.classList.toggle('active', !airoState.sat);
+    if (s) s.classList.toggle('active', !!airoState.sat);
 }
 
 // ==================== PROJECTION LAB ====================
@@ -19593,11 +21998,34 @@ const LAB_PROJECTIONS = [
       note: 'Fold the earth onto a solid, then unfold the solid flat. Every cut is a choice about what to keep whole.' }
 ];
 
-const LAB_KIND_WORDS = {
-    conformal: 'Conformal — angles are true everywhere, so every indicatrix is a CIRCLE. What it pays is area: the circles grow without limit toward the edges.',
-    equalArea: 'Equal-area — every indicatrix covers the same AREA wherever it sits. What it pays is shape: they squash into ellipses.',
-    neither:   'Neither conformal nor equal-area — the indicatrices change both shape and size. A compromise like this is drawn to look right rather than to be right about any one thing.'
-};
+// BY FAMILY, because the family is what the picture is. Twenty-one buttons in one undifferentiated
+// grid is a list to be searched; grouped, the shapes on screen and the headings above them say the
+// same thing, and switching within a group is a comparison rather than a jump. Membership is the
+// standard taxonomy bar one deliberate placement: Goode homolosine is pseudocylindrical by
+// construction and INTERRUPTED by the only property anybody picks it for, so it sits with the cuts.
+const LAB_GROUPS = [
+    { label: 'Cylindrical', keys: ['mercator', 'equirect', 'transverse'] },
+    { label: 'Pseudocylindrical', keys: ['equalEarth', 'natural'] },
+    { label: 'Azimuthal', keys: ['ortho', 'azEqualArea', 'azEquidist', 'stereo', 'gnomonic'] },
+    { label: 'Conic', keys: ['conicEqArea', 'conicConf', 'conicEqDist', 'albers'] },
+    { label: 'Compromise', keys: ['winkel3', 'vanDerGrinten', 'retro'] },
+    { label: 'Interrupted & polyhedral', keys: ['goode', 'peirce', 'spilhaus', 'waterman'] }
+];
+
+// The three rotation sliders and the two conic ones, as one table: the label, where the value
+// lives, and what it resets to. A right-drag writes to the first two unless they are locked.
+const LAB_SLIDERS = [
+    { id: 'lam', label: 'Centre on longitude', min: -180, max: 180, def: 0,
+      get: () => -labState.rotate[0], set: v => { labState.rotate[0] = -v; } },
+    { id: 'phi', label: 'Centre on latitude', min: -90, max: 90, def: 0,
+      get: () => -labState.rotate[1], set: v => { labState.rotate[1] = -v; } },
+    { id: 'gam', label: 'Tilt', min: -180, max: 180, def: 0,
+      get: () => labState.rotate[2], set: v => { labState.rotate[2] = v; } },
+    { id: 'p1', label: 'Standard parallel 1', min: -89, max: 89, def: 30, conic: true,
+      get: () => labState.parallels[0], set: v => { labState.parallels[0] = v; } },
+    { id: 'p2', label: 'Standard parallel 2', min: -89, max: 89, def: 60, conic: true,
+      get: () => labState.parallels[1], set: v => { labState.parallels[1] = v; } }
+];
 
 let labState = null;
 
@@ -19610,9 +22038,9 @@ function renderProjectionLab() {
     const restart = document.getElementById('restart-btn');
     if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
     document.getElementById('question-text').innerHTML =
-        '<strong>Projections.</strong> Drag the map to turn the world under the projection.';
+        '<strong>Projections.</strong> Drag to turn the world east–west; right-drag to move the centre.';
     labState = { proj: 'mercator', rotate: [0, 0, 0], parallels: [30, 60],
-                 tissot: true, graticule: true };
+                 tissot: true, graticule: true, locks: {} };
     buildLabPanel();
     labBindMap();
     labDraw();
@@ -19650,102 +22078,212 @@ function labProjection() {
     if (p.rotate) p.rotate(labState.rotate);
     if (spec.conic && p.parallels) p.parallels(labState.parallels);
     const w = width || 800, h = height || 600, m = 10;
-    try { p.fitExtent([[m, m], [w - m, h - m]], { type: 'Sphere' }); }
+    // A conic conformal runs to INFINITY at the pole opposite its apex, so the whole sphere is not
+    // something it can be fitted to: `fitExtent` came back with the world squashed into a 780x204
+    // strip and paths running 2,800 units wide across a 780 board. It is CLIPPED to the band it is
+    // honest over — clipped rather than merely fitted, because fitting alone leaves the geometry
+    // beyond the band still drawn, as a smear along whichever edge of the board it ran off.
+    //
+    // With the clip installed BEFORE the fit, the sphere's own outline becomes the band's outline
+    // and one `fitExtent` to the Sphere does the right thing. `labFitBand` is the fallback for
+    // when d3-geo-polygon has not landed: a grid of POINTS, whose bounds need no winding, no
+    // clipping and no opinion about what is inside.
+    const bandClip = labBandClip(spec);
+    if (bandClip) p.preclip(bandClip);
+    const band = bandClip ? null : labFitBand(spec, p);
+    try { p.fitExtent([[m, m], [w - m, h - m]], band || { type: 'Sphere' }); }
     catch (_) { /* leave the default framing rather than lose the projection */ }
+    // And nothing may paint outside the board, whatever it does out there. This is in PROJECTED
+    // space and applied after the fit, since d3's own `fit` nulls the clip extent while measuring
+    // and puts it back afterwards.
+    if (p.clipExtent) { try { p.clipExtent([[0, 0], [w, h]]); } catch (_) { /* fine */ } }
     return p;
+}
+
+// How far a conic conformal may be trusted. rho(phi)/rho(0) = tan(pi/4 + phi/2)^-n, so the
+// latitude at which the map is K times its own equatorial radius is one inversion of that — and
+// the sign of n says which pole it is running away to, so the same expression covers a cone
+// pitched over either hemisphere.
+const LAB_CONIC_MAX_K = 3;
+function labConicCutLat(parallels) {
+    const y0 = parallels[0] * DEG, y1 = parallels[1] * DEG;
+    const t = φ => Math.tan(Math.PI / 4 + φ / 2);
+    if (Math.abs(y0 - y1) < 1e-6) return null;
+    const n = Math.log(Math.cos(y0) / Math.cos(y1)) / Math.log(t(y1) / t(y0));
+    if (!isFinite(n) || Math.abs(n) < 1e-6) return null;
+    const φ = 2 * (Math.atan(Math.pow(LAB_CONIC_MAX_K, -1 / n)) - Math.PI / 4) / DEG;
+    return Math.max(-89, Math.min(89, φ));
+}
+
+function labConicBand(spec) {
+    if (spec.key !== 'conicConf') return null;
+    const cut = labConicCutLat(labState.parallels);
+    if (cut == null) return null;
+    return cut < 0 ? [cut, 89.5] : [-89.5, cut];
+}
+
+function labFitBand(spec, p) {
+    const b = labConicBand(spec);
+    if (!b) return null;
+    const pts = [];
+    for (let lon = -180; lon <= 180; lon += 10)
+        for (let lat = b[0]; lat <= b[1]; lat += 5) pts.push([lon, lat]);
+    return { type: 'MultiPoint', coordinates: pts };
+}
+
+// A lon/lat rectangle as a spherical polygon whose INSIDE is the rectangle.
+//
+// Two things it has to get right, and both were wrong first.
+//
+// The corners are held a hundredth of a degree off the poles: a ring's top edge at exactly ±90 is
+// a run of identical points on the sphere, which is a degenerate ring and clips to nothing.
+//
+// And the WINDING is settled by measurement rather than by reasoning about it. Walking the box
+// anticlockwise in the (lon, lat) plane looks like it should be anticlockwise on the sphere, and
+// it is not: measured, the northern lobe's ring came back with an area of 10.12 steradians out of
+// 4π — the whole earth except the lobe — and `geoContains` put the middle of the box outside it
+// and the far side of the world inside. A backwards ring is not a clip that fails, it is a clip
+// that keeps exactly the wrong half, so the map looked untouched and the smear stayed.
+//
+// Testing the box's own centre is exact and needs no convention: it also holds for a band covering
+// more than half the sphere, where any area threshold would get it backwards.
+const LAB_POLE_EPS = 0.01;
+function labLonLatRing(w, e, s, n) {
+    const ss = Math.max(-90 + LAB_POLE_EPS, s), nn = Math.min(90 - LAB_POLE_EPS, n);
+    const ring = [], step = 2;
+    for (let x = w; x < e; x += step) ring.push([x, ss]);
+    for (let y = ss; y < nn; y += step) ring.push([e, y]);
+    for (let x = e; x > w; x -= step) ring.push([x, nn]);
+    for (let y = nn; y > ss; y -= step) ring.push([w, y]);
+    ring.push([w, ss]);
+    const poly = { type: 'Polygon', coordinates: [ring] };
+    const mid = [(w + e) / 2, (ss + nn) / 2];
+    if (!d3.geoContains(poly, mid)) poly.coordinates[0] = ring.slice().reverse();
+    return poly;
+}
+
+function labBandClip(spec) {
+    const b = labConicBand(spec);
+    if (!b || typeof d3.geoClipPolygon !== 'function') return null;
+    try { return d3.geoClipPolygon(labLonLatRing(-180, 180, b[0], b[1])); }
+    catch (_) { return null; }
+}
+
+// The lobes of an interrupted projection, as spherical polygons to clip each pass to.
+//
+// d3-geo-projection's `interrupt` does the interruption inside the RAW FORWARD — each lobe is
+// projected about its own central meridian — and installs no clip at all: measured,
+// `geoInterruptedHomolosine().preclip()` is the plain `geoClipAntimeridian`. So the outline comes
+// out lobed for free while anything crossing a boundary is drawn as a straight line from one lobe
+// to the next, which is the smear: Antarctica and the Arctic as bands right across the map.
+//
+// The cure is to give it the clip it never had. Each lobe is a lon/lat rectangle — `lobes()`
+// hands back `[[west, 0], [centre, ±90], [east, 0]]` per lobe per hemisphere — and the world is
+// drawn once per lobe with `geoClipPolygon` set to that rectangle. The clip runs AFTER the
+// rotation, and so do the lobes, so the rectangle is passed in raw: turning the world moves the
+// geography through interruptions that stay where they are on the paper, which is what an
+// interrupted map means.
+function labLobeClips(p) {
+    if (!p || typeof p.lobes !== 'function' || typeof d3.geoClipPolygon !== 'function') return null;
+    let lobes;
+    try { lobes = p.lobes(); } catch (_) { return null; }
+    if (!lobes || !lobes.length) return null;
+    const out = [];
+    lobes.forEach(hemi => hemi.forEach(lobe => {
+        const w = lobe[0][0], e = lobe[2][0], pole = lobe[1][1];
+        try { out.push(d3.geoClipPolygon(labLonLatRing(w, e, Math.min(0, pole), Math.max(0, pole)))); }
+        catch (_) { /* a lobe that will not clip is simply not one of the passes */ }
+    }));
+    return out.length ? out : null;
 }
 
 function labDraw() {
     if (!labState || !countriesGroup || !svg) return;
     projection = labProjection();
     path = d3.geoPath().projection(projection);
+    // One pass per lobe on an interrupted projection, one pass otherwise. The passes are the OUTER
+    // loop and the features the inner one, because swapping the preclip rebuilds the projection's
+    // stream and doing that per feature would pay for it a couple of hundred times over.
+    const clips = labLobeClips(projection);
+    const base = projection.preclip ? projection.preclip() : null;
+    const one = o => { try { return path(o) || ''; } catch (_) { return ''; } };
+    const dOf = objects => {
+        const out = objects.map(() => '');
+        if (!clips) { objects.forEach((o, i) => { out[i] = one(o); }); return out; }
+        clips.forEach(c => {
+            projection.preclip(c);
+            objects.forEach((o, i) => { out[i] += one(o); });
+        });
+        if (base) projection.preclip(base);
+        return out;
+    };
+
     countriesGroup.selectAll('*').remove();
     svg.selectAll('g.lab-layer').remove();
     const host = countriesGroup.node() && countriesGroup.node().parentNode
         ? d3.select(countriesGroup.node().parentNode) : svg;
     // Under the land: the sphere and the graticule are the frame the countries are drawn on.
     const under = host.insert('g', () => countriesGroup.node()).attr('class', 'lab-layer');
-    const sphere = { type: 'Sphere' };
     // The world does not fill a rectangle on half of these, so without the sphere's own outline
     // there is no telling where the map stops and the page starts.
-    under.append('path').attr('class', 'lab-sphere').attr('d', path(sphere) || '');
+    const frame = dOf(labState.graticule
+        ? [{ type: 'Sphere' }, d3.geoGraticule10()]
+        : [{ type: 'Sphere' }]);
+    // AND THEN CLIP EVERYTHING TO IT. The sphere's outline is the one thing that comes out of an
+    // interrupted projection correctly whatever else does — it is the lobes themselves — so it is
+    // also the exact statement of where the map is allowed to have ink. A ring that d3's spherical
+    // clip could not cut (Antarctica encircles the pole, which leaves the clip's own boundary
+    // running through the middle of the subject) is drawn straight from one lobe to the next, and
+    // that straight line lies in the GAP between them, which is precisely what this removes. The
+    // browser applies it at screen resolution, so the lobe edges stay as clean as the outline.
+    const cid = 'lab-world-clip';
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    defs.select('#' + cid).remove();
+    defs.append('clipPath').attr('id', cid).append('path').attr('d', frame[0]);
+    under.attr('clip-path', `url(#${cid})`);
+    countriesGroup.attr('clip-path', `url(#${cid})`);
+    under.append('path').attr('class', 'lab-sphere').attr('d', frame[0]);
     if (labState.graticule)
-        under.append('path').attr('class', 'lab-grat').attr('d', path(d3.geoGraticule10()) || '');
+        under.append('path').attr('class', 'lab-grat').attr('d', frame[1]);
+    const feats = gameState.countries || [];
+    const land = dOf(feats);
     countriesGroup.selectAll('path.country')
-        .data(gameState.countries || []).enter().append('path')
-        .attr('class', 'country lab-land').attr('d', path);
+        .data(feats).enter().append('path')
+        .attr('class', 'country lab-land').attr('d', (d, i) => land[i]);
     // The indicatrices go ON TOP of the land: they are the instrument, and an instrument you
     // have to look underneath is no use.
     if (labState.tissot) {
-        const over = host.append('g').attr('class', 'lab-layer lab-tissot');
+        const over = host.append('g').attr('class', 'lab-layer lab-tissot')
+            .attr('clip-path', `url(#${cid})`);
         const circle = d3.geoCircle().radius(LAB_TISSOT_RADIUS).precision(2);
+        const cells = [];
         for (let lat = -90 + LAB_TISSOT_STEP; lat <= 90 - LAB_TISSOT_STEP + 0.001; lat += LAB_TISSOT_STEP)
-            for (let lon = -180; lon < 180; lon += LAB_TISSOT_STEP) {
-                const d = path(circle.center([lon, lat])());
-                if (d) over.append('path').attr('class', 'lab-tissot-cell').attr('d', d);
-            }
+            for (let lon = -180; lon < 180; lon += LAB_TISSOT_STEP)
+                cells.push(circle.center([lon, lat])());
+        dOf(cells).forEach(d => {
+            if (d) over.append('path').attr('class', 'lab-tissot-cell').attr('d', d);
+        });
     }
     labReadout();
 }
 
-// What the projection is doing to one country, as a number. The indicatrices show the pattern;
-// this says how bad it gets, in the terms the argument is always had in — Greenland against
-// Africa. Measured on the DRAWN path: the projected polygon's own area in board units against
-// that country's true share of the sphere. So it is a fact about the picture on screen rather
-// than a formula about the projection, and it is wrong in exactly the ways the picture is.
-function labInflation(name) {
-    const f = sbFeature(name);
-    if (!f || !path) return null;
-    const drawn = Math.abs(path.area(f));
-    const whole = Math.abs(path.area({ type: 'Sphere' }));
-    const trueShare = d3.geoArea(f) / (4 * Math.PI);
-    if (!drawn || !whole || !trueShare) return null;
-    return (drawn / whole) / trueShare;
-}
-
-const LAB_MEASURED = ['Greenland', 'Australia', 'India', 'Democratic Republic of the Congo'];
-
+// The readout is the QUOTE and nothing else. The inflation table went with the four paragraphs
+// that used to sit under it: "Greenland 5.22x too big" is the one fact about projections everybody
+// already arrives knowing, and the indicatrices above it say the same thing continuously, over the
+// whole map, without asking anybody to trust a number computed off a clipped path. `labInflation`
+// and `LAB_MEASURED` are gone with it, and so is the interrupted-projection caveat, which existed
+// only to explain a figure the panel no longer prints.
 function labReadout() {
     const el = document.getElementById('lab-readout');
     if (!el) return;
     const spec = labSpec();
-    const rows = LAB_MEASURED.map(n => ({ n, k: labInflation(n) })).filter(x => x.k && isFinite(x.k));
-    el.innerHTML =
-        // Wikipedia in its own words, then the app's. The quote says what the projection IS;
-        // the note beside it says what it is FOR, which is the part a definition leaves out.
-        (spec.quote
-            ? '<blockquote class="lab-quote">“' + spec.quote + '”' +
-              '<cite><a href="https://en.wikipedia.org/wiki/' + spec.wiki +
-              '" target="_blank" rel="noopener">Wikipedia: ' +
-              spec.wiki.replace(/_/g, ' ') + '</a></cite></blockquote>'
-            : '') +
-        (spec.note ? '<div class="lab-note lab-why">' + spec.note + '</div>' : '') +
-        '<div class="lab-kind">' + LAB_KIND_WORDS[spec.kind] + '</div>' +
-        (rows.length
-          ? '<div class="lab-rows">' + rows.map(x =>
-                '<div class="lab-row"><span>' + displayLabelForName(x.n) + '</span>' +
-                '<span class="lab-k' + (x.k > 1.6 || x.k < 0.65 ? ' bad' : '') + '">' +
-                (x.k >= 1 ? x.k.toFixed(2) + '× too big' : (1 / x.k).toFixed(2) + '× too small') +
-                '</span></div>').join('') +
-            '</div><div class="lab-note">Share of the picture against share of the earth — ' +
-            'which is exactly what "Greenland looks as big as Africa" means. On an equal-area ' +
-            'projection every one reads <strong>1.00×</strong>, and that is the only claim any ' +
-            'projection can make about every country at once.</div>' +
-            // Greenland reads 6.55x on an EQUAL-AREA projection, which is the measurement
-            // failing rather than the projection: it straddles the Atlantic interruption, so it
-            // is drawn as two pieces and the signed area of that path means nothing.
-            (spec.interrupted
-              ? '<div class="lab-note">A country lying across an <strong>interruption</strong> is ' +
-                'drawn in two pieces, and the area measured off that path is not its area — ' +
-                'Greenland reads far too big here on a projection that is exactly equal-area. ' +
-                'The countries away from a cut still read 1.00×, which is the projection ' +
-                'telling the truth.</div>'
-              : '') +
-            '<div class="lab-note">Two ways to read low that are not the projection being kind: ' +
-            'a country partly outside the clip is only partly there, and one near the centre of ' +
-            'a projection with a wildly stretched rim loses share because the RIM has eaten the ' +
-            'picture.</div>'
-          : '');
+    el.innerHTML = spec.quote
+        ? '<blockquote class="lab-quote">“' + spec.quote + '”' +
+          '<cite><a href="https://en.wikipedia.org/wiki/' + spec.wiki +
+          '" target="_blank" rel="noopener">Wikipedia: ' +
+          spec.wiki.replace(/_/g, ' ') + '</a></cite></blockquote>'
+        : '';
 }
 
 function buildLabPanel() {
@@ -19756,30 +22294,38 @@ function buildLabPanel() {
     box = document.createElement('div');
     box.id = 'lab-panel';
     box.className = 'lab-panel';
+    // A slider, its lock and its own reset on one line. The lock holds the value against a
+    // right-drag, which writes the same numbers; without it the drag is a way of accidentally
+    // throwing away a standard parallel you had chosen on purpose.
+    // Source order IS the grid order: the four things on the top line first, then the track, which
+    // spans all four beneath them. Writing the range second — where it reads naturally — makes it
+    // claim a row of its own between the label and its value, which is how the label ended up
+    // alone on one line and its number alone on the next.
+    const sliderHtml = s =>
+        '<div class="lab-slider"><span class="lab-slider-lab">' + s.label + '</span>' +
+        '<output id="lab-' + s.id + '-out">' + s.def + '°</output>' +
+        '<button type="button" class="lab-mini lab-reset-one" id="lab-reset-' + s.id +
+        '" title="Back to ' + s.def + '°" disabled>⟲</button>' +
+        '<label class="lab-lock" title="Hold this against a right-drag">' +
+        '<input type="checkbox" id="lab-lock-' + s.id + '"><span>lock</span></label>' +
+        '<input type="range" id="lab-' + s.id + '" min="' + s.min + '" max="' + s.max +
+        '" step="1" value="' + s.def + '"></div>';
+
     box.innerHTML =
-        '<div class="lab-grid">' +
-        LAB_PROJECTIONS.map(p =>
-            '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
-            '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
-        '</div>' +
+        LAB_GROUPS.map(grp =>
+            '<div class="lab-group-lab">' + grp.label + '</div><div class="lab-grid">' +
+            grp.keys.map(k => LAB_PROJECTIONS.find(p => p.key === k)).filter(Boolean).map(p =>
+                '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
+                '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
+            '</div>').join('') +
         '<div id="lab-lib-note" class="lab-note lab-lib-note"></div>' +
         '<div id="lab-readout" class="lab-readout"></div>' +
-        '<label class="lab-slider"><span>Centre on longitude</span>' +
-        '<input type="range" id="lab-lam" min="-180" max="180" step="1" value="0">' +
-        '<output id="lab-lam-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Centre on latitude</span>' +
-        '<input type="range" id="lab-phi" min="-90" max="90" step="1" value="0">' +
-        '<output id="lab-phi-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Tilt</span>' +
-        '<input type="range" id="lab-gam" min="-180" max="180" step="1" value="0">' +
-        '<output id="lab-gam-out">0°</output></label>' +
+        '<div class="lab-controls-head"><span>Orientation</span>' +
+        '<button type="button" class="lab-mini" id="lab-reset-all" ' +
+        'title="Everything back to where it started" disabled>Reset all</button></div>' +
+        LAB_SLIDERS.filter(s => !s.conic).map(sliderHtml).join('') +
         '<div id="lab-conic" class="lab-conic">' +
-        '<label class="lab-slider"><span>Standard parallel 1</span>' +
-        '<input type="range" id="lab-p1" min="-89" max="89" step="1" value="30">' +
-        '<output id="lab-p1-out">30°</output></label>' +
-        '<label class="lab-slider"><span>Standard parallel 2</span>' +
-        '<input type="range" id="lab-p2" min="-89" max="89" step="1" value="60">' +
-        '<output id="lab-p2-out">60°</output></label>' +
+        LAB_SLIDERS.filter(s => s.conic).map(sliderHtml).join('') +
         '<div class="lab-note">A cone wrapped round the globe touches it along these two ' +
         'circles, so the map is true along them and drifts either side. Bring them together and ' +
         'the cone becomes a tangent one; move them apart and the error is spread wider and ' +
@@ -19799,21 +22345,16 @@ function buildLabPanel() {
         labDraw();
     }));
     labSyncLibNotice();
-    const wire = (id, out, set) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', () => {
-            set(+el.value);
-            const o = document.getElementById(out);
-            if (o) o.textContent = el.value + '°';
-            labDraw();
-        });
-    };
-    wire('lab-lam', 'lab-lam-out', v => { labState.rotate[0] = -v; });
-    wire('lab-phi', 'lab-phi-out', v => { labState.rotate[1] = -v; });
-    wire('lab-gam', 'lab-gam-out', v => { labState.rotate[2] = v; });
-    wire('lab-p1', 'lab-p1-out', v => { labState.parallels[0] = v; });
-    wire('lab-p2', 'lab-p2-out', v => { labState.parallels[1] = v; });
+    LAB_SLIDERS.forEach(s => {
+        const el = document.getElementById('lab-' + s.id);
+        if (el) el.addEventListener('input', () => { s.set(+el.value); labSyncSliders(); labDraw(); });
+        const r = document.getElementById('lab-reset-' + s.id);
+        if (r) r.addEventListener('click', () => labResetOne(s));
+        const lk = document.getElementById('lab-lock-' + s.id);
+        if (lk) lk.addEventListener('change', () => { labState.locks[s.id] = lk.checked; });
+    });
+    const all = document.getElementById('lab-reset-all');
+    if (all) all.addEventListener('click', labResetAll);
     const chk = (id, set) => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => { set(el.checked); labDraw(); });
@@ -19821,6 +22362,7 @@ function buildLabPanel() {
     chk('lab-tissot', v => { labState.tissot = v; });
     chk('lab-grat', v => { labState.graticule = v; });
     labSyncConic();
+    labSyncSliders();
 }
 
 function labSyncConic() {
@@ -19828,39 +22370,82 @@ function labSyncConic() {
     if (el) el.style.display = labSpec().conic ? '' : 'none';
 }
 
-// Dragging turns the WORLD, not the picture: it moves the rotation, so what changes is which
-// part of the earth the projection is being unkind to. That is the whole lesson here, and it is
-// invisible if the map merely slides.
+// TWO GESTURES, and NEITHER of them moves the picture. The frame this map is fitted into is fixed
+// — it is the board, and every projection here is fitted to fill it — so a drag that translated
+// the drawing would only take the map off the edge of the thing it had just been fitted to.
+//
+// LEFT turns the world EAST–WEST under it: one number, `rotate[0]`, so the map wraps through the
+// projection and the outline stays exactly where the fit put it.
+//
+// RIGHT moves the projection's FOCUS — both the centre longitude and the centre latitude — which
+// is the lesson this mode exists for: what changes is which part of the earth is being distorted,
+// and that is invisible if the picture merely slides.
+//
+// Both write the same numbers the sliders do, so a LOCKED slider holds against the drag as well.
+// That is what makes the lock worth having: otherwise a drag is a way of quietly undoing a centre
+// longitude or a standard parallel that was chosen on purpose.
 function labBindMap() {
     if (!svg) return;
     let from = null;
+    svg.on('contextmenu.lab', ev => ev.preventDefault());
     svg.on('pointerdown.lab', function (event) {
-        from = { p: d3.pointer(event, this), r: labState.rotate.slice() };
+        from = { p: d3.pointer(event, this), r: labState.rotate.slice(), btn: event.button };
+        try { this.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
     });
     svg.on('pointermove.lab', function (event) {
         if (!from) return;
         const p = d3.pointer(event, this);
+        const dx = p[0] - from.p[0], dy = p[1] - from.p[1];
         const k = 0.4;
-        labState.rotate = [from.r[0] + (p[0] - from.p[0]) * k,
-                           Math.max(-90, Math.min(90, from.r[1] - (p[1] - from.p[1]) * k)),
-                           from.r[2]];
+        const lam = labState.locks.lam ? labState.rotate[0] : from.r[0] + dx * k;
+        const phi = from.btn === 2 && !labState.locks.phi
+            ? Math.max(-90, Math.min(90, from.r[1] - dy * k))
+            : labState.rotate[1];
+        labState.rotate = [lam, phi, labState.rotate[2]];
         labSyncSliders();
         labDraw();
     });
     const stop = () => { from = null; };
     svg.on('pointerup.lab', stop);
+    svg.on('pointercancel.lab', stop);
     svg.on('pointerleave.lab', stop);
 }
 
 function labSyncSliders() {
-    const set = (id, out, v) => {
-        const el = document.getElementById(id), o = document.getElementById(out);
-        if (el) el.value = Math.round(v);
-        if (o) o.textContent = Math.round(v) + '°';
-    };
-    set('lab-lam', 'lab-lam-out', -labState.rotate[0]);
-    set('lab-phi', 'lab-phi-out', -labState.rotate[1]);
-    set('lab-gam', 'lab-gam-out', labState.rotate[2]);
+    LAB_SLIDERS.forEach(s => {
+        const el = document.getElementById('lab-' + s.id);
+        const o = document.getElementById('lab-' + s.id + '-out');
+        const v = Math.round(s.get());
+        if (el) el.value = v;
+        if (o) o.textContent = v + '°';
+        const r = document.getElementById('lab-reset-' + s.id);
+        if (r) r.disabled = v === s.def;
+    });
+    labSyncReset();
+}
+
+// Off-default is the state the reset is FOR, so it is the state it advertises.
+function labIsDefault() {
+    if (!labState) return true;
+    return LAB_SLIDERS.every(s => Math.round(s.get()) === s.def);
+}
+
+function labSyncReset() {
+    const b = document.getElementById('lab-reset-all');
+    if (b) b.disabled = labIsDefault();
+}
+
+function labResetOne(s) {
+    s.set(s.def);
+    labSyncSliders();
+    labDraw();
+}
+
+function labResetAll() {
+    labState.rotate = [0, 0, 0];
+    labState.parallels = [30, 60];
+    labSyncSliders();
+    labDraw();
 }
 
 function removeProjectionLab() {
@@ -19870,7 +22455,9 @@ function removeProjectionLab() {
         svg.on('pointerdown.lab', null);
         svg.on('pointermove.lab', null);
         svg.on('pointerup.lab', null);
+        svg.on('pointercancel.lab', null);
         svg.on('pointerleave.lab', null);
+        svg.on('contextmenu.lab', null);
         svg.selectAll('g.lab-layer').remove();
     }
     labState = null;
@@ -25837,12 +28424,15 @@ const capTileUrl = (col, row) => `data/textures/earth-cap-c${col}-r${row}.jpg`;
 // Marble equirectangular source and drape that crop on a partial-sphere mesh — full detail in
 // view, texture always within the GPU ceiling. Default source is the single 21600×10800 globe;
 // the "500 m tiles" opt-in stitches from the eight full-res 21600² tiles (the build script's).
-const NASA_BMNG_DIR = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/june';
-const NASA_GLOBE_URLS = [ // tried in order — prefer 21600×10800, drop to 5400 if it won't decode
-    `${NASA_BMNG_DIR}/world.200406.3x21600x10800.jpg`,
-    `${NASA_BMNG_DIR}/world.200406.3x5400x2700.jpg`,
+// All of NASA's own imagery here follows the CURRENT month (see the Blue Marble note above); only
+// the committed base sphere and the locally-built cap tiles are stuck at June, because those are
+// files on disk rather than requests.
+const nasaGlobeUrls = () => [ // tried in order — prefer 21600×10800, drop to 5400 if it won't decode
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x21600x10800.jpg`,
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x5400x2700.jpg`,
 ];
-const NASA_500M_URL = t => `${NASA_BMNG_DIR}/world.200406.3x21600x21600.${t}.jpg`;
+const NASA_500M_URL = t =>
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x21600x21600.${t}.jpg`;
 const NASA_500M_COLS = ['A', 'B', 'C', 'D'];            // 90° lon columns: A[-180,-90] … D[90,180]
 const NASA_500M_ROWS = { '1': [0, 90], '2': [-90, 0] }; // row 1 = north, row 2 = south
 const NASA_500M_PPD = 21600 / 90;                       // 240 px/deg — native 500 m detail
@@ -26030,13 +28620,14 @@ function capDestSize(rect, pxPerDeg) {
 function loadNasaGlobe() {
     if (orbitalGlobePromise) return orbitalGlobePromise;
     orbitalGlobePromise = new Promise((resolve, reject) => {
+        const urls = nasaGlobeUrls();
         let i = 0;
         const tryNext = () => {
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.onload = () => (img.naturalWidth ? resolve(img) : img.onerror());
-            img.onerror = () => (++i < NASA_GLOBE_URLS.length ? tryNext() : reject(new Error('NASA globe failed')));
-            img.src = NASA_GLOBE_URLS[i];
+            img.onerror = () => (++i < urls.length ? tryNext() : reject(new Error('NASA globe failed')));
+            img.src = urls[i];
         };
         tryNext();
     });
@@ -26187,6 +28778,27 @@ function loadEarthTextures() {
         if (orbital) { orbital.earth.material.map = orbitalTexLow; orbital.earth.material.needsUpdate = true; }
         orbitalRender();
     }, undefined, () => useNasaFallback()); // base also missing → NASA supplies the cap
+    loadCurrentMonthBase();
+}
+
+// The committed base sphere is June. Ask NASA for the CURRENT month alongside it and swap it in
+// when it arrives: the local file has already painted by then and is covering the far side, so
+// nothing is ever waiting on the network for it. In June there is nothing to do — the file in
+// hand is already the right month.
+function loadCurrentMonthBase() {
+    const m = bmngNowMonth();
+    if (m === BMNG_LOCAL_MONTH) return;
+    ensureBmngMonth(m, img => {
+        const T = window.THREE;
+        if (!T) return;
+        const t = new T.Texture(img);
+        t.colorSpace = T.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+        const old = orbitalTexLow;
+        orbitalTexLow = t;
+        if (orbital) { orbital.earth.material.map = t; orbital.earth.material.needsUpdate = true; }
+        if (old && old !== t && old.dispose) old.dispose();
+        orbitalRender();
+    });
 }
 
 // Geographic bounds of a cap grid tile.

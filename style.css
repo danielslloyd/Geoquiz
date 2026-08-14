@@ -157,6 +157,107 @@
     transform: rotate(18deg) scale(1.06);
 }
 
+/* The palette menu hangs off its own button rather than off the cluster, so adding it cannot
+   change --app-tools-w and push the top bar's score about. */
+.app-tool-wrap { position: relative; }
+
+.palette-menu {
+    position: absolute;
+    top: 46px;
+    right: 0;
+    width: 250px;
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+    padding: 12px 14px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
+    text-align: left;
+}
+.palette-menu.hidden { display: none; }
+.palette-menu .tuning-group-title { margin-top: 10px; }
+.palette-menu .tuning-group-title:first-child { margin-top: 0; }
+.palette-menu .tuning-item { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.palette-menu .tuning-label { flex: 0 0 82px; font-size: 0.78rem; }
+.palette-menu .tuning-item input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.palette-menu .tuning-item select { flex: 1 1 auto; min-width: 0; }
+.palette-menu .tuning-note { font-size: 0.72rem; opacity: 0.75; margin-top: 6px; line-height: 1.35; }
+
+.palette-themes { display: flex; gap: 8px; margin-top: 8px; }
+.palette-swatch {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+.palette-swatch:hover { background: var(--surface-hover); }
+.palette-swatch[aria-pressed="true"] { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+/* A theme names itself badly and shows itself well, so each button carries a chip of its own
+   two principal colours. These are LITERAL rather than var()s on purpose: a swatch has to show
+   the theme it offers, not the theme currently in force. */
+.palette-chip {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+}
+/* Free Explore's projection picker, in the floating overlay column with the prompt. The column is
+   pointer-transparent so drags between its cards still turn the globe; each card takes its own
+   events back, and this is one of them. */
+.explore-proj-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow-sm);
+    padding: 8px 10px;
+    margin-top: 8px;
+}
+.explore-proj-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text);
+}
+.explore-proj-row select { flex: 1 1 auto; min-width: 0; }
+
+/* Enabled only when there is something to undo — a reset that is always available says nothing
+   about whether the view has been moved, which is half of what this button is for. */
+.explore-reset {
+    display: block;
+    width: 100%;
+    margin-top: 7px;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 0.74rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.explore-reset:hover:not(:disabled) { background: var(--primary); color: #fff; border-color: var(--primary); }
+.explore-reset:disabled { opacity: 0.4; cursor: default; }
+.explore-hint {
+    margin-top: 6px;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    color: var(--text-muted, var(--text));
+    opacity: 0.72;
+}
+
+.palette-chip-ocean   { background: linear-gradient(135deg, #e8e0cf 50%, #284b63 50%); }
+.palette-chip-emerald { background: linear-gradient(135deg, #dde2e6 50%, #324a5e 50%); }
+
 /* Debug is a state rather than an action, so it says so instead of carrying "On"/"Off" text. */
 .app-tool[aria-pressed="true"] {
     background: var(--primary);
@@ -1095,13 +1196,12 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 }
 
 /* Airocean: twenty triangles of earth. The tile is the face itself — it has to be filled and
-   not merely outlined, or there is nothing to grab hold of where the face has no land on it. */
-.airo-face { cursor: grab; }
-.airo-face:active { cursor: grabbing; }
-
+   not merely outlined, or the net would read as twenty coastlines rather than as one solid
+   opened out. It is the OCEAN, so it takes the ocean colour and the net becomes a shape. */
 .airo-tile {
-    fill: var(--surface);
+    fill: var(--map-ocean-1, var(--ocean-1, #b6c4cf));
     stroke: none;
+    pointer-events: none;
 }
 
 .airo-land {
@@ -1112,20 +1212,102 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     pointer-events: none;
 }
 
-/* The cut edges, which are the whole subject: every one of them is somewhere the world has
-   been torn to let the rest lie flat. */
+/* A spanning tree of an icosahedron is not guaranteed to lie flat: fold the wrong way and two
+   faces land on the same cell of the lattice. Saying so is worth more than forbidding it. */
+.airo-clash .airo-tile { fill: var(--incorrect, #c0503f); fill-opacity: 0.35; }
+
+/* The edges are the whole subject. A SEAM is where the solid is still joined; a CUT is where
+   the world has been torn to let the rest lie flat, and it is drawn twice — once on each of
+   the faces that used to meet along it. */
 .airo-edge {
     fill: none;
-    stroke: var(--primary);
-    stroke-width: 1.1;
-    stroke-linejoin: round;
+    stroke-linecap: round;
     vector-effect: non-scaling-stroke;
-    opacity: 0.55;
     pointer-events: none;
+    transition: stroke-width 0.12s, opacity 0.12s;
+}
+/* A tear is the subject and a seam is only where the solid still holds, so they are not two
+   weights of the same line: the tear is three times the seam and at full strength. */
+.airo-edge.seam { stroke: var(--primary); stroke-width: 0.8; opacity: 0.33; }
+.airo-edge.cut  { stroke: var(--primary); stroke-width: 2.6; opacity: 1; }
+.airo-edge.hot  { stroke: var(--accent, #d08a2c); stroke-width: 4.5; opacity: 1; }
+/* A fold with no arrangement that avoids an overlap is refused, and the board then does not
+   change at all — so the edge has to say that it was the one refused, or a legitimate "no" is
+   indistinguishable from a dead click. */
+.airo-edge.refused { stroke: var(--incorrect, #c0503f); stroke-width: 5; opacity: 1; }
+
+/* Fat transparent lines are the hit targets: an edge is a line, and a line one pixel wide is
+   not something anybody can point at. */
+.airo-hit {
+    stroke: transparent;
+    fill: none;
+    cursor: pointer;
+    pointer-events: stroke;
 }
 
-.airo-face:hover .airo-tile { fill: var(--hover, var(--surface)); }
-.airo-face:hover .airo-edge { opacity: 1; stroke-width: 1.8; }
+/* Blue Marble, reprojected onto the face. */
+.airo-sat { pointer-events: none; }
+
+/* The tile UNDER the imagery goes dark. Two rasters meeting along a seam can leave a sub-pixel
+   hairline however carefully they are bled into each other — the pixels are square and the seam
+   is not — and against the cream ocean tile that hairline glows. Against the colour Blue Marble
+   paints its own ocean it is invisible, which is a far more reliable fix than chasing the last
+   half pixel. The seam and tear strokes go light for the same reason: their usual dark navy
+   disappears entirely over open water at night. */
+.airo-sat-on .airo-tile { fill: #050a12; }
+.airo-sat-on .airo-edge.seam { stroke: #cfe0f2; opacity: 0.28; }
+.airo-sat-on .airo-edge.cut { stroke: #eaf2fb; opacity: 0.85; }
+
+.airo-select {
+    width: 100%;
+    padding: 0.35rem 0.4rem;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border, rgba(0, 0, 0, 0.2));
+    border-radius: 4px;
+    margin-top: -0.45rem;
+}
+
+/* The inset globe, with the solid held still over it. */
+.airo-globe {
+    display: block;
+    margin: 0 auto;
+    cursor: grab;
+    touch-action: none;
+}
+.airo-globe:active { cursor: grabbing; }
+.airo-g-ocean { fill: var(--map-ocean-1, var(--ocean-1, #b6c4cf)); }
+.airo-g-rim { fill: none; stroke: var(--primary); stroke-width: 1; opacity: 0.5; }
+.airo-g-grat { fill: none; stroke: var(--primary); stroke-width: 0.4; opacity: 0.22; }
+.airo-g-land {
+    fill: var(--map-land, var(--land, #b9c9a8));
+    stroke: var(--map-land-stroke, var(--land-stroke, #7d8c6d));
+    stroke-width: 0.4;
+}
+.airo-g-edge { fill: none; stroke-linecap: round; pointer-events: none; }
+.airo-g-edge.seam { stroke: var(--text, #2c2c2c); stroke-width: 1; opacity: 0.45; }
+.airo-g-edge.cut { stroke: var(--text, #2c2c2c); stroke-width: 2; opacity: 0.9; }
+.airo-g-edge.hot { stroke: var(--accent, #d08a2c); stroke-width: 3; opacity: 1; }
+/* The far side of the solid, seen through the earth: faint and dashed, so it reads as behind
+   rather than as another edge — and so a tear on the back still has something to light up. */
+.airo-g-edge.ghost { opacity: 0.18; stroke-dasharray: 3 3; stroke-width: 1; }
+.airo-g-edge.hot.ghost { stroke: var(--accent, #d08a2c); opacity: 0.5; stroke-width: 2; }
+.airo-globe-note { margin-top: -0.3rem; text-align: center; }
+
+/* One line that says what clicking the edge under the pointer will do. It keeps its height
+   whether or not anything is hovered, so the panel below it never jumps. */
+.airo-hint {
+    font-size: 0.74rem;
+    line-height: 1.4;
+    min-height: 2.8em;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.airo-hint.on { opacity: 0.8; }
+.airo-hint.warn { color: var(--incorrect, #c0503f); opacity: 1; }
+.airo-hint.bad  { color: var(--incorrect, #c0503f); opacity: 1; }
 
 /* The ranking bar chart. Five numbers in a column are five numbers; five bars are a shape —
    this is the only place the round says whether the order was close or a landslide. */
@@ -3752,6 +3934,31 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     background: rgba(20, 26, 38, 0.8);
 }
 
+/* The dome's compass. A needle rather than a word, because what it is saying — which way north
+   has got to — is a direction, and it says it by pointing. Dimmed while north is already up:
+   the control is for the state it is advertising, and hiding it outright would leave nobody
+   knowing it exists. */
+.sp-north {
+    width: 26px; height: 26px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(20, 26, 38, 0.55);
+    border: 1px solid rgba(200, 214, 232, 0.35);
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, background 0.15s ease;
+}
+.sp-north.off-north { opacity: 1; }
+
+/* The two exposures. Only shown with Satellite on, since with it off there is no photograph to
+   expose — the vector map is drawn in the theme's own colours. */
+.sp-sat-gain { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.sp-north:hover { opacity: 1; background: rgba(20, 26, 38, 0.85); }
+.sp-north svg { width: 20px; height: 20px; display: block; }
+.sp-north-ring { fill: none; stroke: rgba(200, 214, 232, 0.35); stroke-width: 1; }
+.sp-north-n { fill: #d05c4a; }
+.sp-north-s { fill: #cfd7e4; }
+
 /* Must out-specify `.sun-path-cell > svg { width:100%; height:100% }`, which otherwise blows the
    inset up to fill the whole pane. */
 .sun-path-cell > svg.sp-orbit-inset {
@@ -3803,12 +4010,36 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 .sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.5); stroke-width: 1.8; stroke-linecap: round; }
 .sp-map-me-body { stroke: #d0392b; stroke-width: 1; stroke-linecap: round; }
 
-.sp-orb-path { fill: none; stroke: rgba(214, 227, 244, 0.7); stroke-width: 1.1; stroke-dasharray: 3 3; }
-.sp-orb-sun { fill: #ffcf5c; }
-.sp-orb-stop { fill: rgba(214, 227, 244, 0.95); }
-.sp-orb-earth { fill: #7cc0f0; stroke: #f2f8fd; stroke-width: 1.2; }
-.sp-orb-axis { stroke: #ffd28a; stroke-width: 1.4; }
-.sp-orb-lab { font-size: 8px; font-weight: 700; fill: rgba(224, 234, 247, 0.95); }
+/* THESE READ AGAINST THE PANEL NOW, not against a black canvas. The near-white ring and labels
+   were right when the orbit floated over the Earth-in-space pane, and invisible the moment it
+   moved onto a cream surface — so they take the theme's own ink instead of a fixed pale grey.
+   The sun, the earth and the axis keep their literal colours, because those are saying which
+   body is which rather than following the palette. */
+.sp-orb-path { fill: none; stroke: var(--primary); opacity: 0.42; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.sp-orb-sun { fill: #f0b429; stroke: rgba(0, 0, 0, 0.18); stroke-width: 0.5; }
+.sp-orb-stop { fill: var(--primary); opacity: 0.65; }
+.sp-orb-earth { fill: #3b82c4; stroke: var(--surface, #fff); stroke-width: 1.2; }
+.sp-orb-axis { stroke: #c07a1e; stroke-width: 1.4; }
+.sp-orb-lab { font-size: 6.6px; font-weight: 700; fill: var(--primary); opacity: 0.7; }
+
+/* The calendar band. Alternating tints rather than a line at every boundary: twelve radial
+   rules round a 34-unit ring is a starburst, and the thing being read is which month, not
+   where it starts. */
+.sp-orb-month { fill: var(--primary); opacity: 0.07; stroke: none; }
+.sp-orb-month.alt { opacity: 0.15; }
+.sp-orb-month-lab {
+    font-size: 5.4px; font-weight: 700; fill: var(--primary); opacity: 0.72;
+    letter-spacing: 0.2px; pointer-events: none;
+}
+
+/* A preset that has caught the pointer, before the press (hover) and during it (held). The halo
+   is what makes a 3 px dot legible as a target at arm's length. */
+.sp-orb-stop.hot { opacity: 1; }
+.sp-orb-stop.held { stroke: var(--surface, #fff); stroke-width: 1; }
+.sp-orb-stop-halo { fill: var(--primary); opacity: 0.18; pointer-events: none; }
+.sp-orb-stop-halo.today { fill: var(--accent, #d08a2c); opacity: 0.26; }
+.sp-orb-lab.hot { opacity: 1; }
+.sp-orb-earth.held { stroke-width: 1.8; }
 
 /* The orbit view replaces the ground SVG in the same cell, so it fills it the same way. */
 .sp-orbit-canvas {
@@ -4773,9 +5004,41 @@ g.ms-story { pointer-events: none; }
 }
 .lab-quote cite a { color: inherit; }
 .lab-why { opacity: 0.85; }
-.lab-slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 0.5rem; font-size: 0.8rem; }
-.lab-slider input[type="range"] { grid-column: 1 / 3; width: 100%; }
-.lab-slider output { grid-column: 2; font-variant-numeric: tabular-nums; opacity: 0.75; }
+/* The family headings. Small and quiet: they organise the grid, they are not a thing to read. */
+.lab-group-lab {
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-bottom: -0.35rem;
+}
+.lab-group-lab + .lab-grid { margin-bottom: 0.1rem; }
+.lab-controls-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.62;
+    border-top: 1px solid var(--border); padding-top: 0.55rem;
+}
+.lab-mini {
+    font: inherit; font-size: 0.68rem; line-height: 1;
+    padding: 2px 6px; cursor: pointer;
+    color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 4px;
+}
+.lab-mini:hover:not(:disabled) { border-color: var(--accent, #d08a2c); }
+.lab-mini:disabled { opacity: 0.32; cursor: default; }
+/* Label, value, per-slider reset and lock on the top line; the track underneath spans them all. */
+.lab-slider {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center; gap: 2px 0.4rem; font-size: 0.8rem;
+}
+.lab-slider input[type="range"] { grid-column: 1 / 5; width: 100%; margin-top: 1px; }
+.lab-slider output { font-variant-numeric: tabular-nums; opacity: 0.75; text-align: right; }
+.lab-slider-lab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-reset-one { padding: 1px 5px; font-size: 0.72rem; }
+.lab-lock { display: flex; align-items: center; gap: 2px; font-size: 0.64rem; opacity: 0.7; cursor: pointer; }
+.lab-lock input { margin: 0; }
+.lab-lock:hover { opacity: 1; }
 .lab-conic { display: flex; flex-direction: column; gap: 0.45rem; }
 .lab-checks { display: flex; gap: 0.9rem; font-size: 0.8rem; flex-wrap: wrap; }
 .lab-checks label { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
@@ -4884,12 +5147,53 @@ g.ms-story { pointer-events: none; }
 /* The orbit diagram moved out of the Earth-in-space pane and into the panel. It is a REFERENCE
    — where in the year we are — rather than something happening in that pane, and floating it
    over the globe made it compete with the thing it was annotating. */
-.sp-orbit-row { display: flex; align-items: center; gap: 10px; }
-.sp-orbit-row .sandbox-readout { flex: 1 1 auto; min-width: 0; }
+/* And it is now the DATE CONTROL as well as the reference, which is why it takes the panel's
+   whole width: an 84px ring is a thing to read, and dragging the earth round it is a thing to
+   aim at. The date slider and the four turning-point buttons it replaces are gone. */
 #sun-path-panel .sp-orbit-inset {
-    flex: 0 0 auto; width: 84px; height: 84px; display: block;
+    display: block;
+    width: 100%;
+    max-width: 260px;
+    margin: 6px auto 2px;
+    aspect-ratio: 1 / 1;
+    height: auto;
     position: static; background: none; border: none; padding: 0;
+    cursor: grab;
+    touch-action: none;
 }
+#sun-path-panel .sp-orbit-inset:active { cursor: grabbing; }
+/* Today is a place on the ring like the solstices, and the one people look for first. */
+.sp-orb-stop.today { fill: var(--accent, #d08a2c); }
+.sp-orb-lab.today  { fill: var(--accent, #d08a2c); }
+
+/* Per-pane controls, in the corner of the pane they govern. Tracking means something different
+   in each view, so the switch belongs on the view rather than in a list elsewhere. */
+.sp-pane-tools {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.sp-pane-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    font-size: 0.68rem;
+    color: var(--text);
+    background: rgba(20, 26, 38, 0.55);
+    border: 1px solid rgba(200, 214, 232, 0.35);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.sp-pane-check:hover { background: rgba(20, 26, 38, 0.8); }
+.sp-pane-check input { margin: 0; cursor: pointer; }
+/* The globe's Reset view sits in the same cluster, so it stops positioning itself. */
+.sp-pane-tools .sp-view-reset { position: static; top: auto; right: auto; }
 
 /* The observer's mark on the sunrise-line map, in whichever figure the panel is set to. */
 .sp-map-me-pin { fill: #d05c4a; stroke: #fff; stroke-width: 0.7; }

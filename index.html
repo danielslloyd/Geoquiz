@@ -50,9 +50,45 @@
          being played, so they belong beside the palette in the corner rather than in the
          controls bar competing for space with the buttons a mode actually owns. -->
     <div id="app-tools">
-        <button id="theme-toggle" class="app-tool" type="button" title="Switch color theme" aria-label="Switch color theme">
-            <span class="material-symbols-outlined">palette</span>
-        </button>
+        <!-- The palette button opens a menu rather than cycling a theme, because the theme is not
+             the only thing here that decides how the map looks. Theme and map style are two
+             independent axes — one picks the colours, the other picks how heavily the map is
+             drawn on them — and the drawing controls belong beside the colours rather than
+             buried in Settings among orbit heights and answer pauses. -->
+        <div class="app-tool-wrap">
+            <button id="theme-toggle" class="app-tool" type="button" aria-haspopup="true"
+                    aria-expanded="false" title="Colours &amp; map drawing"
+                    aria-label="Colours and map drawing">
+                <span class="material-symbols-outlined">palette</span>
+            </button>
+            <div class="palette-menu hidden" id="palette-menu" role="dialog" aria-label="Colours and map drawing">
+                <div class="tuning-group-title">Colours</div>
+                <!-- Named AND shown: "Atlas" and "Slate" mean nothing until you have seen them,
+                     and a swatch of the actual palette says it in one glance. -->
+                <div class="palette-themes" id="palette-themes">
+                    <button type="button" class="palette-swatch" data-theme="ocean" aria-pressed="false">
+                        <span class="palette-chip palette-chip-ocean"></span><span>Atlas</span>
+                    </button>
+                    <button type="button" class="palette-swatch" data-theme="emerald" aria-pressed="false">
+                        <span class="palette-chip palette-chip-emerald"></span><span>Slate</span>
+                    </button>
+                </div>
+                <div class="tuning-group-title">Map</div>
+                <label class="tuning-item" title="How the map is drawn — line weights, dot sizes, and in one case the colours too. Independent of the colour theme above.">
+                    <span class="tuning-label">Map style</span> <select id="tune-map-style"></select>
+                </label>
+                <div class="tuning-note" id="tune-map-style-desc"></div>
+                <label class="tuning-item" title="Multiplies every map line width at once. For a projector, a small screen, or eyes that want help — without having to invent a whole style for it.">
+                    <span class="tuning-label">Line weight</span> <input type="range" id="tune-map-ink" min="0.4" max="3" step="0.05" value="1"><span id="tune-map-ink-val">1.00×</span>
+                </label>
+                <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
+                    <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
+                </label>
+                <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
+                    <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
+                </label>
+            </div>
+        </div>
         <button id="settings-btn" class="app-tool" type="button" title="Tuning &amp; settings" aria-label="Settings">
             <span class="material-symbols-outlined">tune</span>
         </button>
@@ -317,22 +353,11 @@
                         </label>
                     </div>
                     <div class="tuning-group" id="tuning-row">
-                        <div class="tuning-group-title">Map</div>
-                        <!-- Style and theme are two axes on purpose: the palette button up top swaps
-                             the colours, this swaps how the map is drawn. Filled from MAP_STYLES. -->
-                        <label class="tuning-item" title="How the map is drawn — line weights, dot sizes, and in one case the colours too. Independent of the colour theme, which the palette button swaps.">
-                            <span class="tuning-label">Map style</span> <select id="tune-map-style"></select>
-                        </label>
-                        <div class="tuning-note" id="tune-map-style-desc"></div>
-                        <label class="tuning-item" title="Multiplies every map line width at once. For a projector, a small screen, or eyes that want help — without having to invent a whole style for it.">
-                            <span class="tuning-label">Line weight</span> <input type="range" id="tune-map-ink" min="0.4" max="3" step="0.05" value="1"><span id="tune-map-ink-val">1.00×</span>
-                        </label>
-                        <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
-                            <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
-                        </label>
-                        <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
-                            <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
-                        </label>
+                        <!-- Map style, line weight and the two dot sliders live under the palette
+                             button now: they decide how the map LOOKS, which is the same question
+                             the colour theme answers, and they were the only things in here that
+                             anybody changes to taste rather than to tune a mode. -->
+                        <div class="tuning-group-title">Puzzle</div>
                         <label class="tuning-item" title="US States Puzzle: base distance a dropped piece may miss its true position by and still snap home. Difficulty scales this — Easy uses it as-is, Medium halves it, Hard uses a fifth. Measured on the map's fixed 800x600 coordinate grid, so it doesn't drift with the window size.">
                             <span class="tuning-label">Puzzle snap</span> <input type="range" id="tune-puzzle-snap" min="8" max="60" step="1" value="24"><span id="tune-puzzle-snap-val">24</span>
                         </label>
@@ -357,20 +382,57 @@
     </div>
 
     <script>
-        // Theme toggle: cycle between the two palettes and persist the choice
+        // The palette button opens a menu holding the two things that decide how the map looks:
+        // which colours it is drawn in, and how it is drawn. Picking a theme no longer cycles
+        // blind through the list — with the swatches on screen you choose the one you want.
         (function () {
             var btn = document.getElementById('theme-toggle');
-            if (!btn) return;
-            btn.addEventListener('click', function () {
-                var emerald = document.documentElement.getAttribute('data-theme') === 'emerald';
-                if (emerald) {
-                    document.documentElement.removeAttribute('data-theme');
-                    localStorage.setItem('geoquiz-theme', 'ocean');
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'emerald');
-                    localStorage.setItem('geoquiz-theme', 'emerald');
-                }
+            var menu = document.getElementById('palette-menu');
+            if (!btn || !menu) return;
+
+            function currentTheme() {
+                return document.documentElement.getAttribute('data-theme') === 'emerald'
+                    ? 'emerald' : 'ocean';
+            }
+            function syncSwatches() {
+                var now = currentTheme();
+                menu.querySelectorAll('.palette-swatch').forEach(function (s) {
+                    s.setAttribute('aria-pressed', String(s.dataset.theme === now));
+                });
+            }
+            function setTheme(t) {
+                if (t === 'emerald') document.documentElement.setAttribute('data-theme', 'emerald');
+                else document.documentElement.removeAttribute('data-theme');
+                localStorage.setItem('geoquiz-theme', t);
+                syncSwatches();
+                // Most of the map follows through CSS, but four of its marks are built in JS and
+                // read the tokens themselves — the ocean gradient's stops, the lake fill, the
+                // three.js ocean and the flag pattern's backing — so those have to be told. This
+                // script runs before game.js has parsed, hence the hook rather than a direct call.
+                if (typeof window.geoquizThemeChanged === 'function') window.geoquizThemeChanged();
+            }
+            function open(yes) {
+                menu.classList.toggle('hidden', !yes);
+                btn.setAttribute('aria-expanded', String(!!yes));
+                if (yes) syncSwatches();
+            }
+
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                open(menu.classList.contains('hidden'));
             });
+            menu.addEventListener('click', function (e) {
+                var s = e.target.closest('.palette-swatch');
+                if (s) setTheme(s.dataset.theme);
+                e.stopPropagation();        // a slider drag inside the menu must not close it
+            });
+            // Anywhere else, and Escape, closes it. A menu that can only be closed by the button
+            // that opened it is a menu people leave open.
+            document.addEventListener('click', function () { open(false); });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && !menu.classList.contains('hidden')) open(false);
+            });
+            syncSwatches();
         })();
     </script>
     <script src="game.js"></script>

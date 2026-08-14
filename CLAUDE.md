@@ -15,7 +15,83 @@ Interactive geography quiz game built with vanilla JS and D3.js.
 - `data/skyline-cities.json` — seed list for `skyline-id`: the 100 largest US cities + ~117 of the largest world cities, keyed by city name (`label`, `country`, `region`, `population`, optional `query` override). Loaded into `window.skylineCityData`. `population`/`country`/`region` are never shown — they exist only to rank distractors.
 - `data/textures/earth-*.jpg` — NASA Blue Marble Next Generation (June, public domain) Earth textures for the orbital `spaceship` view. `earth-bmng-2048.jpg` (committed) is a full-globe low-res **base sphere** (instant paint + far side + fallback). `earth-cap-c{col}-r{row}.jpg` are a full-500m-res **8×4 grid of 45° tiles** (10800² each, ~230 MB total, **gitignored** — rebuild locally). At ≤500 km only a ~22° cap is ever visible, so each round loads only the handful of tiles that cap reaches (`orbitalLoadCap`/`capTilesForTarget`, pruned to the current cap) onto tile meshes at radius 1 over the base (radius 0.997, so tiles always win depth). Full res is delivered as tiles because a single browser texture caps at 16384 (Chrome/ANGLE `MAX_TEXTURE_SIZE`, even on big GPUs). Regenerate via `scripts/build-earth-texture.py` (downloads the eight 21600² 500m tiles, slices each 2×2 with Pillow; a `build_half()` two-hemisphere alternative is kept but unused). three.js (r160, ESM via importmap in `index.html`, exposed as `window.THREE`) renders it.
   - **NASA live fallback (for deploys without the gitignored cap tiles, e.g. Netlify).** `probeLocalTiles()` HEAD-checks `earth-cap-c0-r0.jpg` on entry; a 404 (or non-image 200) flips `orbitalNasaFallback` and, instead of the local tiles, each round **crops just the visible cap** straight out of a NASA equirectangular source and drapes it on a partial-sphere mesh (`nasaCapRect`→`capDestSize`→`setNasaCapMesh`/`makeRectMesh`), so the texture is always ≤ the GPU ceiling (never the whole oversized globe). Default source is the single **21600×10800** globe (`loadNasaGlobe`, prefers 21600, falls back to 5400×2700 if it won't decode; cropped via `cropGlobeToCanvas`, a 3-copy draw that handles antimeridian wrap). The **"500 m tiles"** checkbox (`#tune-hires-500m` → `orbitalUse500m`) opts into fetching NASA's full 21600² **500m** tiles live and stitching the cap from them (`build500mCap`/`tilePieces500m`/`fetch500mTile`, `createImageBitmap` crop+resize so a 466 MP tile is never held as a canvas); this works even when local tiles are present and falls back to the globe crop on any failure. `orbitalRefreshCap` picks the source (local tiles / globe crop / 500m); `orbitalCapToken` voids stale async builds. Crop canvases are capped at `CAP_TEX_MAX` (12000 px) for memory.
+
+## Blue Marble, month by month
+
+Blue Marble Next Generation is **twelve images, one per month**, and the differences between them
+are most of what the dataset is for: the snow line marching up and down two continents, the Sahel
+greening and going again, the sea ice opening and closing. A satellite view that always shows June
+is showing a season rather than the earth. Measured on the same point in Siberia (100°E, 65°N),
+mean brightness is **208 in January against 31 in July**; Greenland sits at 250 in both, which is
+the control.
+
+June is nevertheless the **floor**, and stays committed as `earth-bmng-2048.jpg`, because a
+satellite view has to have something to draw before any network call returns and because twelve
+copies of it is twenty megabytes charged to every visitor for the eleven they will not look at. So
+the local file paints immediately and the month actually wanted is fetched alongside — NASA's own
+5400×2700, 1.6 MB, `Access-Control-Allow-Origin: *`, measured at about a second — and swapped in
+when it lands. June is the one month with nothing to fetch, since it is the file already in hand.
+
+**Which month is asked for depends on what the view is claiming.** The orbital and Airocean views
+are pictures of the earth NOW, so they ask for the current month. Sun & Moon is a picture of a
+particular day, so it asks for that day's month and follows the dial as it is moved — which means
+Play ▸ Year now walks the snow line down and back up, the same fact the day-length bars are
+reporting and a good deal easier to see. Verified: setting the dial to days 15/105/200/320 fetches
+exactly months 1/4/7/11 and each swaps in when it arrives.
+
+The views share ONE loaded month (`sunPathSat.day`, with `sunPathSat.local` holding June
+separately), which is safe because only one of them is ever on screen. Everything downstream holds
+its own copy of the pixels — a read-back buffer for the Airocean's per-face reprojection, a
+rendered ground for the panorama, a three.js texture for the earth in space — so `bmngInvalidate`
+drops all of them on a swap. **Each of those caches keys itself on something a change of month
+does not move**, which is why missing one shows as a single pane stuck on the old month while its
+neighbours change: the sunrise-line map keys on the map's centre longitude and swapping the image
+does not move the centre, and the dome's ground disc keyed on a mere `!!sunPathSat.day`.
+
+**The night side is a separate fetch and both of its remote sources had to go.** NASA's own
+`eoimages.gsfc.nasa.gov` sends no `Access-Control-Allow-Origin` at all, so every attempt died on
+the CORS check and fell through to the last entry — which was `2_no_clouds_4k.jpg`, a DAY texture.
+The one case the fallback existed for, it answered with the wrong picture. Measured: mean
+brightness 122 with the Sahara at (199,182,158), against 21 and near-black for a real night image.
+The two now used are Black Marble derivatives on jsdelivr, which sends `*` and pins by tag. The **locally built cap tiles stay June**, because those are files on
+disk rather than requests; NASA's own 21600 globe and 500 m tiles follow the current month like
+everything else.
+
 - `data/lakes.geo.json` — Natural Earth **110m** major lakes (Great Lakes, Victoria, Baikal, …), drawn as an overlay on world maps (`drawLakes`). Lakes track the map's detail level (`lakesResForDetail`): `low`/`medium` both use the bundled local 110m file, `high` fetches 50m from jsdelivr (`martynafford/natural-earth-geojson`), cached in `lakesCache` with the local file as fallback. `medium` maps to 110m (not 50m) deliberately — country coastlines at `medium` are the 50m source simplified down to `MEDIUM_SIMPLIFY_RETAIN` (20%, locked) client-side, but raw 50m lakes have no equivalent simplification pass, so they used to render sharper than the coastline they sit inside; 110m lakes are close in coarseness to a 20%-simplified 50m coastline and need no network fetch. They share the globe's `userSpaceOnUse` `#ocean-gradient` (kept in sync by `syncOceanGradient`) so they read as ocean; on flat maps they fill `var(--surface)` (the flat-map ocean colour) and carry a `var(--land-stroke)` coastline border. `MIN_LAKE_DIAM_KM` (32 km, locked) filters out lakes below Great Salt Lake size via `lakeInscribedDiamKm`.
+
+## The hole and the sticker are the same lake
+
+A lake is drawn twice over: once as a HOLE stamped out of the countries, and once as a polygon
+laid on top of them. Anything the hole takes that the polygon does not put back is a piece of the
+page showing through the middle of a continent, and there were **three** independent ways for the
+two to disagree — all of them visible at once on the Great Lakes:
+
+* **The cut always used the bundled 110m file** while the overlay follows the detail level, so at
+  high detail a COARSE hole sat under a FINE polygon and the difference showed as background round
+  every shore and between islands the coarse file does not have.
+* **The overlay drops any lake under `MIN_LAKE_DIAM_KM` and the cut dropped nothing**, so every
+  lake too small to draw was a speck of background with nothing over it at all.
+* **A lake's own ISLANDS went with it.** Cutting the outer ring takes the islands too, and the
+  polygon drawn on top has those same holes — so an island in a lake came out as a speck of
+  background as well. They are handed back to the country as land of their own, and only to the
+  part that actually contained them, since a lake can straddle a border and its islands do not.
+
+So there is now ONE decision about which lakes exist — `lakesForDrawing()`, resolution and size
+threshold together — and both the hole and the sticker are made from its answer, through one fetch
+path (`ensureLakeData`) so they cannot even be looking at different files. That gives an invariant
+worth stating: **the cut set is the drawn set**, so every hole is covered by the polygon it was cut
+for. Measured over a grid across the Great Lakes and the Canadian shield — every point that was
+land before the cut, at all three detail levels — **0 bare holes out of ~1,000 punched to water**,
+against 32 before the islands were handed back.
+
+**The cut still runs after the simplification, and that is not the order it looks like it should
+be.** Cutting at high resolution and then simplifying is not expressible here: the simplification
+is TOPOLOGICAL (`topojson.presimplify` over the arc table), which is what keeps a shared border
+bit-identical between the two countries that own it, and a polygon that has had a lake cut out of
+it is no longer made of arcs. Simplifying the cut features per-ring instead would drop different
+points on each side of a shared border and open gaps along it. What the ordering was wanted FOR is
+the invariant above, and that holds regardless of which runs first: the hole is `country ∩ lake`
+and the sticker is `lake`, so the sticker covers the hole however the country was simplified.
 
 ## Lakes are cut out of the countries
 
@@ -72,7 +148,7 @@ The cutting set is the bundled 110m file at every detail level.
 `drawIslandMarkers`/`updateIslandMarkers` decide per-redraw whether each small feature shows as a clickable dot or its polygon outline, based on the size of the feature's **largest individual polygon part** vs `DOT_PIXEL_THRESHOLD` — not the bounding box of every part combined. A feature whose parts are scattered across a wide area (e.g. a 10-island nation spanning many degrees) would otherwise register as "big" from its combined bbox alone even if no single island is more than a pixel; measuring per-part fixes that. On **flat maps** this is `featureMaxPartPixelDim` (splits the feature into its polygon parts via `featureParts`, takes `path.bounds` of each part individually, keeps the max). On the **globe** it's `featureAngularDim` (same per-part split, `angularDimOfPart` computes each part's angular size directly from its own points rather than via `d3.geoBounds`, then the max across parts is multiplied by projection scale) — cached per candidate as `d.angDim` — so the dot/outline choice depends only on zoom, **not** on how far the country has rotated toward the limb. Per-part angular sizing bypasses `d3.geoBounds` deliberately: on an *isolated* small ring that happens to sit right at ±180° (e.g. a sliver of Fiji), `d3.geoBounds` can't tell which side is "outside" without more surrounding context and reports the full 360° — `lonSpanDeg` (360° minus the largest gap between sorted longitudes) resolves this correctly from the ring's own points. Every quiz item is therefore always shown as *either* geometry or a dot at every detail level. `drawIslandMarkers` keeps the **largest** feature per name (some atlas resolutions split a country into a real polygon plus a stray micro-polygon — e.g. Australia at 50m — which would otherwise be mistaken for a dot; this is a *different* mechanism from the per-part sizing above — it dedups across multiple array entries sharing a name, not across parts within one entry's geometry). Big features (`geoArea > DOT_CANDIDATE_AREA`, a sum-of-areas check unaffected by part scatter) are always outlines and skip the check. World micro-states with no polygon always dot (anchored at `capitalCoords`). Visible dots are spread apart by `relaxDots` (min centre-to-centre `DOT_SPACING` px; also nudged off small outline polygons) so dense clusters (Caribbean/Pacific) stay legible. The spaceship view shows neither dots nor highlights.
 
 Dots are **rebuilt from scratch** by every `drawCountries()`, so anything painted onto them (the `target`/`found` classes, the `flag-filled` pattern fill) is lost on a redraw unless it is explicitly carried across. `captureFeatureMarks()`/`restoreFeatureMarks()` snapshot the class + inline `fill`/`stroke` of both the country paths **and** the dot circles, and are used by the two redraw paths that must not disturb the game in progress: `reloadWorldDetail()` (detail toggle) and `reprojectMap()` (globe↔flat toggle). Both previously restored path *classes* only — so changing detail cleared the flag fill of every already-guessed island (and `reprojectMap` wiped the dots wholesale).
-- `DOT_PIXEL_THRESHOLD` (min dot px, 0–20) and `DOT_SPACING` (dot spacing) are exposed as live tuning sliders; `MEDIUM_SIMPLIFY_RETAIN` (20%) and `MIN_LAKE_DIAM_KM` (32 km) are locked constants, no longer sliders. All tuning sliders (general + spaceship) live in a **Settings pop-up** (`#settings-overlay`, opened by `#settings-btn`), not inline in the controls bar; the `#spaceship-tuning` group inside it is shown only in spaceship mode. A **Gameplay** group holds `ANSWER_PAUSE_MS` (see Answer pacing, below).
+- `DOT_PIXEL_THRESHOLD` (min dot px, 0–20) and `DOT_SPACING` (dot spacing) are exposed as live sliders in the **palette menu** (see below); `MEDIUM_SIMPLIFY_RETAIN` (20%) and `MIN_LAKE_DIAM_KM` (32 km) are locked constants, no longer sliders. The remaining tuning sliders live in a **Settings pop-up** (`#settings-overlay`, opened by `#settings-btn`), not inline in the controls bar; the `#spaceship-tuning` group inside it is shown only in spaceship mode. A **Gameplay** group holds `ANSWER_PAUSE_MS` (see Answer pacing, below).
 - The orbital `spaceship` view renders on its own **three.js** WebGL canvas (not D3/SVG) — see the `spaceship` row below.
 
 ## Shape framing core
@@ -268,16 +344,116 @@ earth — which is exactly what "Greenland looks as big as Africa" means. Measur
 path, so it is a fact about what is on screen rather than a formula about the projection.
 Verified across all fourteen: every equal-area projection reads **1.00× for all four countries**
 (Equal Earth, azimuthal equal-area, conic equal-area, Albers), Mercator puts Greenland at 5.22×,
-conic conformal at 3.85×. Two ways of reading low are not the projection being kind and the panel
-says so: a country partly outside the clip is only partly there, and one near the centre of a
-projection with a wildly stretched rim loses share because the rim has eaten the picture.
+conic conformal at 3.85×. Two ways of reading low are not the projection being kind: a country
+partly outside the clip is only partly there, and one near the centre of a projection with a
+wildly stretched rim loses share because the rim has eaten the picture.
 
-Dragging turns the WORLD, not the picture — it moves the rotation, so what changes is which part
-of the earth is being distorted, which is the whole lesson and is invisible if the map merely
-slides. The projection is rebuilt from scratch on every change rather than mutated: a conic
-carries standard parallels a cylindrical has never heard of, and switching by setting properties
-leaves the old ones in force. The globe/flat, tilt and detail toggles are all hidden — the mode
-supplies its own projection and pins 110m.
+### The readout is the quote, and nothing else
+
+There were four paragraphs and a table. The paragraphs — what the projection is for, what its
+family gives up, how to read the numbers, and two ways of reading them wrong — were each a general
+truth restated identically on all twenty-one projections, so nobody read any of it after the first.
+And the table said "Greenland 5.22× too big", which is the one fact about projections everybody
+already arrives knowing, computed off a clipped path, while the indicatrices directly above it say
+the same thing continuously and over the whole map. `LAB_KIND_WORDS`, `spec.note`, `labInflation`
+and `LAB_MEASURED` are all gone.
+
+### Two gestures, and neither moves the picture
+
+The frame is fixed — it is the board, and every projection here is fitted to fill it — so a drag
+that translated the drawing would only take the map off the edge of the thing it had just been
+fitted to. A pan was tried and removed for exactly that reason.
+
+**Left turns the world east–west**: one number, `rotate[0]`, so the map wraps through the
+projection and the outline stays where the fit put it. **Right moves the FOCUS**, centre longitude
+and centre latitude together, which is the lesson this mode exists for — what changes is which part
+of the earth is being distorted, and that is invisible if the picture merely slides.
+
+**Both write the same numbers the sliders do, so a locked slider holds against the drag.** That is
+the whole point of the lock: otherwise a drag is a way of quietly undoing a standard parallel or a
+centre longitude that was chosen on purpose. Each of the five sliders carries its own lock and its
+own reset, and a sixth reset puts everything back; all six are disabled while there is nothing to
+undo.
+
+### Interrupted projections were never clipped at all
+
+`d3.geoInterruptedHomolosine().preclip()` is the plain **`geoClipAntimeridian`** — measured.
+d3-geo-projection's `interrupt` does the interruption inside the RAW FORWARD, projecting each lobe
+about its own central meridian, and installs no lobe clip whatsoever. The lobed outline therefore
+comes out for free while anything crossing a boundary is drawn as a straight line from one lobe to
+the next. That is the smear: Antarctica and the Arctic as bands right across the map, the graticule
+and the indicatrices streaking with them.
+
+The cure is in two halves, and it needed both.
+
+**The lobes get the clip they never had.** `lobes()` hands back `[[west, 0], [centre, ±90],
+[east, 0]]` per lobe per hemisphere, and the world is drawn once per lobe with `geoClipPolygon` set
+to that rectangle, the `d` strings concatenated. Passes are the OUTER loop and features the inner
+one, because swapping the preclip rebuilds the projection's stream. The rectangle is passed in raw:
+the clip runs after the rotation and so do the lobes, so turning the world moves the geography
+through interruptions that stay put on the paper, which is what an interrupted map means.
+
+Two things that rectangle has to get right, and both were wrong first. Its corners are held a
+hundredth of a degree off the poles, since a top edge at exactly ±90 is a run of identical points
+on the sphere and clips to nothing. And its **winding is settled by measurement**, not by argument:
+walking the box anticlockwise in the (lon, lat) plane looks like it should be anticlockwise on the
+sphere and is not — the northern lobe's ring came back with an area of **10.12 steradians out of
+4π**, the whole earth except the lobe, with `geoContains` putting the middle of the box outside it.
+A backwards ring is not a clip that fails, it is a clip that keeps exactly the wrong half, so the
+map looked untouched. `labLonLatRing` tests the box's own centre and reverses if it is outside,
+which is exact and also holds for a band covering more than half the sphere, where any area
+threshold gets it backwards.
+
+**And then everything is clipped to the sphere's own outline** (`clipPath`, at screen resolution).
+That outline is the one thing an interrupted projection always gets right — it IS the lobes — so it
+is also the exact statement of where the map may have ink. It catches what the spherical clip
+cannot: a ring that ENCLOSES A POLE has the clip's own boundary running through the middle of it,
+which d3-geo-polygon will not cut, and Antarctica is exactly that. Its straight jump from one lobe
+to the next lies in the gap between them, and the gap is precisely what the outline excludes.
+
+Measured on Goode, before against after, sampling every second pixel: **4,956 ink samples removed,
+271 added** (antialiasing along the new edges), 24,379 unchanged.
+
+A planar cut on longitude was tried in between and abandoned. Cutting rings at the lobe meridians
+in the (lon, lat) plane is the textbook description of an interruption and works for Antarctica —
+and destroys every feature that crosses ±180, because in the plane those rings run the wrong way
+round the world. Russia inverted and flooded the map.
+
+### The conic conformal runs to infinity, so it is clipped to where it does not
+
+A conic conformal diverges at the pole opposite its apex. Fitting it to the whole sphere is fitting
+it to something unbounded: `fitExtent` returned the world squashed into a 780×204 strip with paths
+running **2,800 units wide across a 780 board**, which is what "looks broken" was.
+
+`labConicCutLat` inverts the projection's own radius formula — ρ(φ)/ρ(0) = tan(π/4 + φ/2)^−n — for
+the latitude at which the map is `LAB_CONIC_MAX_K` (3) times its own equatorial radius, and the
+sign of n says which pole it is running away to, so one expression covers a cone pitched over
+either hemisphere. At the default parallels that is **65.7°S**. The band is CLIPPED rather than
+merely fitted, because fitting alone leaves the geometry beyond it still drawn, as a smear along
+whichever edge of the board it ran off; with the clip installed before the fit, the sphere's own
+outline becomes the band's outline and one `fitExtent` does the rest. Worst horizontal run in a
+country: **771 → 6.2**.
+
+Every projection also gets a `clipExtent` on the board after fitting, so nothing can paint outside
+it whatever it does out there — measured 0 paths outside the board across all twenty-one, against a
+bounding box of 2,800 before.
+
+### The projections are grouped by family
+
+Twenty-one buttons in one undifferentiated grid is a list to be searched. Grouped —
+**Cylindrical, Pseudocylindrical, Azimuthal, Conic, Compromise, Interrupted & polyhedral** — the
+shapes on screen and the headings above them say the same thing, and switching within a group is a
+comparison rather than a jump. `LAB_GROUPS` is the single list and the grid is rendered from it, so
+a projection can be neither duplicated nor lost: verified 21 of 21 placed, 0 duplicated, 0 missing.
+
+Membership is the standard taxonomy bar one deliberate placement: **Goode homolosine** is
+pseudocylindrical by construction and interrupted by the only property anybody picks it for, so it
+sits with the cuts.
+
+The projection is rebuilt from scratch on every change rather than mutated: a conic carries
+standard parallels a cylindrical has never heard of, and switching by setting properties leaves the
+old ones in force. The globe/flat, tilt and detail toggles are all hidden — the mode supplies its
+own projection and pins 110m.
 
 Fixed at source on the way: **the tilt toggle was tested with `isGlobeView()`**, which at that
 point in `startGameWithMode` still answers for the PREVIOUS mode — `flatGlobeView` is not set for
@@ -289,7 +465,9 @@ from whatever came before it.
 `airocean-lab`, the third Explore tile. Fuller wrapped the earth on an icosahedron and cut the
 solid open; which cuts you make is the whole argument, because every arrangement keeps some
 things together by tearing others apart. So the cuts are the interaction — turn the world inside
-the solid, pull a triangle off, drop it somewhere else.
+the solid, and choose edge by edge which is a seam and which is a tear. **Six solids**, not one:
+the icosahedron Fuller used, the dodecahedron, two Archimedean truncations, the snub cube and a
+Catalan rhombic triacontahedron.
 
 **It is not `d3.geoAirocean` with knobs on**, and the reason is worth recording because three
 attempts went that way first. That projection bakes each face's placement at construction, so a
@@ -307,39 +485,371 @@ instead, and it is short because the geometry is kind:
   side — written with complex numbers, because multiply-to-turn, add-to-move and conjugate-to-
   mirror is what a rigid motion of the plane *is*. Both the direct and the mirrored motion are
   tried and the one putting the child on the far side of the seam is kept; the other folds it
-  back over its parent. **Worst seam gap over the whole net: 6.4 × 10⁻¹⁴ px.**
+  back over its parent. **Worst seam gap over the whole net: 1.1 × 10⁻¹³ px.**
 
-The arrangement is therefore a **spanning forest over the face adjacency**, which is why "anything
-connected to the rest only through the piece you moved comes with it" is not a feature that had to
-be written — it is what a subtree is.
+### The map is never in pieces
 
-Three things it has to get right, and two of them were wrong first:
+The arrangement is a **spanning tree over the face adjacency**, held as an **edge SET** and not as
+parent pointers. Every operation here is "add this edge, drop that one", so a tree edited as a set
+cannot come apart; the parent links the placement walk needs are derived from the set by
+breadth-first search each time. Connectivity is therefore not an invariant anybody has to
+maintain — it is a property of the only representation there is. Measured: **60 of 60 edge copies clicked
+from a fresh net, 150 consecutive clicks after that, and 200 more on each of the six solids — zero
+breaks, zero dead clicks, and every seam still closing to 10⁻¹³.**
 
-* **The faces must be wound.** They fall out of the adjacency search in index order, which is
-  backwards about half the time, and a backwards spherical ring is not a triangle — it is the
-  whole earth minus that triangle. Unwound, every point on the globe read as inside **nine or
-  eleven faces** and each face clipped to the complement of itself. Wound: **3,000 random points,
-  every one in exactly one face.**
-* **Rerooting belongs to the re-attach, not the grab.** `airoReroot` reverses the chain of parents
-  above a face, and on a grab that walks all the way to the map's own root — making the grabbed
-  face the parent of everything, so tearing it off took the entire map. Grabbing cuts the one link
-  above the face and lets its subtree follow. Measured: grabbing carries 8 of 20 faces, all
-  translating by exactly the drag vector, with the other 12 not moving at all.
-* **A dropped piece may find its home through any of its faces**, not just the one that was cut,
-  so the re-attach reroots the component onto whichever face matched. Verified re-attaching
-  through a face that was not the old parent: 19 seams, gap 1.3 × 10⁻¹³.
+This replaced a drag-a-triangle-off-and-drop-it-somewhere puzzle, which is a different thing —
+a loose jigsaw of the earth rather than a solid being opened out.
 
-Snapping matches **edge midpoints** rather than endpoints, so a piece dropped the right way round
-but slightly turned still finds its home; dropped 3.6 units out, every face lands back on its
-original position to within 10⁻⁶.
+### The interaction is the edges
 
-The clip that cuts the world down to one face is `d3.geoClipPolygon` from **d3-geo-polygon**, and
-Fuller's own net is read off d3-geo-projection's Airocean by matching face centroids. Both are
+An edge that is a **seam** is drawn once, with a triangle either side. An edge that is a **tear**
+is drawn **twice**, once on each of the faces that used to meet along it, in two different places
+on the map — and those two drawings are the same edge of the solid. That is the single fact a flat
+world has to hide, so hovering marks both: over the whole default net the eleven tears' twins sit
+a minimum of **132 units apart**, which is why you would never otherwise guess they were one edge.
+
+Clicking toggles it, and which way it folds is decided by the pointer:
+
+* **A tear closes.** Adding an edge to a spanning tree closes exactly one cycle, so exactly one
+  edge on that cycle has to go, and the one taken is the hinge holding the **clicked** triangle
+  where it is. The piece you pointed at lets go and swings round to meet its twin, bringing
+  whatever hangs off it.
+* **A seam opens**, and the triangle that let go takes hold again immediately with whichever of
+  its **other two edges the pointer was nearer**. Only an edge running to the far side of the cut
+  will do; one leading back into the piece that came away closes a cycle instead of holding
+  anything.
+
+**A dead click is the one outcome this mode cannot afford**, and the rule as stated produces them:
+a face whose every edge is a seam is a hinge for that many subtrees and cannot itself be the thing
+that moves. Six of the icosahedron's twenty faces are like that under Fuller's net, and **five of
+its nineteen seams refused outright**. So when neither face of the seam can swing, the loose side
+is re-hung at whichever tear spanning the two sides is nearest the click — the same
+nearest-to-the-pointer rule one step further out. It can always be done, and that is a fact about
+polyhedra rather than luck: by Steinitz's theorem the face adjacency graph of any convex
+polyhedron is 3-connected, so removing one edge from it never separates anything.
+
+### The clip polygon is in ROTATED coordinates
+
+One word, and it is the whole of what made this mode unreadable. d3's pipeline runs **rotate →
+preclip → project**, so a preclip is handed points that have *already* been turned by the
+projection's own rotation; a clip ring given in raw lon/lat is a ring somewhere else entirely. It
+did not fail loudly — it clipped each face to a region beside itself, so all twenty faces drew
+land belonging to their neighbours, overlapping, and the board came out as one smear of coastline
+with the triangles lost somewhere inside it.
+
+Measured on face 0: the raw ring draws land across `[-18,-356]..[322,-8]` with the triangle at
+`[-119,-151]..[142,95]` — wholly outside it — and the rotated ring draws it across
+`[-113,-150]..[121,87]`, inside the triangle, as a face of a polyhedron must be. Verified after
+the fix by testing every drawn vertex against its own triangle: **0 of 20 faces spill**, and still
+0 after turning the world to a new orientation.
+
+### Six solids, none of them typed out as faces
+
+`AIRO_SOLIDS`: **icosahedron** (20 triangles), **dodecahedron** (12 pentagons), **truncated
+icosahedron** (12 pentagons + 20 hexagons — the football), **truncated icosidodecahedron** (30
+squares + 20 hexagons + 12 decagons), **snub cube** (32 triangles + 6 squares, chiral) and the
+Catalan **rhombic triacontahedron** (30 golden rhombi). Each is a bare bag of POINTS; the faces
+are worked out by `airoBuildSolid`. A face list is the part that is tedious to type and impossible
+to check by eye — one transposed index gives a solid that looks almost right and unfolds into
+nonsense — while a point list is short and is the form every published coordinate set comes in.
+
+The faces come from **supporting planes**, and the candidates come from the vertices themselves:
+every face containing a vertex contains exactly two of that vertex's edge-neighbours, and those
+three points are never collinear, so each vertex with each pair of its neighbours enumerates every
+face several times over. A plane is kept when no vertex lies outside it. That is 360 candidates
+for the largest solid here rather than the 280,000 triples a blind search would try.
+
+Verified for all six: **correct V, E and F, Euler characteristic exactly 2**, every face's edge
+count equal to its corner count, dual graph connected, every vertex used, worst planarity error
+3 × 10⁻¹⁶.
+
+Two things it must not do. It must not **normalise the points onto the unit sphere** — a Catalan
+solid genuinely has its vertices at two different radii, and flattening them destroys it — and it
+must not assume every face is the same distance from the centre.
+
+**A FACE IS ITS SET OF CORNERS, and that is what identifies it.** Keying the dedupe on the rounded
+normal instead is the same face found from two different corners of itself producing two different
+strings, because `-1e-17` formats as `"-0.00000"` and `+1e-17` as `"0.00000"` — so any face whose
+normal lies on an axis with a zero component was collected TWICE. That is exactly the 12 pentagons
+of the truncated icosahedron, which sit on the five-fold axes, and the 12 decagons of the
+truncated icosidodecahedron: **44 faces instead of 32, every vertex claimed by four faces instead
+of three, and an Euler characteristic of 74.** A set of integers has no such question about it.
+
+**The rhombic triacontahedron is derived, not quoted.** The published sets pair an icosahedron
+with a dodecahedron at a particular relative radius and chirality, and getting either wrong gives
+32 points whose hull is not rhombic at all. Its 30 faces correspond one for one to the
+icosahedron's 30 EDGES: each rhombus is that edge's two endpoints (the short diagonal) with the
+two points over the faces either side (the long diagonal). Requiring the diagonals to bisect each
+other — which is what makes it a rhombus rather than a kite — puts those points at the face's
+vertex sum over φ². Checked on one face: (0,1,φ), (0,−1,φ) and (±1/φ, 0, φ) all lie in the plane
+z = φ with diagonals 2 and 2/φ, a ratio of exactly φ.
+
+### The gnomonic scale is the face's own distance from the centre
+
+This is what lets an Archimedean net close up. A gnomonic at scale k sends a direction θ off the
+axis to k·tan θ, while the real face — lying in a plane at distance d — puts it at d·tan θ. So
+`k = S·d` draws the face at exactly S times its real self, and two faces sharing an edge draw that
+edge at the same length however different they are.
+
+On a Platonic solid every d is equal and this is one constant, which is why it never had to be
+thought about. On an Archimedean one it is not: the truncated icosahedron's pentagons sit at
+0.9393 of its circumradius and its hexagons at 0.9150, so a single scale draws every shared
+pentagon–hexagon edge **2.7% longer on one side than the other**. `airoJoin` maps corner to corner
+regardless, so nothing would look broken — it would quietly stop being a rigid motion and start
+being a similarity, shrinking every hexagon by that much and compounding it down the tree.
+Measured with the per-face scale: shared-edge length mismatch **≤ 3 × 10⁻¹⁵** on every solid, and
+the placement matrices are rigid to **2 × 10⁻¹⁵** (no scale drift), with seams closing to 10⁻¹³.
+
+Two smaller generalisations went with it. The gnomonic is aimed at the face's **plane normal**
+rather than the average of its corners — they coincide for a regular polygon and a rhombus is not
+one — and the point deciding which side a child lands on is the child's **centroid**, since a
+triangle has exactly one "other vertex" and a decagon has eight.
+
+### The icosahedral solids are all put in ONE frame, and it is d3's
+
+Fuller's orientation is the three numbers in `AIRO_FULLER_ROTATE`, and they are stated in the
+frame d3's Airocean builds its solid in: an icosahedron with **vertices at the poles** and two
+rings at ±atan(1/2). The published Cartesian coordinates use a different orientation of the same
+icosahedron, the cyclic permutations of (0, ±1, ±φ), which has no vertex at either pole.
+
+Quoting them verbatim silently broke Fuller's net. `airoFullerOrder` matches d3's tree onto our
+faces by DIRECTION, and with the solid turned the match ran to the wrong faces every time — and it
+did not look like a failure, because every link it produced was between genuinely adjacent faces,
+so the tree was a perfectly good net, just not the historical one. Measured against d3's own tree:
+**8 of 19 seams in common**. Aligned, **19 of 19** (d3 reports 21 because two of its faces are
+split in half and their halves link to each other).
+
+The rotation is found rather than typed: the icosahedron's symmetry group is transitive on
+(vertex, incident edge) pairs, so carrying any such pair of one copy onto any such pair of the
+other carries the whole solid onto the whole solid. The dodecahedron sidesteps the question
+entirely by being built as the **dual** — one vertex over each face of the pole-up icosahedron.
+The snub cube is octahedral and keeps its own frame; Fuller's orientation means nothing on it.
+
+### The gnomonic is aimed in the SOLID's frame, not the earth's
+
+Each face's gnomonic was aimed at the face's centre in EARTH coordinates — `rotate([-lon, -lat])`
+on a centre that moves as the world is turned inside the solid. That leaves the in-plane
+orientation to be settled by whatever the local north happens to be at that centre, so every tile
+quietly **spun in place** as the world turned. It never looked broken: the net really was the
+same triangle throughout, each copy of it merely drawn at a different angle, and the assembled
+shape is congruent either way because a face's in-plane turn is absorbed into its placement
+matrix.
+
+Composed the other way round — turn the earth into the solid, THEN apply the fixed turn that
+brings this face's normal to the origin — the second half is a constant of the solid, so a face's
+projected corners are pure polyhedron and do not depend on the orientation at all. Measured
+against a 90° change of orientation: **worst drift in a face's corners 4 × 10⁻¹³, worst drift in a
+placement matrix 5 × 10⁻¹³**. And the finished picture is unchanged — the same layout, only the
+frame angle differs (best-spin 113° before, −15° after), verified by pairwise distances between
+ten known cities: **worst change 1 px**.
+
+Three things fall out of it, and the last two are why it was worth doing:
+
+* The placement walk and the board's fit stop depending on the orientation, so turning the world
+  no longer makes the net jump.
+* **Dragging becomes exact rather than approximate.** The versor formula rests on the projection
+  factoring as (something fixed) ∘ (the rotation being dragged), which is now true. Measured over
+  a drag: the grabbed earth point is drawn **exactly 0 px** from the cursor at every step. (It
+  parts company with the cursor only by crossing a fold onto another tile, where it is genuinely
+  drawn somewhere else — that is what a net is.)
+* A frame of a drag has only the LAND to redraw.
+
+### The land each face is handed
+
+The clipped world path is the expensive half of a redraw, and it was being paid in full on every
+face: d3 handed the whole world to each of 62 faces and walked all of it 62 times, when a face of
+the truncated icosidodecahedron covers a sixtieth of the sphere and cannot touch all but a handful
+of countries. Each feature now gets a bounding CAP once — an axis and the angle out to its
+furthest point — and a face is handed only the features whose cap meets its own.
+
+The clip itself is untouched, so this is a speed-up rather than an approximation, and the path
+string is the same one: **byte-identical on every face of all six solids**, at 3.6× to 7.9× the
+speed (the 62-face solid **798 ms → 101 ms**, the icosahedron 238 → 65). The axis is the
+normalised mean of the feature's own points and the radius is its worst point against that axis —
+a loose cap rather than the smallest one, which is the safe direction, and a feature whose points
+average to nothing falls back to a cap covering everything. Three-vectors are used throughout
+because they have no antimeridian to get wrong.
+
+### Overlap is REFUSED, not reported
+
+Marking the clash in red said the map was wrong and left it wrong. On a Platonic solid there is
+nothing to say — no unfolding of one ever overlaps, which is Horiyama and Shoji, 2011 — but on the
+other four the folding can walk a face straight onto another, and a flat world with two countries
+drawn over each other is not a picture of anything.
+
+Refusing is affordable because **no edit here has only one answer**. Adding an edge to a spanning
+tree closes exactly one cycle and any edge on that cycle may give way; tearing a seam leaves the
+loose face a choice of every other edge it owns. The pointer only says which is PREFERRED. So the
+candidates are walked in the order the pointer asked for and the first arrangement with nothing on
+top of anything is taken — the click lands where you aimed it whenever it can, and somewhere else
+rather than nowhere when it cannot. A tree that will not lay out at all counts as infinitely bad,
+which folds two failures into one test.
+
+`airoOverlaps` is the **separating axis theorem** rather than the centroid-lattice trick, which
+was only ever valid for congruent equilaterals: two convex polygons miss each other exactly when
+some edge normal of one separates them. Faces sharing an edge are skipped and pairs are filtered
+on bounding circles first, so 62 faces cost a few hundred real tests rather than 1,891.
+
+Measured over **1,320 folds across the six solids: zero left overlapping, zero broke the net, zero
+refused**, seams still closing to 10⁻¹³. Over a further 1,800 folds the rule visibly bit **once**
+— one fold on the truncated icosidodecahedron where the pointer's first choice would have
+overlapped and the second was taken instead. That it fires rarely is the point; that it fires at
+all is what the measurement is for. The repair pass was tested separately by handing it a random
+tree that does overlap: 2 clashes to 0, still spanning.
+
+A fold that no arrangement can satisfy is refused with a red flash on the edge and a line saying
+why, because the board does not change and a legitimate "no" would otherwise be
+indistinguishable from a dead click. Trees arriving from anywhere other than a fold — the
+historical net, the fan, the default for a solid just picked — go through `airoUnoverlap`, a
+bounded hill-climb that re-hangs an overlapping face on one of its other edges. All six defaults
+are clean already, so in practice it does nothing.
+
+### Satellite
+
+A **Map / Satellite** toggle. The imagery is Blue Marble, through the same `ensureSunPathSat` that
+Sun & Moon uses so a visit to either warms the other, and it asks for the **current month** (see
+the Blue Marble note above). It is equirectangular and each face is a gnomonic, so the only way
+across is to walk the DESTINATION pixels and invert: for every pixel of a face, ask the projection
+which point of the earth is there and read that point out of the texture. Forward-mapping would
+leave gaps wherever the projection stretches.
+
+It is rasterised **per face**, not per board, because a face's imagery does not depend on how the
+net is folded — only on the orientation of the world inside the solid. So it rides in
+`airoGeomCache` alongside the geometry and folding, spinning and refitting all reuse it. Pixels
+outside the face are skipped rather than computed, and the inside test runs FIRST, so the
+expensive inverse projection is only done for pixels that will be kept.
+
+**The face's raster is clipped by SVG, not by where its own pixels stop.** A raster's edge is a
+staircase at the resolution it was made at, and the net's outline and every tear are exactly the
+places where no neighbouring face covers that staircase — so the imagery ended in visible steps
+against the background, which is what "harshly pixellated" was. The tile's own polygon is the true
+edge and the browser draws it antialiased at the resolution of the SCREEN, whatever the raster's
+happens to be. The bleed past the edge stays: it is what stops a hairline of background showing
+through along a SEAM, where the neighbour's raster has to meet this one.
+
+**How finely a face is rasterised follows how big it is on screen** (`airoSatPx`, 0.9–3.2 px per
+board unit), so zooming in gets more imagery rather than bigger pixels of the imagery it already
+had. Re-rasterising is far too slow to do while the wheel is still turning, so `airoSatWatch`
+waits 260 ms for the zoom to settle and only then, and only when the shortfall is worth paying
+for — a third again of detail is, a nudge of the wheel is not. Zooming back out never triggers it.
+Measured: 20 of 20 faces clipped, raster 0.9 → 2.37 px/unit after a zoom to 2.6×.
+
+The tile UNDER the imagery goes **dark**, with the seam and tear strokes going light: two rasters
+meeting can leave a sub-pixel gap however carefully they are bled, and against Blue Marble's own
+near-black ocean that gap is invisible, which is far more reliable than chasing the last half
+pixel. A missing texture falls back to the vector map rather than to blank tiles, and
+`airoSatFace` does not memoise that failure, since the image may simply not have landed yet.
+
+### Two hands on the globe, and one on the board
+
+Dragging used to mean one thing. It now means two, because there are two genuinely different
+questions to ask of this picture and only one of them changes the map.
+
+* **Left-drag turns the whole assembly** — earth and solid together. Nothing about the net
+  changes; you are looking at the same arrangement from somewhere else.
+* **Right-drag turns the wireframe alone against a held earth**, which moves the cut points over
+  the world and re-cuts the map.
+
+The inset therefore carries TWO rotations: a view rotation applied to both bodies, and the world's
+own orientation inside the solid applied to the earth alone. The earth's screen rotation is the
+second followed by the first, and that one identity is the whole of what separates the gestures —
+hold the earth's screen rotation still while the view moves and the world's orientation is forced
+to whatever keeps the equation true, which is the same thing as saying the cage turned and the
+earth did not. Measured: after a right-drag the earth's screen rotation is **identical to three
+decimals** and the net is rebuilt; after a left-drag the world's orientation is untouched.
+
+**Right-drag works on the board too**, which is where your attention is and which is a great deal
+bigger than a 214-pixel inset. There it is a grab: the point of the earth under the pointer stays
+under the pointer, so the map slides across the tiles while the cage holds still. That is the same
+relative motion as dragging the wireframe over the inset, seen from the other side — each gesture
+grabs whatever it is you are actually touching. Which face the pointer is over is tested
+geometrically rather than by asking what caught the event, since the tiles are deliberately
+pointer-transparent so the board can be one big handle; a press in the gap outside the net falls
+back to the nearest face, so the drag always starts.
+
+A drag frame rewrites **one `d` per face and nothing else** — no relayout, no refit, no rebuilt
+edges — and the world it is handed while the hand is moving is the cap-filtered set with one
+vertex in four. Measured per frame: **24 ms on the dodecahedron, 38 on the icosahedron, 57 on the
+62-face solid**. Satellite imagery cannot be re-rastered at that rate, so the vector map stands in
+for it until the hand stops.
+
+### Zoom
+
+Cursor-anchored wheel zoom to 14×, shift-drag or middle-drag to pan, double-click to come back
+out. Zoom and pan sit OUTSIDE the fit in the board's transform, so refolding the net — which
+refits it — does not throw away where you had zoomed to. Measured: the point under the cursor
+drifts **0.0000 px** over a run of zooms in and out, and the pan is bounded by the NET rather than
+by the viewport, so it can be pushed to the edge of the board but not off it (0 of 6 hard shoves
+in different directions put it off screen).
+
+### The clipped land path is cached too
+
+Clipping the world to a face is the expensive half of a redraw and it does not depend on how the
+net is FOLDED, so paying it per fold was pure waste: the truncated icosidodecahedron's 62 faces
+cost **972 ms a click**. Cached on the face alongside the geometry it is **16 ms**, and the
+icosahedron 263 → 14. The cap filter above then cuts what a change of ORIENTATION costs, which is
+the one thing that does invalidate the cache.
+
+### The frame turns, and north is averaged
+
+The net can be turned in the plane, by dragging the board or by the slider. Nothing about the
+arrangement decides which way up it hangs — the root face sits at the identity and its own
+gnomonic settles the angle, which is arbitrary — so the default is whichever angle **fills the
+board best**. That leaves two answers, since a bounding box is the same under a half-turn.
+
+**The tie is broken on north averaged over every face, not read off the poles.** A net is
+folded, so "up" is not one direction on it: the mean of the twenty unit north vectors has length
+**3.43 out of a possible 20**, which is how weakly coherent the thing is. Two points are therefore
+no evidence — the north and south poles happen to sit on faces folded against the bulk of the map,
+so a pole-above-pole test puts Africa upside down, while the average gives the layout everyone
+knows. Measured on the current frame, the mean north vector spun by the chosen angle is
+**(-0.03, -3.43)** — straight up the screen. (The angle itself reads −15° now rather than the 113°
+it read before the gnomonic was re-aimed; it is the same picture, since the two frames differ by
+exactly that much. Verified to 1 px on ten known cities.)
+
+Turning the frame rewrites **one matrix**: the net's shape does not depend on the angle it is
+looked at, so `airoApplyFrame` refits and sets the outer transform rather than redrawing every
+face's clipped world path per pointermove.
+
+### The globe and the earth agree about every vertex
+
+The inset shows the solid over the world, and the two are kept in register by one identity rather
+than by any bookkeeping: a solid vertex `v` corresponds to the earth point `inv(v)`, and an
+orthographic carrying the same rotation sends `inv(v)` straight back to `v`. So the earth's
+projection carries the world's orientation and the solid's does not, and the two agree on where
+every vertex belongs. Adding the view rotation (above) applies it to BOTH, which leaves the
+identity intact. Seams and tears are drawn differently on the globe too, which is what makes the
+cut points visible as things that move.
+
+The far side of the wireframe is drawn as well, faint and dashed, through an orthographic with the
+clip **removed** — an orthographic *is* the see-through view, so a point behind the earth projects
+exactly where it would appear through glass. Without it a hovered tear on the far side had nothing
+to highlight and the hover simply did nothing; with it **all eleven** light up.
+
+Dragging the INSET updates only the inset, and the net is rebuilt on release: the net's shape does
+not move with the orientation at all — a face is the same shape whatever it is holding — so there
+is nothing to see in it until the hand stops. Dragging the BOARD is the one that shows the earth
+moving, and it can afford to, because by then only the land inside each tile has to be redrawn.
+Either way it is the orientation, not the fold, that invalidates the per-face caches.
+
+The clip (`d3.geoClipPolygon`, d3-geo-polygon) and Fuller's net (d3-geo-projection's Airocean) are
 fetched on demand through the same `withLabLibs` gate the projection lab uses; until they land the
 land is **held back rather than drawn wrong**, since a gnomonic without a clip draws the whole
-visible hemisphere and every face would carry its neighbours' geography. The fallback net, if the
-libraries never arrive, is a breadth-first spanning tree — a perfectly good net, just not the
-historical one.
+visible hemisphere. The fallback net, if they never arrive, is a breadth-first spanning tree — a
+perfectly good net, just not the historical one. If the libraries are slow and somebody has
+already started folding, the swap to Fuller's net is skipped (`airoState.touched`): taking the net
+out from under a hand using it is worse than opening on the fallback.
+
+### Exit now exits
+
+The three lab modes — Airocean, the projection lab, the framing sandbox — all relabel `#restart-btn`
+to "Exit" and then inherited the shared **restart** handler, so the button said Exit and rebuilt
+the mode. They have no round to restart and no other way out. `restartGame` short-circuits to
+`teardownActiveGame() + goHome()` for all three.
+
+`goHome` also had to learn about them. The lab panels are appended to `#question-container` rather
+than owned by a layer it empties, so going home merely **hid** them along with it — and the next
+mode to unhide that container inherited somebody else's panel.
 
 ## Sandbox category
 
@@ -2369,10 +2879,130 @@ The CSS cannot pick the wide one with `nth-child(... of ...)` because that form 
 
 | Pane | What it adds |
 |---|---|
-| **Sky above you** | The dome: a compass rose with 15° ticks, the sun's ring solid above the horizon and dotted below, the rise/set points with their azimuths, and the day and night arcs labelled with their lengths. |
+| **Sky above you** | The dome: a compass rose with 15° ticks, the sun's ring solid above the horizon and dotted below, the rise/set points with their azimuths, the sun's bearing traced as an arc on the ground and labelled with the hours it lasts, and a compass that faces north. Every label here lies IN the ground rather than facing the camera — see below. |
 | **Earth in space** | A textured globe carrying the sunrise-line pane's own map, the axial tilt and the latitude drawn as arcs, the observer's horizon as the tangent disc, and a faint hemisphere with the sun's track arcing over it — the dome in miniature and in place. |
 | **From the ground** | A 150° equal-angle panorama over a sky gradient that slides with the sun's altitude, with altitude ticks, compass ticks and the sun continuing on a dotted line below the horizon. |
 | **Sunrise line** | Everything Sun & Moon drew: the terminator, the twilight bands, the sub-solar and sub-lunar points, the tropics and polar circles, the nautical zones, the day-length bars, and the satellite imagery. Click it to move the observer. |
+
+### The dome's labels lie in the ground
+
+A sprite always faces the camera, which is right for a label naming something in the sky and wrong
+for one naming a direction on the ground. The compass letters and the rise/set bearings belong to
+the ground plane the way the rose painted on an airfield does; as sprites they read as interface
+hovering above the picture rather than as part of it.
+
+`makeGroundLabel` builds the same canvas `makeLabel` does and hangs it on a `PlaneGeometry` turned
+-90° about X, which lays it flat with its top pointing north — the printed-rose convention, where
+every letter reads the same way up rather than each one facing outward. The turn is baked into the
+GEOMETRY, so anything checking the orientation has to read the vertex data: the object's own matrix
+is untouched and reports a plane still facing the camera. Verified: 8 ground labels, every one with
+a zero span in object-space y.
+
+**Which way round to ink it is a question about the background, and the background has two
+answers.** Inside the horizon ring it is the ground disc — cream by default, very nearly black
+under Blue Marble; outside the ring there is no disc at all and it is the pane, which is the
+theme's own surface whatever the satellite switch says. So the one case wanting pale ink on a dark
+halo is a label on the disc with imagery under it (`groundInk`), and everything else takes the
+theme's ink on a pale one. The rise/set labels moved in to the cardinals' own radius for this
+reason: further out they were pale text on a cream pane, under the dome's own edge and among the
+tick marks.
+
+The halo width became a parameter at the same time. A label in the sky has to survive whatever is
+behind it and gets a heavy outline; one lying on the ground is seen at a grazing angle, where the
+same outline thickens into an emboss and swallows the letter.
+
+### The dial is outside the ring
+
+Everything about the horizon — the rise and set marks, the arc of the sun's bearing, the hours it
+lasts — now sits OUTSIDE the horizon ring, and the cardinal letters have gone back inside onto the
+disc where a printed compass rose puts them. Inside the ring these marks sat on top of the ground
+the observer is standing on: over the rose, over the satellite imagery, and, for the arc, straight
+across the middle of the disc, which is the one part of the picture that is about the place rather
+than about the sun. Outside, the ring reads as a dial with its scale printed round it, and the
+rise/set bearings no longer have to be pushed out past the cardinals to clear them.
+
+The rise and set marks lie IN the ground too. They were upright posts, and an upright mark in a
+pane whose whole subject is what happens at the horizon is a thing sticking up through the horizon.
+Flat and radial, ending exactly on the arc, they read as its ticks.
+
+### The shadow is cast
+
+Every vertex of the figure is pushed down the sun's own ray until it reaches the ground, and what
+lands there is the shadow — the figure's silhouette from the sun's direction. It stretches and
+swings because that is what the geometry does, not because a length and a bearing were computed and
+a quadrilateral drawn from them. Measured across a day: the bearing tracks azimuth + 180° to within
+9°, and the length runs 0.085 at 62° altitude, 0.141 at 45.7°, 0.27 at 27.3°, against h/tan(alt) of
+0.069 / 0.127 / 0.252 (the hull is a little longer because it includes the figure's own width).
+
+The outline is the **convex hull** of the projected points. A true silhouette would be the union of
+six overlapping projected solids, and a union of translucent polygons is not something three can
+draw in one pass — every overlap would double the darkness. The hull is one polygon with no overlap
+to compound, and at this size the only thing it fills in is the gap between the legs.
+
+**And the shadow switching between dark and faint was a sort order, not an opacity.** Both the
+shadow and the ground disc are transparent, so three sorts them by distance from the camera — and
+the shadow's centroid swings round the disc's centre with the sun, so it drew in front of the disc
+for half the day and behind it for the other half, where the disc's own 92% fill washed it out. An
+explicit `renderOrder` above the disc fixes it. Measured over thirteen hours of rendered pixels:
+mean shadow luminance **88.3 to 91.7**, a 3.8% spread that is the shadow lengthening over slightly
+different ground rather than any change in the shadow.
+
+Both figures get one — the dome's and the globe pane's — through the same helper, which takes the
+ground as an origin, an up vector and an in-plane axis rather than assuming the world's XZ. The
+globe pane's observer is standing on a tangent plane tipped to wherever on the earth they are.
+
+### The figure is a bathroom sign
+
+The pictogram is the most legible human silhouette there is, and what makes it one is the shape
+rather than the detail: a round head clear of the body, shoulders that slope straight out into the
+arms, and two legs splayed from a narrow waist. Six low-poly primitives, six or eight sides each,
+so it still reads as that outline from any bearing the dome can be turned to — a flat pictogram
+would vanish edge-on, and the stick figure it replaces went sub-pixel. It is also the default now
+rather than the map pin, because a shadow is only worth casting from something shaped like the
+thing casting it.
+
+### Two exposures, because they are two photographs
+
+Blue Marble and Black Marble are two instruments photographing two different things, and nothing
+makes their exposures agree. How bright the lights should read against the daylight is a matter of
+taste, so it is a pair of sliders (shown only with Satellite on, since with it off there is no
+photograph to expose).
+
+One pair of numbers, four places, each reached the cheapest way there is: on the GLOBE the day
+image is a texture on a Lambert material, so the material's own colour is the multiplier — no
+canvas to redraw and no cache to invalidate — and the night image is a shader whose gain is already
+a uniform; on the MAP both are SVG `<image>` elements, so a CSS brightness filter is the same
+multiplication by another route. `syncSunPathGain` is re-run after the map rebuilds its imagery,
+since the exposure is not part of what it rebuilds.
+
+### The day, as an arc on the ground
+
+The sky track says where the sun goes; its shadow on the compass says which way you would have to
+face to follow it, and the length of that arc is the length of the day. It is not a second copy of
+the track — it is the track's BEARING, which is the one component of it the rose can be read
+against. Built from the same runs as the sky track rather than from a second sweep, so the two can
+never disagree about where the sun is up; a point within a whisker of the zenith has no bearing at
+all and is dropped rather than normalised into a NaN. Measured: 2 arcs, every vertex on the arc
+radius to 3 × 10⁻⁸.
+
+**The hour figures moved onto those arcs**, which is where a length is legible. They used to hang
+off the sky track, which put the same sentence twice on the screen once the ground arc existed —
+and put the night one UNDER THE FLOOR, since the midpoint of the dark run is below the horizon by
+construction, where it showed through the translucent disc as a smear in the middle of the rose.
+
+### Face north
+
+`#sp-dome-north` is a compass in the dome's corner: a needle that turns to say where north has got
+to, and that puts it back on top when pressed. Where the needle points falls out of one identity —
+with the camera at bearing A the world direction running up the screen is (-sin A, 0, -cos A) and
+its right is (-cos A, 0, sin A), so north (0, 0, -1) reads at clockwise angle
+`atan2(-sin A, cos A) = -A` from straight up. One rotation, no trigonometry at draw time.
+
+The dome's bearing is the drag offset PLUS whatever tracking is adding, and tracking is a thing
+that turns the view continuously — so **facing north has to switch it off as well**, or the next
+tick would take the view straight back off north. That is the same bargain Google's compass makes
+with a rotated map. The button is dimmed rather than hidden while north is already up: a control
+that appears out of nowhere is one nobody knows exists.
 
 ### The ground pane has no edge stretch
 
@@ -2390,6 +3020,48 @@ field could then be opened from 104° to **150°**, because equal angles carry n
 
 On the centre column the vertical axis IS altitude, exactly, so the tick scale is linear and needs
 no trigonometry at all.
+
+### The image goes on the sphere's rect, not on the pane
+
+The sunrise-line pane is 400 × 220 and its projection is fitted so a full 360° of longitude spans
+the WIDTH — which on an equirectangular pins 180° of latitude to half that, 200 px. Drawn at the
+pane's own height the imagery was therefore 10% too tall and 10 px too high, so every coastline sat
+several degrees off the land it belongs to: 5 px at 45°, which is 4.5° of latitude, and plainly
+visible as a mismatch between the satellite basemap and the vector borders over it.
+
+`spSatRect` places the image on the sphere's own projected rectangle instead, which is right
+whatever aspect the pane happens to have, and the Black Marble night image goes through the same
+one. Verified against London, Tokyo and Buenos Aires at three map rotations: **dY and dX exactly 0**
+between where the projection puts a city and where the image's own pixel for it lands.
+
+### The globe pane's night side is the Black Marble
+
+The earth's texture is the DAY image and the scene's directional light is what makes half of it
+dark — but dark is not the same picture as lit up, and the night image cannot be composited into
+the day canvas, because the terminator moves with the hour while that canvas is rebuilt only when
+the geography changes.
+
+So it is a shell a thousandth of a radius out, alpha-blended over the earth, opaque where the
+surface faces away from the sun and clear where it faces it, fading across the terminator out to
+about 12° past it. The sun is passed in the SHELL's own frame, so the shader needs to know nothing
+about how the earth is turned or how the holder is tilted.
+
+**Additive was tried first and is the wrong tool here**, for a reason particular to this pane: its
+ambient is deliberately bright — the default view is edge-on to the sunlight, so with a darker one
+the middle of the visible face reads as an unlit ball — and against an ambient-lit continent the
+lights simply do not carry. Measured, the whole night side lifted from a mean of **33.6 to 41** and
+not one city was visible.
+
+Two smaller things it has to get right. **`smoothstep`'s edges must ascend** — GLSL leaves the
+result undefined when `edge0 >= edge1` — so the fade is written the way round the language wants
+and subtracted. And the texture is left in the DEFAULT colour space: a raw `ShaderMaterial` gets
+neither the input decode nor the output encode chunk, so an untagged texture reaches the screen
+exactly as it came out of the file, while tagging it sRGB would decode without re-encoding and wash
+it out. (Same reasoning as the orbital atmosphere's raw sRGB `Vector3`s.)
+
+Black Marble is a dark image and this pane draws the earth about 250 px across, where a city is a
+fraction of a pixel, so the shell carries a gain of 2.4: at unity the brightest city came out at 98
+of 255 and the picture read as simply black.
 
 ### The map that vanished
 
@@ -2464,7 +3136,11 @@ about, and every reading taken against it was taken against fiction.
 altitude on the camera's own vertical circle, and a gauge pinned to the left edge read a column
 where it is merely close while sitting as far as it could get from the arc it measures.
 
-**Track sun** is on by default and means something different in each pane, which is the point.
+**Track sun is PER PANE, and lives in the corner of the pane it governs.** It means something
+different in each of the four, which is exactly why one switch for all of them was wrong: it asked
+you to remember which four things it did, and to want all four at once. `sunPathState.track` is a
+flag per pane and `spTrack(pane)` is the only reader. **Day lengths** moved into the Map's corner
+by the same argument — the bars it labels are on the map and nowhere else.
 
 The dome swings round the ground's normal to face the sun's bearing — by MINUS the azimuth, since
 the camera's own angle runs anticlockwise from +Z while a compass bearing runs clockwise from
@@ -2488,6 +3164,59 @@ One bug worth keeping: **`a || b` is the wrong test between two arrays**, since 
 truthy. `gameState.countries || sunPathState.landFeatures` returns the empty one and never looks at
 the full one — and in this mode the first is often empty while the second holds the world, which is
 what silently left the dome's ground a flat colour.
+
+### The orbit IS the date control
+
+A slider for the date and four buttons for the turning points were two controls saying the same
+thing as the picture sitting beside them. The orbit already shows where in the year we are;
+dragging the earth round it is the same gesture as reading it, and the solstices and equinoxes are
+places on the ring rather than a separate row. **Today** is a place on it too, and the one people
+look for first. So the slider and the buttons are gone and the diagram takes the panel's whole
+width — an 84 px ring is a thing to read, and a thing to aim at has to be bigger than that.
+
+A press anywhere on the ring jumps the date there and starts a drag, because aiming at a 4.5 px
+earth is not a gesture anybody should have to make. Snapping is ±4 days round the ring — measured
+round it, so late December is near early January — and lands exactly on 79 / 172 / 265 / 355 and
+on today; a point between two stops is left alone. The pointer goes through the SVG's own
+coordinate system rather than through a measurement of the element, so it stays right at whatever
+size the panel gives it.
+
+**Its colours had to change with it.** The ring and its labels were near-white, which was right
+when the orbit floated over the black Earth-in-space canvas and invisible the moment it moved onto
+a cream panel. They take the theme's ink now; the sun, the earth and the axis keep literal colours,
+because those say which body is which rather than following the palette.
+
+**The ring carries a calendar on the outside of it.** "Day 214" is not a date anybody holds in
+their head, so the one thing the ring could not say was the one thing you are setting; twelve
+labelled wedges turn a bare angle into a place in the year, and they cost nothing to read because
+they are where you were already looking. Alternating tints rather than a rule at every boundary —
+twelve radial lines round a 34-unit ring is a starburst, and what is being read is which month, not
+where it starts. Verified: 12 wedges, no label out of the viewBox, and days 15 / 172 / 200 / 320 /
+355 landing under Jan / Jun / Jul / Nov / Dec.
+
+**A preset says in advance that it will catch you, and says so again while it has.** `spOrbHover`
+and `spOrbGrab` are module state rather than classes on the elements, because the whole inset is
+redrawn on every clock tick — sixty times a second under Play — so anything written onto a node is
+gone by the next frame. `spOrbResolve` returns the day AND which stop took hold of it, the second
+half being what lets the drawing show the grab rather than only obey it: a halo and a wider dot
+under the pointer, a ring on the earth knob while it is held.
+
+### What else the panel lost
+
+**The latitude slider** — the observer is set by clicking the map, double-clicking the globe, or
+My latitude, all of which set longitude too, which the slider never could. **Time zones** — the
+box was still there after the nautical-zone drawing had already been removed, so it toggled a flag
+nothing read. And the big label is down to the two things only it says: the date and time, and
+where you are. Hours of daylight, the sun's altitude and the angle the track meets the horizon at
+were all already in the pane captions or in the pictures themselves, and four lines of readout
+above the orbit left the orbit no room to be the size it now needs.
+
+**Tropic lines reach all three views that can show them.** They are the same five parallels
+wherever they are drawn, so one switch governs the map's bars, the rings round the earth in space
+(built once as fixed furniture and tagged `userData.tropic`, so the switch is a visibility flip)
+and the ground the observer is standing on. On that last one they are curves rather than straight
+lines, because the disc is an azimuthal equidistant map about the observer — and whether one is in
+view at all is a fact about where you are, which is the point of drawing it there.
 
 The dome and the ground pane become pannable by hand. Turning tracking off hands the camera over
 WHERE IT IS rather than snapping, so the switch reads as "stop following".
@@ -2568,6 +3297,83 @@ The **moon is drawn as it looks**: a disc with the terminator as an ellipse whos
 **Play year** walks a year in ~38 s, holding 3.2 s at each of the four turning points to caption what the lines are doing (`SUN_TOUR_STOPS`). The date does the moving and the layers already follow it, so the tour is just a clock plus a caption track. **Locate me** is the only geolocation call and only ever runs from that button — never on load.
 
 `updateModeOverlays()` is called from `updateIslandMarkers()` — the one function every re-path already goes through — so the terminator, the chain and the revealed border all follow drag, wheel, pinch and animation without each mode wiring its own hooks.
+
+## Free Explore chooses its own projection
+
+Every other globe mode has exactly two views, because a quiz needs one honest picture and its flat
+counterpart and no more. Free Explore has no question in it at all — turning the world over and
+looking at it IS the mode — so the projection is worth having as a choice.
+
+It also had no way back to the globe. `flatGlobeView` is one flag shared by every globe mode and
+nothing ever resets it, so entering Free Explore straight after a flat mode inherited the flat
+view — and its own projection toggle had been repurposed as a door to the projection lab, so
+"Explore the Globe" opened on a Mercator with no way to make it round. The mode sets the flag on
+entry from its own answer now, and the toggle is a toggle again. The lab keeps its half of the old
+door, because a mode with fourteen projections and no globe has nothing else that button could
+usefully mean.
+
+**`EXPLORE_PROJECTIONS` is eleven projections d3 ships in the base bundle**, so the dropdown works
+with nothing fetched; the lab's other six need `d3-geo-projection` and the lab is where they live.
+Nothing here is a lab exhibit — no indicatrix, no inflation readout, only a world you can turn.
+The globe is an ENTRY in the same dropdown rather than a separate switch, because one control that
+answers "what am I looking at" beats a toggle and a dropdown that can disagree; the toggle button
+and the picker are written from one place (`syncProjectionChrome`) for the same reason.
+
+### Two gestures on a flat projection
+
+Left turns the world under a frame that does not move; right moves the frame's own centre.
+
+On the Mercator those are the same thing and the distinction never had to be made: its x is
+proportional to longitude, so rotating and translating look identical and the wrap comes free. On
+an Equal Earth or an azimuthal they are not the same at all — a translate slides the whole outline
+about, leaving a rounded rectangle adrift in the corner of the board, while a rotation keeps the
+outline nailed where it was fitted and moves the geography through it. That is what "pan with a
+wrapping effect, never move the frame" is, and it is `exploreDragFlat`.
+
+**The sensitivity comes from the drawn width of the world, not from a constant over the scale**:
+dragging by the width of the world turns it exactly once round, whatever aspect that projection
+happens to have. Measured on Equal Earth, azimuthal equidistant and Natural Earth: a quarter-width
+drag turns **exactly 90.00°**, the latitude does not move, and the sphere's own projected bounding
+box shifts **0.000 px on every edge**.
+
+**RIGHT moves the projection's focus** — the point it is centred on, which is what decides where it
+is honest and where it lies. Left is the picture, right is the instrument. d3-drag's default filter
+admits only button 0, so the filter is widened for exactly this case and `contextmenu` is
+suppressed while it applies.
+
+Vertical is deliberately inert at the fit scale — there is nowhere for it to go and moving the
+frame is the one thing this gesture must not do — and becomes a pan once the map is bigger than the
+board, clamped so the world's outline always still crosses the middle of the frame. That is a rule
+any outline can satisfy without the code knowing what shape it is.
+
+**Reset view** lights up only when the view is off its opening rotation or zoom (`exploreIsDefault`,
+synced from `updateModeOverlays`, which is the one place every re-path goes through). It has to be
+synced AFTER the fit as well as during it: the redraw inside `reprojectMap` runs while
+`gameState.initialScale` still holds the previous projection's fit, so every switch of projection
+left the button lit over a view nobody had touched.
+
+Three things the shared map machinery needed:
+
+* **`isFlatWorldView()` is now false for these.** The Mercator crop band, the rotate-to-pan wrap
+  and the cursor-anchored longitude zoom are all facts about the MERCATOR — its x is proportional
+  to longitude and it tiles east to west. None of that is true of an Equal Earth or an azimuthal,
+  so they take the two gestures above instead.
+* **They are fitted to the SPHERE, not to a crop band** (`fitExploreWorld`). Each has its own
+  outline and aspect — the azimuthals are discs, Equal Earth is a rounded 2.05:1 — and a band
+  chosen to make Mercator behave says nothing about any of them.
+* **They draw their own outline** (`path.explore-sphere`, re-pathed by `syncOceanGradient` on
+  every pan and zoom). A Mercator can let the page background be the sea because its edge is the
+  edge of the board; a disc cannot, because most of what is outside it is not sea.
+
+**Fixed at source: any projection with a clip angle has a far side, not only the orthographic.**
+d3 clips the PATHS, but `projection(point)` happily returns a coordinate for a point beyond the
+clip — a stereographic cut at 120° puts one a few hundred units out — so the island dot for a
+country on the far side was drawn floating in the ocean outside the map's own outline, and the
+drawing ran to 5,000 units wide in a 800×600 box. The orthographic's own far-side test turns out
+to be exactly this rule with the angle at 90, so the two are now one test. Measured across all
+eleven: **zero stray dots and everything inside the frame**, against 187 of 240 countries drawn
+and a bounding box of [-3162, -800] before. The Mercator is the one that still overflows, and
+deliberately: that is the crop band doing its job, unchanged.
 
 ## Coastline model (where spaceship spots come from)
 
@@ -2692,6 +3498,29 @@ state, it SUPPRESSES it: the base rule and the pressed rule both set the shortha
 `var()`, and Chrome will not restart a transition for that — measured, the button stayed cream
 indefinitely with the transition on and turned primary instantly with it off. This is the same
 trap `.country`'s `fill` hits under a map-style swap, in a second place.
+
+### The palette button opens a menu
+
+It used to cycle the theme blind. It now opens `#palette-menu`, holding the two things that decide
+how the map LOOKS: which colours it is drawn in, and how it is drawn. **Map style, Line weight,
+Min dot px and Dot spacing moved here out of Settings** — they were the only things in there that
+anybody changes to taste rather than to tune a mode, and they belong beside the colours rather
+than among orbit heights and answer pauses. Settings keeps the Spaceship, Gameplay and Puzzle
+groups.
+
+The two themes are **named and shown**: "Atlas" and "Slate" mean nothing until you have seen them,
+so each button carries a chip of that palette's own two principal colours. Those chips are literal
+hexes rather than `var()`s on purpose — a swatch has to show the theme it OFFERS, not the theme
+currently in force.
+
+Three things it has to get right. The menu hangs off `.app-tool-wrap` rather than off the cluster,
+so adding it cannot change `--app-tools-w` and shove the top bar's score about (measured: cluster
+still 126 px against the declared 136, no horizontal overflow). A click inside it must not close
+it, or dragging a slider dismisses the menu on the first mousedown. And swapping the theme has to
+tell the map: CSS repaints itself, but the four marks built in JS read the tokens once at build
+time — the ocean gradient's stops, the lake fill, the three.js ocean material and the flag
+pattern's backing — so the page's own script calls `window.geoquizThemeChanged`, a hook game.js
+installs, because that script has to run before game.js has parsed.
 
 ## The two buttons are shared furniture
 
@@ -2989,6 +3818,24 @@ Uses quaternion-based rotation via Fil's versor library (inlined). Key state:
 - `gammaLocked` — when true, gamma (tilt) is forced to 0; togglable via UI button
 
 **Important:** Any code that changes `projection.rotate()` outside of the drag handler (e.g. `rotateToCountry`, zoom handler, reset points) must also update `r_unconstrained = projection.rotate().slice()` to prevent snap-back on the next drag. Both animations only do so in their `.on('end', …)`, so a drag that interrupts an in-flight spin resumes from the pre-spin value.
+
+### The snapshot is checked, not trusted
+
+`r_unconstrained` is only ever a snapshot of the rotation the last drag finished at — and it is
+module-level, so it **outlives the globe it was taken from**. `setupGlobe` builds a fresh
+projection at `[0, 0, 0]` and nothing reset the snapshot, so the first drag on the new globe was
+seeded from a rotation the world was no longer in and the first pixel of movement teleported it
+there. Measured: a **6 px drag jumped 86°** in Free Explore entered after spinning any other globe
+mode, and the same in all five globe modes tested.
+
+`dragBaseQuaternion` is the one place both drag entry points (the mouse drag and the touch
+handler) get their starting quaternion, and it uses the snapshot only when the snapshot still
+describes the rotation the projection is actually in. The comparison is on the QUATERNIONS, so a
+±360° difference or a second Euler triple for the same rotation still counts as agreement.
+Checking rather than resetting is what makes this immune to the trap the other way round: a caller
+that moves `projection.rotate` and forgets the snapshot now falls back to the truth instead of
+dragging from a ghost. Measured after: **1.16–2.03°** for the same 6 px drag across
+capitals-race, Free Explore, Mystery Flag, Identify and Flag Match.
 
 **Shortest-path spin.** `rotateToCountry` and `zoomAndRotateToCountry` interpolate through `interpolateRotateShortest(from, to)`, not raw `d3.interpolate`. `projection.rotate()` returns a lambda in `[-180, 180]`, so any hop across the antimeridian (Fiji ↔ Alaska) used to read as a ~350° delta and spin the globe nearly all the way around the wrong way for an adjacent target. The helper nudges each axis' target by ±360° until the per-axis delta lands in `[-180, 180]`, then hands the *adjusted* target to plain `d3.interpolate`.
 
