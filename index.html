@@ -46,9 +46,57 @@
     </script>
 </head>
 <body>
-    <button id="theme-toggle" type="button" title="Switch color theme" aria-label="Switch color theme">
-        <span class="material-symbols-outlined">palette</span>
-    </button>
+    <!-- App tools, not mode controls. Settings and Debug apply to the whole app whatever is
+         being played, so they belong beside the palette in the corner rather than in the
+         controls bar competing for space with the buttons a mode actually owns. -->
+    <div id="app-tools">
+        <!-- The palette button opens a menu rather than cycling a theme, because the theme is not
+             the only thing here that decides how the map looks. Theme and map style are two
+             independent axes — one picks the colours, the other picks how heavily the map is
+             drawn on them — and the drawing controls belong beside the colours rather than
+             buried in Settings among orbit heights and answer pauses. -->
+        <div class="app-tool-wrap">
+            <button id="theme-toggle" class="app-tool" type="button" aria-haspopup="true"
+                    aria-expanded="false" title="Colours &amp; map drawing"
+                    aria-label="Colours and map drawing">
+                <span class="material-symbols-outlined">palette</span>
+            </button>
+            <div class="palette-menu hidden" id="palette-menu" role="dialog" aria-label="Colours and map drawing">
+                <div class="tuning-group-title">Colours</div>
+                <!-- Named AND shown: "Atlas" and "Slate" mean nothing until you have seen them,
+                     and a swatch of the actual palette says it in one glance. -->
+                <div class="palette-themes" id="palette-themes">
+                    <button type="button" class="palette-swatch" data-theme="ocean" aria-pressed="false">
+                        <span class="palette-chip palette-chip-ocean"></span><span>Atlas</span>
+                    </button>
+                    <button type="button" class="palette-swatch" data-theme="emerald" aria-pressed="false">
+                        <span class="palette-chip palette-chip-emerald"></span><span>Slate</span>
+                    </button>
+                </div>
+                <div class="tuning-group-title">Map</div>
+                <label class="tuning-item" title="How the map is drawn — line weights, dot sizes, and in one case the colours too. Independent of the colour theme above.">
+                    <span class="tuning-label">Map style</span> <select id="tune-map-style"></select>
+                </label>
+                <div class="tuning-note" id="tune-map-style-desc"></div>
+                <label class="tuning-item" title="Multiplies every map line width at once. For a projector, a small screen, or eyes that want help — without having to invent a whole style for it.">
+                    <span class="tuning-label">Line weight</span> <input type="range" id="tune-map-ink" min="0.4" max="3" step="0.05" value="1"><span id="tune-map-ink-val">1.00×</span>
+                </label>
+                <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
+                    <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
+                </label>
+                <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
+                    <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
+                </label>
+            </div>
+        </div>
+        <button id="settings-btn" class="app-tool" type="button" title="Tuning &amp; settings" aria-label="Settings">
+            <span class="material-symbols-outlined">tune</span>
+        </button>
+        <button id="debug-validity-toggle" class="app-tool" type="button" aria-pressed="false"
+                title="Debug: colour-code the map by which countries have quiz data" aria-label="Debug overlay">
+            <span class="material-symbols-outlined">bug_report</span>
+        </button>
+    </div>
     <div class="container">
         <header id="landing-header">
             <h1><span class="material-symbols-outlined">public</span> Geoquiz</h1>
@@ -82,7 +130,7 @@
                     </div>
                 </div>
                 <button class="mode-icon-btn" data-mode="name-all" title="Name All Countries"><span class="material-symbols-outlined">keyboard</span></button>
-                <button class="mode-icon-btn" data-mode="population-order" title="Order by Population"><span class="material-symbols-outlined">bar_chart</span></button>
+                <button class="mode-icon-btn" data-mode="rank" title="Rank Them"><span class="material-symbols-outlined">bar_chart</span></button>
                 <button class="mode-icon-btn" data-mode="flags" title="Flags"><span class="material-symbols-outlined">flag</span></button>
                 <button class="mode-icon-btn" data-mode="capitals" title="Capitals"><span class="material-symbols-outlined">star</span></button>
                 <button class="mode-icon-btn" data-mode="explore" title="Explore"><span class="material-symbols-outlined">explore</span></button>
@@ -106,78 +154,8 @@
         <div class="mode-selector" id="mode-selector">
             <h2>Select Quiz Mode</h2>
             <div class="mode-buttons" id="mode-buttons">
-                <button class="mode-btn" data-mode="find">
-                    <span class="mode-icon material-symbols-outlined">search</span>
-                    <span class="mode-name">Find on the Map</span>
-                    <span class="mode-desc">Find countries or states on the globe/map</span>
-                </button>
-                <button class="mode-btn" data-mode="identify">
-                    <span class="mode-icon material-symbols-outlined">help</span>
-                    <span class="mode-name">Identify Mode</span>
-                    <span class="mode-desc">Identify highlighted locations on the map</span>
-                </button>
-                <button class="mode-btn" data-mode="name-all">
-                    <span class="mode-icon material-symbols-outlined">keyboard</span>
-                    <span class="mode-name">Name All Countries</span>
-                    <span class="mode-desc">Type as many countries as you can!</span>
-                </button>
-                <button class="mode-btn" data-mode="population-order">
-                    <span class="mode-icon material-symbols-outlined">bar_chart</span>
-                    <span class="mode-name">Order by Population</span>
-                    <span class="mode-desc">Drag countries to order them by population</span>
-                </button>
-                <button class="mode-btn" data-mode="flags">
-                    <span class="mode-icon material-symbols-outlined">flag</span>
-                    <span class="mode-name">Flags</span>
-                    <span class="mode-desc">Find the country from its flag, or match every flag at once</span>
-                </button>
-                <button class="mode-btn" data-mode="capitals">
-                    <span class="mode-icon material-symbols-outlined">star</span>
-                    <span class="mode-name">Capitals</span>
-                    <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
-                </button>
-                <button class="mode-btn" data-mode="explore">
-                    <span class="mode-icon material-symbols-outlined">explore</span>
-                    <span class="mode-name">Explore</span>
-                    <span class="mode-desc">Roam the globe, or put the world through a dozen projections</span>
-                </button>
-                <button class="mode-btn" data-mode="places">
-                    <span class="mode-icon material-symbols-outlined">push_pin</span>
-                    <span class="mode-name">Places I've Been</span>
-                    <span class="mode-desc">Fill in the map with your travels and share it</span>
-                </button>
-                <button class="mode-btn" data-mode="shapes">
-                    <span class="mode-icon material-symbols-outlined">extension</span>
-                    <span class="mode-name">Shapes</span>
-                    <span class="mode-desc">Name an outline, trace one, or drag the pieces into place</span>
-                </button>
-                <button class="mode-btn" data-mode="sb-missing">
-                    <span class="mode-icon material-symbols-outlined">search_off</span>
-                    <span class="mode-name">Who's Missing?</span>
-                    <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
-                </button>
-                <button class="mode-btn" data-mode="sun-moon">
-                    <span class="mode-icon material-symbols-outlined">wb_twilight</span>
-                    <span class="mode-name">Sun &amp; Moon</span>
-                    <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
-                </button>
-                <button class="mode-btn" data-mode="spaceship">
-                    <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                    <span class="mode-name">Where Is My Spaceship?</span>
-                    <span class="mode-desc">Guess your orbital location from the view below</span>
-                </button>
-                <button class="mode-btn" data-mode="sandbox">
-                    <span class="mode-icon material-symbols-outlined">science</span>
-                    <span class="mode-name">Sandbox</span>
-                    <span class="mode-desc">Sun &amp; moon, sun path, odd one out, draw the border</span>
-                </button>
-                <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
-                     see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
-                <!-- <button class="mode-btn" data-mode="skyline-id">
-                    <span class="mode-icon material-symbols-outlined">apartment</span>
-                    <span class="mode-name">Skyline ID</span>
-                    <span class="mode-desc">Name the city from a photo of its skyline</span>
-                </button> -->
+                <!-- Filled by renderLandingGrid() from LANDING_TILES in game.js: the grid is
+                     rebuilt from the same list every time Home is pressed, so it lives in one place. -->
             </div>
         </div>
 
@@ -309,10 +287,7 @@
             <button id="detail-toggle" class="btn secondary" title="Map detail level">Detail: Medium</button>
             <button id="hint-outlines-toggle" class="btn secondary" title="Overlay country outlines on the globe (hint)" style="display:none">Outlines: Off</button>
             <button id="map-colour-toggle" class="btn secondary" title="Colour the map so no two neighbours share a colour" style="display:none">Colours: Off</button>
-
-            <button id="debug-validity-toggle" class="btn secondary" title="Color-code map by which countries have quiz data">Debug: Off</button>
             <button id="share-btn" class="btn secondary" title="Copy a link to this mode / challenge a friend"><span class="material-symbols-outlined">share</span> Share</button>
-            <button id="settings-btn" class="btn secondary" title="Tuning &amp; settings"><span class="material-symbols-outlined">tune</span> Settings</button>
         </div>
 
         <!-- Settings pop-up: all tuning sliders live here (opened from the Settings button). -->
@@ -378,13 +353,11 @@
                         </label>
                     </div>
                     <div class="tuning-group" id="tuning-row">
-                        <div class="tuning-group-title">Map</div>
-                        <label class="tuning-item" title="Largest on-screen size (px) below which a feature shows as a dot">
-                            <span class="tuning-label">Min dot px</span> <input type="range" id="tune-dotsize" min="0" max="20" step="0.1" value="5"><span id="tune-dotsize-val">5</span>
-                        </label>
-                        <label class="tuning-item" title="Minimum spacing (px) enforced between dots">
-                            <span class="tuning-label">Dot spacing</span> <input type="range" id="tune-dotspace" min="0" max="5" step="0.1" value="5"><span id="tune-dotspace-val">5</span>
-                        </label>
+                        <!-- Map style, line weight and the two dot sliders live under the palette
+                             button now: they decide how the map LOOKS, which is the same question
+                             the colour theme answers, and they were the only things in here that
+                             anybody changes to taste rather than to tune a mode. -->
+                        <div class="tuning-group-title">Puzzle</div>
                         <label class="tuning-item" title="US States Puzzle: base distance a dropped piece may miss its true position by and still snap home. Difficulty scales this — Easy uses it as-is, Medium halves it, Hard uses a fifth. Measured on the map's fixed 800x600 coordinate grid, so it doesn't drift with the window size.">
                             <span class="tuning-label">Puzzle snap</span> <input type="range" id="tune-puzzle-snap" min="8" max="60" step="1" value="24"><span id="tune-puzzle-snap-val">24</span>
                         </label>
@@ -409,20 +382,57 @@
     </div>
 
     <script>
-        // Theme toggle: cycle between the two palettes and persist the choice
+        // The palette button opens a menu holding the two things that decide how the map looks:
+        // which colours it is drawn in, and how it is drawn. Picking a theme no longer cycles
+        // blind through the list — with the swatches on screen you choose the one you want.
         (function () {
             var btn = document.getElementById('theme-toggle');
-            if (!btn) return;
-            btn.addEventListener('click', function () {
-                var emerald = document.documentElement.getAttribute('data-theme') === 'emerald';
-                if (emerald) {
-                    document.documentElement.removeAttribute('data-theme');
-                    localStorage.setItem('geoquiz-theme', 'ocean');
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'emerald');
-                    localStorage.setItem('geoquiz-theme', 'emerald');
-                }
+            var menu = document.getElementById('palette-menu');
+            if (!btn || !menu) return;
+
+            function currentTheme() {
+                return document.documentElement.getAttribute('data-theme') === 'emerald'
+                    ? 'emerald' : 'ocean';
+            }
+            function syncSwatches() {
+                var now = currentTheme();
+                menu.querySelectorAll('.palette-swatch').forEach(function (s) {
+                    s.setAttribute('aria-pressed', String(s.dataset.theme === now));
+                });
+            }
+            function setTheme(t) {
+                if (t === 'emerald') document.documentElement.setAttribute('data-theme', 'emerald');
+                else document.documentElement.removeAttribute('data-theme');
+                localStorage.setItem('geoquiz-theme', t);
+                syncSwatches();
+                // Most of the map follows through CSS, but four of its marks are built in JS and
+                // read the tokens themselves — the ocean gradient's stops, the lake fill, the
+                // three.js ocean and the flag pattern's backing — so those have to be told. This
+                // script runs before game.js has parsed, hence the hook rather than a direct call.
+                if (typeof window.geoquizThemeChanged === 'function') window.geoquizThemeChanged();
+            }
+            function open(yes) {
+                menu.classList.toggle('hidden', !yes);
+                btn.setAttribute('aria-expanded', String(!!yes));
+                if (yes) syncSwatches();
+            }
+
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                open(menu.classList.contains('hidden'));
             });
+            menu.addEventListener('click', function (e) {
+                var s = e.target.closest('.palette-swatch');
+                if (s) setTheme(s.dataset.theme);
+                e.stopPropagation();        // a slider drag inside the menu must not close it
+            });
+            // Anywhere else, and Escape, closes it. A menu that can only be closed by the button
+            // that opened it is a menu people leave open.
+            document.addEventListener('click', function () { open(false); });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && !menu.classList.contains('hidden')) open(false);
+            });
+            syncSwatches();
         })();
     </script>
     <script src="game.js"></script>

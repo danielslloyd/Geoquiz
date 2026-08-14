@@ -227,8 +227,25 @@ function cutLakeFromPoly(poly, lake) {
     return null;
 }
 
+// ---- the hole and the sticker are the same lake ----
+// A lake is drawn twice over: once as a HOLE stamped out of the countries, and once as a polygon
+// laid on top of them. Those two have to be the same shape, because anything the hole takes that
+// the polygon does not put back is a piece of the page showing through the middle of a continent.
+// They were not the same shape in two independent ways, and both were visible on the Great Lakes:
+//
+//   * The cut always used the bundled 110m file while the overlay follows the detail level, so at
+//     high detail a COARSE hole sat under a FINE polygon and the difference showed as blue round
+//     every shore and between islands the coarse file does not have.
+//   * The overlay drops any lake under `MIN_LAKE_DIAM_KM` and the cut dropped nothing, so every
+//     lake too small to draw was a blue speck with nothing over it at all.
+//
+// So there is now ONE decision about which lakes exist — `lakesForDrawing()` — and both the hole
+// and the sticker are made from its answer. That gives an invariant worth stating: the cut set is
+// the drawn set, so every hole is covered by the polygon it was cut for, and no arrangement of
+// resolutions or thresholds can put the background back on screen.
 const lakeCutCache = new WeakMap();
 let lakeCutRings = null;         // the lakes to cut with, once they have arrived
+let lakeCutRes = null;           // the resolution those rings came from
 let lakeCutStats = null;
 
 // Every lake as a plain ring with its bounding box, biggest first. Small ones are skipped: a
@@ -238,13 +255,21 @@ function lakeCutPrepare(feats) {
     (feats || []).forEach(f => {
         const parts = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : (f.geometry.coordinates || []);
         parts.forEach(pp => {
-            const ring = (pp[0] || []).slice();
-            if (ring.length > 3 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+            const open = r => {
+                const c = (r || []).slice();
+                if (c.length > 3 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1]) c.pop();
+                return c;
+            };
+            const ring = open(pp[0]);
             if (ring.length < 8) return;
             let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
             ring.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]);
                                 x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
-            out.push({ ring, bb: [x0, y0, x1, y1], area: Math.abs(ghRingArea(ring)) });
+            // The lake's own ISLANDS ride along. Cutting the outer ring alone takes the islands
+            // with it, and the polygon drawn on top has those same holes — so each island came out
+            // as a speck of background in the middle of a lake. They are handed back as land below.
+            out.push({ ring, holes: pp.slice(1).map(open).filter(h => h.length >= 3),
+                       bb: [x0, y0, x1, y1], area: Math.abs(ghRingArea(ring)) });
         });
     });
     out.sort((a, b) => b.area - a.area);
@@ -256,7 +281,10 @@ function lakeCutPrepare(feats) {
 // dearer than that.
 function cutLakesFromFeatures(features) {
     if (!lakeCutRings || !lakeCutRings.length) return features;
-    if (lakeCutCache.has(features)) return lakeCutCache.get(features);
+    // Memoised against the feature array AND the resolution it was cut at, since the detail
+    // toggle changes the second without necessarily changing the first.
+    const hit = lakeCutCache.get(features);
+    if (hit && hit.res === lakeCutRes) return hit.out;
     const stats = { clipped: 0, holed: 0, failed: 0, pairs: 0 };
     const out = features.map(f => {
         const g = f.geometry;
@@ -301,6 +329,14 @@ function cutLakesFromFeatures(features) {
                 const want = Math.sign(ghRingArea(open)) || 1;
                 const turn = (ring, sgn) => (Math.sign(ghRingArea(ring)) || 1) === sgn ? ring : ring.slice().reverse();
                 const out2 = ring => (wrapped ? ring.map(rewrap) : ring);
+                // An island in the lake is land, and it is land belonging to whichever country
+                // actually held it — a lake can straddle a border and its islands do not, so the
+                // island only goes back to the part that contained it.
+                (lk.holes || []).forEach(h => {
+                    if (!ghPointIn(unwrap(h[0]), open)) return;
+                    const t2 = turn(h, want);
+                    next.push([t2.concat([t2[0]])]);
+                });
                 if (r.holes && r.holes.length) {
                     stats.holed++;
                     next.push([outer].concat(pp.slice(1),
@@ -321,35 +357,35 @@ function cutLakesFromFeatures(features) {
         return { ...f, geometry: { type: 'MultiPolygon', coordinates: parts } };
     });
     lakeCutStats = stats;
-    lakeCutCache.set(features, out);
+    lakeCutCache.set(features, { res: lakeCutRes, out });
     return out;
 }
 
 // The lakes arrive over the network (or out of the bundled file), so the first world drawn may
 // have none. Rather than blocking the map on them, the cut is applied when they land and the map
-// redrawn once — the same shape as the coastline model's own readiness gate.
-let lakeCutPending = false;
+// redrawn once — the same shape as the coastline model's own readiness gate. The same happens
+// when the detail toggle asks for a resolution that has not been fetched yet.
 function ensureLakeCut() {
-    if (lakeCutRings || lakeCutPending) return;
-    lakeCutPending = true;
-    const done = feats => {
-        lakeCutRings = lakeCutPrepare(feats);
-        lakeCutPending = false;
-        // Redrawing is a convenience, not a requirement: any later redraw picks the cut up from
-        // the memo anyway. So it is skipped whenever the map is not plainly idle — a reload
-        // fired into a mode that is still building its board replaces the features under it, and
-        // the mode has no way to know that happened.
-        try {
-            const mc = QUIZ_MODES[gameState && gameState.mode];
-            const idle = mc && mc.mapObject === 'countries' && !mc.sbQuizMode &&
-                         gameState.countries && gameState.countries.length && countriesGroup;
-            if (idle && typeof reloadWorldDetail === 'function') reloadWorldDetail();
-        } catch (_) { /* the next redraw will do it */ }
-    };
-    if (lakesCache['110m']) { done(lakesCache['110m']); return; }
-    d3.json('data/lakes.geo.json')
-        .then(d => { lakesCache['110m'] = (d && d.features) || []; done(lakesCache['110m']); })
-        .catch(() => { lakeCutRings = []; lakeCutPending = false; });
+    const res = lakesResForDetail();
+    if (lakeCutRes === res) return;
+    const feats = lakesForDrawing();
+    if (!feats) { ensureLakeData(res); return; }   // not here yet; it comes back round on arrival
+    lakeCutRings = lakeCutPrepare(feats);
+    lakeCutRes = res;
+}
+
+// What to do when a lake file lands. Redrawing the overlay is not enough on its own: the cut is
+// baked into the world's FEATURES, so those have to be rebuilt, which only the detail reload
+// does. It is skipped whenever the map is not plainly idle — a reload fired into a mode still
+// building its board replaces the features under it, and the mode has no way to know.
+function onLakesArrived() {
+    try {
+        const mc = QUIZ_MODES[gameState && gameState.mode];
+        const idle = mc && mc.mapObject === 'countries' && !mc.sbQuizMode &&
+                     gameState.countries && gameState.countries.length && countriesGroup;
+        if (idle && typeof reloadWorldDetail === 'function') reloadWorldDetail();
+        else if (typeof drawLakes === 'function' && g) { drawLakes(); updateIslandMarkers(); }
+    } catch (_) { /* the next redraw will do it */ }
 }
 
 function worldFeaturesFromTopology(data) {
@@ -1008,6 +1044,20 @@ const QUIZ_MODES = {
         autoRotate: false,
         projectionLabMode: true    // the world through a menu of projections, with the distortion drawn
     },
+    'airocean-lab': {
+        name: 'Airocean World',
+        quizList: quizCountries,
+        dataObjKey: 'countryData',
+        totalQuestions: 1,
+        useGlobe: true,
+        mapUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+        mapObject: 'countries',
+        hasFlags: false,
+        itemLabel: 'country',
+        itemLabelPlural: 'countries',
+        autoRotate: false,
+        airoceanMode: true         // the earth on an icosahedron, unfolded by hand
+    },
     'missing-sandbox': {
         name: "Who's Missing Sandbox",
         quizList: quizCountries,
@@ -1148,6 +1198,8 @@ const QUIZ_MODES = {
         autoRotate: false,
         drawBorderMode: true    // trace the missing outline; scored by distance to the real one
     },
+    // The same mode under its old key, so an existing link still works. Sun & Moon's key is the
+    // one on the landing page and in the top bar.
     'sun-path': {
         name: 'Sun Path',
         quizList: quizCountries,
@@ -1173,7 +1225,12 @@ const QUIZ_MODES = {
         itemLabel: 'place',
         itemLabelPlural: 'places',
         autoRotate: false,
-        sunMoonMode: true       // view-only: day/night, terminator, sub-solar and sub-lunar points
+        // MERGED. Sun & Moon and Sun Path were one subject looked at from two places, and the
+        // sunrise-line pane was already a small copy of Sun & Moon's map. So this key — the one
+        // with the landing tile and the top-bar slot — now opens the four-pane view, with that
+        // pane doing the whole of what the old page did: terminator, twilight, the sub-solar and
+        // sub-lunar points, the tropics, the zones, and the satellite imagery.
+        sunPathMode: true
     },
     'spaceship': {
         name: 'Where Is My Spaceship?',
@@ -1257,13 +1314,13 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
 
     // Add at least one similar item if available
     if (similarItems.length > 0) {
-        const randomSimilar = similarItems[Math.floor(Math.random() * similarItems.length)];
+        const randomSimilar = pickOne(similarItems);
         options.push(randomSimilar);
     }
 
     // Fill remaining options with random items
     while (options.length < 4) {
-        const randomItem = currentList[Math.floor(Math.random() * currentList.length)];
+        const randomItem = pickOne(currentList);
         if (!options.includes(randomItem)) {
             options.push(randomItem);
         }
@@ -1284,7 +1341,7 @@ function generateMultipleChoiceOptions(correctAnswer, answerType = 'item') {
 function shuffleArray(array) {
     const shuffled = [...array];
     for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rnd() * (i + 1));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled;
@@ -1598,7 +1655,10 @@ async function initGame() {
     const dataLoaded = await initializeGameData();
     if (!dataLoaded) return;
 
+    loadMapStyle();        // before anything draws, so the first map is already in the right style
+    renderLandingGrid();   // before the listeners: they are attached to the tiles it creates
     setupEventListeners();
+    wireMapStyleControls();
 
     // Deep-link support: if the URL names a mode (from a shared/challenge link), open it.
     routeFromUrl();
@@ -1623,7 +1683,8 @@ function startGameWithMode(mode) {
     // The panels that are taller than a phone viewport get the app-wide `height: 100vh;
     // overflow: hidden` lifted, or their controls are simply cut off with no way to reach them.
     document.body.classList.toggle('sb-tall-active',
-        !!((modeConfig.sbQuizMode && modeConfig.sbNoMap) || modeConfig.projectionLabMode));
+        !!((modeConfig.sbQuizMode && modeConfig.sbNoMap) || modeConfig.projectionLabMode ||
+           modeConfig.airoceanMode));
     document.body.classList.toggle('sb-wide-panel',
         !!(modeConfig.sbQuizMode && modeConfig.sbEngine === 'estimate'));
     // And hand the map box back, for the same reason `sbTeardown` does: the tile-only rounds
@@ -1702,6 +1763,19 @@ function startGameWithMode(mode) {
         ended: false
     };
 
+    // A KNOWN LABEL on Give Up before the mode renders. It is shared furniture and a mode that
+    // shows the button without setting its text inherits whatever the last one wrote -- the
+    // Puzzle's "Solve It" turned up on Name All and on Capitals ▸ Multiple Choice, and Find the
+    // Capital's "Skip" on the Flag Workshop. Only the LABEL is reset here, not the visibility:
+    // which buttons a mode shows is a decision each one makes for itself, and forcing that too
+    // would hide a button in every mode that has always relied on it being there.
+    setModeChrome({ giveUp: MODE_CHROME_DEFAULTS.giveUp });
+
+    // The stream is seeded BEFORE anything is drawn or any question chosen, so the very first
+    // draw is already on it.
+    seedGame(pendingGameSeed || newSeed());
+    pendingGameSeed = null;
+
     // Set current data sources
     // A sandbox/link seed is handed over exactly once, into the fresh gameState.
     gameState.spaceshipSeed = pendingSpaceshipSeed;
@@ -1761,7 +1835,7 @@ function startGameWithMode(mode) {
     // mode until further down this same function, so this test still sees the PREVIOUS mode's
     // answer and a flat board can inherit a tilt button from whatever came before it.
     gammaToggle.style.display = (isGlobeView() && !modeConfig.spaceshipMode &&
-        !modeConfig.projectionLabMode && !modeConfig.framingSandboxMode &&
+        !modeConfig.projectionLabMode && !modeConfig.airoceanMode && !modeConfig.framingSandboxMode &&
         !modeConfig.missingSandboxMode && !modeConfig.sbQuizMode) ? '' : 'none';
     gammaToggle.textContent = gammaLocked ? 'Tilt: Locked' : 'Tilt: Free';
 
@@ -1772,7 +1846,8 @@ function startGameWithMode(mode) {
     if (detailToggle) {
         detailToggle.style.display = (modeConfig.mapObject === 'countries' && !modeConfig.spaceshipMode &&
             !modeConfig.sandboxMode && !modeConfig.countryShapeIdMode &&
-            !modeConfig.projectionLabMode && !modeConfig.sbQuizMode) ? '' : 'none';
+            !modeConfig.projectionLabMode && !modeConfig.airoceanMode &&
+            !modeConfig.sbQuizMode) ? '' : 'none';
         detailToggle.textContent = 'Detail: ' + mapDetail.charAt(0).toUpperCase() + mapDetail.slice(1);
     }
 
@@ -1797,28 +1872,34 @@ function startGameWithMode(mode) {
         colourBtn.textContent = 'Colours: ' + (mapColourOn ? 'On' : 'Off');
     }
 
+    // `flatGlobeView` is one flag shared by every globe mode and it is never reset, so a mode
+    // entered straight after a flat one inherits the flat view. For a quiz that is harmless — the
+    // toggle is right there. For Free Explore it was not: its toggle had been repurposed as a
+    // door to the projection lab, so "Explore the Globe" opened on a Mercator with no way back to
+    // a globe at all. It owns its own answer now, and says so on entry.
+    if (modeConfig.freeExploreMode) flatGlobeView = exploreProj() !== 'globe';
+
     // Show the projection (globe/flat) toggle only for globe-capable modes
     const projToggle = document.getElementById('projection-toggle');
     if (projToggle) {
         // The quick quizzes each present themselves one way on purpose — a lone silhouette,
         // a flat pair, a coastline-only world — and none of them is answerable any better on
         // the other projection, so the toggle is only a way to break the framing.
-        // In the Explore pair the button is not a projection toggle at all: it is the door
-        // between the two halves of the folder. Free Explore has one view (a globe you turn) and
-        // the lab has fourteen, so "flat or round" was never the question there — the question is
-        // which of the two you want to be in.
-        const explorePair = modeConfig.freeExploreMode || modeConfig.projectionLabMode;
-        projToggle.style.display = (explorePair ||
-            (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.sbQuizMode)) ? '' : 'none';
-        projToggle.textContent = explorePair
-            ? (modeConfig.projectionLabMode ? 'View: Globe' : 'View: Projections')
+        // In the projection lab the button is not a projection toggle at all: that mode supplies
+        // its own projection and has no globe, so the only thing "View: Globe" can usefully mean
+        // there is the way back to Free Explore.
+        projToggle.style.display = (modeConfig.projectionLabMode ||
+            (modeConfig.useGlobe && !modeConfig.spaceshipMode && !modeConfig.airoceanMode &&
+             !modeConfig.sbQuizMode)) ? '' : 'none';
+        projToggle.textContent = modeConfig.projectionLabMode
+            ? 'View: Globe'
             : (flatGlobeView ? 'View: Map' : 'View: Globe');
     }
 
     // Reset the debug overlay for each new game
     debugValidityOn = false;
     const debugToggle = document.getElementById('debug-validity-toggle');
-    if (debugToggle) debugToggle.textContent = 'Debug: Off';
+    if (debugToggle) debugToggle.setAttribute('aria-pressed', 'false');
 
     // Show appropriate layout based on mode
     if (modeConfig.useWorldQuizLayout) {
@@ -1858,7 +1939,7 @@ function startGameWithMode(mode) {
         if (modeConfig.framingSandboxMode) flatGlobeView = true;
         // The lab supplies its own projection every frame; the globe/flat switch would only
         // fight it.
-        if (modeConfig.projectionLabMode) flatGlobeView = true;
+        if (modeConfig.projectionLabMode || modeConfig.airoceanMode) flatGlobeView = true;
         setupGlobe();
         loadMapData();
     }
@@ -2019,9 +2100,130 @@ function mercatorY(latDeg) {
 }
 
 // True when showing the wrapping flat world (a globe mode, in map view, world geometry).
+// ---- Free Explore's projections ----
+// Every other globe mode has exactly two views because a quiz only ever needs one honest picture
+// and its flat counterpart. Free Explore has no question in it at all — turning the world over and
+// looking at it IS the mode — so the projection is worth having as a choice rather than as a
+// toggle between round and Mercator.
+//
+// These are the projections d3 ships in the base bundle, so the dropdown works with nothing
+// fetched. The projection lab's other six need d3-geo-projection, and the lab is where they live.
+// Nothing here is a lab exhibit: there is no Tissot's indicatrix and no inflation readout, only a
+// world you can turn.
+const EXPLORE_PROJECTIONS = {
+    'globe':        { label: 'Globe', globe: true },
+    'mercator':     { label: 'Mercator', mercator: true },
+    'equal-earth':  { label: 'Equal Earth', make: () => d3.geoEqualEarth() },
+    'natural':      { label: 'Natural Earth', make: () => d3.geoNaturalEarth1() },
+    'equirect':     { label: 'Equirectangular', make: () => d3.geoEquirectangular() },
+    'azim-equal':   { label: 'Azimuthal equal-area', make: () => d3.geoAzimuthalEqualArea() },
+    'azim-dist':    { label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant() },
+    'stereo':       { label: 'Stereographic', make: () => d3.geoStereographic().clipAngle(120) },
+    'conic-equal':  { label: 'Conic equal-area', make: () => d3.geoConicEqualArea() },
+    'conic-dist':   { label: 'Conic equidistant', make: () => d3.geoConicEquidistant() },
+    'transverse':   { label: 'Transverse Mercator', make: () => d3.geoTransverseMercator() }
+};
+const EXPLORE_PROJ_DEFAULT = 'globe';
+let exploreProjKey = EXPLORE_PROJ_DEFAULT;
+
+const exploreMode = () => {
+    const mc = QUIZ_MODES[gameState.mode];
+    return !!(mc && mc.freeExploreMode);
+};
+// Which projection Free Explore is on — 'mercator' everywhere else, so every other mode reads
+// exactly what it always did.
+const exploreProj = () => (exploreMode() ? exploreProjKey : 'mercator');
+// A flat Free Explore projection that is not the Mercator: the one case the shared map machinery
+// has never seen.
+const exploreCustomFlat = () => {
+    const k = exploreProj();
+    return k !== 'mercator' && k !== 'globe' && !!EXPLORE_PROJECTIONS[k];
+};
+
+// The Mercator crop band, the rotate-to-pan wrap and the cursor-anchored longitude zoom are all
+// facts about the MERCATOR — its x is proportional to longitude and it tiles east to west. None
+// of that is true of an Equal Earth or an azimuthal, so those fall through to the plain
+// translate pan every regional map uses, which is correct for any projection at all.
 function isFlatWorldView() {
     const mc = QUIZ_MODES[gameState.mode];
-    return !!(mc && mc.useGlobe && flatGlobeView && mc.mapObject === 'countries');
+    return !!(mc && mc.useGlobe && flatGlobeView && mc.mapObject === 'countries' &&
+              !exploreCustomFlat());
+}
+
+// TWO GESTURES, because there are two genuinely different questions to ask of a flat projection
+// and only one of them is about where the picture is.
+//
+// LEFT turns the world under a frame that does not move. On the Mercator that is already what a
+// horizontal pan does — its x is proportional to longitude, so rotating and translating look the
+// same and the wrap comes free. On an Equal Earth or an azimuthal they are not the same at all: a
+// translate slides the whole outline about, leaving a rounded rectangle adrift in the corner of
+// the board, while a rotation keeps the outline nailed where it was fitted and moves the geography
+// through it. That is what "pan with a wrapping effect, never move the frame" is.
+//
+// RIGHT moves the projection's own focus — the point it is centred on, which is what decides where
+// it is honest and where it lies. Left is the picture, right is the instrument.
+//
+// The sensitivity comes from the drawn width of the world rather than from a constant over the
+// scale: dragging by the width of the world should turn it exactly once round, whatever aspect
+// this particular projection happens to have.
+function exploreDragFlat(dx, dy, button, world) {
+    const w = (world && world.w) || (2 * Math.PI * projection.scale());
+    const h = (world && world.h) || w / 2;
+    const r = projection.rotate();
+    if (button === 2) {
+        projection.rotate([r[0] + dx * 360 / w,
+                           Math.max(-90, Math.min(90, r[1] - dy * 180 / h)), r[2]]);
+        return;
+    }
+    projection.rotate([r[0] + dx * 360 / w, r[1], r[2]]);
+    // Vertical only once the map is bigger than the board — at the fit scale there is nowhere for
+    // it to go and moving the frame is the one thing this gesture must not do. Clamped so the
+    // world's own outline always still crosses the middle of the frame, which is a rule any
+    // outline can satisfy without knowing what shape it is.
+    if (dy && projection.scale() > (gameState.initialScale || 0) * 1.01) {
+        const t = projection.translate();
+        projection.translate([t[0], t[1] + dy]);
+        try {
+            const b = path.bounds({ type: 'Sphere' });
+            const mid = height / 2;
+            const fix = b[0][1] > mid ? mid - b[0][1] : (b[1][1] < mid ? mid - b[1][1] : 0);
+            if (fix) projection.translate([t[0], t[1] + dy + fix]);
+        } catch (_) { /* an outline that will not measure keeps the pan it was given */ }
+    }
+}
+
+// Whether the view is where the mode opened it. Rotation is the whole of "orientation", and the
+// zoom is included because a reset that left the map at 6x would not read as one.
+function exploreIsDefault() {
+    if (!projection || !projection.rotate) return true;
+    const r = projection.rotate();
+    const rot = Math.abs(r[0]) + Math.abs(r[1]) + Math.abs(r[2]);
+    const s0 = gameState.initialScale || projection.scale();
+    return rot < 0.01 && Math.abs(projection.scale() - s0) < 0.5;
+}
+
+function syncExploreReset() {
+    const btn = document.getElementById('explore-reset');
+    if (btn) btn.disabled = exploreIsDefault();
+}
+
+function resetExploreView() {
+    if (!exploreMode()) return;
+    reprojectMap();                       // rebuilds the projection, which is the reset
+    gameState.initialScale = projection.scale();
+    r_unconstrained = projection.rotate ? projection.rotate().slice() : null;
+    syncExploreReset();
+}
+
+// Fitted to the SPHERE, not to a crop band. Each of these has its own natural outline and aspect
+// — Mollweide is an ellipse, the azimuthals are discs, Equal Earth is a rounded 2.05:1 — and a
+// band chosen to make Mercator behave says nothing about any of them.
+function fitExploreWorld(proj) {
+    const pad = 10;
+    try {
+        proj.rotate([0, 0, 0]);
+        proj.fitExtent([[pad, pad], [width - pad, height - pad]], { type: 'Sphere' });
+    } catch (_) { /* a projection that will not fit keeps whatever scale it had */ }
 }
 
 // Scale that fills the container for the crop band (also the zoom-out floor).
@@ -2110,7 +2312,7 @@ function isStaticMapMode(mc) {
     if (mc && mc.framingSandboxMode) return true;
     // The lab's drag is its own — it turns the WORLD under the projection rather than panning
     // the picture — so the shared pan and wheel must keep off it.
-    if (mc && mc.projectionLabMode) return true;
+    if (mc && (mc.projectionLabMode || mc.airoceanMode)) return true;
     return !!(mc && (mc.findCapitalMode || mc.statePuzzleMode || mc.countryShapeIdMode ||
                      mc.sandboxMode || mc.drawBorderMode));
 }
@@ -2155,6 +2357,8 @@ function setupGlobe() {
     } else if (modeConfig.useAlbersUsa) {
         // Albers USA composite projection — AK and HI insets are built in
         projection = d3.geoAlbersUsa();
+    } else if (exploreCustomFlat()) {
+        projection = EXPLORE_PROJECTIONS[exploreProj()].make();
     } else {
         // Mercator projection for regional maps (India, Germany, etc.) and the flat world view.
         // precision(0) disables D3's adaptive great-circle resampling, which would otherwise
@@ -2168,11 +2372,10 @@ function setupGlobe() {
 
     path = d3.geoPath().projection(projection);
 
-    // Add gradient for ocean
-    // Pull the muted ocean tones from the active theme's CSS variables
-    const rootStyle = getComputedStyle(document.documentElement);
-    const ocean1 = (rootStyle.getPropertyValue('--ocean-1').trim()) || '#aebfca';
-    const ocean2 = (rootStyle.getPropertyValue('--ocean-2').trim()) || '#647d8d';
+    // Add gradient for ocean. This is one of the four places CSS cannot reach — a gradient's
+    // stops are attributes on elements built in JS — so it reads the map tokens itself.
+    const ocean1 = mapStyle('--map-ocean-1', '#aebfca');
+    const ocean2 = mapStyle('--map-ocean-2', '#647d8d');
 
     const defs = svg.append('defs');
     // userSpaceOnUse so the ocean circle/sphere AND carved-out lakes all sample the
@@ -2206,6 +2409,16 @@ function setupGlobe() {
             .attr('fill', 'url(#ocean-gradient)')
             .attr('stroke', ocean2)
             .attr('stroke-width', 1.5);
+    } else if (exploreCustomFlat()) {
+        // These projections have an OUTLINE — an ellipse, a disc, a rounded rectangle — and it is
+        // half of what distinguishes one from another. A Mercator can get away with letting the
+        // page background be the sea, because its edge is the edge of the board; a Mollweide
+        // cannot, because most of what is outside it is not sea at all. Drawn empty and given its
+        // `d` on every re-path, since the projection is not fitted until the world has loaded.
+        g.append('path').attr('class', 'explore-sphere')
+            .attr('fill', 'url(#ocean-gradient)')
+            .attr('stroke', ocean2)
+            .attr('stroke-width', 1.5);
     }
 
     // Group for countries
@@ -2236,13 +2449,39 @@ function setupGlobe() {
         svg.call(drag);
     } else if (modeConfig.useGlobe) {
         // Flat (Mercator) view of a globe mode: drag to pan
-        let panLast = null;
+        let panLast = null, panBtn = 0, panWorld = null;
         const flatDrag = d3.drag()
-            .on('start', (event) => { panLast = staticNow() ? null : [event.x, event.y]; })
+            // The right button is admitted only where it means something — Free Explore's
+            // non-Mercator projections, where left turns the world under the frame and right
+            // moves the frame's own centre. d3-drag's default filter drops everything but
+            // button 0, which is right for every other map here.
+            .filter(ev => !ev.ctrlKey && (ev.button === 0 ||
+                          (ev.button === 2 && exploreCustomFlat() && !staticNow())))
+            .on('start', (event) => {
+                panLast = staticNow() ? null : [event.x, event.y];
+                panBtn = (event.sourceEvent && event.sourceEvent.button) || 0;
+                // How wide the whole world is drawn, measured once: a drag of that many pixels
+                // should turn it exactly once round. Only rotate changes during the drag and
+                // neither rotation moves the outline's width, so it cannot go stale mid-gesture.
+                panWorld = null;
+                if (exploreCustomFlat()) {
+                    try {
+                        const b = path.bounds({ type: 'Sphere' });
+                        panWorld = { w: b[1][0] - b[0][0], h: b[1][1] - b[0][1] };
+                    } catch (_) { panWorld = null; }
+                }
+            })
             .on('drag', (event) => {
                 if (gameState.scrollLocked || !panLast || staticNow()) return;
                 const dx = event.x - panLast[0];
                 const dy = event.y - panLast[1];
+                if (exploreCustomFlat()) {
+                    exploreDragFlat(dx, dy, panBtn, panWorld);
+                    panLast = [event.x, event.y];
+                    countriesGroup.selectAll('path').attr('d', path);
+                    updateIslandMarkers();
+                    return;
+                }
                 if (isFlatWorldView()) {
                     // Horizontal pan rotates the projection's longitude → seamless wrap.
                     const dLon = dx * 360 / (2 * Math.PI * projection.scale());
@@ -2260,6 +2499,8 @@ function setupGlobe() {
                 updateIslandMarkers();
             });
         svg.call(flatDrag);
+        // Without this the right-drag ends in a context menu over the map.
+        svg.on('contextmenu', ev => { if (exploreCustomFlat()) ev.preventDefault(); });
     }
 
     // Find-the-Capital / Place-the-Countries: clicking the static map drops/moves a guess marker.
@@ -2430,7 +2671,7 @@ function setupGlobe() {
             const p = svgPoint(e.touches[0]);
             r0 = projection.rotate();
             v0 = versor.cartesian(projection.invert(p));
-            q0 = versor(r_unconstrained || r0);
+            q0 = dragBaseQuaternion(r0);
         }
     }, { passive: false });
 
@@ -2552,7 +2793,11 @@ function loadMapData() {
 
     // World modes pick their resolution from the detail toggle; others use their fixed URL.
     const mapUrl = (modeConfig.mapObject === 'countries') ? worldCountriesUrl() : modeConfig.mapUrl;
-    const loader = (modeConfig.mapObject === 'countries') ? fetchWorldTopo(mapUrl) : d3.json(mapUrl);
+    // Water is assembled in JS out of two fetched files rather than being one map, so it hands
+    // the collection straight over and takes the plain-GeoJSON branch below like any other.
+    const loader = modeConfig.waterPool
+        ? Promise.resolve({ type: 'FeatureCollection', features: waterFeatures() || [] })
+        : (modeConfig.mapObject === 'countries') ? fetchWorldTopo(mapUrl) : d3.json(mapUrl);
     loader
         .then(data => {
             // Check mapObject to determine how to process the data
@@ -2584,6 +2829,8 @@ function loadMapData() {
                     // non-globe `countries` map keeps Mercator's default scale of 1 and the
                     // whole board collapses to a dot.
                     fitCapitalWorld(projection); // static full-width world for guessing
+                } else if (exploreCustomFlat()) {
+                    fitExploreWorld(projection);
                 } else if (flatGlobeView) {
                     fitFlatWorld(projection);
                 }
@@ -2985,6 +3232,46 @@ function lakesUrlForRes(res) {
         : `https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/${res}/physical/ne_${res}_lakes.json`;
 }
 
+// ONE fetch path, so the overlay and the cut can never end up looking at different files.
+// `undefined` in the cache means untouched, `null` means a fetch is in flight.
+function ensureLakeData(res) {
+    if (lakesCache[res] !== undefined) return lakesCache[res];
+    lakesCache[res] = null;
+    const land = feats => {
+        lakesCache[res] = feats || [];
+        lakeCutRes = null;                  // whatever the cut was made from, it is stale now
+        onLakesArrived();
+    };
+    d3.json(lakesUrlForRes(res))
+        .then(d => land((d && d.features) || []))
+        // Fall back to the bundled 110m file so lakes still render.
+        .catch(() => d3.json('data/lakes.geo.json')
+            .then(d => land((d && d.features) || []))
+            .catch(() => land([])));
+    return null;
+}
+
+// WHICH LAKES EXIST, for this detail level — the single answer both the overlay and the cut are
+// made from. Filtered by the diameter of the largest circle that fits inside each lake (its
+// "fatness"), so long-thin lakes read as small; the Winnipeg system shares one metric (its
+// largest member) so its parts pass and fail together.
+const lakeDrawCache = new WeakMap();
+function lakesForDrawing() {
+    const feats = lakesCache[lakesResForDetail()];
+    if (!feats) return feats;                       // undefined = untouched, null = in flight
+    if (lakeDrawCache.has(feats)) return lakeDrawCache.get(feats);
+    const nameOf = f => f && f.properties && f.properties.name;
+    const groupDiam = feats
+        .filter(f => WINNIPEG_GROUP.has(nameOf(f)))
+        .reduce((m, f) => Math.max(m, lakeInscribedDiamKm(f)), 0);
+    const out = feats.filter(f => {
+        const d = WINNIPEG_GROUP.has(nameOf(f)) ? groupDiam : lakeInscribedDiamKm(f);
+        return d >= MIN_LAKE_DIAM_KM;
+    });
+    lakeDrawCache.set(feats, out);
+    return out;
+}
+
 // Draw countries on the globe
 function drawCountries() {
     const mc = QUIZ_MODES[gameState.mode];
@@ -3009,6 +3296,7 @@ function drawCountries() {
     // Same reason as the framing sandbox: the lab owns its board and has to rebuild it from
     // state, or any caller reaching drawCountries replaces it with the ordinary world map.
     if (mc && mc.projectionLabMode) { if (labState) labDraw(); return; }
+    if (mc && mc.airoceanMode) { if (airoState) airoDraw(); return; }
 
     // Coming Into Focus draws one growing outline into countriesGroup and nothing else. The
     // shape-id branch below skips the join, so the path survives — but only if it is still
@@ -3118,9 +3406,8 @@ function lakeInscribedDiamKm(f) {
     if (f._lakeDiamKm != null) return f._lakeDiamKm;
     const geom = f.geometry;
     const polys = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
-    const [[w, s], [e, n]] = d3.geoBounds(f);
-    const lat0 = (s + n) / 2;
-    const kx = 111.320 * Math.cos(lat0 * Math.PI / 180), ky = 110.574; // deg → km at this latitude
+    const bb = geoBox(f);
+    const kx = 111.320 * Math.cos((bb ? bb.midLat : 0) * Math.PI / 180), ky = 110.574; // deg → km here
     let best = 0;
     for (const poly of polys) {
         const rings = poly.map(r => r.map(p => [p[0] * kx, p[1] * ky]));
@@ -3145,33 +3432,9 @@ function drawLakes() {
     if (!g || !lakesMode || lakesMode.mapObject !== 'countries' || lakesMode.countryShapeIdMode) return;
     if (lakesMode.spaceshipMode) return; // lakes project to infinity under the tilt camera
 
-    const res = lakesResForDetail();
-    const feats = lakesCache[res];
-    if (feats === undefined) {
-        lakesCache[res] = null; // mark in-flight to avoid duplicate fetches
-        d3.json(lakesUrlForRes(res))
-            .then(data => { lakesCache[res] = (data && data.features) || []; drawLakes(); updateIslandMarkers(); })
-            .catch(() => {
-                // Fall back to the bundled 110m file so lakes still render.
-                d3.json('data/lakes.geo.json')
-                    .then(d => { lakesCache[res] = (d && d.features) || []; drawLakes(); updateIslandMarkers(); })
-                    .catch(() => { lakesCache[res] = []; });
-            });
-        return;
-    }
-    if (feats === null) return; // still loading this resolution
-
-    // Filter by the diameter of the largest circle that fits inside each lake (its
-    // "fatness"), so long-thin lakes read as small. The Winnipeg system shares one
-    // metric (its largest member) so its parts pass/fail together.
-    const nameOf = f => f && f.properties && f.properties.name;
-    const groupDiam = feats
-        .filter(f => WINNIPEG_GROUP.has(nameOf(f)))
-        .reduce((m, f) => Math.max(m, lakeInscribedDiamKm(f)), 0);
-    const visibleFeats = feats.filter(f => {
-        const d = WINNIPEG_GROUP.has(nameOf(f)) ? groupDiam : lakeInscribedDiamKm(f);
-        return d >= MIN_LAKE_DIAM_KM;
-    });
+    // The same list the cut is made from, so every hole has its own polygon over it.
+    const visibleFeats = lakesForDrawing();
+    if (!visibleFeats) { ensureLakeData(lakesResForDetail()); return; }
 
     // Match the surrounding ocean: the shaded gradient on the globe/orbit views,
     // the flat-map surface colour on Mercator (where the card backdrop is the ocean).
@@ -3199,6 +3462,382 @@ function featureParts(feature) {
     if (geom.type === 'Polygon') return [geom.coordinates];
     if (geom.type === 'MultiPolygon') return geom.coordinates;
     return [];
+}
+
+// ONE earth. Three constants held the same 6371 -- EARTH_R_KM for the orbital view,
+// SB_EARTH_R_KM for the sandbox, FRAMING_R2 for the framing sandbox's areas -- and seven more
+// places wrote the number out. Nothing was ever inconsistent, but three names for one fact is
+// three places to look when a distance disagrees with an area, and a fourth would have had to be
+// typed into all of them.
+const EARTH_R_KM = 6371;
+const EARTH_R2_KM2 = EARTH_R_KM * EARTH_R_KM;   // for d3.geoArea, which returns steradians
+
+// ==================== MAP STYLES ====================
+//
+// THEME and STYLE are two axes and the point of this is that they stay independent. The theme
+// decides the palette — Atlas parchment, Slate blue-grey — and the style decides how the map is
+// DRAWN: how heavy the ink is, whether a border is a hairline or a rule, how big a dot has to be
+// before you can hit it. Asking one control to do both gives you a dark mode that also secretly
+// changes your line weights.
+//
+// Every map mark in the stylesheet reads a `--map-*` token, and each colour token falls back to
+// the theme's own. So a style that only wants heavier ink names widths and says nothing about
+// colour, and the theme still decides how the map LOOKS. Blueprint is the exception and it is
+// deliberate: it is a look rather than a weight, so it overrides the colours, and it says so.
+//
+// Widths are in VIEWBOX UNITS. The map svg is 800x600 whatever size it renders at, so 0.5 is the
+// same fraction of the map on a phone and on a desktop; a px would pin the stroke to the screen
+// and make every line proportionally fatter the smaller the map got.
+const MAP_STYLES = {
+    atlas: {
+        label: 'Atlas',
+        desc: 'The default. Hairline borders, the theme’s own colours.',
+        tokens: {}
+    },
+    fine: {
+        label: 'Fine',
+        desc: 'Thinner still, and dotted borders — for looking at coastlines rather than at countries.',
+        tokens: {
+            '--map-ink': '0.7',
+            '--map-w-border': '0.45',
+            '--map-dash-border': '1.4 1.1'
+        }
+    },
+    bold: {
+        label: 'Bold',
+        desc: 'Heavy ink and bigger dots. For a projector, a small screen, or eyes that want help.',
+        tokens: {
+            '--map-ink': '1.9',
+            '--map-w-dot': '1.6',
+            '--map-w-dot-hover': '2.2'
+        }
+    },
+    blueprint: {
+        label: 'Blueprint',
+        // The one style that is a LOOK rather than a weight, so it is the one that overrides the
+        // theme's colours. Everything else here leaves the palette alone on purpose.
+        desc: 'White lines on drawing-office blue. Overrides the theme’s map colours — the only style that does.',
+        tokens: {
+            '--map-ink': '1.15',
+            '--map-land': '#123a5c',
+            '--map-land-stroke': '#9fd4f0',
+            '--map-land-hover': '#1d5c8f',
+            '--map-ocean-1': '#0b2138',
+            '--map-ocean-2': '#061625'
+        }
+    }
+};
+const MAP_STYLE_DEFAULT = 'atlas';
+let mapStyleKey = MAP_STYLE_DEFAULT;
+// A multiplier ON TOP of whatever the style asks for, so "I need this heavier" is a slider rather
+// than a reason to invent another style. It composes: Fine at 2x is still dotted and still
+// relatively light against its own borders, which is what makes it a weight control and not a
+// fifth style hiding in a range input.
+let mapInkUser = 1;
+
+// Read a map token. For the four places CSS cannot reach — the ocean gradient's stops, the lake
+// overlay's fill, the three.js ocean sphere, the flag pattern's backing — which build attributes
+// or WebGL materials rather than matching selectors.
+function mapStyle(token, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+    return v || fallback || '';
+}
+// The widths are numbers, and the ink multiplier is not folded into them by the browser unless
+// something asks for the calc() — so anything wanting a width in JS has to do the multiply.
+function mapStyleWidth(token, fallback) {
+    const w = parseFloat(mapStyle(token, ''));
+    const ink = parseFloat(mapStyle('--map-ink', '1')) || 1;
+    return (isFinite(w) ? w : (fallback || 0)) * ink;
+}
+
+// Stamp a style onto the document. The tokens go on the root element as inline custom properties
+// rather than into a stylesheet rule, so a style is a plain object and adding one costs no CSS.
+// Every token not named by the style is REMOVED rather than left, or switching from Blueprint to
+// Bold would keep Blueprint's colours.
+function applyMapStyle(key, opts) {
+    const st = MAP_STYLES[key] ? key : MAP_STYLE_DEFAULT;
+    mapStyleKey = st;
+    const root = document.documentElement;
+    const all = new Set();
+    Object.values(MAP_STYLES).forEach(s => Object.keys(s.tokens).forEach(t => all.add(t)));
+    all.forEach(t => root.style.removeProperty(t));
+    Object.entries(MAP_STYLES[st].tokens).forEach(([t, v]) => root.style.setProperty(t, v));
+    // The user's weight multiplies the style's own rather than replacing it, which is what keeps
+    // the slider a weight control instead of a fifth style hiding in a range input.
+    const styleInk = parseFloat(MAP_STYLES[st].tokens['--map-ink'] || '1') || 1;
+    root.style.setProperty('--map-ink', String(+(styleInk * mapInkUser).toFixed(4)));
+    root.dataset.mapStyle = st;
+    // A TRANSITIONED PROPERTY DOES NOT NOTICE A CUSTOM PROPERTY CHANGING. `.country` carries
+    // `transition: fill 0.2s` for the hover, and Chrome will not restart that transition when
+    // only the var() behind `fill` moves — so the land kept the old theme's colour indefinitely
+    // while the stroke, which has no transition, changed instantly. Measured: still cream after
+    // 1200 ms, correct the moment the transition is taken off. Suppressed for two frames, which
+    // is a hair less than the swap costs anyway.
+    root.classList.add('map-style-swapping');
+    requestAnimationFrame(() => requestAnimationFrame(() =>
+        root.classList.remove('map-style-swapping')));
+    try {
+        localStorage.setItem('geoquiz.mapStyle', st);
+        localStorage.setItem('geoquiz.mapInk', String(mapInkUser));
+    } catch (_) { /* private mode */ }
+    // The gradient's stops and the WebGL materials were built from the old tokens and cannot
+    // hear a CSS change, so the map is redrawn — unless the caller is the boot, when there is
+    // nothing drawn yet.
+    if (!(opts && opts.quiet)) refreshMapStyle();
+}
+
+function refreshMapStyle() {
+    // Repaint whatever is currently on screen. The redraw paths already exist for the detail
+    // toggle and the projection toggle; this needs the same two, and no more, because everything
+    // else reads its colour from CSS at paint time.
+    try {
+        const grad = svg && svg.select && svg.select('#ocean-gradient');
+        if (grad && !grad.empty()) {
+            grad.selectAll('stop')
+                .attr('stop-color', (d, i) => mapStyle(i === 0 ? '--map-ocean-1' : '--map-ocean-2',
+                                                       i === 0 ? '#aebfca' : '#647d8d'));
+        }
+    } catch (_) { /* no map on screen */ }
+    try { if (typeof drawCountries === 'function' && gameState && gameState.countries &&
+              gameState.countries.length) drawCountries(); } catch (_) { /* not drawable yet */ }
+}
+
+// How the palette menu tells the map that the colours moved. That menu lives in the page's own
+// script because it has to work before game.js has parsed; this is the one thing it needs from
+// here. Swapping the theme changes only CSS variables, and CSS repaints itself — but the four
+// marks built in JS (the ocean gradient's stops, the lake fill, the three.js ocean material and
+// the flag pattern's backing) read those variables once, at build time, and cannot hear them
+// change.
+window.geoquizThemeChanged = function () { refreshMapStyle(); };
+
+function loadMapStyle() {
+    let saved = null, ink = null;
+    try {
+        saved = localStorage.getItem('geoquiz.mapStyle');
+        ink = parseFloat(localStorage.getItem('geoquiz.mapInk'));
+    } catch (_) { saved = null; }
+    if (isFinite(ink) && ink > 0) mapInkUser = Math.max(0.4, Math.min(3, ink));
+    applyMapStyle(saved || MAP_STYLE_DEFAULT, { quiet: true });
+}
+
+// The two controls in Settings ▸ Map.
+function wireMapStyleControls() {
+    const sel = document.getElementById('tune-map-style');
+    const desc = document.getElementById('tune-map-style-desc');
+    const ink = document.getElementById('tune-map-ink');
+    const inkVal = document.getElementById('tune-map-ink-val');
+    if (sel && !sel.options.length) {
+        sel.innerHTML = Object.keys(MAP_STYLES)
+            .map(k => `<option value="${k}">${MAP_STYLES[k].label}</option>`).join('');
+    }
+    const say = () => {
+        if (desc) desc.textContent = MAP_STYLES[mapStyleKey].desc;
+        if (sel) sel.value = mapStyleKey;
+        if (ink) ink.value = mapInkUser;
+        if (inkVal) inkVal.textContent = mapInkUser.toFixed(2) + '×';
+    };
+    if (sel) sel.addEventListener('change', () => { applyMapStyle(sel.value); say(); });
+    if (ink) ink.addEventListener('input', () => {
+        mapInkUser = parseFloat(ink.value) || 1;
+        applyMapStyle(mapStyleKey);
+        say();
+    });
+    say();
+}
+
+// The two buttons every mode has an opinion about.
+//
+// They are shared page furniture -- one Give Up, one Next, written to from ninety places -- so
+// whatever the last mode left is what the next one starts from. `false` hides, `true` shows with
+// the default label, a string shows with that label, and anything OMITTED is left alone, because
+// plenty of callers deliberately touch one and not the other mid-round.
+const MODE_CHROME_DEFAULTS = { giveUp: 'Give Up', next: 'Next Question' };
+function setModeChrome(o) {
+    const set = (id, v, dflt) => {
+        const el = document.getElementById(id);
+        if (!el || v === undefined) return;
+        if (v === false) { el.style.display = 'none'; return; }
+        el.style.display = 'inline-block';
+        el.textContent = typeof v === 'string' ? v : dflt;
+    };
+    set('give-up-btn', o.giveUp, MODE_CHROME_DEFAULTS.giveUp);
+    set('next-btn', o.next, MODE_CHROME_DEFAULTS.next);
+    if (o.nextDisabled !== undefined) {
+        const n = document.getElementById('next-btn');
+        if (n) n.disabled = !!o.nextDisabled;
+    }
+}
+
+// Borrow a geography.
+//
+// Seven modes are RECONFIGURED IN PLACE rather than declared per region: Identify, Name All,
+// Places I've Been, the Puzzle, Draw the Border, Name the Shape and its two sandbox quizzes all
+// take "which map, which list, which labels" from another mode's entry and then apply whatever
+// they force. Written out, that is the same eight assignments seven times, and the failure mode
+// is silent -- a mode that forgets `useAlbersUsa` inherits the last region's composite projection
+// and fits it to a country it cannot draw.
+//
+// `useAlbersUsa` is normalised to a boolean here, because most of the seven wrote
+// `base.useAlbersUsa || false` and the rest wrote `!!base.useAlbersUsa`, and an `undefined`
+// reaching a truthiness test somewhere else is exactly the sort of thing that works until it does
+// not. Returns the base so a caller can go on reading it for the overrides it wants to apply.
+const BORROWED_KEYS = ['quizList', 'dataObjKey', 'useGlobe', 'mapUrl', 'mapObject',
+                       'itemLabel', 'itemLabelPlural'];
+function borrowRegion(target, region, fallback) {
+    // Water is a pool rather than a mode, so it has no QUIZ_MODES entry to borrow from — see
+    // waterRegionConfig.
+    if (region === 'water') {
+        const w = waterRegionConfig();
+        Object.assign(target, w);
+        return w;
+    }
+    target.waterPool = false;
+    const base = QUIZ_MODES[region] || QUIZ_MODES[fallback || 'countries'];
+    BORROWED_KEYS.forEach(k => { target[k] = base[k]; });
+    target.useAlbersUsa = !!base.useAlbersUsa;
+    return base;
+}
+
+// ==================== RASTERISING, ONCE ====================
+//
+// Four places in the app answer a question by DRAWING the thing and looking at the pixels, and
+// they do it because the alternative is a polygon boolean engine over arbitrary geometry. Two ask
+// "which pixels are covered" (the land raster the coastline model probes against, and the
+// silhouette masks Upside Down compares) and two ask "how much of the picture is each colour"
+// (a flag's palette by area, and the workshop's probe render). They were four copies of the same
+// canvas-and-getImageData ceremony with the interesting three lines in the middle.
+
+// Draw into an offscreen canvas and read the alpha back as a bitmask. `draw` gets the context.
+function alphaMask(w, h, draw, tol) {
+    const bits = new Uint8Array(w * h);
+    try {
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        draw(ctx);
+        const data = ctx.getImageData(0, 0, w, h).data;
+        const t = tol == null ? 40 : tol;
+        for (let i = 0; i < w * h; i++) bits[i] = data[i * 4 + 3] > t ? 1 : 0;
+    } catch (_) { /* no canvas: everything reads as empty, and the caller says so */ }
+    return bits;
+}
+
+// An SVG document, decoded and drawn at a given size, returned as raw RGBA. Async because an
+// <img> is the only thing that will rasterise an SVG, and it decodes off the main thread.
+async function rasteriseSvg(doc, W, H) {
+    const url = 'data:image/svg+xml;charset=utf-8,' +
+        encodeURIComponent(new XMLSerializer().serializeToString(doc));
+    const img = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => rej(new Error('decode'));
+        im.src = url;
+    });
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, W, H);
+    return ctx.getImageData(0, 0, W, H).data;
+}
+
+// Attribute every opaque pixel to the NEAREST of a set of reference colours and tally the shares.
+// `tol` is how far a pixel may be from its nearest and still count: beyond it the pixel is an
+// antialiased blend of two colours and belongs to neither, which is what stops a stripe's edge
+// inventing a colour the flag does not have. Returns null when nothing was countable.
+function tallyByColour(data, refs, tol) {
+    const n = new Array(refs.length).fill(0);
+    let total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 200) continue;              // transparent margin
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let bi = -1, bd = Infinity;
+        for (let k = 0; k < refs.length; k++) {
+            const c = refs[k];
+            const d = Math.hypot(r - c[0], g - c[1], b - c[2]);
+            if (d < bd) { bd = d; bi = k; }
+        }
+        if (bd > tol) continue;
+        n[bi]++; total++;
+    }
+    return total ? n.map(c => c / total) : null;
+}
+
+// ==================== ONE SEEDED STREAM ====================
+//
+// A share link should hand somebody the game you played, not another game in the same mode. That
+// needs every choice a round makes — which country, which distractors, which of a hundred
+// shuffles — to come out of ONE stream with ONE seed, so a number in the URL replays the lot.
+//
+// `Math.random` stays where the choice is not part of the question: the jitter that nudges two
+// dots apart, an audio noise burst, the starfield. Those are drawn a different number of times
+// depending on how the map happens to be laid out, so routing them through the stream would put
+// the sequence out of step and reproduce nothing.
+//
+// The seed is a plain 32-bit number and the generator is the mulberry32 already here for the
+// spaceship seeds. `rnd()` is a drop-in for `Math.random()` and `pickOne` for the
+// `arr[floor(random*len)]` written out twenty-nine times.
+let gameRng = Math.random;
+function seedGame(seed) {
+    const s = (seed >>> 0) || 1;
+    gameState.seed = s;
+    gameRng = mulberry32(s);
+    return s;
+}
+const rnd = () => gameRng();
+const pickOne = arr => (arr && arr.length) ? arr[Math.floor(rnd() * arr.length)] : undefined;
+const newSeed = () => (Math.floor(Math.random() * 0xFFFFFFFF) >>> 0) || 1;
+// Carried from a link into the fresh gameState exactly once, like the spaceship seed.
+let pendingGameSeed = null;
+
+// A memo that empties itself when the world does.
+//
+// Everything wrapped in this is a walk over the atlas keyed by country name -- a centroid, an
+// area, whether the framing core is the whole country -- and every one of them is wrong the
+// moment `gameState.countries` is replaced, which happens on a detail change and on every round
+// of Who's Missing, whose entire job is to hand back a different world. Keying on the ARRAY
+// IDENTITY rather than on a version number means nothing has to remember to invalidate anything:
+// a new list is a new cache, and there is no path that produces a new world without producing a
+// new list. Five caches wrote that ritual out by hand and one of them -- the shape-quiz one --
+// did not do it at all, relying on a single explicit clear that a detail change never reached.
+function memoByCountries(fn) {
+    let src = null, map = new Map();
+    const out = name => {
+        if (src !== gameState.countries) { src = gameState.countries; map = new Map(); }
+        if (map.has(name)) return map.get(name);
+        const v = fn(name);
+        map.set(name, v);
+        return v;
+    };
+    out.clear = () => { map = new Map(); };
+    return out;
+}
+
+// A bounding box you can do arithmetic on.
+//
+// `d3.geoBounds` is antimeridian-AWARE, which is not the same as antimeridian-safe: a feature
+// straddling ±180 comes back with its EAST edge west of its west edge — Russia reads
+// [[19.6, 41.2], [-169.8, 81.9]] — because that is the honest answer to which arc of the circle
+// it occupies. Subtract one from the other, as the obvious code does, and the span comes out
+// negative; take the absolute value, as the careful-looking code does, and it comes out as the
+// 190° of empty Atlantic the country is NOT in. Either way the countries that suffer are the
+// first anybody would name: Russia, the United States via Alaska, Fiji, Kiribati, New Zealand.
+//
+// geoBox returns a box whose east edge is UNWRAPPED — always east of the west edge, possibly
+// past 180 — so `lonSpan` is always the true span and `midLon` always lies between the two. Some
+// callers genuinely cannot answer their question for a wrapped box (which edge of Russia is its
+// easternmost point?), so `wrapped` says whether it happened and they can decline rather than
+// compute something wrong. Null for geometry with no finite bounds.
+function geoBox(feature) {
+    let b;
+    try { b = d3.geoBounds(feature); } catch (_) { return null; }
+    if (!b || !isFinite(b[0][0]) || !isFinite(b[0][1]) ||
+        !isFinite(b[1][0]) || !isFinite(b[1][1])) return null;
+    const w = b[0][0], s = b[0][1], n = b[1][1];
+    let e = b[1][0];
+    const wrapped = e < w;
+    if (wrapped) e += 360;
+    return { w, s, e, n, wrapped, raw: b,
+             lonSpan: e - w, latSpan: n - s, midLon: (w + e) / 2, midLat: (s + n) / 2 };
 }
 
 // Longitude span of a set of degrees, correctly handling antimeridian wraparound: the true
@@ -3343,8 +3982,19 @@ function drawIslandMarkers() {
 function syncOceanGradient() {
     if (!svg) return;
     const grad = svg.select('#ocean-gradient');
-    if (grad.empty() || !isGlobeView()) return;
-    grad.attr('cx', width / 2).attr('cy', height / 2).attr('r', projection.scale());
+    if (grad.empty()) return;
+    if (isGlobeView()) {
+        grad.attr('cx', width / 2).attr('cy', height / 2).attr('r', projection.scale());
+        return;
+    }
+    // Free Explore's other projections draw their own outline, so the sphere is re-pathed here
+    // (it moves with every pan and zoom) and the gradient is centred on the board rather than on
+    // a globe that is not there.
+    const sph = svg.select('path.explore-sphere');
+    if (sph.empty()) return;
+    try { sph.attr('d', path({ type: 'Sphere' }) || ''); } catch (_) { sph.attr('d', ''); }
+    grad.attr('cx', width / 2).attr('cy', height / 2)
+        .attr('r', Math.max(width, height) * 0.62);
 }
 
 // Per redraw: keep the ocean gradient + lakes in sync, then decide for each
@@ -3364,8 +4014,14 @@ function updateIslandMarkers() {
     if (!islandMarkersGroup) return;
 
     const globe = isGlobeView();
-    // Only the orthographic globe has .rotate() and a far side to hide.
-    const center = globe ? (() => { const r = projection.rotate(); return [-r[0], -r[1]]; })() : null;
+    // ANY projection with a clip angle has a far side, not only the orthographic. d3 clips the
+    // PATHS, but `projection(point)` happily returns a coordinate for a point beyond the clip —
+    // a stereographic cut at 120° puts one a few hundred units out — so the dot for a country on
+    // the far side was drawn floating in the ocean outside the map's own outline. The
+    // orthographic's own far-side test is exactly this rule with the angle at 90.
+    const clipDeg = (projection.clipAngle ? projection.clipAngle() : null) || null;
+    const center = (clipDeg && projection.rotate)
+        ? (() => { const r = projection.rotate(); return [-r[0], -r[1]]; })() : null;
     const dotted = new Set();
     const shown = [];      // visible dots, collected so overlapping ones can be spread apart
     const obstacles = [];  // small outline polygons a dot should not cover
@@ -3373,7 +4029,7 @@ function updateIslandMarkers() {
     islandMarkersGroup.selectAll('circle').each(function (d) {
         const sel = d3.select(this);
         const xy = projection(d.lonlat);
-        const offGlobe = globe && d3.geoDistance(d.lonlat, center) > Math.PI / 2;
+        const offGlobe = !!center && d3.geoDistance(d.lonlat, center) > clipDeg * Math.PI / 180;
         const valid = xy && !isNaN(xy[0]) && !offGlobe;
         let showDot = true;
         if (d.feature) {
@@ -3461,7 +4117,7 @@ function toggleDebugValidity() {
     applyDebugValidity();
     if (!debugValidityOn) clearDebugBoundingBoxes();
     const btn = document.getElementById('debug-validity-toggle');
-    if (btn) btn.textContent = debugValidityOn ? 'Debug: On' : 'Debug: Off';
+    if (btn) btn.setAttribute('aria-pressed', debugValidityOn ? 'true' : 'false');
 }
 
 function applyDebugValidity() {
@@ -3537,19 +4193,76 @@ function drawDebugBoundingBoxes(d) {
 // map, preserving the in-progress question.
 function toggleFlatGlobe() {
     const mc = QUIZ_MODES[gameState.mode];
-    // In the Explore folder this button is the door between its two halves rather than a
-    // projection switch: Free Explore has one view and the lab has fourteen, so "flat or round"
-    // is not the question there. Which of the two you want to be in is.
-    if (mc && mc.freeExploreMode) { startGameWithMode('projection-lab'); return; }
+    // The lab's half of the old door stays: it is a mode with fourteen projections of its own and
+    // no globe, so "back to the globe" is the only thing that button could usefully mean there.
+    // Free Explore's half is gone — it now HAS a globe/flat toggle and a projection of its own to
+    // choose, which is what the button says, and reaching the lab through it meant Free Explore
+    // had no way back to the globe at all once anything had left `flatGlobeView` set.
     if (mc && mc.projectionLabMode) { startGameWithMode('free-explore'); return; }
     if (!mc || !mc.useGlobe) return; // Only globe-capable modes can switch projection
     flatGlobeView = !flatGlobeView;
+    // Coming back to the globe from, say, an azimuthal has to put the picker back in step, and
+    // going flat from the globe has to leave a flat projection selected rather than 'globe'.
+    if (mc.freeExploreMode)
+        exploreProjKey = flatGlobeView
+            ? (exploreProjKey === 'globe' ? 'mercator' : exploreProjKey)
+            : 'globe';
     reprojectMap();
+    syncProjectionChrome();
+}
 
+// The projection toggle, the tilt lock and Free Explore's picker all say the same thing about the
+// same state, so they are written in one place rather than three.
+function syncProjectionChrome() {
+    const mc = QUIZ_MODES[gameState.mode] || {};
     const btn = document.getElementById('projection-toggle');
-    if (btn) btn.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
+    if (btn && !mc.projectionLabMode)
+        btn.textContent = flatGlobeView ? 'View: Map' : 'View: Globe';
     const gammaToggle = document.getElementById('gamma-lock-toggle');
     if (gammaToggle) gammaToggle.style.display = isGlobeView() ? '' : 'none';
+    const sel = document.getElementById('explore-proj');
+    if (sel) sel.value = exploreProj();
+}
+
+// Free Explore's picker. It lives in the floating overlay panel with the prompt, because that is
+// where this mode keeps everything, and it includes the globe as an entry — one control that
+// answers "what am I looking at" beats a toggle and a dropdown that can disagree.
+function buildExplorePanel() {
+    const host = document.getElementById('globe-side-panel') ||
+                 document.getElementById('question-container');
+    if (!host) return;
+    const old = document.getElementById('explore-panel');
+    if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'explore-panel';
+    box.className = 'explore-proj-panel';
+    box.innerHTML = '<label class="explore-proj-row"><span>Projection</span>' +
+        '<select id="explore-proj">' +
+        Object.keys(EXPLORE_PROJECTIONS)
+            .map(k => `<option value="${k}">${EXPLORE_PROJECTIONS[k].label}</option>`).join('') +
+        '</select></label>' +
+        '<button id="explore-reset" class="explore-reset" title="Back to the opening view" ' +
+        'disabled>Reset view</button>' +
+        '<div class="explore-hint">Drag to turn · right-drag to move the centre</div>';
+    host.appendChild(box);
+    const reset = document.getElementById('explore-reset');
+    if (reset) reset.addEventListener('click', resetExploreView);
+    const sel = document.getElementById('explore-proj');
+    sel.value = exploreProj();
+    sel.addEventListener('change', () => {
+        exploreProjKey = sel.value;
+        flatGlobeView = exploreProjKey !== 'globe';
+        // The zoom floor is the scale the map opened at, and every projection opens at its own —
+        // carrying the last one's over would either lock the zoom out or let it run away.
+        reprojectMap();
+        gameState.initialScale = projection.scale();
+        syncProjectionChrome();
+        // After the fit, not during it: the redraw inside reprojectMap syncs the button while
+        // `initialScale` still holds the PREVIOUS projection's fit, so every switch left the
+        // reset lit up over a view nobody had touched.
+        syncExploreReset();
+    });
+    syncExploreReset();
 }
 
 // Rebuild the map for the current projection without changing the question.
@@ -3565,7 +4278,8 @@ function reprojectMap() {
 
     // Flat world view: crop/fill/wrap; the globe keeps its fixed scale.
     if (flatGlobeView && QUIZ_MODES[gameState.mode].mapObject === 'countries') {
-        fitFlatWorld(projection);
+        if (exploreCustomFlat()) fitExploreWorld(projection);
+        else fitFlatWorld(projection);
     }
 
     drawCountries();
@@ -4017,6 +4731,7 @@ function giveUp() {
         if (modeConfig.sbEngine === 'multi') { sbSubmitMulti(); return; }
         if (modeConfig.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
         if (modeConfig.sbEngine === 'picker') { sbSubmitPicker(); return; }
+        if (modeConfig.sbEngine === 'connect') { sbFinishConnect(gameState.sbQuestion, false); return; }
         const q = gameState.sbQuestion;
         gameState.sbAnswered = true;
         const feedback = document.getElementById('feedback');
@@ -4261,6 +4976,11 @@ function startNewQuestion() {
         return;
     }
 
+    if (modeConfig.airoceanMode) {
+        renderAirocean();
+        return;
+    }
+
     // The flag workshop — no map, no target, no score.
     if (modeConfig.flagWorkshopMode) {
         renderFlagWorkshop();
@@ -4375,7 +5095,7 @@ function startNewQuestion() {
         }
 
         // Select random item
-        const randomIndex = Math.floor(Math.random() * availableItems.length);
+        const randomIndex = Math.floor(rnd() * availableItems.length);
         gameState.targetCountry = availableItems[randomIndex];
         gameState.usedCountries.add(gameState.targetCountry);
 
@@ -5037,24 +5757,15 @@ function labelMissedOnMap(missed) {
     if (!feats.length) return;
 
     const fc = { type: 'FeatureCollection', features: feats };
-    let span = 360;
-    try {
-        const bb = d3.geoBounds(fc);
-        span = Math.max(Math.abs(bb[1][0] - bb[0][0]), Math.abs(bb[1][1] - bb[0][1]));
-    } catch (_) { /* leave it as the whole world */ }
-    if (span < 140 && projection && projection.fitExtent) {
-        try {
-            // Rotate first on a globe: fitExtent only scales and translates, so anything on the
-            // far side of an orthographic would be fitted to a hemisphere it cannot appear in.
-            if (typeof projection.rotate === 'function' && isGlobeView()) {
-                const c = d3.geoCentroid(fc);
-                if (c && isFinite(c[0])) {
-                    projection.rotate([-c[0], gammaLocked ? 0 : -c[1], 0]);
-                    r_unconstrained = projection.rotate().slice();
-                }
-            }
-            const pad = Math.min(width, height) * 0.08;
-            projection.fitExtent([[pad, pad], [width - pad, height - pad]], fc);
+    // The abs() this replaces measured the wrong arc for a wrapped set — a miss list holding
+    // both Russia and Canada spans 170° of real world and read as 190° of empty Atlantic.
+    const bb = geoBox(fc);
+    const span = bb ? Math.max(bb.lonSpan, bb.latSpan) : 360;
+    if (span < 140) {
+        // On a globe the world has to be turned first: fitExtent only scales and translates, so
+        // anything on the far side of an orthographic would be fitted to a hemisphere it cannot
+        // appear in.
+        if (fitTo(fc, { pad: 0.08, recentre: isGlobeView() ? 'globe' : false })) {
             drawCountries();
             // drawCountries rebuilds the paths and the dots, so the red highlight has to go
             // back on afterwards or the zoom silently undoes it.
@@ -5062,7 +5773,7 @@ function labelMissedOnMap(missed) {
                 .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
             if (islandMarkersGroup) islandMarkersGroup.selectAll('circle')
                 .classed('incorrect', d => d && d.properties && want.has(normalizeName(d.properties.name)));
-        } catch (_) { /* keep the framing we had */ }
+        }
     }
 
     const layer = g.append('g').attr('class', 'name-all-labels');
@@ -5267,6 +5978,8 @@ function renderFreeExploreMode() {
     document.getElementById('restart-btn').textContent = 'Exit Explore';
     document.getElementById('restart-btn').onclick = exitFreeExplore;
     document.getElementById('restart-btn').style.display = 'inline-block';
+    buildExplorePanel();
+    syncProjectionChrome();
 }
 
 // Handle exit from free explore mode
@@ -5281,16 +5994,8 @@ function exitFreeExplore() {
 // wholesale (same reconfigure pattern as startIdentifyMode). `opts` carries state to restore
 // from a shared URL: selectionsStr (encoded) and message.
 function startPlacesMode(region, opts = {}) {
-    const base = region === 'us' ? QUIZ_MODES['us-states'] : QUIZ_MODES['countries'];
     const m = QUIZ_MODES['places-been'];
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.useGlobe = base.useGlobe;
-    m.useAlbersUsa = base.useAlbersUsa || false;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
+    borrowRegion(m, region === 'us' ? 'us-states' : 'countries');
     m.placesRegion = region;
 
     placesPendingSelectionsStr = opts.selectionsStr || null;
@@ -5578,6 +6283,12 @@ function sharePlacesLink() {
 function syncModeUrl(mode) {
     const p = new URLSearchParams();
     p.set('mode', mode);
+    // The seed goes in the ADDRESS BAR as well as in a shared link, so the URL always names the
+    // game in front of you -- copy it out of the bar and it is the same game, which is what
+    // anybody copying a URL expects and is a share button they do not have to find.
+    if (gameState.seed) p.set('seed', String(gameState.seed));
+    // Only when it is not the default: a `?map=atlas` on every link is noise saying nothing.
+    if (mapStyleKey !== MAP_STYLE_DEFAULT) p.set('map', mapStyleKey);
     history.replaceState(null, '', location.pathname + '?' + p.toString());
 }
 
@@ -5603,6 +6314,8 @@ function shareCurrentGame() {
     if (mc && mc.placesMode) { sharePlacesLink(); return; }
     const p = new URLSearchParams();
     p.set('mode', gameState.mode);
+    if (gameState.seed) p.set('seed', String(gameState.seed));
+    if (mapStyleKey !== MAP_STYLE_DEFAULT) p.set('map', mapStyleKey);
     if (gameState.ended) {
         p.set('score', String(gameState.score));
         const max = gameState.totalQuestions * maxSubForMode(mc);
@@ -5631,6 +6344,24 @@ function showToast(text) {
 // On load, start the mode named in the URL (?mode=...). Returns true if it handled routing.
 function routeFromUrl() {
     const p = new URLSearchParams(location.search);
+    // A style travels with a link, so a screenshot or a challenge sent to somebody arrives
+    // looking the way it was sent. It is NOT saved to localStorage from here — a link should not
+    // silently redecorate the recipient's app for good — which is why it is applied after
+    // loadMapStyle rather than through it.
+    const st = p.get('map');
+    if (st && MAP_STYLES[st]) {
+        mapStyleKey = st;
+        const root = document.documentElement;
+        Object.entries(MAP_STYLES[st].tokens).forEach(([t, v]) => root.style.setProperty(t, v));
+        const si = parseFloat(MAP_STYLES[st].tokens['--map-ink'] || '1') || 1;
+        root.style.setProperty('--map-ink', String(+(si * mapInkUser).toFixed(4)));
+        root.dataset.mapStyle = st;
+    }
+    // A seed replays the exact questions. Held here and handed to the fresh gameState by
+    // startGameWithMode, the same way the spaceship's own seed is.
+    const sd = parseInt(p.get('seed'), 10);
+    if (isFinite(sd) && sd > 0) pendingGameSeed = sd >>> 0;
+
     const mode = p.get('mode');
     if (!mode) return false;
 
@@ -5690,10 +6421,18 @@ function teardownActiveGame() {
     removePuzzleTray();
     removeFlagTray();
     removeSandboxPanel();
-    removeSunMoonPanel();
-    removeSunPathMode();
     sbTeardown();
     stopGlobeSpin();
+    // The lab panels are appended to #question-container rather than owned by a layer this
+    // function empties, so they have to be named.
+    airoState = null;
+    airoGeomCache = null;
+    labState = null;
+    framingState = null;
+    ['lab-panel', 'airocean-panel', 'fr-panel', 'explore-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
     document.body.classList.remove('spaceship-active');
     document.body.classList.remove('state-puzzle-active');
     document.body.classList.remove('sb-tall-active');
@@ -5714,36 +6453,85 @@ function teardownActiveGame() {
     });
 }
 
-// Show the region picker (World / USA) for Places-been.
-function showPlacesModeSelector() {
+// ==================== THE PICKERS ====================
+// Every screen between the landing grid and a live mode is the same shell — tear down whatever
+// is playing, hide the top bar, show the header, write a title, some rows of tiles, and a Back
+// button — and it was written out longhand twelve times. Three of the twelve had drifted off
+// the pattern in the one place it matters: Find, Identify and Name All never called
+// teardownActiveGame, and every picker is reachable from the top bar of a LIVE mode. Measured,
+// opening Name All from Sun & Moon left two WebGL canvases still rendering behind the menu;
+// from the projection lab, Find left the map, its side layout and its panel.
+//
+// A block is one of: {sub} a line of prose, {tiles, on} a grid, {toggle} a scope switch, or
+// {html} for the one screen that needs something of its own.
+function selectorTileHtml(t, attr) {
+    const icon = t.flag
+        ? `<img class="mode-icon" src="https://flagcdn.com/${t.flag}.svg" alt="${t.label}" />`
+        : `<span class="mode-icon material-symbols-outlined">${t.icon || 'public'}</span>`;
+    return `<button class="mode-btn" ${attr}="${t.key}">${icon}` +
+        `<span class="mode-name">${t.label}</span>` +
+        `<span class="mode-desc">${t.desc || ''}</span></button>`;
+}
+
+function selectorBlockHtml(b, attr) {
+    if (b.html) return b.html;
+    if (b.sub) return `<p class="selector-sub">${b.sub}</p>`;
+    if (b.tiles) return `<div class="mode-buttons">` +
+        b.tiles.map(t => selectorTileHtml(t, attr)).join('') + `</div>`;
+    if (b.toggle) {
+        const t = b.toggle;
+        return `<div class="scope-toggle" role="group" aria-label="${t.label || 'Options'}">` +
+            (t.label ? `<span class="scope-toggle-label">${t.label}</span>` : '') +
+            t.options.map(o => `<button type="button" class="scope-btn` +
+                `${o.key === t.value ? ' active' : ''}" ${attr}="${o.key}">${o.label}</button>`).join('') +
+            `</div>` + (t.hint ? `<div class="place-setup-hint" ${attr}-hint>${t.hint}</div>` : '');
+    }
+    return '';
+}
+
+// `back` defaults to the landing grid; pass a function for a picker that came from another
+// picker, or false for a screen that offers its own way out.
+function renderSelector(o) {
     teardownActiveGame();
     document.getElementById('top-bar').style.display = 'none';
     document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Places I've Been</h2>
-        <p class="selector-sub">Fill in the map with everywhere you've been, then share it.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-places-region="world">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World</span>
-                <span class="mode-desc">Mark the countries you've been to</span>
-            </button>
-            <button class="mode-btn" data-places-region="us">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">USA</span>
-                <span class="mode-desc">Mark the US states you've been to</span>
-            </button>
-        </div>
-        <button id="back-from-places-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    modeSelector.querySelectorAll('[data-places-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => startPlacesMode(e.currentTarget.dataset.placesRegion));
+    const sel = document.getElementById('mode-selector');
+    sel.classList.remove('hidden');
+    const blocks = (o.blocks || []).filter(Boolean);
+    const attrOf = i => `data-sel${i}`;
+    sel.innerHTML = `<h2>${o.title}</h2>` +
+        blocks.map((b, i) => selectorBlockHtml(b, attrOf(i))).join('') +
+        (o.back === false ? ''
+            : `<button id="selector-back-btn" class="btn secondary" style="margin-top: 20px;">Back</button>`);
+    blocks.forEach((b, i) => {
+        const attr = attrOf(i);
+        const handler = b.on || (b.toggle && b.toggle.on);
+        if (!handler) return;
+        sel.querySelectorAll(`[${attr}]:not([${attr}-hint])`).forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (b.toggle) sel.querySelectorAll(`[${attr}]:not([${attr}-hint])`)
+                    .forEach(x => x.classList.toggle('active', x === btn));
+                handler(btn.getAttribute(attr), btn, sel.querySelector(`[${attr}-hint]`));
+            });
+        });
     });
-    document.getElementById('back-from-places-btn').addEventListener('click', resetModeSelector);
+    const back = document.getElementById('selector-back-btn');
+    if (back) back.addEventListener('click', typeof o.back === 'function' ? o.back : resetModeSelector);
+    return sel;
+}
+
+// Show the region picker (World / USA) for Places-been.
+function showPlacesModeSelector() {
+    renderSelector({
+        title: "Places I've Been",
+        blocks: [
+            { sub: 'Fill in the map with everywhere you’ve been, then share it.' },
+            { tiles: [
+                { key: 'world', icon: 'public', label: 'World', desc: 'Mark the countries you’ve been to' },
+                { key: 'us', flag: 'us', label: 'USA', desc: 'Mark the US states you’ve been to' }
+              ], on: startPlacesMode }
+        ]
+    });
 }
 
 // Show country popup with stats and flag
@@ -5930,23 +6718,88 @@ let shapeDescriptorCache = null;
 // framing core, so an offshore speck can't report South Africa as a tall, mostly-empty box.
 function computeShapeDescriptor(feature) {
     const f = shapeFramingCore(feature);
-    const area = d3.geoArea(f); // steradians (spherical area, 0..4π)
-    const [[w, s], [e, n]] = d3.geoBounds(f);
-    let lonSpan = e - w;
-    if (lonSpan < 0) lonSpan += 360; // antimeridian wrap
-    const midLat = (s + n) / 2;
+    const river = isRiverFeature(feature);
+    // A river has no area at all, so both size and compactness need a different measure — and
+    // there is a natural one for each. SIZE is its length squared, which is in the same units as
+    // an area and so puts a long river and a large lake on one scale. COMPACTNESS becomes
+    // STRAIGHTNESS: how much of its own length the river actually gets away from where it
+    // started, which is a real property of a river's shape and lands in the same 0..1 range the
+    // area version does. Neither the descriptor's callers nor its distance metric change.
+    const len = river ? d3.geoLength(f.geometry || f) : 0;
+    const area = river ? len * len : d3.geoArea(f);       // steradians (spherical area, 0..4π)
+    const bb = geoBox(f) || { s: 0, n: 0, lonSpan: 0, midLat: 0 };
+    const { s, n, lonSpan, midLat } = bb;
     const width = lonSpan * Math.cos(midLat * Math.PI / 180); // physical width (deg-equiv)
     const height = Math.max(n - s, 1e-3);
     const aspect = width / height;                            // >1 wide, <1 tall
     // Spherical bounding-box area, for a size-independent compactness ratio.
     const bboxArea = Math.abs((lonSpan * Math.PI / 180) *
         (Math.sin(n * Math.PI / 180) - Math.sin(s * Math.PI / 180)));
-    const compactness = bboxArea > 0 ? area / bboxArea : 0;   // fraction of bbox filled
+    const compactness = river
+        ? Math.min(1, Math.hypot(width, height) * Math.PI / 180 / Math.max(len, 1e-6))
+        : (bboxArea > 0 ? area / bboxArea : 0);               // fraction of bbox filled
     return { logArea: Math.log(Math.max(area, 1e-6)), logAspect: Math.log(Math.max(aspect, 1e-3)), compactness };
 }
 
 // name -> shape descriptor, from the largest feature per name (some names split
 // into micro-polygons at high detail; the biggest carries the recognisable shape).
+// ---- framing the projection on something ----------------------------------------------
+// One or many, features or country names, each replaced by its framing core and wrapped as a
+// collection. The core is taken per FEATURE and never over the collection: a set is only as
+// tight as the remotest islet in ANY of them, and these sets are whole neighbourhoods —
+// dividing Germany hands land to the Netherlands, whose feature reaches Aruba.
+function coreCollection(items) {
+    const list = (Array.isArray(items) ? items : [items])
+        .map(x => typeof x === 'string' ? sbFeature(x) : x)
+        .filter(Boolean)
+        .map(f => {
+            const core = shapeFramingCore(f);
+            if (!core) return f;
+            return core.type === 'Feature' ? core
+                 : { type: 'Feature', properties: {}, geometry: core };
+        });
+    return list.length ? { type: 'FeatureCollection', features: list } : null;
+}
+
+// Fit the projection to something. Seven places did this and each carried its own copy of the
+// same four decisions:
+//
+//   pad       a fraction of the SMALLER side, so a margin is the same margin whichever way
+//             round the board is
+//   core      run the target through coreCollection first
+//   recentre  turn the world under the projection BEFORE fitting, because fitExtent only
+//             scales and translates. 'lon' brings the target's own meridian to the middle,
+//             which is what keeps an antimeridian straddler from fitting to a box spanning the
+//             whole world; 'globe' brings it round to the near side of an orthographic, where
+//             it can appear at all.
+//
+// It returns a boolean and swallows its own failures, because the honest answer to a fit that
+// will not go is to keep the framing you had — which is what every one of the seven already did
+// in its own catch block.
+function fitTo(target, opts) {
+    const o = opts || {};
+    const proj = o.projection || projection;
+    const obj = o.core ? coreCollection(target) : target;
+    if (!proj || !proj.fitExtent || !obj) return false;
+    const w = o.width || width || 800, h = o.height || height || 600;
+    const pad = Math.min(w, h) * (o.pad == null ? 0.08 : o.pad);
+    try {
+        if (o.recentre && typeof proj.rotate === 'function') {
+            const c = d3.geoCentroid(obj);
+            if (c && isFinite(c[0])) {
+                proj.rotate(o.recentre === 'globe'
+                    ? [-c[0], gammaLocked ? 0 : -c[1], 0]
+                    : [-c[0], 0]);
+                // Any rotation set outside the drag handler has to be written back here, or the
+                // next drag snaps to the pre-fit value.
+                if (o.recentre === 'globe') r_unconstrained = proj.rotate().slice();
+            }
+        }
+        proj.fitExtent([[pad, pad], [w - pad, h - pad]], obj);
+    } catch (_) { return false; }
+    return true;
+}
+
 function buildShapeDescriptorCache() {
     const byName = new Map();
     (gameState.countries || []).forEach(f => {
@@ -6004,7 +6857,7 @@ function generateShapeIdOptions(correctAnswer) {
     // Top up to 4 with random quiz items if similarity yielded too few.
     let guard = 0;
     while (options.length < 4 && options.length < list.length && guard++ < 500) {
-        const r = list[Math.floor(Math.random() * list.length)];
+        const r = pickOne(list);
         if (!options.includes(r)) options.push(r);
     }
     return shuffleArray(options);
@@ -6015,20 +6868,28 @@ function generateShapeIdOptions(correctAnswer) {
 // Three ways to show one silhouette, from the outline plainly to a scrap of it at an angle.
 // Nothing about the QUESTION changes — same countries, same shape-similar distractors — only
 // how much of the shape you are given to work from.
+// "Turned" — the whole outline at an unknown angle — is gone from here. It was the same
+// question Upside Down asks, and asking it twice on one screen only split the answer between
+// two tiles; the arbitrary angles now live in that quiz's transform vocabulary instead.
 const SHAPE_ID_TIERS = {
-    outline: { label: 'Outline', desc: 'The country, upright and whole' },
-    turned:  { label: 'Turned',  desc: 'The whole outline, at an unknown angle', rotate: true },
+    outline: { label: 'Outline', desc: 'The shape, upright and whole' },
     // Starts as a handful of corners and grows back into the real coastline while you watch.
     // Answer whenever you are sure; the score is how little of it you needed.
-    unfold:  { label: 'Coming Into Focus', desc: 'A few corners, sharpening to the true coastline — name it as early as you dare', unfold: true }
+    unfold:  { label: 'Coming Into Focus', desc: 'A few corners, sharpening to the true outline — name it as early as you dare', unfold: true }
 };
 let shapeIdTier = 'outline';
 
-// Which geography the silhouettes are cut from. Every tier works over either — a state is as
-// hard to name from its outline as a country is, and rather harder for the rectangular ones.
+// Which geography the silhouettes are cut from. Every tier works over any of them — a state is
+// as hard to name from its outline as a country is, and rather harder for the rectangular ones,
+// and a lake or a river is a shape like any other.
 const SHAPE_ID_REGIONS = [
-    { key: 'countries', label: 'World',     icon: 'public',  desc: 'Every country' },
-    { key: 'us-states', label: 'US States', icon: 'flag',    desc: 'All fifty' }
+    { key: 'countries',      label: 'World',   desc: 'Every country' },
+    { key: 'us-states',      label: 'USA',     desc: 'All fifty states' },
+    { key: 'indian-states',  label: 'India',   desc: 'States and union territories' },
+    { key: 'german-states',  label: 'Germany', desc: 'The sixteen Bundesländer' },
+    { key: 'uk-states',      label: 'England', desc: 'Ceremonial counties' },
+    { key: 'mexican-states', label: 'Mexico',  desc: 'The thirty-two states' },
+    { key: 'water',          label: 'Water',   desc: 'Lakes and major rivers' }
 ];
 let shapeIdRegion = 'countries';
 
@@ -6038,27 +6899,41 @@ let shapeIdRegion = 'countries';
 // live in insets at their own scales), and Shape ID wants a plain Mercator fitted to whatever
 // it is showing; and the round count is capped at the list length, since the fifty states are
 // not the two hundred countries.
+// Water arrives over the network, and its quizList IS the fetched pool — so a mode played over
+// it cannot be configured until the pool has landed. Everything else starts straight away.
+function withWaterRegion(region, cb) {
+    if (region !== 'water') { cb(); return; }
+    if (waterFeatures()) { cb(); return; }
+    const t0 = Date.now();
+    const tick = () => {
+        if (waterFeatures()) { cb(); return; }
+        if (Date.now() - t0 > 15000) { cb(); return; }   // give up and let the mode say so
+        setTimeout(tick, 120);
+    };
+    setTimeout(tick, 120);
+}
+
 function startShapeIdMode(region, tier) {
-    const m = QUIZ_MODES['country-shape-id'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
-    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
-    shapeIdTier = tier || shapeIdTier;
-    m.shapeIdRegion = shapeIdRegion;
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
-    m.useGlobe = false;
-    m.useAlbersUsa = false;
-    // The world silhouettes are judged on the outline, so they force 10m through
-    // worldCountriesUrl(); every other region ships one resolution and uses its own URL.
-    m.mapUrl = base.mapObject === 'countries'
-        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json'
-        : base.mapUrl;
-    m.totalQuestions = Math.min(10, base.quizList.length);
-    shapeDescriptorCache = null;   // descriptors are keyed by name, and the pool just changed
-    startGameWithMode('country-shape-id');
+    withWaterRegion(region, () => {
+        const m = QUIZ_MODES['country-shape-id'];
+        const base = borrowRegion(m, region);
+        shapeIdRegion = (QUIZ_MODES[region] || region === 'water') ? region : 'countries';
+        shapeIdTier = tier || shapeIdTier;
+        m.shapeIdRegion = shapeIdRegion;
+        m.useGlobe = false;
+        m.useAlbersUsa = false;
+        // The world silhouettes are judged on the outline, so they force 10m through
+        // worldCountriesUrl(); every other region ships one resolution and uses its own URL.
+        // Water has no URL at all — it is assembled in JS (see waterFeatures).
+        if (!base.waterPool) {
+            m.mapUrl = base.mapObject === 'countries'
+                ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json'
+                : base.mapUrl;
+        }
+        m.totalQuestions = Math.min(10, base.quizList.length);
+        shapeDescriptorCache = null;   // descriptors are keyed by name, and the pool just changed
+        startGameWithMode('country-shape-id');
+    });
 }
 
 // The two sandbox quizzes that live under Name the Shape take a region the same way, and by the
@@ -6072,23 +6947,27 @@ function startShapeIdMode(region, tier) {
 function startShapeQuizMode(key, region) {
     const m = QUIZ_MODES[key];
     if (!m) return;
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
-    shapeIdRegion = QUIZ_MODES[region] ? region : 'countries';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapObject = base.mapObject;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
-    m.useAlbersUsa = false;
-    // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
-    // every other region ships one resolution and uses its own URL.
-    m.mapUrl = base.mapObject === 'countries'
-        ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
-        : base.mapUrl;
-    m.totalQuestions = Math.min(10, base.quizList.length);
-    shapeDescriptorCache = null;
-    sbWholeCache.clear();
-    startGameWithMode(key);
+    withWaterRegion(region, () => {
+        const base = borrowRegion(m, region);
+        shapeIdRegion = (QUIZ_MODES[region] || region === 'water') ? region : 'countries';
+        m.useAlbersUsa = false;
+        // NOT the region's. Every sandbox round is declared `useGlobe: true` and reaches its flat
+        // board through `sbFlat` instead, so borrowing `false` from the state maps would send it
+        // down the regional-flat-map path rather than the sandbox's own. This is the one key the
+        // borrow must not carry here.
+        m.useGlobe = true;
+        // World rounds keep going through worldCountriesUrl() (which `sbHiRes` pushes to 10m);
+        // every other region ships one resolution and uses its own URL. Water has none.
+        if (!base.waterPool) {
+            m.mapUrl = base.mapObject === 'countries'
+                ? 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+                : base.mapUrl;
+        }
+        m.totalQuestions = Math.min(10, base.quizList.length);
+        shapeDescriptorCache = null;
+        sbWholeCache.clear();
+        startGameWithMode(key);
+    });
 }
 
 function renderCountryShapeIdQuestion() {
@@ -6100,8 +6979,6 @@ function renderCountryShapeIdQuestion() {
     const what = (QUIZ_MODES['country-shape-id'] || {}).itemLabel || 'country';
     document.getElementById('question-text').innerHTML = tier.unfold
         ? `Name it as soon as you can.`
-        : tier.rotate
-        ? `Which ${what} is this? <span style="opacity:.7;font-size:.85em">(turned to an unknown angle)</span>`
         : `Which ${what} is highlighted?`;
     const flagDisplay = document.getElementById('flag-display');
     if (flagDisplay) flagDisplay.style.display = 'none';
@@ -6117,13 +6994,7 @@ function renderCountryShapeIdQuestion() {
     // South Africa, the Galápagos for Ecuador) sets the bounds and the country itself
     // shrinks to a smudge. The full geometry is still what's drawn below; excluded parts
     // just land outside the viewport.
-    if (target && projection && projection.fitExtent) {
-        const core = shapeFramingCore(target);
-        const c = d3.geoCentroid(core);
-        if (c && isFinite(c[0])) projection.rotate([-c[0], 0]);
-        const pad = Math.min(width, height) * 0.12;
-        projection.fitExtent([[pad, pad], [width - pad, height - pad]], core);
-    }
+    if (target) fitTo(target, { core: true, pad: 0.12, recentre: 'lon' });
 
     // Draw ONLY the target as a single borderless silhouette. Rendering the whole
     // 10m world (~250k vertices) just to show one country is far too heavy, so the
@@ -6131,40 +7002,16 @@ function renderCountryShapeIdQuestion() {
     countriesGroup.selectAll('path').remove();
     g.selectAll('g.shape-id-layer').remove();
     if (target) {
-        // The harder tiers wrap the silhouette in a group that is rotated about the viewport
-        // centre. Rotating in SCREEN space rather than re-projecting is what keeps the framing
-        // identical across tiers — re-projecting would refit the country to its new bounding
-        // box, so the amount of the viewport it fills would itself become a clue.
-        let host = countriesGroup;
         // The unfolding tier draws itself, frame by frame, and owns the path for the round.
         // It must NOT return out of the whole function — the answer list is still to come.
         if (tier.unfold) startShapeUnfold(target);
-        else if (tier.rotate) {
-            const ang = Math.round(Math.random() * 360);
-            // Shrink far enough that the TURNED shape still fits. The projection was fitted to
-            // the country upright, so a tall one spun a quarter turn needs the viewport's width
-            // for its height and runs off the edge — Tonga came out 1,064 px tall in a 600 px
-            // box. The room a w x h box needs at angle a is (w|cos|+h|sin|) by (w|sin|+h|cos|).
-            let f = 1;
-            try {
-                const b = path.bounds(shapeFramingCore(target) || target);
-                const w0 = b[1][0] - b[0][0], h0 = b[1][1] - b[0][1];
-                const r = ang * DEG, ca = Math.abs(Math.cos(r)), sa = Math.abs(Math.sin(r));
-                const pad2 = Math.min(width, height) * 0.12;
-                f = Math.min(1, (width - 2 * pad2) / (w0 * ca + h0 * sa),
-                                (height - 2 * pad2) / (w0 * sa + h0 * ca));
-            } catch (_) { f = 1; }
-            gameState.shapeIdAngle = ang;
-            gameState.shapeIdFit = f;
-            host = g.append('g').attr('class', 'shape-id-layer')
-                .attr('transform', `rotate(${ang}, ${width / 2}, ${height / 2}) ` +
-                                   `translate(${width / 2},${height / 2}) scale(${f}) translate(${-width / 2},${-height / 2})`);
-        }
-        if (!tier.unfold) {
+        else {
             gameState.shapeIdTarget = target;
-            host.append('path')
+            // A river is a LINE: it has no inside, so it is stroked rather than filled. Same
+            // path, same fit, same class for everything else about it.
+            countriesGroup.append('path')
                 .datum(target)
-                .attr('class', 'country shape-target')
+                .attr('class', 'country shape-target' + (isRiverFeature(target) ? ' shape-line' : ''))
                 .attr('d', path(target));
         }
     }
@@ -6235,8 +7082,24 @@ let shapeUnfold = null;
 function startShapeUnfold(target) {
     stopShapeUnfold();
     gameState.shapeIdTarget = target;
-    const R2 = 6371 * 6371;
-    let rings = featureParts(target)
+    const R2 = EARTH_R2_KM2;
+    // A river is a LINE, and Visvalingam–Whyatt on an open polyline is the original case rather
+    // than a special one — the difference is only that the result is stroked instead of closed,
+    // and that the two ends genuinely cannot be dropped (see the endpoint note below, which
+    // exists because a RING's ends are an artefact and a river's are the river).
+    const line = isRiverFeature(target);
+    let rings;
+    if (line) {
+        const geom = target.geometry || target;
+        const parts = geom.type === 'LineString' ? [geom.coordinates] : (geom.coordinates || []);
+        rings = parts.filter(r => r && r.length > 2).map(r => ({ ring: r, km2: 0 }));
+        if (!rings.length) {
+            countriesGroup.append('path').datum(target)
+                .attr('class', 'country shape-target shape-line').attr('d', path(target));
+            return;
+        }
+    } else {
+    rings = featureParts(target)
         .map(poly => poly[0])
         .filter(r => r && r.length > 4)
         .map(r => ({ ring: r, km2: d3.geoArea({ type: 'Polygon', coordinates: [r] }) * R2 }))
@@ -6252,6 +7115,7 @@ function startShapeUnfold(target) {
         all.sort((x, y) => y.length - x.length);
         rings = [{ ring: all[0], km2: 0 }];
     }
+    }
 
     // One global ordering of every point in every kept ring, by VW weight.
     //
@@ -6263,6 +7127,10 @@ function startShapeUnfold(target) {
     // own heaviest finite weight instead: important within their ring, ordinary globally.
     const prepared = rings.map(({ ring }) => {
         const w = vwWeights(ring);
+        // On a LINE the Infinity stands: the mouth and the source are where the river actually
+        // ends, so they are the two points that must always be there. On a ring they are an
+        // artefact of where the atlas started the arc and are demoted.
+        if (line) return { ring, w: Array.from(w) };
         let maxFinite = 0;
         for (let i = 0; i < w.length; i++) if (isFinite(w[i]) && w[i] > maxFinite) maxFinite = w[i];
         const fixed = Array.from(w, v => (isFinite(v) ? v : (maxFinite || 1)));
@@ -6270,12 +7138,29 @@ function startShapeUnfold(target) {
     });
     const order = [];
     prepared.forEach((pr, ri) => {
-        for (let i = 0; i < pr.ring.length - 1; i++) order.push({ ri, i, w: pr.w[i] });
+        // A ring repeats its first point as its last, so the closing copy is skipped; a line
+        // does not, so its final point is a real one and has to be offered.
+        const n = line ? pr.ring.length : pr.ring.length - 1;
+        for (let i = 0; i < n; i++) order.push({ ri, i, w: pr.w[i] });
     });
     order.sort((x, y) => y.w - x.w);
 
-    const layer = countriesGroup.append('path').attr('class', 'country shape-target shape-unfold');
-    shapeUnfold = { target, prepared, order, total: order.length, layer,
+    const layer = countriesGroup.append('path')
+        .attr('class', 'country shape-target shape-unfold' + (line ? ' shape-line' : ''));
+    // ONE POINT PER PRESS on the state maps. The growth rule is right for countries and wrong
+    // for states, and the reason is the shapes: a country's outline runs to hundreds or
+    // thousands of points, so equal absolute steps stop meaning anything and a ratio is the only
+    // thing that gets you to full detail in a sane number of presses. A state's runs to a
+    // fraction of that, and at that size every point is a visible corner much further up -- so
+    // the ratio was skipping past the whole interesting range in three or four presses.
+    // Measured at the 10m detail this mode forces: the states' median outline is 166 points
+    // against 899 for the countries pool, a factor of 5.4, and the smallest state is 34 points
+    // against a smallest country of 8.
+    // Water goes one at a time for the same reason the states do: a lake or a river is a short
+    // outline, and the ratio skips the whole interesting range in three presses.
+    const oneAtATime = shapeIdRegion === 'water' ||
+        !!(QUIZ_MODES[shapeIdRegion] && QUIZ_MODES[shapeIdRegion].mapObject !== 'countries');
+    shapeUnfold = { target, prepared, order, total: order.length, layer, oneAtATime, line,
                     points: SHAPE_UNFOLD_START, gap: 4 };
     drawShapeUnfold(SHAPE_UNFOLD_START);
 }
@@ -6286,8 +7171,10 @@ function startShapeUnfold(target) {
 function stepShapeUnfold() {
     if (!shapeUnfold || gameState.questionType !== 'country-shape-id') return;
     if (gameState.answeredCorrectly || shapeUnfold.points >= shapeUnfold.total) return;
-    const next = Math.max(shapeUnfold.points + shapeUnfold.gap,
-                          Math.round(shapeUnfold.points * SHAPE_UNFOLD_RATIO));
+    const next = shapeUnfold.oneAtATime
+        ? shapeUnfold.points + 1
+        : Math.max(shapeUnfold.points + shapeUnfold.gap,
+                   Math.round(shapeUnfold.points * SHAPE_UNFOLD_RATIO));
     shapeUnfold.gap++;
     shapeUnfold.points = Math.min(shapeUnfold.total, next);
     drawShapeUnfold(shapeUnfold.points);
@@ -6315,25 +7202,27 @@ function drawShapeUnfold(n) {
     }
     const polys = [];
     keep.forEach((idxs, ri) => {
-        // A ring needs three distinct points to enclose anything. Below that it has not earned
-        // its place and simply is not drawn — which is what makes the islands arrive one at a
-        // time rather than all at once as slivers.
-        if (idxs.length < 3) return;
+        // A ring needs three distinct points to enclose anything; a LINE needs only two to be a
+        // line. Below that it has not earned its place and simply is not drawn — which is what
+        // makes the islands arrive one at a time rather than all at once as slivers.
+        if (idxs.length < (shapeUnfold.line ? 2 : 3)) return;
         idxs.sort((x, y) => x - y);
         const ring = shapeUnfold.prepared[ri].ring;
         const pts = idxs.map(i => ring[i]);
-        pts.push(pts[0]);
-        polys.push([pts]);
+        if (!shapeUnfold.line) pts.push(pts[0]);   // a ring closes; a river does not
+        polys.push(shapeUnfold.line ? pts : [pts]);
     });
     if (!polys.length) {
         const ring = shapeUnfold.prepared[0].ring;
         const step = Math.max(1, Math.floor(ring.length / 4));
         const pts = [];
         for (let i = 0; i < ring.length && pts.length < 3; i += step) pts.push(ring[i]);
-        pts.push(pts[0]);
-        polys.push([pts]);
+        if (!shapeUnfold.line) pts.push(pts[0]);
+        polys.push(shapeUnfold.line ? pts : [pts]);
     }
-    shapeUnfold.layer.attr('d', path({ type: 'MultiPolygon', coordinates: polys }) || '');
+    shapeUnfold.layer.attr('d', path(shapeUnfold.line
+        ? { type: 'MultiLineString', coordinates: polys }
+        : { type: 'MultiPolygon', coordinates: polys }) || '');
 }
 
 function stopShapeUnfold() {
@@ -6361,18 +7250,8 @@ function revealShapeIdTruth() {
         }
         return;
     }
-    if (!tier || !tier.rotate || !g || !gameState.shapeIdTarget) return;
-    const layer = g.select('g.shape-id-layer');
-    if (layer.empty()) return;
-    layer.select('path.shape-target').attr('d', path(gameState.shapeIdTarget));
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const dur = reduce ? 0 : 700;
-    const end = `rotate(0, ${width / 2}, ${height / 2}) ` +
-                `translate(${width / 2},${height / 2}) scale(1) translate(${-width / 2},${-height / 2})`;
-    if (dur) layer.transition().duration(dur).ease(d3.easeCubicInOut).attr('transform', end);
-    // d3 transitions are rAF-driven and a backgrounded tab never fires it, so the finished
-    // state is set unconditionally — the same backstop the puzzle's piece `settle` documents.
-    setTimeout(() => { if (layer.node() && layer.node().isConnected) { layer.interrupt(); layer.attr('transform', end); } }, dur + 60);
+    // Nothing else to reveal: the Outline tier already shows the shape as it really is, and
+    // the "Turned" tier that needed un-turning is gone — its question is Upside Down's now.
 }
 
 // One tile per tier, in the same shape as the puzzle's difficulty picker, with the geography
@@ -6382,70 +7261,138 @@ function revealShapeIdTruth() {
 // set of them into position. They were three separate landing tiles asking the same kind of
 // question, and the puzzle in particular reads as its own genre when it is really "do you know
 // this shape" with the answer given by where you put it.
+// A quiz key rendered as a tile, straight off the registry.
+const sbTileFor = k => ({ key: k, icon: SB_QUIZZES[k].icon,
+                          label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc });
+
+// ---- the geography strip ---------------------------------------------------------------
+// A screen about outlines should pick its geography by outline. The names are the same six
+// words on every picker in the app and they say nothing; the shapes say everything, and they
+// are the very thing the modes behind them are about.
+//
+// They are CUT FROM THE ATLAS rather than hand-authored, so they are the real countries at the
+// resolution the app already has cached, and a region added later needs no path data drawn for
+// it. Water is the exception — there is no one lake that means "water", so it gets a drawn
+// glyph of a lake with a river running out of it.
+const REGION_GLYPH_BOX = 40;
+const REGION_GLYPH_OF = {
+    'us-states': 'United States of America', 'indian-states': 'India',
+    'german-states': 'Germany', 'uk-states': 'United Kingdom', 'mexican-states': 'Mexico'
+};
+const WORLD_TOPO_110M = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+
+// A lake with a river leaving it. Two paths, drawn rather than measured, because no real body
+// of water reads as "water in general".
+const WATER_GLYPH =
+    '<path class="rg-fill" d="M7 13c2-4 7-5 11-3 3 1.6 6 1 8-1 2.4-2.4 6-1.6 6 1.6 0 3.2-2 6-6 7' +
+    '-4.4 1.2-8 0-11-1.6-3-1.6-6-1.2-8 0.4-1.6 1.2-2.4-1.2 0-3.4z"/>' +
+    '<path class="rg-line" d="M4 34c4-1 6-4 10-4.6 4-0.6 6 2 10 1.4 3.4-0.6 5-3 8-3.4"/>';
+
+// A shape fitted to the glyph box. `d3.geoIdentity().reflectY` is the plain planar fit — the
+// features arrive already projected by the Mercator, so there is nothing spherical left to do.
+function regionGlyphMarkup(key, topo) {
+    const B = REGION_GLYPH_BOX;
+    if (key === 'water') return WATER_GLYPH;
+    if (!topo) return '';
+    let feats;
+    try { feats = topojson.feature(topo, topo.objects.countries).features; }
+    catch (_) { return ''; }
+    // The world is the whole earth seen from space, which is the one honest icon for "world"
+    // and is the same machinery pointed at every feature at once.
+    if (key === 'countries') {
+        const proj = d3.geoOrthographic().rotate([-10, -15]).clipAngle(90)
+            .fitExtent([[2, 2], [B - 2, B - 2]], { type: 'Sphere' });
+        const p = d3.geoPath(proj);
+        const land = { type: 'FeatureCollection', features: feats };
+        return `<circle class="rg-globe" cx="${B / 2}" cy="${B / 2}" r="${B / 2 - 2}"/>` +
+               `<path class="rg-fill" d="${p(land) || ''}"/>`;
+    }
+    const want = REGION_GLYPH_OF[key];
+    if (!want) return '';
+    const f = feats.find(x => namesMatch(getCountryName(x.id), want) ||
+                              namesMatch((x.properties || {}).name, want));
+    if (!f) return '';
+    // The framing core, for the same reason every other fit here uses it: the United States
+    // reaches Guam and the box would be mostly Pacific.
+    const core = coreCollection(f);
+    const proj = d3.geoMercator().fitExtent([[3, 3], [B - 3, B - 3]], core || f);
+    return `<path class="rg-fill" d="${d3.geoPath(proj)(f) || ''}"/>`;
+}
+
+function regionGlyphHtml(r, active) {
+    return `<button type="button" class="region-glyph${active ? ' active' : ''}" ` +
+        `data-region="${r.key}" title="${r.desc}" aria-pressed="${active}">` +
+        `<svg viewBox="0 0 ${REGION_GLYPH_BOX} ${REGION_GLYPH_BOX}" aria-hidden="true" ` +
+        `data-glyph="${r.key}"></svg><span>${r.label}</span></button>`;
+}
+
+// Fill the strip's svgs once the atlas is in hand. It is cached after the first visit, so this
+// is instant on every later one; before then the buttons are their labels, which is what they
+// used to be anyway.
+function paintRegionGlyphs(host) {
+    fetchWorldTopo(WORLD_TOPO_110M).then(topo => {
+        (host || document).querySelectorAll('svg[data-glyph]').forEach(svgEl => {
+            if (svgEl.childElementCount) return;
+            svgEl.innerHTML = regionGlyphMarkup(svgEl.dataset.glyph, topo);
+        });
+    }).catch(() => { /* labels alone still work */ });
+}
+
+// Which modes make sense over which geography. A lake has no capital and no neighbours, the
+// Mercator's lie is a lie about the WORLD, and there is no jigsaw of rivers — so rather than
+// offering a tile that fails, the screen shows only what the current pick can actually play.
+const SHAPE_MODE_REGIONS = {
+    'state-puzzle':   k => k !== 'water',
+    'draw-border':    k => k !== 'water',
+    'sb-lake':        k => k === 'water' || k === 'countries',
+    'sb-mercator-lie': k => k === 'countries'
+};
+const shapeModeFits = (key, region) =>
+    !SHAPE_MODE_REGIONS[key] || SHAPE_MODE_REGIONS[key](region);
+
 function showShapeIdSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const sel = document.getElementById('mode-selector');
-    sel.classList.remove('hidden');
-    sel.innerHTML = `
-        <h2>Shapes</h2>
-        <p class="selector-sub">Name an outline, trace one, or drag a set of them into place.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-shapemode="state-puzzle">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">Map Puzzle</span>
-                <span class="mode-desc">Drag every piece into place — world, US, India, Germany, England or Mexico</span>
-            </button>
-            <button class="mode-btn" data-shapemode="draw-border">
-                <span class="mode-icon material-symbols-outlined">gesture</span>
-                <span class="mode-name">Draw the Border</span>
-                <span class="mode-desc">The country is cut out of the map — trace where it goes</span>
-            </button>
-        </div>
-        <p class="selector-sub">Or one silhouette, no map around it — how much of it do you want?</p>
-        <div class="scope-toggle" role="group" aria-label="Geography">
-            <span class="scope-toggle-label">From:</span>
-            ${SHAPE_ID_REGIONS.map(r => `<button type="button" class="scope-btn` +
-                `${r.key === shapeIdRegion ? ' active' : ''}" data-shaperegion="${r.key}">${r.label}</button>`).join('')}
-        </div>
-        <div class="mode-buttons">
-            ${Object.keys(SHAPE_ID_TIERS).map(k => `
-            <button class="mode-btn" data-shapetier="${k}">
-                <span class="mode-icon material-symbols-outlined">pentagon</span>
-                <span class="mode-name">${SHAPE_ID_TIERS[k].label}</span>
-                <span class="mode-desc">${SHAPE_ID_TIERS[k].desc}</span>
-            </button>`).join('')}
-        </div>
-        <p class="selector-sub">Or ask a different question about the same silhouettes.</p>
-        <div class="mode-buttons">
-            ${SB_IN_SHAPE_ID.map(k => `
-            <button class="mode-btn" data-shapequiz="${k}">
-                <span class="mode-icon material-symbols-outlined">${SB_QUIZZES[k].icon}</span>
-                <span class="mode-name">${SB_QUIZZES[k].label}</span>
-                <span class="mode-desc">${SB_QUIZZES[k].desc}</span>
-            </button>`).join('')}
-        </div>`;
-    sel.querySelectorAll('[data-shaperegion]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            shapeIdRegion = btn.dataset.shaperegion;
-            sel.querySelectorAll('[data-shaperegion]').forEach(b =>
-                b.classList.toggle('active', b === btn));
-        });
+    const region = shapeIdRegion;
+    const fits = k => shapeModeFits(k, region);
+    // The two that ask for a geography of their own rather than taking this screen's, plus the
+    // world-only quizzes. Filtered, not greyed: a tile that cannot be played is not a choice.
+    const others = [
+        { key: 'state-puzzle', icon: 'extension', label: 'Map Puzzle',
+          desc: 'Drag every piece into place' },
+        { key: 'draw-border', icon: 'gesture', label: 'Draw the Border',
+          desc: 'The shape is cut out of the map — trace where it goes' }
+    ].concat(SB_IN_SHAPES.map(sbTileFor)).filter(t => fits(t.key));
+
+    const sel = renderSelector({
+        title: 'Shapes',
+        back: false,
+        blocks: [
+            { sub: 'Everything whose question is an outline. Pick what the outlines are cut from.' },
+            { html: `<div class="region-strip" role="group" aria-label="Geography">` +
+                    SHAPE_ID_REGIONS.map(r => regionGlyphHtml(r, r.key === region)).join('') +
+                    `</div>` },
+            { sub: 'One silhouette, no map around it — how much of it do you want?' },
+            { tiles: Object.keys(SHAPE_ID_TIERS).map(k => ({
+                        key: k, icon: 'pentagon',
+                        label: SHAPE_ID_TIERS[k].label, desc: SHAPE_ID_TIERS[k].desc })),
+              on: k => startShapeIdMode(region, k) },
+            { sub: 'Or ask a different question about the same silhouettes.' },
+            { tiles: SB_IN_SHAPE_ID.map(sbTileFor).filter(t => fits(t.key)),
+              on: k => startShapeQuizMode(k, region) },
+            others.length ? { sub: 'Or a whole set of them at once.' } : null,
+            others.length ? { tiles: others,
+              on: k => k === 'state-puzzle' ? showStatePuzzleSelector()
+                     : k === 'draw-border' ? showDrawBorderSelector()
+                     : startGameWithMode(k) } : null
+        ]
     });
-    sel.querySelectorAll('[data-shapetier]').forEach(btn => {
-        btn.addEventListener('click', () => startShapeIdMode(shapeIdRegion, btn.dataset.shapetier));
-    });
-    sel.querySelectorAll('[data-shapequiz]').forEach(btn => {
-        btn.addEventListener('click', () => startShapeQuizMode(btn.dataset.shapequiz, shapeIdRegion));
-    });
-    // The two that ask for a region of their own rather than taking this screen's.
-    sel.querySelectorAll('[data-shapemode]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            if (btn.dataset.shapemode === 'state-puzzle') showStatePuzzleSelector();
-            else showDrawBorderSelector();
-        });
-    });
+
+    // The strip is its own control rather than a renderSelector block, because picking a region
+    // changes WHICH TILES the screen has — so it re-opens the screen rather than toggling a class.
+    sel.querySelectorAll('[data-region]').forEach(b => b.addEventListener('click', () => {
+        shapeIdRegion = b.dataset.region;
+        showShapeIdSelector();
+    }));
+    paintRegionGlyphs(sel);
 }
 
 // ==================== SKYLINE ID MODE ====================
@@ -6559,10 +7506,10 @@ async function resolveSkylineTarget() {
         const pool = Object.keys(data).filter(
             c => !gameState.usedCountries.has(c) && !skylineNoPhoto.has(c));
         if (!pool.length) return null;
-        const city = pool[Math.floor(Math.random() * pool.length)];
+        const city = pickOne(pool);
         gameState.usedCountries.add(city);
         const list = await fetchSkylineCandidates(city).catch(() => []);
-        if (list.length) return { city: city, photo: list[Math.floor(Math.random() * list.length)] };
+        if (list.length) return { city: city, photo: pickOne(list) };
         skylineNoPhoto.add(city);
     }
     return null;
@@ -6978,16 +7925,7 @@ function drawOrderArrows(container, correctIndexOf) {
 // Memoised against the feature list itself, so anything that replaces that list (a detail
 // change, Who's Missing's surgery) invalidates it for free. At 10m a centroid is a walk over
 // tens of thousands of vertices, and the sandbox draw loops ask for hundreds of them per round.
-let sbCentroidCache = { src: null, map: new Map() };
-function getCountryCentroid(countryName) {
-    if (sbCentroidCache.src !== gameState.countries) {
-        sbCentroidCache = { src: gameState.countries, map: new Map() };
-    }
-    if (sbCentroidCache.map.has(countryName)) return sbCentroidCache.map.get(countryName);
-    const out = computeCountryCentroid(countryName);
-    sbCentroidCache.map.set(countryName, out);
-    return out;
-}
+const getCountryCentroid = memoByCountries(name => computeCountryCentroid(name));
 
 function computeCountryCentroid(countryName) {
     const country = gameState.countries && gameState.countries.find(c => c.properties.name === countryName);
@@ -7069,6 +8007,27 @@ let v0, r0, q0;
 let r_unconstrained = null;  // Track unconstrained rotation for quaternion continuity
 let gammaLocked = true;  // When true, gamma (tilt/roll) is locked to 0 (north-up). Default on so the globe stays upright.
 
+// The quaternion a drag starts from. `r_unconstrained` exists for continuity between drags and
+// is only ever a snapshot of the rotation the last one finished at — but it is module-level and
+// OUTLIVES THE GLOBE IT WAS TAKEN FROM. `setupGlobe` builds a fresh projection at [0, 0, 0], and
+// nothing resets the snapshot, so the first drag on the new globe is seeded from a rotation the
+// world is no longer in and the first pixel of movement teleports it there. Measured: a 6 px drag
+// in Free Explore, entered after spinning any other globe mode, jumped 86°.
+//
+// The invariant is that the snapshot describes the rotation the projection is ACTUALLY in, and
+// that is what is checked — on the quaternions, so a ±360° difference or a second Euler triple
+// for the same rotation still counts as agreement. Checking rather than resetting is what makes
+// this immune to the recurring trap the other way round: a caller that moves `projection.rotate`
+// and forgets the snapshot now falls back to the truth instead of dragging from a ghost.
+function dragBaseQuaternion(r0) {
+    if (r_unconstrained) {
+        const a = versor(r_unconstrained), b = versor(r0);
+        if (Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 0.999999)
+            return a;
+    }
+    return versor(r0);
+}
+
 function dragStart(event) {
     // Don't allow dragging if scrolling is locked
     if (gameState.scrollLocked) return;
@@ -7080,7 +8039,7 @@ function dragStart(event) {
     const p = d3.pointer(event, this);
     r0 = projection.rotate();
     v0 = versor.cartesian(projection.invert(p));
-    q0 = versor(r_unconstrained || r0);
+    q0 = dragBaseQuaternion(r0);
 }
 
 function dragging(event) {
@@ -7342,6 +8301,15 @@ function appendChallengeButton(feedback) {
 
 // Restart game
 function restartGame() {
+    // The three labs relabel this button "Exit" and then inherited the restart handler, so it
+    // said Exit and rebuilt the mode instead — the one thing it must not do, since these have no
+    // round to restart and no other way out.
+    const mc = QUIZ_MODES[gameState.mode];
+    if (mc && (mc.airoceanMode || mc.projectionLabMode || mc.framingSandboxMode)) {
+        teardownActiveGame();
+        goHome();
+        return;
+    }
     const currentMode = gameState.mode;
     const currentDataObj = gameState.currentDataObj;
     const currentQuizList = gameState.currentQuizList;
@@ -7399,6 +8367,18 @@ function goHome() {
     // Tear down the Places panel and return to a clean, mode-less URL.
     const placesPanel = document.getElementById('places-panel');
     if (placesPanel) placesPanel.remove();
+
+    // The lab panels are appended to #question-container rather than owned by a layer this
+    // function empties, so going home merely HID them along with it — and the next mode to
+    // unhide that container inherited somebody else's panel.
+    airoState = null;
+    airoGeomCache = null;
+    labState = null;
+    framingState = null;
+    ['lab-panel', 'airocean-panel', 'fr-panel', 'explore-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
     history.replaceState(null, '', location.pathname);
 
     document.getElementById('top-bar').style.display = 'none';
@@ -7420,39 +8400,118 @@ function goHome() {
     document.getElementById('mode-selector').scrollTop = 0;
 }
 
+// A `data-mode` a click can carry is one of two things: a QUIZ_MODES key to start outright, or a
+// name that has to open a PICKER first because something must be chosen — a region, a difficulty,
+// which of three ways of asking the same question. There is no way to tell them apart by looking,
+// so the second kind is written down here, once.
+//
+// It has to be one table because there are three places a mode name arrives from (the landing
+// grid, that grid again after `resetModeSelector` rewrites it, and the top bar), and they were
+// three copies of the same if-chain. A tile added to one and not the others silently starts the
+// mode with whatever configuration the last visit left behind — which is exactly what `spaceship`
+// and `state-puzzle` do, since both are real mode keys AND pickers.
+// The landing grid, once. It used to exist twice — as markup in index.html and again as a
+// template string inside `resetModeSelector` — so every tile added, renamed or re-iconed had to
+// be written out in both, and a tile that made it into only one appeared on a fresh load and
+// vanished the moment anybody pressed Home.
+const LANDING_TILES = [
+    ['find', 'search', 'Find on the Map', 'Find countries or states on the globe/map'],
+    ['identify', 'help', 'Identify Mode', 'Identify highlighted locations on the map'],
+    ['name-all', 'keyboard', 'Name All Countries', 'Type as many countries as you can!'],
+    ['rank', 'bar_chart', 'Rank Them', 'Drag five into order — by people, distance, coastline or reach'],
+    ['flags', 'flag', 'Flags', 'Find the country from its flag, or match every flag at once'],
+    ['capitals', 'star', 'Capitals', 'Multiple choice, typing race, or pin it on the map'],
+    ['explore', 'explore', 'Explore', 'Roam the globe, or put the world through a dozen projections'],
+    ['places', 'push_pin', "Places I've Been", 'Fill in the map with your travels and share it'],
+    ['shapes', 'extension', 'Shapes', 'Name an outline, trace one, or drag the pieces into place'],
+    ['sb-missing', 'search_off', "Who's Missing?", 'A country has been absorbed by its neighbours — which one?'],
+    ['sun-moon', 'wb_twilight', 'Sun &amp; Moon', 'Day, night and the sunrise line at any date and time'],
+    ['spaceship', 'rocket_launch', 'Where Is My Spaceship?', 'Guess your orbital location from the view below'],
+    ['sandbox', 'science', 'Sandbox', 'Sun &amp; moon, sun path, odd one out, draw the border']
+    // Skyline ID is withheld until the photo pool is vetted — the mode itself still works in
+    // full; add ['skyline-id', 'apartment', 'Skyline ID', 'Name the city from a photo of its
+    // skyline'] here to bring it back, and nowhere else.
+];
+
+const landingTileHtml = ([mode, icon, name, desc]) =>
+    `<button class="mode-btn" data-mode="${mode}">` +
+    `<span class="mode-icon material-symbols-outlined">${icon}</span>` +
+    `<span class="mode-name">${name}</span>` +
+    `<span class="mode-desc">${desc}</span></button>`;
+
+// Fill the grid and wire it. Both callers want exactly this, and the wiring has to be redone
+// each time because the tiles are new elements.
+function renderLandingGrid() {
+    const box = document.getElementById('mode-buttons');
+    if (!box) return;
+    box.innerHTML = LANDING_TILES.map(landingTileHtml).join('');
+    box.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', e => routeMode(e.currentTarget.dataset.mode));
+    });
+}
+
+const MODE_ROUTES = {
+    'find': () => showFindModeSelector(),
+    'identify': () => showIdentifyModeSelector(),
+    'name-all': () => showNameAllModeSelector(),
+    'places': () => showPlacesModeSelector(),
+    'state-puzzle': () => showStatePuzzleSelector(),
+    'shapes': () => showShapeIdSelector(),
+    'country-shape-id': () => showShapeIdSelector(),
+    'explore': () => showExploreSelector(),
+    'capitals': () => showCapitalsSelector(),
+    'flags': () => showFlagsSelector(),
+    'spaceship': () => showSpaceshipSelector(),
+    'sandbox': () => showSandboxSelector(),
+    'rank': () => showRankSelector()
+};
+
+// RANKINGS. Every mode whose question is "put these in order" was scattered — one on the
+// landing grid, three in the sandbox — and they are one genre: a measurement, five countries,
+// and a column to drag. Gathering them is also what makes it obvious that the METRIC is the
+// variable, which is why five more of them could be added in an afternoon.
+// The four that were already written, plus the five metrics. A FUNCTION rather than a const,
+// because SB_RANK_METRICS is declared much further down the file and a const here would read it
+// during the temporal dead zone.
+const RANK_FIXED = [
+    { key: 'population-order', icon: 'groups', label: 'Order by Population',
+      desc: 'Five countries, most people first' },
+    { key: 'sb-estimate-pop', icon: 'insights', label: 'How Many People',
+      desc: 'Not an order — slide to your best guess for one country' },
+    { key: 'sb-distance-order', icon: 'sort', label: 'Near to Far',
+      desc: 'Order five by distance from one' },
+    { key: 'sb-extreme-order', icon: 'straighten', label: 'Furthest That Way',
+      desc: 'Order five by the point that reaches furthest one way' }
+];
+const rankSubmodes = () => RANK_FIXED.concat(Object.keys(SB_RANK_METRICS).map(k => ({
+    key: k, icon: SB_RANK_METRICS[k].icon,
+    label: SB_RANK_METRICS[k].label, desc: SB_RANK_METRICS[k].desc
+})));
+
+function showRankSelector() {
+    renderSelector({
+        title: 'Rank Them',
+        blocks: [
+            { sub: 'Five at a time, dragged into order. The measurement is the question — rank the ' +
+                   'same five countries by any two of these and the orders barely agree.' },
+            { tiles: rankSubmodes(), on: startGameWithMode }
+        ]
+    });
+}
+
+// Follow a mode name wherever it goes. `start` is how to begin an ordinary mode, which differs by
+// caller: the landing grid starts it directly, the top bar clears the live view first.
+function routeMode(mode, start) {
+    if (!mode) return;
+    const open = MODE_ROUTES[mode];
+    if (open) { open(); return; }
+    (start || startGameWithMode)(mode);
+}
+
 // Event listeners
 function setupEventListeners() {
-    // Mode selection from main mode selector
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            if (mode === 'find') {
-                showFindModeSelector();
-            } else if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else if (mode === 'name-all') {
-                showNameAllModeSelector();
-            } else if (mode === 'places') {
-                showPlacesModeSelector();
-            } else if (mode === 'state-puzzle') {
-                showStatePuzzleSelector();
-            } else if (mode === 'shapes' || mode === 'country-shape-id') {
-                showShapeIdSelector();
-            } else if (mode === 'explore') {
-                showExploreSelector();
-            } else if (mode === 'capitals') {
-                showCapitalsSelector();
-            } else if (mode === 'flags') {
-                showFlagsSelector();
-            } else if (mode === 'spaceship') {
-                showSpaceshipSelector();
-            } else if (mode === 'sandbox') {
-                showSandboxSelector();
-            } else {
-                startGameWithMode(mode);
-            }
-        });
-    });
+    // The landing tiles are wired by `renderLandingGrid`, which builds them — there is nothing
+    // to attach here, and attaching anyway would fire every route twice.
 
     // States sub-mode selection
     document.querySelectorAll('#states-selector .mode-btn').forEach(btn => {
@@ -7479,21 +8538,9 @@ function setupEventListeners() {
     const landingHeader = document.getElementById('landing-header');
     if (landingHeader) landingHeader.addEventListener('click', goHome);
 
-    // All/Random-10 scope toggle (Find + Identify selector screens). Delegated on the
-    // persistent #mode-selector container since showFindModeSelector/showIdentifyModeSelector
-    // rewrite its innerHTML wholesale every time they're opened.
-    const modeSelectorEl = document.getElementById('mode-selector');
-    if (modeSelectorEl) {
-        modeSelectorEl.addEventListener('click', (e) => {
-            const btn = e.target.closest('.scope-btn');
-            if (!btn) return;
-            const group = btn.closest('.scope-toggle');
-            const isAll = btn.dataset.scope === 'all';
-            if (group.dataset.for === 'find') findQuizScopeAll = isAll;
-            else if (group.dataset.for === 'identify') identifyQuizScopeAll = isAll;
-            group.querySelectorAll('.scope-btn').forEach(b => b.classList.toggle('active', b === btn));
-        });
-    }
+    // The All/Random-10 scope toggle used to be delegated here, because the Find and Identify
+    // screens rewrote #mode-selector wholesale. renderSelector wires its own toggles as it
+    // builds them, so there is nothing left to delegate.
 
     // Helper to switch modes from the top bar
     function switchToMode(mode) {
@@ -7556,17 +8603,11 @@ function setupEventListeners() {
     document.querySelectorAll('.top-bar-modes > .mode-icon-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const mode = e.currentTarget.dataset.mode;
-            // Places-been and the States Puzzle need a choice made first (region /
-            // difficulty), so open their selectors rather than starting a mode directly.
-            if (mode === 'places') { showPlacesModeSelector(); return; }
-            if (mode === 'state-puzzle') { showStatePuzzleSelector(); return; }
-            if (mode === 'shapes' || mode === 'country-shape-id') { showShapeIdSelector(); return; }
-            if (mode === 'explore') { showExploreSelector(); return; }
-            if (mode === 'capitals') { showCapitalsSelector(); return; }
-            if (mode === 'flags') { showFlagsSelector(); return; }
-            if (mode === 'spaceship') { showSpaceshipSelector(); return; }
-            if (mode === 'sandbox') { showSandboxSelector(); return; }
-            if (mode) switchToMode(mode);
+            // The one exception to the route table, and it is deliberate: the ⌨️ icon is a
+            // one-click shortcut back into Name All at whatever region you last played, where
+            // every other picker here exists because the mode cannot start without an answer.
+            if (mode === 'name-all') { switchToMode(mode); return; }
+            routeMode(mode, switchToMode);
         });
     });
 
@@ -7589,6 +8630,7 @@ function setupEventListeners() {
             if (mc.sbEngine === 'multi') { sbSubmitMulti(); return; }
             if (mc.sbEngine === 'estimate') { sbSubmitEstimate(); return; }
             if (mc.sbEngine === 'picker') { sbSubmitPicker(); return; }
+            if (mc.sbEngine === 'connect') { sbSubmitConnect(); return; }
         }
         // Draw the Border: the first press scores the traced loop and reveals the real one.
         if (mc && mc.drawBorderMode && drawBorderState && !drawBorderState.done) {
@@ -7823,10 +8865,10 @@ function renderFindCapitalQuestion() {
         const d = gameState.currentDataObj[n];
         return d && Array.isArray(d.capitalCoords);
     });
-    let target = pool[Math.floor(Math.random() * pool.length)];
+    let target = pickOne(pool);
     let guard = 0;
     while (gameState.usedCountries.has(target) && gameState.usedCountries.size < pool.length && guard++ < 500) {
-        target = pool[Math.floor(Math.random() * pool.length)];
+        target = pickOne(pool);
     }
     gameState.usedCountries.add(target);
     gameState.targetCountry = target;
@@ -7891,7 +8933,7 @@ function revealCapitalAnswer(extraLine) {
 function submitCapitalGuess() {
     if (gameState.capitalSubmitted || !gameState.currentGuess) return;
     gameState.capitalSubmitted = true;
-    const dKm = d3.geoDistance(gameState.currentGuess, gameState.capitalAnswer) * 6371;
+    const dKm = d3.geoDistance(gameState.currentGuess, gameState.capitalAnswer) * EARTH_R_KM;
     gameState.totalDistanceKm += dKm;
     logCapitalRound(gameState.currentGuess, dKm);
 
@@ -8041,13 +9083,13 @@ function puzzlePlacementErrorKm(feature, drop) {
     const a = projection.invert ? projection.invert(c) : null;
     const b = projection.invert ? projection.invert(dropped) : null;
     if (a && b && !isNaN(a[0]) && !isNaN(b[0])) {
-        return d3.geoDistance(a, b) * 6371;
+        return d3.geoDistance(a, b) * EARTH_R_KM;
     }
     // geoAlbersUsa is a composite and inverts to null in the gaps between its insets, so
     // fall back to the local scale: km per board unit, measured right at the true position.
     const probe = projection.invert ? projection.invert([c[0] + 10, c[1]]) : null;
     const kmPerUnit = (a && probe && !isNaN(probe[0]))
-        ? (d3.geoDistance(a, probe) * 6371) / 10
+        ? (d3.geoDistance(a, probe) * EARTH_R_KM) / 10
         : 4;   // ~4 km per unit across the lower 48 at this projection scale
     return Math.hypot(drop[0], drop[1]) * kmPerUnit;
 }
@@ -8994,6 +10036,34 @@ const ODD_TRAITS = [
             const facts = ensureCountryFacts();
             return facts ? [{ tag: 'island', names: [...facts.island] }] : [];
         }
+    },
+    {
+        // "Three of these border Bolivia; one does not." The only trait here whose group is
+        // defined by a country rather than by a category, and the only one that needs to choose
+        // its own outsider: a random one is dismissed by continent without anybody thinking about
+        // a border, so the odd one out has to be a country that comes CLOSE and does not touch.
+        key: 'neighbour',
+        label: tag => `all border ${displayLabelForName(tag)}`,
+        groups: () => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            const out = [];
+            facts.neighbours.forEach((_, n) => {
+                const nb = playableNeighbours(n);
+                if (nb.length >= 3) out.push({ tag: n, names: nb });
+            });
+            return out;
+        },
+        outsiders: (grp, list) => {
+            const nbSet = new Set((grp.names || []).map(normalizeName));
+            nbSet.add(normalizeName(grp.tag));
+            const c0 = getCountryCentroid(grp.tag);
+            if (!c0) return null;
+            return list.filter(n => !nbSet.has(normalizeName(n)))
+                .map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(c0, getCountryCentroid(n)) : Infinity }))
+                .filter(x => isFinite(x.d)).sort((a, b) => a.d - b.d)
+                .slice(0, 6).map(x => x.n);
+        }
     }
 ];
 
@@ -9069,9 +10139,13 @@ function buildOddOneOut() {
             const members = shuffleArray(grp.names.filter(n => inList.has(normalizeName(n))));
             if (members.length < 3) continue;
             const memberSet = new Set(members.map(normalizeName));
-            const outsiders = list.filter(n => !memberSet.has(normalizeName(n)));
+            // A trait may pick its own distractors — see the `neighbour` trait, where a random
+            // country from the far side of the world is not a wrong answer anybody would consider.
+            const outsiders = trait.outsiders
+                ? (trait.outsiders(grp, list.filter(n => !memberSet.has(normalizeName(n)))) || [])
+                : list.filter(n => !memberSet.has(normalizeName(n)));
             if (!outsiders.length) continue;
-            const odd = outsiders[Math.floor(Math.random() * outsiders.length)];
+            const odd = pickOne(outsiders);
             return {
                 trait: trait.key,
                 why: trait.label(grp.tag),
@@ -9252,7 +10326,7 @@ function pickDrawBorderTarget() {
         return d3.geoArea(f) > 0.0015;
     });
     if (!feats.length) return null;
-    return feats[Math.floor(Math.random() * feats.length)];
+    return pickOne(feats);
 }
 
 function ensureDrawBorderLayer() {
@@ -9705,6 +10779,8 @@ function updateModeOverlays() {
     }
     if (mc.sbQuizMode) sbUpdateOverlay();
     if (mc.missingSandboxMode) msDrawStory();
+    // Every re-path goes through here, which is the one place that knows the view has moved.
+    if (mc.freeExploreMode) syncExploreReset();
 }
 
 // ---- satellite ----
@@ -10054,7 +11130,6 @@ function halfDayAngle(latDeg, decDeg) {
     return { deg: Math.acos(c) / DEG, polar: null };
 }
 
-function riseAngle(latDeg) { return 90 - Math.abs(latDeg); }
 
 // The live state, as one object every pane reads.
 function sunPathNow() {
@@ -10066,6 +11141,123 @@ function sunPathNow() {
         alt: sunAltitude(s.lat, dec, H),
         az: sunAzimuth(s.lat, dec, H),
         hd: halfDayAngle(s.lat, dec)
+    };
+}
+
+// Which of the panes are on. Any of the four can go: a person watching the sunrise line move
+// through a year does not want three quarters of the screen given to the other three, and the
+// dome and the ground view are two ways of saying the same thing that are worth seeing one at a
+// time as well as together.
+const SUNPATH_PANES = [
+    { key: 'dome',   cell: 'sun-path-dome-cell',    label: 'Skydome' },
+    { key: 'globe',  cell: 'sun-path-globe-cell',   label: 'Globe' },
+    { key: 'ground', cell: 'sun-path-horizon-cell', label: 'POV' },
+    { key: 'map',    cell: 'sun-path-map-cell',     label: 'Map' }
+];
+
+// TRACKING IS PER PANE, because it means something different in each of them and there is no
+// reason to want it everywhere at once. The dome swings round to face the sun's bearing, the
+// ground camera locks onto the sun, the globe changes which of the two bodies is held still, and
+// the map re-centres on the sub-solar meridian. So the switch lives in the corner of the pane it
+// governs rather than in a list where you have to remember which panes it reaches.
+const spTrack = pane => !!(sunPathState && sunPathState.track && sunPathState.track[pane] !== false);
+
+// Show or hide the cells and let what is left fill the stage. The count goes on the stage as a
+// data attribute and the CSS does the rest; the only thing that cannot be expressed in CSS is
+// which cell should span two columns when there are three, so that one is marked here.
+function syncSunPathPanes() {
+    if (!sunPathState) return;
+    const stage = document.getElementById('sun-path-stage');
+    if (!stage) return;
+    const on = SUNPATH_PANES.filter(p => sunPathState.panes[p.key] !== false);
+    SUNPATH_PANES.forEach(p => {
+        const cell = document.getElementById(p.cell);
+        if (cell) { cell.hidden = sunPathState.panes[p.key] === false; cell.classList.remove('sp-wide'); }
+    });
+    if (on.length === 3) {
+        const last = document.getElementById(on[2].cell);
+        if (last) last.classList.add('sp-wide');
+    }
+    stage.dataset.shown = String(on.length || 1);
+    SUNPATH_PANES.forEach(p => {
+        const box = document.getElementById('sp-pane-' + p.key);
+        if (box) box.checked = sunPathState.panes[p.key] !== false;
+    });
+    // The canvases are sized from their cells, so they have to be re-measured after the cells
+    // have been resized — and the SVG panes derive their viewBox from the cell aspect too.
+    requestAnimationFrame(() => {
+        if (!sunPathState) return;
+        sizeSunPathCanvases();
+        updateSunPath();
+    });
+}
+
+// ---- the moon, on Sun Path's own clock ----
+// Sun Path keeps a day-of-year and an hour rather than a Date, because everything it draws about
+// the SUN comes out of two angles and needs no calendar. The moon does need one: its position is
+// a function of the actual date, not of the declination. So the clock is turned into a UTC Date
+// on demand, and the moon is then read off the same machinery Sun & Moon uses.
+function sunPathDate(now) {
+    const year = new Date().getUTCFullYear();
+    const ms = Date.UTC(year, 0, 1) + (now.day - 1) * 86400000 + now.hour * 3600000;
+    return new Date(ms);
+}
+
+// The moon's altitude and azimuth for the observer, its illuminated fraction, and which limb is
+// lit. A body's sub-point IS its declination and the longitude it is overhead, so the local hour
+// angle is just the observer's longitude minus that — the same relation the sun's own hour angle
+// has here, which is why `sunAltitude` and `sunAzimuth` can be handed the moon unchanged.
+// THE MOON, DRAWN AS IT LOOKS. The terminator on a sphere seen from here is a circle seen edge
+// on, which is an ELLIPSE: half-width r|1-2k| for an illuminated fraction k. At k = 0.5 it
+// collapses to a straight line and the moon is exactly half lit; at k = 1 it bulges back out to
+// the full circle. So one path covers every phase continuously, and the eight named phases are
+// only names for places along it — which is why the shape must be built from k rather than from
+// a bucket. `bright` is the screen angle the lit limb points along.
+//
+// Appended into `g`, which the caller has already translated to the moon's position.
+function sunPathMoonGlyph(g, r, k, brightDeg, cls) {
+    const kk = Math.max(0, Math.min(1, k));
+    const rx = r * Math.abs(1 - 2 * kk);
+    // Which way the lit crescent bows. Under half, the terminator curves the same way as the limb
+    // and the lit part is a crescent; over half it curves the other way and the DARK part is.
+    const inner = kk > 0.5 ? 1 : 0;
+    const gp = g.append('g').attr('class', (cls || '') + ' sp-moon-glyph')
+        .attr('transform', `rotate(${(brightDeg || 0).toFixed(1)})`);
+    gp.append('circle').attr('class', 'sp-moon-dark').attr('r', r);
+    gp.append('path').attr('class', 'sp-moon-lit')
+        .attr('d', `M0,${-r} A${r},${r} 0 0 1 0,${r} A${rx.toFixed(2)},${r} 0 0 ${inner} 0,${-r} Z`);
+    gp.append('circle').attr('class', 'sp-moon-rim').attr('r', r);
+    return gp;
+}
+
+// The moon at some other hour of the same day, for drawing its track. Its own motion across the
+// sky over one day is small next to the earth's turn, so the sub-point is taken once and only the
+// hour angle is walked — which is the same approximation the sun's track makes about the
+// declination, and wrong by about half a degree at the ends.
+function sunPathMoonAt(now, hourAngleDeg) {
+    const m = sunPathMoonNow(now);
+    if (!m) return null;
+    const H = ((hourAngleDeg + 540) % 360) - 180;
+    return { alt: sunAltitude(now.lat, m.dec, H), az: sunAzimuth(now.lat, m.dec, H), k: m.k };
+}
+
+function sunPathMoonNow(now) {
+    if (typeof lunarPosition !== 'function') return null;
+    const date = sunPathDate(now);
+    const m = lunarPosition(date);
+    if (!m || !m.sub) return null;
+    const dec = m.sub[1];
+    const H = ((now.lon - m.sub[0] + 540) % 360) - 180;
+    const ph = moonPhase(date);
+    return {
+        alt: sunAltitude(now.lat, dec, H),
+        az: sunAzimuth(now.lat, dec, H),
+        sub: m.sub, dec, H,
+        k: ph.fraction,
+        // Waxing has the sun to its west in the sky, so the lit limb faces the other way from a
+        // waning moon. One sign is all the drawing needs.
+        limb: ph.elongation < 180 ? 1 : -1,
+        phase: phaseName(ph.elongation)
     };
 }
 
@@ -10081,16 +11273,27 @@ function renderSunPathMode() {
     restart.textContent = 'Exit';
     restart.onclick = goHome;
     document.getElementById('question-text').innerHTML =
-        '<strong>Sun Path</strong> — one moment, four views: the sky above you, the earth in ' +
-        'space, the view from the ground, and the sunrise line. Click the map to move.';
+        '<strong>Sun &amp; Moon</strong> — one moment, four views of it: the skydome, the globe, the ' +
+        'view from where you are standing, and the map. Click the map (or double-click the globe) ' +
+        'to move; switch any view off to give the rest the screen.';
 
     const today = new Date();
     const day = Math.floor((today - new Date(today.getUTCFullYear(), 0, 0)) / 86400000);
     if (!sunPathState) {
-        sunPathState = { lat: 51, lon: 0, day, hour: 12, playing: false, raf: null, mode: 'day' };
+        sunPathState = { lat: 51, lon: 0, day, hour: 12, playing: false, raf: null, mode: 'day',
+                         panes: { dome: true, globe: true, ground: true, map: true },
+                         track: { dome: true, globe: true, ground: true, map: true },
+                         // The pictogram, not the pin: a shadow is only worth casting from
+                         // something shaped like the thing casting it.
+                         showMoon: false, satellite: false, figure: 'person',
+                         dayGain: 1, nightGain: 2.4,
+                         tropics: true, dayLengths: true };
     }
+    if (!sunPathState.panes) sunPathState.panes = { dome: true, globe: true, ground: true, map: true };
+    if (!sunPathState.track) sunPathState.track = { dome: true, globe: true, ground: true, map: true };
     buildSunPathStage();
     buildSunPathPanel();
+    syncSunPathPanes();
     updateSunPath();
 }
 
@@ -10109,29 +11312,75 @@ function buildSunPathStage() {
     const stage = document.createElement('div');
     stage.id = 'sun-path-stage';
     stage.className = 'sun-path-stage';
+    // Each pane carries its OWN tracking switch, in its own corner. Tracking means a different
+    // thing in each of them, so a single switch in a list somewhere else was asking people to
+    // remember which four things it did; here the control is on the thing it governs. Day lengths
+    // goes with the Map for the same reason — the bars it draws are on the map and nowhere else.
+    const trackBox = (key, extra) =>
+        `<div class="sp-pane-tools">` +
+        `<label class="sp-pane-check" title="Follow the sun in this view"><input type="checkbox" ` +
+        `id="sp-track-${key}" checked> Track sun</label>${extra || ''}</div>`;
     stage.innerHTML = `
         <div class="sun-path-cell" id="sun-path-dome-cell">
-            <div class="sun-path-cap">Sky above you<span id="sun-path-dome-note"></span></div>
+            <div class="sun-path-cap">Skydome<span id="sun-path-dome-note"></span></div>
+            ${trackBox('dome', '<button class="sp-north" id="sp-dome-north" ' +
+                'title="Face north"><svg viewBox="0 0 24 24" aria-hidden="true">' +
+                '<circle class="sp-north-ring" cx="12" cy="12" r="9"/>' +
+                '<g id="sp-dome-needle"><path class="sp-north-n" d="M12 3.6 L15.4 12 L12 10.2 Z"/>' +
+                '<path class="sp-north-s" d="M12 20.4 L8.6 12 L12 13.8 Z"/>' +
+                '<path class="sp-north-n" d="M12 3.6 L8.6 12 L12 10.2 Z" opacity="0.55"/>' +
+                '<path class="sp-north-s" d="M12 20.4 L15.4 12 L12 13.8 Z" opacity="0.55"/>' +
+                '</g></svg></button>')}
         </div>
         <div class="sun-path-cell" id="sun-path-globe-cell">
-            <div class="sun-path-cap">Earth in space<span id="sun-path-globe-note"></span></div>
-            <button class="sp-view-reset" id="sun-path-view-reset"
-                    title="Back to the default view: edge-on to the sunlight">Reset view</button>
-            <svg class="sp-orbit-inset" id="sun-path-orbit-inset" viewBox="0 0 120 120"
-                 preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="sun-path-cap">Globe<span id="sun-path-globe-note"></span></div>
+            ${trackBox('globe', '<button class="sp-view-reset" id="sun-path-view-reset" ' +
+                'title="Back to the default view: edge-on to the sunlight">Reset view</button>')}
         </div>
         <div class="sun-path-cell" id="sun-path-horizon-cell">
-            <div class="sun-path-cap" id="sun-path-horizon-cap">From the ground<span id="sun-path-horizon-note"></span></div>
+            <div class="sun-path-cap" id="sun-path-horizon-cap">POV<span id="sun-path-horizon-note"></span></div>
+            ${trackBox('ground')}
             <svg id="sun-path-horizon" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <div class="sun-path-cell" id="sun-path-map-cell">
-            <div class="sun-path-cap">Sunrise line<span id="sun-path-map-note"></span></div>
+            <div class="sun-path-cap">Map<span id="sun-path-map-note"></span></div>
+            ${trackBox('map', '<label class="sp-pane-check" title="Label each parallel with its ' +
+                'hours of daylight"><input type="checkbox" id="sp-daylen" checked> Day lengths</label>')}
             <svg id="sun-path-map" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
         </div>`;
     host.appendChild(stage);
     const resetBtn = document.getElementById('sun-path-view-reset');
     if (resetBtn) resetBtn.addEventListener('click', resetSunPathView);
+    const northBtn = document.getElementById('sp-dome-north');
+    if (northBtn) northBtn.addEventListener('click', faceSunPathNorth);
+    SUNPATH_PANES.forEach(v => {
+        const box = document.getElementById('sp-track-' + v.key);
+        if (!box) return;
+        box.checked = spTrack(v.key);
+        box.addEventListener('change', function () {
+            sunPathState.track[v.key] = this.checked;
+            // Handing the camera over WHERE IT IS rather than snapping: turning tracking off
+            // leaves it exactly where tracking had it, so the switch reads as "stop following"
+            // rather than as a jump to somewhere else.
+            if (v.key === 'ground' && !this.checked) {
+                const n = sunPathNow();
+                sunPathState.groundAz = n.az;
+                sunPathState.groundEl = n.alt;
+            }
+            if (v.key === 'dome') applySunPathDomeCamera();
+            updateSunPath();
+        });
+    });
+    const dayLen = document.getElementById('sp-daylen');
+    if (dayLen) {
+        dayLen.checked = sunPathState.dayLengths !== false;
+        dayLen.addEventListener('change', function () {
+            sunPathState.dayLengths = this.checked;
+            updateSunPath();
+        });
+    }
     buildSunPathMap();
+    wireSunPathGroundDrag();
     withThree(() => { ensureSunPathThree(); updateSunPath(); });
     if (!sunPathState.resizeBound) {
         sunPathState.resizeBound = true;
@@ -10148,6 +11397,36 @@ function buildSunPathStage() {
         });
         stage.querySelectorAll('.sun-path-cell').forEach(c => sunPathState.ro.observe(c));
     }
+}
+
+// Panning the ground view by hand, for when it is not locked on the sun. Degrees per pixel is
+// taken from the pane's own scale, so a drag moves the view by exactly the angle it moves the
+// picture — the same equal-angle contract the projection itself keeps.
+function wireSunPathGroundDrag() {
+    const el = document.getElementById('sun-path-horizon');
+    if (!el || el.dataset.dragWired) return;
+    el.dataset.dragWired = '1';
+    let from = null;
+    el.style.touchAction = 'none';
+    el.addEventListener('pointerdown', e => {
+        if (!sunPathState || spTrack('ground')) return;
+        const r = el.getBoundingClientRect();
+        from = { x: e.clientX, y: e.clientY, w: r.width || 1,
+                 az: sunPathState.groundAz == null ? sunPathNow().az : sunPathState.groundAz,
+                 el: sunPathState.groundEl || 0 };
+        try { el.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+    });
+    el.addEventListener('pointermove', e => {
+        if (!from || !sunPathState) return;
+        const perPx = GROUND_FOV / from.w;
+        sunPathState.groundAz = ((from.az - (e.clientX - from.x) * perPx) % 360 + 360) % 360;
+        sunPathState.groundEl = Math.max(-80, Math.min(80, from.el + (e.clientY - from.y) * perPx));
+        updateSunPath();
+    });
+    const stop = () => { from = null; };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('pointerleave', stop);
 }
 
 // ---- three.js: the dome and the globe ----
@@ -10182,8 +11461,17 @@ function ensureSunPathThree() {
     buildGlobeScene();
     applySunPathGlobeCamera();
     applySunPathDomeCamera();
-    wireSunPathDrag(globe.canvas, 'view', () => { applySunPathGlobeCamera(); sunPathAutoFrame(); });
+    // The leader lines and their labels are built in the CAMERA's basis — that is what makes them
+    // a tidy screen-space column whichever way the globe is pivoted — so a drag has to rebuild
+    // them. Without it they stayed where the old camera had put them and slid off their own
+    // parallels, which is exactly what "the labels move with the camera" describes.
+    wireSunPathDrag(globe.canvas, 'view', () => {
+        applySunPathGlobeCamera();
+        sunPathAutoFrame();
+        if (sunPathState) updateSunPath();
+    });
     wireSunPathDrag(dome.canvas, 'domeView', () => { applySunPathDomeCamera(); sunPathAutoFrame(); });
+    wireSunPathGlobePick(globe);
     sizeSunPathCanvases();
 }
 
@@ -10358,13 +11646,118 @@ function applySunPathDomeCamera() {
     const th = sunPathState && sunPathState.three && sunPathState.three.dome;
     if (!th) return;
     const o = sunPathState.domeView || SUNPATH_DOME_DEFAULT;
-    const az = o.az * DEG, el = Math.max(-85, Math.min(85, o.el)) * DEG;
+    // TRACK SUN swings the camera round the ground's normal so it always looks along the sun's
+    // own compass bearing — the dome's answer to the ground pane's locked camera, and the reason
+    // the two panes agree about what "over there" means. The drag still works: it is an offset
+    // from the sun's bearing rather than from north.
+    // MINUS the azimuth. The camera's own angle is measured the other way round from a compass
+    // bearing — azimuth runs clockwise from north and this angle runs anticlockwise from +Z — so
+    // adding it turned the dome the wrong way and the sun crossed the sky backwards.
+    const track = spTrack('dome') ? -(sunPathState.sunAz || 0) : 0;
+    const az = (o.az + track) * DEG, el = Math.max(-85, Math.min(85, o.el)) * DEG;
     const d = th.frameDist || th.camera.position.length() || 4.4;
     th.camera.position.set(Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
     th.camera.up.set(0, 1, 0);
     th.camera.lookAt(0, 0, 0);
     th.camera.updateProjectionMatrix();
     th.frameDist = 0;      // the fit depends on the view direction, so let it re-solve
+}
+
+// THE COMPASS, as Google Maps has one: a needle that turns to say where north has got to, and
+// that puts it back on top when pressed.
+//
+// The dome's camera bearing is the drag offset PLUS whatever tracking is adding, and tracking is
+// a thing that turns the view continuously — so "face north" has to switch it off as well, or
+// the next tick would take the view straight back off north. That is the same bargain Google's
+// compass makes with a rotated map: pressing it ends the rotation.
+//
+// Where the needle points falls out of one identity. With the camera at bearing A the world
+// direction that appears to run up the screen is (-sin A, 0, -cos A) and its right is
+// (-cos A, 0, sin A), so north (0, 0, -1) reads at clockwise angle atan2(-sin A, cos A) = -A from
+// straight up. One rotation, no trigonometry at draw time.
+function sunPathDomeBearing() {
+    const o = (sunPathState && sunPathState.domeView) || SUNPATH_DOME_DEFAULT;
+    const track = spTrack('dome') ? -(sunPathState && sunPathState.sunAz || 0) : 0;
+    return ((o.az + track) % 360 + 360) % 360;
+}
+
+function syncSunPathNorth() {
+    const btn = document.getElementById('sp-dome-north');
+    const needle = document.getElementById('sp-dome-needle');
+    if (!btn || !needle) return;
+    const a = sunPathDomeBearing();
+    needle.setAttribute('transform', `rotate(${(-a).toFixed(2)} 12 12)`);
+    // Off-north is the state the button is FOR, so it is the state it advertises. Dimmed rather
+    // than hidden: a control that appears out of nowhere is one nobody knows exists.
+    const off = Math.min(a, 360 - a) > 1.5;
+    btn.classList.toggle('off-north', off);
+}
+
+function faceSunPathNorth() {
+    if (!sunPathState) return;
+    if (spTrack('dome')) {
+        sunPathState.track.dome = false;
+        const box = document.getElementById('sp-track-dome');
+        if (box) box.checked = false;
+    }
+    const el = (sunPathState.domeView || SUNPATH_DOME_DEFAULT).el;
+    sunPathState.domeView = { az: 0, el };
+    applySunPathDomeCamera();
+    updateSunPath();
+}
+
+// DOUBLE-CLICK THE GLOBE TO STAND THERE. The map below can already be clicked, but the globe is
+// the pane somebody is looking at when they think "what about here" — and it is the only one
+// showing the far side of the world at all.
+//
+// A double-click rather than a single one, because the single click is the end of a drag: this
+// pane's whole interaction is pivoting it, and every pivot would otherwise relocate the observer.
+//
+// The ray is cast by hand rather than through THREE.Raycaster: it is one sphere at the origin,
+// which is a quadratic, and the answer then has to be un-rotated back through the two transforms
+// the pane applies (the holder's tilt and the earth's spin) to become a longitude.
+function wireSunPathGlobePick(v) {
+    if (!v || !v.canvas || v.canvas.dataset.pickWired) return;
+    v.canvas.dataset.pickWired = '1';
+    v.canvas.addEventListener('dblclick', e => {
+        const T = window.THREE;
+        const th = sunPathState && sunPathState.three && sunPathState.three.globe;
+        if (!T || !th || !th.earth) return;
+        const r = v.canvas.getBoundingClientRect();
+        const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+        const ny = -(((e.clientY - r.top) / r.height) * 2 - 1);
+        // An orthographic camera: the ray is parallel, so its origin is the point on the near
+        // plane and its direction is the view direction. Both come out of the camera's matrices
+        // without any of the perspective algebra a projected ray would need.
+        const origin = new T.Vector3(nx, ny, -1).unproject(v.camera);
+        const dir = new T.Vector3(0, 0, -1).transformDirection(v.camera.matrixWorld).normalize();
+        // |origin + t·dir|² = 1
+        const b = 2 * origin.dot(dir), c = origin.lengthSq() - 1;
+        const disc = b * b - 4 * c;
+        if (disc < 0) return;                       // the click missed the globe
+        const t = (-b - Math.sqrt(disc)) / 2;       // the near root: the face we can see
+        const hit = origin.clone().add(dir.clone().multiplyScalar(t));
+        // Into the HOLDER's frame — the tilt undone, the spin still in — because that is the frame
+        // this pane's own forward mapping is written in. Both the observer and the moon are placed
+        // by `(cos L·cos lat, sin lat, −sin L·cos lat)` for a RELATIVE longitude L, so inverting
+        // exactly that is the only way to be sure of the sign. Going through the earth MESH's
+        // frame instead means reasoning about SphereGeometry's own seam convention on top, which
+        // is where the longitude came out mirrored.
+        th.holder.updateMatrixWorld(true);
+        const local = th.holder.worldToLocal(hit.clone()).normalize();
+        const la = Math.asin(Math.max(-1, Math.min(1, local.y))) / DEG;
+        const rel = Math.atan2(-local.z, local.x) / DEG;
+        // And back to an absolute longitude by adding whatever that frame measures from: the
+        // sub-solar meridian while tracking, the observer's own while the earth is held still.
+        const track = spTrack('globe');
+        const now = sunPathNow();
+        const origin0 = track ? (now.lon - now.H) : now.lon;
+        const lo = rel + origin0;
+        if (!isFinite(la) || !isFinite(lo)) return;
+        sunPathState.lat = Math.max(-89, Math.min(89, la));
+        sunPathState.lon = ((lo + 540) % 360) - 180;
+        updateSunPath();
+    });
 }
 
 // Pointer-drag to pivot. Listeners go on before setPointerCapture (and the capture is wrapped),
@@ -10422,19 +11815,6 @@ function sizeSunPathCanvases() {
         v.halfH = 0;
     });
     sunPathAutoFrame();
-    // The orbit pane sizes the same way but keeps its own aim (updateSunPathOrbit) — it is a
-    // camera in a place, not a scene framed to fit.
-    const o = sunPathState.orbit;
-    if (o) {
-        o.canvas.style.width = '';
-        o.canvas.style.height = '';
-        const r = o.cell.getBoundingClientRect();
-        const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
-        o.renderer.setSize(w, h, false);
-        o.camera.aspect = w / h;
-        o.camera.updateProjectionMatrix();
-        renderSunPathOrbit();
-    }
     renderSunPathThree();
 }
 
@@ -10451,20 +11831,27 @@ function themeColor(name, fallback) {
 }
 
 // A text sprite that always faces the camera — used for every label in both 3D panes.
-function makeLabel(text, colour, scale) {
+// Unbolded serif, like every other label in this mode: these are annotations on a diagram, not
+// interface chrome, and a bold sans sprite sits on top of the picture rather than in it.
+const SUNPATH_LABEL_FONT = "Georgia, 'Iowan Old Style', 'Palatino Linotype', Palatino, serif";
+function makeLabel(text, colour, scale, halo) {
     const T = window.THREE;
     const pad = 8, font = 40;
     const meas = document.createElement('canvas').getContext('2d');
-    meas.font = `bold ${font}px system-ui, sans-serif`;
+    meas.font = `${font}px ${SUNPATH_LABEL_FONT}`;
     const w = Math.ceil(meas.measureText(text).width) + pad * 2;
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = font + pad * 2;
     const ctx = cv.getContext('2d');
-    ctx.font = `bold ${font}px system-ui, sans-serif`;
+    ctx.font = `${font}px ${SUNPATH_LABEL_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 6;
-    ctx.strokeStyle = 'rgba(8,12,20,0.75)';
+    // A label in the SKY has to survive whatever is behind it and gets a heavy dark outline; one
+    // lying on the ground may be read against a cream disc, against Blue Marble, or against the
+    // pane outside the disc, and the outline has to change sides to suit. Hence the parameters.
+    const h = halo || {};
+    ctx.lineWidth = h.w == null ? 5 : h.w;
+    ctx.strokeStyle = h.colour || 'rgba(8,12,20,0.7)';
     ctx.strokeText(text, cv.width / 2, cv.height / 2);
     ctx.fillStyle = colour || '#eef2fa';
     ctx.fillText(text, cv.width / 2, cv.height / 2);
@@ -10475,6 +11862,50 @@ function makeLabel(text, colour, scale) {
     sp.scale.set(s * cv.width / cv.height, s, 1);
     sp.userData.labelW = sp.scale.x;      // callers that left-align need the width
     return sp;
+}
+
+// The same text LYING IN THE GROUND, as a piece of the diagram rather than a card floating over
+// it. A sprite always faces the camera, which is right for a label naming something in the sky
+// and wrong for one naming a direction on the ground: the compass letters and the rise/set
+// bearings belong to the ground plane the way the rose painted on an airfield does, and a sprite
+// makes them read as interface hovering above the picture.
+//
+// The canvas is the same one `makeLabel` builds; only the carrier differs. A PlaneGeometry faces
+// +Z with its top at +Y, so one turn of -90° about X lays it flat with its top pointing north
+// (-Z) — the printed-rose convention, where every letter reads the same way up rather than each
+// one facing outward. `renderOrder` rather than `depthTest: false`, or it would draw straight
+// through the dome and the sun; the ground disc is transparent, so without it the sort by
+// centroid distance can hide a label out at the rim behind a disc centred on the origin.
+// Which way round to draw it. INSIDE the horizon ring the background is the ground disc, which is
+// cream by default and very nearly black under Blue Marble; OUTSIDE it there is no disc at all and
+// the background is the pane, which is the theme's own surface whatever the satellite switch says.
+// So the one case wanting pale ink on a dark halo is a label on the disc with imagery under it,
+// and everything else wants the theme's ink on a pale one.
+function groundInk(onDisc, colour) {
+    const satellite = !!(sunPathState && sunPathState.satellite && sunPathSat.day);
+    return (onDisc && satellite)
+        ? { ink: colour, halo: { w: 4, colour: 'rgba(8,12,20,0.8)' } }
+        : { ink: themeColor('--text', '#2a3140').getStyle(),
+            halo: { w: 4.5, colour: 'rgba(255,255,255,0.8)' } };
+}
+
+function makeGroundLabel(text, colour, height, opts) {
+    const T = window.THREE;
+    const o = opts || {};
+    const ink = groundInk(!!o.onDisc, colour);
+    const src = makeLabel(text, ink.ink, height, ink.halo);
+    const aspect = src.scale.x / src.scale.y;
+    const geo = new T.PlaneGeometry(height * aspect, height);
+    geo.rotateX(-Math.PI / 2);
+    if (o.yaw) geo.rotateY(o.yaw);
+    const m = new T.Mesh(geo, new T.MeshBasicMaterial({
+        map: src.material.map, transparent: true, depthWrite: false,
+        depthTest: false, side: T.DoubleSide
+    }));
+    src.material.dispose();               // the sprite was only ever a way to draw the canvas
+    m.renderOrder = 3;
+    m.userData.labelW = height * aspect;
+    return m;
 }
 
 // The five fixed parallels every view shares. The observer's own latitude is added as a sixth
@@ -10518,6 +11949,18 @@ function dashedFrom(points, colour, opacity) {
         new T.LineBasicMaterial({ color: colour, transparent: true, opacity: opacity == null ? 0.6 : opacity }));
 }
 
+// The dial's scale, all of it outside the horizon ring at 1.0 and in this order outward:
+// the cardinal letters, then the rise/set marks, then the arc of the sun's bearing with its
+// hours, then the rise/set bearings themselves.
+// The cardinals go back INSIDE, onto the disc, where a printed compass rose puts them — which
+// leaves the whole of the outside for the dial and stops the rise/set bearings having to be
+// pushed out past everything else to clear them.
+const SP_CARDINAL_R = 0.76;
+const SP_MARK_R = [1.0, 1.13];        // the rise/set marks, lying in the ground
+const SP_DAY_ARC_R = 1.13;            // the marks touch it, so they read as ticks on the dial
+const SP_ARC_LAB_R = 1.25;
+const SP_RISE_LAB_R = 1.25;
+
 // --- SKY: the celestial dome ---
 function buildDomeScene() {
     const T = window.THREE;
@@ -10528,11 +11971,16 @@ function buildDomeScene() {
     // what should be readable, and a wireframe just competes with them.
     s.add(new T.Mesh(
         new T.SphereGeometry(1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2),
-        new T.MeshBasicMaterial({ color: themeColor('--ocean-1', '#aebfca'), transparent: true,
+        new T.MeshBasicMaterial({ color: themeColor('--map-ocean-1', '#aebfca'), transparent: true,
                                   opacity: 0.12, side: T.DoubleSide, depthWrite: false })));
-    s.add(new T.Mesh(
+    // Kept on the state: the satellite checkbox re-textures this disc rather than rebuilding
+    // the scene, and a north-up patch of real ground has to be able to follow the observer.
+    const groundDisc = new T.Mesh(
         new T.CircleGeometry(1, 64).rotateX(-Math.PI / 2),
-        new T.MeshBasicMaterial({ color: themeColor('--land', '#cbc3a4'), transparent: true, opacity: 0.92 })));
+        new T.MeshBasicMaterial({ color: themeColor('--land', '#cbc3a4'), transparent: true, opacity: 0.92 }));
+    s.add(groundDisc);
+    sunPathState.domeGround = groundDisc;
+    refreshSunPathDomeGround();
 
     // The compass rose on the ground: the two cardinal axes plus a ring of ticks, so an
     // azimuth can actually be read off rather than guessed.
@@ -10548,9 +11996,9 @@ function buildDomeScene() {
     s.add(rose);
 
     [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([txt, az]) => {
-        const v = altAzVector(0, az).multiplyScalar(1.14);
-        const sp = makeLabel(txt, '#f2f5fa', 0.19);
-        sp.position.set(v.x, 0.06, v.z);
+        const v = altAzVector(0, az).multiplyScalar(SP_CARDINAL_R);
+        const sp = makeGroundLabel(txt, '#f2f5fa', 0.22, { onDisc: true });
+        sp.position.set(v.x, 0.014, v.z);
         s.add(sp);
     });
 
@@ -10622,29 +12070,97 @@ function updateDomeScene(now) {
     const longestRun = lit => runs.filter(r => r.lit === lit && r.pts.length > 2)
         .sort((a, b) => b.pts.length - a.pts.length)[0];
 
-    // Where it rises and sets, and how long each arc lasts.
+    // EVERYTHING ABOUT THE HORIZON GOES OUTSIDE THE RING. The rise and set marks, the arc of the
+    // sun's bearing and the hours it lasts are all statements about the edge of the sky, and
+    // inside the ring they sat on top of the ground the observer is standing on — over the
+    // compass rose, over the satellite imagery, and (for the arc) across the middle of the disc,
+    // which is the one part of the picture that is about the place rather than about the sun.
+    // Out here the ring reads as a dial with its scale printed round the outside.
+    //
+    // The rise and set marks lie IN the ground too. They were upright posts — the goalposts — and
+    // an upright mark in a pane whose whole subject is what happens at the horizon is a thing
+    // sticking up through the horizon.
     if (!now.hd.polar) {
         [[-now.hd.deg, 'Sunrise'], [now.hd.deg, 'Sunset']].forEach(([H, txt]) => {
             const az = sunAzimuth(now.lat, now.dec, H);
             const v = altAzVector(0, az);
-            th.dyn.add(lineFrom([v.clone().setY(0.004), v.clone().setY(0.26)], 0xd05c4a, 0.95));
-            const lab = makeLabel(`${txt} ${Math.round(az)}°`, '#ffd9d2', 0.115);
-            lab.position.set(v.x * 1.05, 0.34, v.z * 1.05);
+            const mark = [SP_MARK_R[0], SP_MARK_R[1]].map(r =>
+                new T.Vector3(v.x * r, 0.006, v.z * r));
+            th.dyn.add(lineFrom(mark, 0xd05c4a, 0.95));
+            const lab = makeGroundLabel(`${txt} ${Math.round(az)}°`, '#ffd9d2', 0.15);
+            lab.position.set(v.x * SP_RISE_LAB_R, 0.014, v.z * SP_RISE_LAB_R);
             th.dyn.add(lab);
         });
     }
+
+    // THE DAY, AS AN ARC ON THE GROUND. The sky track says where the sun goes; its shadow on the
+    // compass says which way you would have to face to follow it, and the length of that arc is
+    // the length of the day. It is not a second copy of the track — it is the track's bearing,
+    // which is the one component of it the rose can be read against.
+    //
+    // Built from the SAME runs as the sky track rather than from a second sweep, so the two can
+    // never disagree about where the sun is up. A point directly overhead has no bearing at all,
+    // so anything within a whisker of the zenith is dropped rather than normalised into a NaN.
+    const groundArc = pts3 => {
+        const out = [];
+        pts3.forEach(v => {
+            const h = Math.hypot(v.x, v.z);
+            if (h < 1e-6) return;
+            out.push(new T.Vector3(v.x / h * SP_DAY_ARC_R, 0.008, v.z / h * SP_DAY_ARC_R));
+        });
+        return out;
+    };
+    runs.forEach(r => {
+        const a = groundArc(r.pts);
+        if (a.length < 2) return;
+        th.dyn.add(r.lit ? lineFrom(a, 0xf0a92b, 0.85) : dashedFrom(a, 0x8f97a8, 0.35));
+    });
     // Arc labels: the lit arc and the dark one, placed on their own halves of the track.
     const dayH = now.hd.polar === 'day' ? 24 : now.hd.polar === 'night' ? 0 : now.hd.deg / 15 * 2;
     const dayRun = longestRun(true), nightRun = longestRun(false);
-    if (dayRun) {
-        const lab = makeLabel(`${dayH.toFixed(1)} h of daylight`, '#ffe6b0', 0.12);
-        lab.position.copy(dayRun.pts[Math.floor(dayRun.pts.length / 2)].clone().multiplyScalar(1.16));
+    // THE HOURS GO ON THE GROUND ARCS, not on the track. They used to hang off the track itself,
+    // which put the same sentence twice on the screen once the ground arc existed — and put the
+    // night one UNDER THE FLOOR, since the midpoint of the dark run is below the horizon by
+    // construction, where it showed through the translucent disc as a smear in the middle of the
+    // rose. On the arc each one labels a length you can actually see.
+    const arcLabel = (run, text, colour) => {
+        const g = groundArc(run.pts);
+        if (g.length < 4) return;
+        const mid = g[Math.floor(g.length / 2)];
+        const h = Math.hypot(mid.x, mid.z) || 1;
+        const lab = makeGroundLabel(text, colour, 0.135, { onDisc: true });
+        lab.position.set(mid.x / h * SP_ARC_LAB_R, 0.014, mid.z / h * SP_ARC_LAB_R);
         th.dyn.add(lab);
-    }
-    if (nightRun) {
-        const lab = makeLabel(`${(24 - dayH).toFixed(1)} h of night`, '#b9c4d6', 0.12);
-        lab.position.copy(nightRun.pts[Math.floor(nightRun.pts.length / 2)].clone().multiplyScalar(1.16));
-        th.dyn.add(lab);
+    };
+    if (dayRun) arcLabel(dayRun, `${dayH.toFixed(1)} h of daylight`, '#ffe6b0');
+    if (nightRun) arcLabel(nightRun, `${(24 - dayH).toFixed(1)} h of night`, '#cdd6e4');
+
+    // The moon, on the same dome and at the same instant, when it is asked for. Pale and small:
+    // it is here to say where it is relative to the sun, which is the thing about the moon that
+    // is genuinely hard to picture, and it must not compete with the arc.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m) {
+            // ITS TRACK, not a caption. The sun already gets an arc across this dome and the
+            // moon's is the same construction on its own declination — and two arcs at different
+            // tilts is the whole story of why the moon rises later each night, which no
+            // percentage was ever going to tell.
+            const above = [], below = [];
+            for (let Hh = -180; Hh <= 180; Hh += 2) {
+                const mm = sunPathMoonAt(now, Hh);
+                if (!mm) continue;
+                const v = altAzVector(mm.alt, mm.az);
+                (mm.alt >= 0 ? above : below).push(v);
+            }
+            if (above.length > 1) th.dyn.add(lineFrom(above, 0xf2f4f8, 0.7));
+            if (below.length > 1) th.dyn.add(dashedFrom(below, 0xf2f4f8, 0.3));
+            const mp = altAzVector(m.alt, m.az).multiplyScalar(1.004);
+            const ball = new T.Mesh(new T.SphereGeometry(0.03, 18, 12),
+                new T.MeshBasicMaterial({ color: m.alt >= 0 ? 0xeeece4 : 0x8f95a3,
+                                          transparent: true, opacity: m.alt >= 0 ? 1 : 0.5 }));
+            ball.position.copy(mp);
+            th.dyn.add(ball);
+        }
     }
 
     // The sun itself, at the current hour, with its ray aimed at the OBSERVER rather than
@@ -10662,7 +12178,9 @@ function updateDomeScene(now) {
     const eye = new T.Vector3(0, SUNPATH_FIGURE_H * 0.55, 0);
     if (now.alt > 0) {
         th.dyn.add(lineFrom([p, eye], 0xf0a92b, 0.5));
-        th.dyn.add(sunPathShadow(now.alt, now.az, SUNPATH_FIGURE_H, 0.95));
+        const sh = sunPathShadowHull(th.figure, altAzVector(now.alt, now.az).normalize(),
+                                     { maxLen: 0.95 });
+        if (sh) th.dyn.add(sh);
     } else {
         // Same ray, dotted, so the link to the figure survives the night.
         const seg = [];
@@ -10710,12 +12228,32 @@ function makeSunPathFigure(height, colour, style) {
             add(new T.CylinderGeometry(h * 0.05, h * 0.22, h * 0.80, 10), h * 0.40);
             add(new T.SphereGeometry(h * 0.09, 10, 8), h * 0.86);
             break;
-        default:
-            // Solid silhouette: tapered legs, a broader chest, a round head. Holds its shape
-            // when it shrinks, which the stick figure does not.
-            add(new T.CylinderGeometry(h * 0.10, h * 0.15, h * 0.45, 8), h * 0.225);
-            add(new T.CylinderGeometry(h * 0.17, h * 0.13, h * 0.34, 8), h * 0.62);
-            add(new T.SphereGeometry(h * 0.17, 10, 8), h * 0.90);
+        default: {
+            // THE BATHROOM SIGN, in low poly. The pictogram is the most legible human silhouette
+            // there is, and what makes it one is the shape rather than the detail: a round head
+            // clear of the body, shoulders that slope straight out into the arms, and two legs
+            // splayed from a narrow waist. Six primitives with six or eight sides each, so it
+            // still reads as that outline from any bearing the dome can be turned to — a flat
+            // pictogram would vanish edge-on, and the stick figure it replaces went sub-pixel.
+            const seg = 6;
+            const limb = (r0, r1, len, x, y, z, tilt) => {
+                const m = add(new T.CylinderGeometry(r0, r1, len, seg), y);
+                m.position.set(x, y, z);
+                m.rotation.z = tilt;
+                return m;
+            };
+            // Legs, splayed a little from the waist.
+            limb(h * 0.075, h * 0.105, h * 0.46, -h * 0.075, h * 0.23, 0, 0.13);
+            limb(h * 0.075, h * 0.105, h * 0.46, h * 0.075, h * 0.23, 0, -0.13);
+            // Torso: wide at the shoulders, narrow at the waist.
+            add(new T.CylinderGeometry(h * 0.21, h * 0.115, h * 0.34, seg), h * 0.60);
+            // Arms, angled down and out — the pictogram's most recognisable line.
+            limb(h * 0.055, h * 0.075, h * 0.30, -h * 0.20, h * 0.60, 0, 0.42);
+            limb(h * 0.055, h * 0.075, h * 0.30, h * 0.20, h * 0.60, 0, -0.42);
+            // The head, sitting clear of the shoulders on a short neck.
+            add(new T.SphereGeometry(h * 0.155, 8, 6), h * 0.90);
+            break;
+        }
     }
     return g;
 }
@@ -10731,26 +12269,93 @@ function rebuildSunPathDomeFigure() {
     th.scene.add(th.figure);
 }
 
-function sunPathShadow(altDeg, azDeg, height, maxLen) {
+// THE SHADOW IS CAST, not drawn to look like one.
+//
+// Every vertex of the figure is pushed down the sun's own ray until it reaches the ground, and
+// what lands there is the shadow. So it is the figure's silhouette from the sun's direction: it
+// stretches and swings as the sun moves because that is what the geometry does, not because a
+// length and a bearing were computed and a quadrilateral drawn from them. The trapezoid it
+// replaces could only ever be a tapered sliver however the figure was shaped, and the arms of a
+// pictogram are exactly the part it could not say anything about.
+//
+// The outline is the CONVEX HULL of the projected points. A true silhouette would need the union
+// of six overlapping projected solids, and a union of translucent polygons is not something three
+// can draw in one pass — every overlap would double the darkness. The hull is one polygon, so it
+// has no overlap to compound, and at the size this is drawn (a figure a tenth of the dome's
+// radius) the only thing it fills in is the gap between the legs.
+// `o` gives the ground: its `origin`, its `up`, and two unit vectors spanning it. The dome's
+// ground is the world XZ plane; the globe pane's is the tangent plane at the observer, tipped
+// wherever on the earth they are standing. Same construction either way.
+function sunPathShadowHull(figure, toSun, o) {
     const T = window.THREE;
-    const away = altAzVector(0, (azDeg + 180) % 360).normalize();
-    const side = new T.Vector3(0, 1, 0).cross(away).normalize();
-    const len = Math.min(maxLen, height / Math.max(0.09, Math.tan(Math.max(0.5, altDeg) * DEG)));
-    // CONSTANT width. The sun is a far-off source, so a shadow lengthens without spreading —
-    // tying width to length made a low-sun shadow fan out like a torch beam. The earlier
-    // complaint that it looked faint before noon was never the opacity (which never changed):
-    // it was a ~2px hairline. The answer is a wider constant width and more contrast, not taper.
-    const w0 = height * 0.30, w1 = w0 * 0.86;
-    const y = 0.004;
-    const a = side.clone().multiplyScalar(w0), b = side.clone().multiplyScalar(-w0);
-    const tip = away.clone().multiplyScalar(len);
-    const c = tip.clone().add(side.clone().multiplyScalar(-w1));
-    const d = tip.clone().add(side.clone().multiplyScalar(w1));
-    const pts = [a, b, c, a, c, d].map(v => new T.Vector3(v.x, y, v.z));
-    const geo = new T.BufferGeometry().setFromPoints(pts);
-    return new T.Mesh(geo, new T.MeshBasicMaterial({
-        color: 0x33291c, transparent: true, opacity: 0.58, side: T.DoubleSide, depthWrite: false
-    }));
+    if (!figure || !toSun) return null;
+    const up = o.up || new T.Vector3(0, 1, 0);
+    const origin = o.origin || new T.Vector3(0, 0, 0);
+    const denom = toSun.dot(up);
+    if (denom <= 0.004) return null;                    // the sun is on or below the horizon
+    // Two axes in the ground, to hull in. Any pair will do — the hull is the same set of points.
+    const ax = o.ax || new T.Vector3(1, 0, 0);
+    const az2 = new T.Vector3().crossVectors(up, ax).normalize();
+    const ax2 = new T.Vector3().crossVectors(az2, up).normalize();
+    const pts = [];
+    const v = new T.Vector3(), rel = new T.Vector3();
+    figure.updateMatrixWorld(true);
+    figure.traverse(m => {
+        if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+        const pos = m.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+            rel.subVectors(v, origin);
+            // Slide down the ray until the point is in the plane.
+            const k = rel.dot(up) / denom;
+            rel.addScaledVector(toSun, -k);
+            pts.push([rel.dot(ax2), rel.dot(az2)]);
+        }
+    });
+    if (pts.length < 3) return null;
+    // A shadow the length of the whole dome is not a shadow, it is a stripe: the low-sun case is
+    // clamped, about the figure's own foot, so it keeps its direction and its shape.
+    const maxLen = o.maxLen || 0.95;
+    const far = Math.max(...pts.map(p => Math.hypot(p[0], p[1])));
+    if (far > maxLen) { const s = maxLen / far; pts.forEach(p => { p[0] *= s; p[1] *= s; }); }
+
+    const hull = convexHull2D(pts);
+    if (hull.length < 3) return null;
+    const lift = up.clone().multiplyScalar(o.lift == null ? 0.005 : o.lift);
+    const at = p => origin.clone().add(lift)
+        .addScaledVector(ax2, p[0]).addScaledVector(az2, p[1]);
+    const tri = [];
+    for (let i = 1; i + 1 < hull.length; i++)
+        tri.push(at(hull[0]), at(hull[i]), at(hull[i + 1]));
+    const mesh = new T.Mesh(new T.BufferGeometry().setFromPoints(tri),
+        new T.MeshBasicMaterial({ color: 0x2b2318, transparent: true,
+                                  opacity: o.opacity == null ? 0.5 : o.opacity,
+                                  side: T.DoubleSide, depthWrite: false }));
+    // ABOVE THE GROUND DISC, explicitly. Both are transparent, so three sorts them by distance
+    // from the camera — and the shadow's centroid swings round the disc's with the sun, so it
+    // landed in front of the disc for half the day and behind it for the other half, where the
+    // disc's own 92% fill washed it out. That is the shadow "switching between dark and faint",
+    // and no amount of opacity would have fixed it: it was a sort order that depended on the time
+    // of day.
+    mesh.renderOrder = 2;
+    return mesh;
+}
+
+// Andrew's monotone chain. Returns the hull counter-clockwise, first point repeated at neither end.
+function convexHull2D(pts) {
+    const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const build = src => {
+        const h = [];
+        for (const q of src) {
+            while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], q) <= 0) h.pop();
+            h.push(q);
+        }
+        h.pop();
+        return h;
+    };
+    return build(p).concat(build(p.slice().reverse()));
 }
 
 // --- SPACE: the earth, its tilt, and the observer's horizon ---
@@ -10763,8 +12368,13 @@ function buildGlobeScene() {
     const built = buildEarthInSpace(th.scene);
     th.holder = built.holder;
     th.earth = built.earth;
+    th.night = built.night;
     th.dyn = built.dyn;
     th.holderDyn = built.holderDyn;
+    // The light and the sun's two marks, so the pane can move them when the earth is held still.
+    th.light = built.light;
+    th.sunBall = built.sunBall;
+    th.sunRay = built.sunRay;
 }
 
 // An equirectangular canvas of the world in the Sunrise-line pane's own colours, wrapped onto
@@ -10778,6 +12388,345 @@ function buildGlobeScene() {
 // The canvas itself, with no reference to any particular pane — so a second Earth-in-space
 // (the Read the Daylight reveal) can be built from the same world without owning Sun Path's
 // state. Returns null while the land features are still loading.
+// ---- the satellite imagery ----
+// One Blue Marble, shared by every pane that can use it: the earth in space, the dome's ground
+// disc and the horizon's ground fill. It is the same 2048x1024 equirectangular the orbital view
+// keeps as its base sphere, so nothing new is downloaded and nothing new is committed.
+//
+// The night side is DERIVED rather than fetched. NASA's Black Marble is a separate 60 MB image
+// and there is nowhere to put it; darkening and cooling the day image gives the same reading at
+// the size these panes are drawn — the terminator is the thing being looked at, not the city
+// lights. `scripts/build-earth-night.py` fetches the real one for anybody who wants it, and it
+// is picked up automatically if it is there.
+const SUNPATH_DAY_TEX = 'data/textures/earth-bmng-2048.jpg';
+
+// ---- Blue Marble, month by month ----
+// Blue Marble Next Generation is TWELVE images, one per month, and the differences between them
+// are most of what the dataset is for: the snow line marching up and down two continents, the
+// Sahel greening and going again, the sea ice opening and closing. A satellite view that always
+// shows June is showing a season rather than the earth.
+//
+// June is nevertheless the FLOOR, and stays committed to the repository, because a satellite view
+// has to have something to draw before any network call returns — and because twelve copies of it
+// is twenty megabytes charged to every visitor for the eleven they will not look at. So the local
+// one paints immediately and the month that was actually asked for is fetched alongside and
+// swapped in when it lands.
+//
+// Which month is asked for depends on what the view is claiming. The orbital and Airocean views
+// are pictures of the earth NOW, so they ask for the current month. Sun & Moon is a picture of a
+// particular day, so it asks for that day's month and follows the dial as it is moved.
+const NASA_BMNG_BASE = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base';
+const BMNG_MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
+                     'july', 'august', 'september', 'october', 'november', 'december'];
+const BMNG_LOCAL_MONTH = 6;                       // the committed texture IS June
+const bmngClampMonth = m => Math.min(12, Math.max(1, Math.round(m) || BMNG_LOCAL_MONTH));
+const bmngStamp = m => '2004' + String(bmngClampMonth(m)).padStart(2, '0');
+const bmngDir = m => `${NASA_BMNG_BASE}/${BMNG_MONTHS[bmngClampMonth(m) - 1]}`;
+const bmngNowMonth = () => new Date().getUTCMonth() + 1;
+// 5400x2700 is 1.6 MB and about eight times the detail of the committed 2048 — the right trade
+// for something fetched on a whim. The 21600 globe and the 500 m tiles are the orbital view's
+// business and it asks for those itself.
+const bmngGlobeUrl = m => `${bmngDir(m)}/world.${bmngStamp(m)}.3x5400x2700.jpg`;
+
+const bmngCache = new Map();                      // month -> Image, or 'pending' / 'failed'
+function ensureBmngMonth(m, cb) {
+    m = bmngClampMonth(m);
+    const hit = bmngCache.get(m);
+    if (hit && hit.width) { if (cb) cb(hit); return hit; }
+    if (hit) return null;                         // pending, or failed and not worth hammering
+    bmngCache.set(m, 'pending');
+    const im = new Image();
+    im.crossOrigin = 'anonymous';                 // it is read back out of a canvas
+    im.onload = () => { bmngCache.set(m, im); if (cb) cb(im); };
+    im.onerror = () => { bmngCache.set(m, 'failed'); };
+    im.src = bmngGlobeUrl(m);
+    return null;
+}
+
+// The satellite views share ONE loaded month, which is safe because only one of them is ever on
+// screen. Everything downstream holds its own copy of the pixels — a read-back buffer for the
+// Airocean's per-face reprojection, a rendered ground for the panorama, a three.js texture for
+// the earth in space — so a new month has to invalidate all of them.
+// Every one of these holds its own copy of last month's pixels, and each keys itself on something
+// that a change of month does not move — the observer's position, the map's centre longitude, a
+// mere `!!sunPathSat.day`. So each has to be told outright, and missing one shows as a pane that
+// stays on the old month while its neighbours change: the sunrise-line map was doing exactly that,
+// because its cache key is the centre longitude and swapping the image does not move the centre.
+function bmngInvalidate() {
+    airoSatSrc = null;
+    if (sunPathGroundCache) sunPathGroundCache.key = null;
+    sunPathDomeGroundAt = null;
+    if (typeof sunPathMap !== 'undefined' && sunPathMap) sunPathMap.satDirty = true;
+    if (typeof airoState !== 'undefined' && airoState && airoState.geomRef)
+        airoState.geomRef.forEach(g => { g.satUrl = null; g.satPx = 0; });
+}
+
+function useBmngMonth(m, after) {
+    m = bmngClampMonth(m);
+    if (!sunPathSat.day || sunPathSat.month === m) return;
+    const swap = img => {
+        sunPathSat.day = img;
+        sunPathSat.month = m;
+        bmngInvalidate();
+        if (after) after();
+    };
+    // June is the one month with nothing to fetch: it is the file already in hand.
+    if (m === BMNG_LOCAL_MONTH && sunPathSat.local) { swap(sunPathSat.local); return; }
+    const im = ensureBmngMonth(m, swap);
+    if (im) swap(im);
+}
+// The night side comes from NASA's own servers rather than from this repository. It is a several
+// megabyte image that one checkbox in one mode wants, so committing it would cost every visitor
+// who never ticks that box; fetched lazily it costs only the people who do. A LOCAL copy wins if
+// it is there — scripts/build-earth-night.py writes one — so anybody who would rather not depend
+// on a third party need not.
+//
+// Two remote candidates, tried in order, because over the life of a static site a URL eventually
+// moves. Both must be CORS-open, since the image is drawn into a canvas and read back.
+//
+// THE REMOTE CANDIDATES BOTH HAD TO GO. NASA's own `eoimages.gsfc.nasa.gov` serves no
+// `Access-Control-Allow-Origin` at all, so every attempt died on the CORS check and fell through
+// to the last entry — which was `2_no_clouds_4k.jpg`, a DAY texture. So the one case the fallback
+// existed for, it answered with the wrong picture, and the night side would have lit up as
+// daylight rather than as cities. Measured: mean brightness 122 with the Sahara at (199,182,158),
+// against 21 and near-black for a real night image.
+//
+// The two here are both genuine Black Marble derivatives on jsdelivr, which sends
+// `Access-Control-Allow-Origin: *` and pins by tag: mean brightness 21.6 and 20.5, Sahara dark in
+// both. The first is 4096x2048 and the smaller file of the two.
+const SUNPATH_NIGHT_TEX = [
+    'data/textures/earth-night-2048.jpg',
+    'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/earth-night.jpg',
+    'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_lights_2048.png'
+];
+let sunPathSat = { day: null, local: null, month: 0, night: null, tried: false, nightTried: false };
+
+// Calls back ONLY when the image arrives. A failed load calls back never, and that is the point:
+// the caller's callback re-runs the draw, so calling it on failure with nothing loaded sends it
+// straight back here, and back again — a synchronous loop that blew the stack the first time the
+// checkbox was ticked before the file had landed.
+function ensureSunPathSat(cb) {
+    if (sunPathSat.day) { if (cb) cb(); return; }
+    if (sunPathSat.tried) return;
+    sunPathSat.tried = true;
+    const im = new Image();
+    // `local` is kept separately from `day` so that asking for June again is free rather than a
+    // second trip to NASA for a month already sitting in the repository.
+    im.onload = () => {
+        sunPathSat.day = im;
+        sunPathSat.local = im;
+        sunPathSat.month = BMNG_LOCAL_MONTH;
+        if (cb) cb();
+    };
+    im.onerror = () => { /* left tried: retrying every frame would hammer a 404 */ };
+    im.src = SUNPATH_DAY_TEX;
+    // The night image blocks nobody, so it is fetched alongside and simply turns up.
+    ensureSunPathNight();
+}
+
+// City lights, lazily, from whichever source answers first. `crossOrigin` is set because the
+// image may be drawn into a canvas, and a tainted canvas cannot be read back — a silent failure
+// that would look like the ground going black rather than like a permissions problem.
+function ensureSunPathNight(cb) {
+    if (sunPathSat.night) { if (cb) cb(); return; }
+    if (sunPathSat.nightTried) return;
+    sunPathSat.nightTried = true;
+    let i = 0;
+    const tryNext = () => {
+        if (i >= SUNPATH_NIGHT_TEX.length) return;
+        const url = SUNPATH_NIGHT_TEX[i++];
+        const im = new Image();
+        if (/^https?:/.test(url)) im.crossOrigin = 'anonymous';
+        im.onload = () => {
+            sunPathSat.night = im;
+            if (sunPathState) updateSunPath();
+            if (cb) cb();
+        };
+        im.onerror = tryNext;
+        im.src = url;
+    };
+    tryNext();
+}
+
+
+// The ground seen from standing height, rendered PER PIXEL rather than pasted on as a pattern.
+//
+// A pattern was wrong in the way that matters: the ground recedes, so a square of it near the
+// horizon covers a tiny slice of the frame and a square at your feet covers a huge one. Tiling a
+// flat image over that gave a smear with no depth in it, which is what "completely messed up"
+// describes. Here every pixel below the horizon is turned back into a ray, the ray is intersected
+// with the ground plane, and the resulting distance and bearing are looked up in the imagery. The
+// result has real perspective: the texture compresses toward the horizon of its own accord.
+//
+// The eye is HIGH, and deliberately. At standing height the whole visible ground is a couple of
+// kilometres across, which on a 2048-wide world image is a single pixel repeated — the render is
+// then perfectly correct and perfectly featureless. From twenty kilometres up the foreground is
+// tens of kilometres and the horizon hundreds, which is the scale that image has something to
+// say at. The pane is a diagram of the sky rather than a photograph, so there is no true answer
+// here; there is only the height at which the ground has any texture to show.
+const SUNPATH_EYE_KM = 20;
+// Re-rendered only when the view has actually moved. Playing a day moves the camera with the sun,
+// so this is not free, but a degree of bearing is far below what the imagery resolves.
+let sunPathGroundCache = { key: null, cv: null };
+function sunPathGroundImage(camAlt, camAz, fovDeg, W, H, lat, lon) {
+    const img = sunPathSat.day;
+    if (!img) return null;
+    const key = [Math.round(camAlt), Math.round(camAz), Math.round(fovDeg), W, H,
+                 lat.toFixed(2), lon.toFixed(2)].join('|');
+    if (sunPathGroundCache.key === key) return sunPathGroundCache.url;
+    // Drawn at a quarter scale and stretched back up: this is a soft, hazy surface with no fine
+    // detail worth resolving, and a full-size per-pixel loop on every clock tick is not free.
+    const w = Math.max(24, Math.round(W / 4)), h = Math.max(24, Math.round(H / 4));
+    const src = document.createElement('canvas');
+    src.width = img.width; src.height = img.height;
+    const sctx = src.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(img, 0, 0);
+    const sdata = sctx.getImageData(0, 0, img.width, img.height).data;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    const out = ctx.createImageData(w, h);
+    const kdeg = (W / 2) / (fovDeg / 2);          // the pane's own pixels per degree
+    const cosA = Math.cos(camAlt * DEG), sinA = Math.sin(camAlt * DEG);
+    for (let py = 0; py < h; py++) {
+        // Back to the pane's coordinates, then to the camera-frame angles the projection uses.
+        const ay = (H / 2 - (py + 0.5) * (H / h)) / kdeg;      // degrees up from centre
+        for (let px = 0; px < w; px++) {
+            const ax = ((px + 0.5) * (W / w) - W / 2) / kdeg;  // degrees right of centre
+            // The ray in the camera frame, then rotated into the observer's frame by the camera's
+            // own altitude. Azimuth is handled as a bearing offset below, which is exact because
+            // the ground is a plane and a bearing is a bearing.
+            const ca = Math.cos(ay * DEG), sa = Math.sin(ay * DEG);
+            const cx2 = Math.cos(ax * DEG), sx2 = Math.sin(ax * DEG);
+            const fwd = ca * cx2, rgt = ca * sx2, upv = sa;
+            // Rotate about the camera's right axis by the camera's altitude.
+            const up2 = upv * cosA + fwd * sinA;
+            const fw2 = fwd * cosA - upv * sinA;
+            const i4 = (py * w + px) * 4;
+            if (up2 >= -0.004) { out.data[i4 + 3] = 0; continue; }   // at or above the horizon
+            const horiz = Math.hypot(fw2, rgt);
+            const distKm = SUNPATH_EYE_KM * horiz / (-up2);
+            if (!isFinite(distKm) || distKm > 4000) { out.data[i4 + 3] = 0; continue; }
+            const bearing = camAz + Math.atan2(rgt, fw2) / DEG;
+            // Flat-earth offset, which at these distances is the right answer to five figures.
+            const dLat = distKm / 111.32 * Math.cos(bearing * DEG);
+            const dLon = distKm / 111.32 * Math.sin(bearing * DEG) /
+                Math.max(0.08, Math.cos((lat + dLat / 2) * DEG));
+            const la = Math.max(-89.9, Math.min(89.9, lat + dLat));
+            const lo = ((lon + dLon + 540) % 360) - 180;
+            const sx = Math.min(img.width - 1, Math.max(0, Math.round((lo + 180) / 360 * img.width)));
+            const sy = Math.min(img.height - 1, Math.max(0, Math.round((90 - la) / 180 * img.height)));
+            const j = (sy * img.width + sx) * 4;
+            out.data[i4] = sdata[j];
+            out.data[i4 + 1] = sdata[j + 1];
+            out.data[i4 + 2] = sdata[j + 2];
+            out.data[i4 + 3] = 255;
+        }
+    }
+    ctx.putImageData(out, 0, 0);
+    // The data URL is cached, not the canvas: `toDataURL` is the expensive half of this and it
+    // was being paid on every draw even when the pixels had not changed.
+    const url = cv.toDataURL('image/jpeg', 0.85);
+    sunPathGroundCache = { key, url };
+    return url;
+}
+
+// THE GROUND UNDER THE DOME, as a real map of where the observer is standing.
+//
+// The projection is AZIMUTHAL EQUIDISTANT centred on them, and that is not a free choice: the
+// disc is being looked at from its own centre, so what a viewer reads off it is direction and
+// distance from that centre — which is exactly the pair this projection keeps true. Every bearing
+// from the middle is a straight line at its true compass angle, and distance along it is to
+// scale, so the compass rose drawn on top of the disc means what it says at every radius. A
+// Mercator patch would have neither property and would put north-east at some other angle.
+//
+// The disc is textured north-up, which is why the dome's own compass rose lines up with it.
+const SUNPATH_LOCAL_SPAN_KM = 900;      // the radius the disc covers on the ground
+function sunPathLocalMap(lat, lon, px) {
+    const N = px || 1024;
+    // Same trap, same fix: whichever of the two actually has features in it.
+    const feats = ((sunPathState && (sunPathState.landFeatures || []).length)
+                   ? sunPathState.landFeatures
+                   : (gameState.countries || []));
+    const cv = document.createElement('canvas');
+    cv.width = N; cv.height = N;
+    const ctx = cv.getContext('2d');
+    const radiusDeg = SUNPATH_LOCAL_SPAN_KM / 111.32;
+    const proj = d3.geoAzimuthalEquidistant()
+        .rotate([-lon, -lat])
+        .translate([N / 2, N / 2])
+        .scale((N / 2) / (radiusDeg * DEG))
+        .clipAngle(179)
+        .precision(0.3);
+
+    if (sunPathState && sunPathState.satellite && sunPathSat.day) {
+        // The imagery, re-projected pixel by pixel: an inverse for each destination pixel, then a
+        // lookup in the equirectangular source. The same walk the spaceship view's own satellite
+        // reprojection does, and for the same reason — a destination-side loop can fill any
+        // projection at all, where a source-side one can fill none of them.
+        const img = sunPathSat.day;
+        const sc = document.createElement('canvas');
+        sc.width = img.width; sc.height = img.height;
+        const sctx = sc.getContext('2d', { willReadFrequently: true });
+        sctx.drawImage(img, 0, 0);
+        const sd = sctx.getImageData(0, 0, img.width, img.height).data;
+        const out = ctx.createImageData(N, N);
+        for (let y = 0; y < N; y++) {
+            for (let x = 0; x < N; x++) {
+                const ll = proj.invert([x + 0.5, y + 0.5]);
+                const i4 = (y * N + x) * 4;
+                if (!ll || !isFinite(ll[0])) { out.data[i4 + 3] = 0; continue; }
+                const sx = Math.min(img.width - 1, Math.max(0, Math.round((ll[0] + 180) / 360 * img.width)));
+                const sy = Math.min(img.height - 1, Math.max(0, Math.round((90 - ll[1]) / 180 * img.height)));
+                const j = (sy * img.width + sx) * 4;
+                out.data[i4] = sd[j];
+                out.data[i4 + 1] = sd[j + 1];
+                out.data[i4 + 2] = sd[j + 2];
+                out.data[i4 + 3] = 255;
+            }
+        }
+        ctx.putImageData(out, 0, 0);
+        spDrawLocalTropics(ctx, proj, N);
+        return cv;
+    }
+
+    if (!feats.length) return null;
+    ctx.fillStyle = '#9fb8cc';
+    ctx.fillRect(0, 0, N, N);
+    const pth = d3.geoPath(proj, ctx);
+    ctx.beginPath();
+    feats.forEach(f => pth(f));
+    ctx.fillStyle = '#cbc3a4';
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, N / 340);
+    ctx.strokeStyle = '#a79c78';
+    ctx.stroke();
+    spDrawLocalTropics(ctx, proj, N);
+    return cv;
+}
+
+// The five fixed parallels on the ground the observer is standing on. The disc is an azimuthal
+// equidistant map about them, so a tropic is a curve across it rather than a straight line — and
+// whether one is in view at all is a fact about where you are, which is the point of drawing it
+// there. Only reaches the ground within SUNPATH_LOCAL_SPAN_KM, so most locations show none.
+function spDrawLocalTropics(ctx, proj, N) {
+    if (!sunPathState || sunPathState.tropics === false) return;
+    const pth = d3.geoPath(proj, ctx);
+    ctx.save();
+    ctx.lineWidth = Math.max(1, N / 400);
+    ctx.setLineDash([N / 90, N / 110]);
+    [[0, '#ffffff'], [OBLIQUITY_DEG, '#d9a441'], [-OBLIQUITY_DEG, '#d9a441'],
+     [90 - OBLIQUITY_DEG, '#7fb6d9'], [-(90 - OBLIQUITY_DEG), '#7fb6d9']].forEach(([lat, col]) => {
+        ctx.beginPath();
+        pth({ type: 'LineString',
+              coordinates: d3.range(-180, 181, 2).map(l => [l, lat]) });
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = 0.75;
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
 function sunPathEarthCanvas(features) {
     const feats = features || sunPathState && sunPathState.landFeatures || gameState.countries || [];
     if (!feats.length) return null;
@@ -10785,6 +12734,12 @@ function sunPathEarthCanvas(features) {
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = Hh;
     const ctx = cv.getContext('2d');
+    // Satellite, when it is on and the image is here. The vector map is not a fallback anybody
+    // should be ashamed of — it is the clearer of the two at this size — so it stays the default.
+    if (sunPathState && sunPathState.satellite && sunPathSat.day) {
+        ctx.drawImage(sunPathSat.day, 0, 0, W, Hh);
+        return cv;
+    }
     ctx.fillStyle = '#9fb8cc';                    // .sp-map-ocean
     ctx.fillRect(0, 0, W, Hh);
     ctx.save();
@@ -10801,6 +12756,93 @@ function sunPathEarthCanvas(features) {
     return cv;
 }
 
+// CITY LIGHTS, as a shell just above the surface.
+//
+// The earth's own texture is the DAY image and the scene's directional light is what makes half
+// of it dark — but dark is not the same picture as lit up, and the Black Marble is a second image
+// that belongs only on the night side. It cannot be composited into the day canvas, because the
+// terminator moves with the hour while that canvas is rebuilt only when the geography changes.
+//
+// So: a sphere a thousandth of a radius out, alpha-blended over the earth, opaque where the
+// surface faces away from the sun and clear where it faces it. The night side is then the Black
+// Marble itself rather than the day image with lights sprinkled on, and the fade between them
+// spans the terminator out to about 12° past it, which is roughly the twilight the lights would
+// come on through.
+//
+// ADDITIVE WAS TRIED FIRST and is the wrong tool here, for a reason particular to this pane: its
+// ambient is deliberately bright — the default view is edge-on to the sunlight, so with a darker
+// one the middle of the visible face reads as an unlit ball — and against an ambient-lit
+// continent the lights simply do not carry. Measured, the whole night side lifted from a mean of
+// 33.6 to 41 and not one city was visible.
+//
+// The sun is passed in the SHELL's own frame, so the shader needs to know nothing about how the
+// earth is turned or how the holder is tilted.
+//
+// The texture is left in the default colour space deliberately: a raw ShaderMaterial gets neither
+// the input decode nor the output encode chunk, so an untagged texture goes to the screen exactly
+// as it came out of the file. Tagging it sRGB would decode without re-encoding and wash it out.
+const SP_NIGHT_VERT = `
+    varying vec3 vN; varying vec2 vUv;
+    void main() {
+        vN = normalize(normal); vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`;
+// `smoothstep`'s edges must ASCEND — GLSL leaves the result undefined when edge0 >= edge1, and
+// ANGLE returns a flat zero, so writing the fade as smoothstep(0.02, -0.26, d) produced a shell
+// that was present, textured, visible and completely black. It is written the way round the
+// language wants and subtracted instead.
+const SP_NIGHT_FRAG = `
+    uniform sampler2D uMap; uniform vec3 uSun; uniform float uGain;
+    varying vec3 vN; varying vec2 vUv;
+    void main() {
+        float d = dot(normalize(vN), normalize(uSun));
+        float a = 1.0 - smoothstep(-0.21, 0.0, d);
+        gl_FragColor = vec4(texture2D(uMap, vUv).rgb * uGain, a);
+    }`;
+function makeNightShell() {
+    const T = window.THREE;
+    const mat = new T.ShaderMaterial({
+        uniforms: { uMap: { value: null }, uSun: { value: new T.Vector3(1, 0, 0) },
+                    // Black Marble is a dark image and this pane draws the earth about 250 px
+                    // across, where a city is a fraction of a pixel. At unity the brightest of
+                    // them came out at 98 of 255 and the picture read as simply black. This is
+                    // only the starting value — the Night slider owns it from here.
+                    uGain: { value: 2.4 } },
+        vertexShader: SP_NIGHT_VERT, fragmentShader: SP_NIGHT_FRAG,
+        transparent: true, depthWrite: false
+    });
+    const m = new T.Mesh(new T.SphereGeometry(1.001, 64, 48), mat);
+    m.visible = false;
+    m.userData.noFrame = true;              // the auto-framing must not see a second earth
+    return m;
+}
+
+// Point the shell's sun at where the light actually is, and show it only when there is both a
+// reason to (satellite on) and something to show (the image has landed).
+function syncNightShell(th, sunDir) {
+    const T = window.THREE;
+    if (!th || !th.night) return;
+    const want = !!(sunPathState && sunPathState.satellite);
+    if (want && !sunPathSat.night) ensureSunPathNight();
+    const on = want && !!sunPathSat.night;
+    th.night.visible = on;
+    if (!on) return;
+    th.night.material.uniforms.uGain.value = spNightGain();
+    const u = th.night.material.uniforms;
+    if (u.uMap.value !== th.nightTex || !th.nightTex) {
+        const tex = new T.Texture(sunPathSat.night);
+        tex.needsUpdate = true;
+        if (u.uMap.value) u.uMap.value.dispose();
+        th.nightTex = tex;
+        u.uMap.value = tex;
+    }
+    // The shell hangs off the earth, so it carries the earth's spin and the holder's tilt. One
+    // inverse turns the world-space sun direction into the frame the shader is reasoning in.
+    th.earth.updateMatrixWorld(true);
+    u.uSun.value.copy(sunDir).transformDirection(
+        new T.Matrix4().copy(th.earth.matrixWorld).invert());
+}
+
 // Paint that canvas onto an earth mesh.
 function applyEarthTexture(mesh, cv) {
     const T = window.THREE;
@@ -10813,13 +12855,74 @@ function applyEarthTexture(mesh, cv) {
     mesh.material.needsUpdate = true;
 }
 
-function refreshSunPathEarthTexture() {
+function refreshSunPathEarthTexture(force) {
     const th = sunPathState && sunPathState.three && sunPathState.three.globe;
     if (!window.THREE || !th || !th.earth) return;
+    // The image arrives over a load event, so a first call with satellite on has nothing to draw
+    // yet: ask for it and come back. `force` is the checkbox's own call, which must not be
+    // short-circuited by a texture that is already painted.
+    if (sunPathState.satellite && !sunPathSat.day) {
+        ensureSunPathSat(() => { if (sunPathState) { refreshSunPathEarthTexture(true); updateSunPath(); } });
+        return;                      // nothing to paint yet; the callback comes back here
+    }
     const cv = sunPathEarthCanvas();
     if (!cv) return;
     applyEarthTexture(th.earth, cv);
     sunPathState.earthTexCanvas = cv;
+    // The dome's ground disc is the same imagery seen from a metre up.
+    refreshSunPathDomeGround();
+}
+
+// The ground under the observer in the dome pane: a patch of real surface when satellite is on,
+// the flat land colour when it is not.
+// How big the dome's ground disc is drawn. 1024 across a 900 km radius is about 1.8 km a pixel,
+// which is roughly what a 2048-wide world image holds and well past what a disc this size shows.
+const SUNPATH_PATCH_PX = 1024;
+// ONE LOCATION, EVERY PANE. `sunPathState.lat/lon` is the only place the observer lives, and each
+// pane derives its own picture from it on every update — except this disc, which is a texture and
+// therefore has to be told. It was built once and never re-cut, so moving the observer moved the
+// sun's arc, the globe's marker and the map's pin while the ground under the dome quietly stayed
+// where it had started: three panes at the new place and one at the old.
+//
+// Rebuilt only when the location actually changes, since re-projecting the world into a 1024 px
+// disc is not something to do sixty times a second.
+let sunPathDomeGroundAt = null;
+function refreshSunPathDomeGround(force) {
+    const T = window.THREE;
+    const disc = sunPathState && sunPathState.domeGround;
+    if (!T || !disc) return;
+    const key = [sunPathState.lat.toFixed(3), sunPathState.lon.toFixed(3),
+                 !!sunPathState.satellite, sunPathSat.month,
+                 sunPathState.tropics !== false].join('|');
+    if (!force && sunPathDomeGroundAt === key) return;
+    sunPathDomeGroundAt = key;
+    // Drawn whenever there is anything to draw it FROM — the vector world always, the imagery when
+    // satellite is on. The disc is the ground the observer is standing on, and a plain coloured
+    // circle says nothing at all about where that is.
+    //
+    // `a || b` is the wrong test between two arrays: an EMPTY array is truthy, so
+    // `gameState.countries || landFeatures` returns the empty one and never looks at the full
+    // one. In this mode `gameState.countries` is often empty and `landFeatures` holds the world,
+    // which is exactly the case that silently left the disc a flat colour.
+    const have = ((gameState.countries || []).length ? gameState.countries
+                  : (sunPathState.landFeatures || []));
+    const want = !!(have.length || sunPathSat.day);
+    if (!want) {
+        if (disc.material.map) { disc.material.map.dispose(); disc.material.map = null; }
+        disc.material.color = new T.Color(themeColor('--land', '#cbc3a4'));
+        disc.material.opacity = 0.92;
+        disc.material.needsUpdate = true;
+        return;
+    }
+    const cv = sunPathLocalMap(sunPathState.lat, sunPathState.lon, SUNPATH_PATCH_PX);
+    if (!cv) return;
+    const tex = new T.CanvasTexture(cv);
+    if (T.SRGBColorSpace) tex.colorSpace = T.SRGBColorSpace;
+    if (disc.material.map) disc.material.map.dispose();
+    disc.material.map = tex;
+    disc.material.color = new T.Color(0xffffff);
+    disc.material.opacity = 1;
+    disc.material.needsUpdate = true;
 }
 
 // ---- the Earth-in-space pane, as a reusable scene ----
@@ -10837,6 +12940,9 @@ function buildEarthInSpace(scene, opts) {
         new T.MeshLambertMaterial({ color: 0x9fb8cc }));
     holder.add(earth);
     applyEarthTexture(earth, sunPathEarthCanvas(o.features));
+    // A child of the earth, so it turns with it and needs no bookkeeping of its own.
+    const night = makeNightShell();
+    earth.add(night);
 
     const sun = new T.DirectionalLight(0xffffff, 2.6);
     sun.position.set(5, 0, 0);
@@ -10846,34 +12952,80 @@ function buildEarthInSpace(scene, opts) {
     // shading is zero — with a darker ambient the whole pane read as an unlit ball.
     scene.add(new T.AmbientLight(0x3c5170, 1.6));
 
-    // The sun, off to +X, with its ray to the sub-solar point. All three are tagged noFrame:
-    // the auto-framing must ignore them or it would pull the camera back far enough to fit a
-    // body 3.3 radii away and shrink the earth to a marble.
+    // The sun, with its ray to the sub-solar point. Both are tagged noFrame: the auto-framing
+    // must ignore them or it would pull the camera back far enough to fit a body 3.3 radii away
+    // and shrink the earth to a marble. Handles come back so the caller can move them — which is
+    // what happens when the earth is held still and the sun is the thing that goes round.
+    //
+    // The 'Sunlight' label is gone. It named the one object in the pane nobody was going to
+    // mistake for anything else, and it was the widest sprite in the scene.
+    let sunBall = null, sunRay = null;
     if (o.sunBall !== false) {
-        const ball = new T.Mesh(new T.SphereGeometry(0.13, 16, 16), new T.MeshBasicMaterial({ color: 0xffcf5c }));
-        ball.position.set(3.3, 0, 0);
-        ball.userData.noFrame = true;
-        scene.add(ball);
-        const ray = lineFrom([new T.Vector3(3.1, 0, 0), new T.Vector3(1.02, 0, 0)], 0xffcf5c, 0.85);
-        ray.userData.noFrame = true;
-        scene.add(ray);
-        const sunLab = makeLabel('Sunlight', '#ffe6b0', 0.16);
-        sunLab.position.set(2.55, 0.28, 0);
-        sunLab.userData.noFrame = true;
-        scene.add(sunLab);
+        sunBall = new T.Mesh(new T.SphereGeometry(0.13, 16, 16), new T.MeshBasicMaterial({ color: 0xffcf5c }));
+        sunBall.position.set(3.3, 0, 0);
+        sunBall.userData.noFrame = true;
+        scene.add(sunBall);
+        sunRay = lineFrom([new T.Vector3(3.1, 0, 0), new T.Vector3(1.02, 0, 0)], 0xffcf5c, 0.85);
+        sunRay.userData.noFrame = true;
+        scene.add(sunRay);
     }
 
-    // Fixed furniture on the globe: the axis, the equator, the tropics and polar circles.
+    // Fixed furniture on the globe: the axis, the equator, the tropics and polar circles. The
+    // five parallels are tagged so the Tropic lines switch can reach them — they are the same
+    // five the map draws bars along, so one control governs both.
     holder.add(lineFrom([new T.Vector3(0, -1.5, 0), new T.Vector3(0, 1.5, 0)], 0xffd28a, 0.9));
-    holder.add(parallelRing(0, 0xffffff, 0.8));
-    [OBLIQUITY_DEG, -OBLIQUITY_DEG].forEach(l => holder.add(parallelRing(l, 0xd9a441, 0.6)));
-    [90 - OBLIQUITY_DEG, -(90 - OBLIQUITY_DEG)].forEach(l => holder.add(parallelRing(l, 0x7fb6d9, 0.6)));
+    const tropicRing = (lat, colour, opacity) => {
+        const r = parallelRing(lat, colour, opacity);
+        r.userData.tropic = true;
+        holder.add(r);
+    };
+    tropicRing(0, 0xffffff, 0.8);
+    [OBLIQUITY_DEG, -OBLIQUITY_DEG].forEach(l => tropicRing(l, 0xd9a441, 0.6));
+    [90 - OBLIQUITY_DEG, -(90 - OBLIQUITY_DEG)].forEach(l => tropicRing(l, 0x7fb6d9, 0.6));
 
     const dyn = new T.Group();
     scene.add(dyn);          // horizon plane + angle marks live in WORLD space, not the tilted frame
     const holderDyn = new T.Group();
     holder.add(holderDyn);
-    return { holder, earth, dyn, holderDyn };
+    return { holder, earth, night, dyn, holderDyn, light: sun, sunBall, sunRay };
+}
+
+// The two exposures, applied wherever each image is drawn.
+//
+// On the GLOBE the day image is a texture on a Lambert material, so the material's own colour is
+// the multiplier — no canvas to redraw and no cache to invalidate — and the night image is a
+// shader whose gain is already a uniform. On the MAP both are SVG <image> elements, so a CSS
+// brightness filter is the same multiplication by another route. Four places, one pair of numbers.
+const spDayGain = () => (sunPathState && sunPathState.dayGain) || 1;
+const spNightGain = () => (sunPathState && sunPathState.nightGain != null ? sunPathState.nightGain : 2.4);
+
+function syncSunPathGain() {
+    if (!sunPathState) return;
+    const box = document.getElementById('sp-sat-gain');
+    if (box) box.style.display = sunPathState.satellite ? '' : 'none';
+    const th = sunPathState.three && sunPathState.three.globe;
+    if (th && th.earth && th.earth.material) {
+        // Only when there is imagery to brighten: the vector map is drawn in its own colours and
+        // a gain on those is just a wrong palette.
+        const k = (sunPathState.satellite && sunPathSat.day) ? spDayGain() : 1;
+        th.earth.material.color.setScalar(k);
+        th.earth.material.needsUpdate = true;
+    }
+    if (th && th.night) th.night.material.uniforms.uGain.value = spNightGain();
+    if (sunPathMap) {
+        sunPathMap.sat.attr('style', `filter: brightness(${spDayGain()})`);
+        sunPathMap.svg.selectAll('.sp-map-sat-night')
+            .attr('style', `filter: brightness(${spNightGain()})`);
+    }
+}
+
+// The Tropic lines switch, reaching the earth in space. The rings are built once as fixed
+// furniture, so this is a visibility flip rather than a rebuild.
+function syncSunPathTropics() {
+    const th = sunPathState && sunPathState.three && sunPathState.three.globe;
+    if (!th || !th.holder) return;
+    const on = sunPathState.tropics !== false;
+    th.holder.traverse(o => { if (o.userData && o.userData.tropic) o.visible = on; });
 }
 
 // Leader lines out to a left-hand column, one per parallel that is actually facing us.
@@ -10956,12 +13108,73 @@ function updateGlobeScene(now) {
     clearGroup(th.dyn);
     clearGroup(th.holderDyn);
 
-    // Tip the earth so the sub-solar latitude IS the declination (the light is fixed at +X).
-    th.holder.rotation.set(0, 0, -now.dec * DEG);
-    // Spin the textured sphere to put the right geography under the light. SphereGeometry places
-    // an unmirrored equirectangular map's longitude L at mesh angle -L, and the sub-solar
-    // longitude (lon - H) has to land at +X, so the whole alignment is this one rotation.
-    if (th.earth) th.earth.rotation.y = (now.H - now.lon) * DEG;
+    // TWO FRAMES, and the switch between them is what Track sun means in this pane.
+    //
+    // TRACKING (the original): the light is nailed to +X and the earth turns under it, so the
+    // sub-solar point holds still in the frame and the day sweeps across the geography. The tilt
+    // is carried by the holder — tipping the axis by the declination is what puts the sub-solar
+    // latitude where it belongs.
+    //
+    // NOT TRACKING: the earth holds still and the SUN goes round it, which is the view from the
+    // ground rather than from the sun. The tilt then has to move from the earth to the sun's
+    // path: with the axis upright, the sun runs its daily circle at the declination's own
+    // latitude about that axis, which is exactly what a diurnal circle is. Physically the same
+    // picture; the difference is only which of the two is held still, and that is the whole of
+    // what somebody switching this off is asking to see.
+    const track = spTrack('globe');
+    th.holder.rotation.set(0, 0, track ? -now.dec * DEG : 0);
+    // SphereGeometry places an unmirrored equirectangular map's longitude L at mesh angle -L.
+    // Tracking, the sub-solar longitude (lon - H) has to land at +X; held still, the observer's
+    // own longitude does, so their meridian faces the camera's default position and the sun
+    // visibly comes round to them.
+    if (th.earth) th.earth.rotation.y = (track ? (now.H - now.lon) : -now.lon) * DEG;
+    // Where the sunlight comes from. Tracking, +X and nothing else; held still, the daily circle.
+    // The sub-solar longitude is `lon - H`, so RELATIVE to the observer's meridian — which is
+    // what the earth is aligned to when it is held still — the sun sits at -H. Everything else in
+    // this pane maps a relative longitude L to z = -cos(lat)·sin(L), so the sun's z is
+    // -cos(dec)·sin(-H) = +cos(dec)·sin(H). Writing the minus by analogy with the observer's own
+    // position (which is at +H, not -H) sent it round the sky backwards — and the moon, which is
+    // built from its own sub-point and needs no such reasoning, was right all along.
+    const sunDir = track
+        ? new T.Vector3(1, 0, 0)
+        : new T.Vector3(Math.cos(now.dec * DEG) * Math.cos(now.H * DEG),
+                        Math.sin(now.dec * DEG),
+                        Math.cos(now.dec * DEG) * Math.sin(now.H * DEG));
+    if (th.light) th.light.position.copy(sunDir.clone().multiplyScalar(5));
+    syncNightShell(th, sunDir);
+    if (th.sunBall) th.sunBall.position.copy(sunDir.clone().multiplyScalar(3.3));
+    if (th.sunRay) {
+        const pts = [sunDir.clone().multiplyScalar(3.0), sunDir.clone().multiplyScalar(1.02)];
+        th.sunRay.geometry.setFromPoints(pts);
+        th.sunRay.geometry.computeBoundingSphere();
+    }
+
+    // The moon, as a body rather than a marker: a small sphere out past the earth in the
+    // direction of its own sub-point, lit from wherever the sun is. Placed at a tenth of the real
+    // distance — sixty earth radii would put it three screens away and the pane would either
+    // frame a marble or lose the moon entirely — and tagged noFrame for the same reason the sun
+    // is. What it is honestly showing is the DIRECTION, which is the thing worth seeing.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m && m.sub) {
+            // The sub-lunar point in the same frame as everything else: tracking, longitudes are
+            // measured from the sub-solar meridian; held still, from the observer's own.
+            const rel = track ? (m.sub[0] - (now.lon - now.H)) : (m.sub[0] - now.lon);
+            const la = m.sub[1] * DEG, lo = rel * DEG;
+            const dir = new T.Vector3(Math.cos(la) * Math.cos(lo), Math.sin(la),
+                                      -Math.cos(la) * Math.sin(lo));
+            if (track) dir.applyAxisAngle(new T.Vector3(0, 0, 1), -now.dec * DEG);
+            const ball = new T.Mesh(new T.SphereGeometry(0.075, 20, 14),
+                new T.MeshLambertMaterial({ color: 0xd8d4c8 }));
+            ball.position.copy(dir.clone().multiplyScalar(2.35));
+            ball.userData.noFrame = true;
+            th.dyn.add(ball);
+            const lab = makeLabel(`moon ${(m.k * 100).toFixed(0)}%`, '#d6dbe6', 0.1);
+            lab.position.copy(dir.clone().multiplyScalar(2.62));
+            lab.userData.noFrame = true;
+            th.dyn.add(lab);
+        }
+    }
 
     // The observer's parallel — the sixth, and the only one that moves.
     th.holderDyn.add(parallelRing(now.lat, 0xd05c4a, 0.9));
@@ -10974,7 +13187,9 @@ function updateGlobeScene(now) {
     // the hour advances the observer must move toward -Z. With +sin(H) the globe span backwards
     // and the entire world came out mirrored east-west: measuring the sun's azimuth in the
     // observer's own local frame returned 360 - az (249 deg at 09:00 instead of 111 deg).
-    const spin = now.H * DEG;
+    // Tracking, the observer rides round with the hour angle. Held still, they stay put at their
+    // own meridian and it is the sun that moves — which is the point of holding it still.
+    const spin = (track ? now.H : 0) * DEG;
     const local = new T.Vector3(Math.cos(spin) * r, y, -Math.sin(spin) * r);
     // No marker ball: the figure standing on the horizon disc below IS the observer, and two
     // markers for one person only invited the question of which was which.
@@ -10992,9 +13207,6 @@ function updateGlobeScene(now) {
             .add(north.clone().multiplyScalar(Math.sin(a) * 0.42)));
     }
     th.holderDyn.add(lineFrom(disc, 0x4fc3f7, 0.95));
-    const hlab = makeLabel('Horizon', '#bfe7fb', 0.10);
-    hlab.position.copy(up.clone().multiplyScalar(1.05).add(east.clone().multiplyScalar(0.5)));
-    th.holderDyn.add(hlab);
 
     // The Sky-above-you pane, in miniature and in place: a faint dome standing on that horizon
     // circle, with the sun's track arcing over it. This is the whole point of showing both — the
@@ -11048,25 +13260,17 @@ function updateGlobeScene(now) {
     fig.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), up);
     th.holderDyn.add(fig);
     if (now.alt > 0) {
-        const awayAz = (now.az + 180) % 360;
-        const away = north.clone().multiplyScalar(Math.cos(awayAz * DEG))
-            .add(east.clone().multiplyScalar(Math.sin(awayAz * DEG))).normalize();
-        const side = up.clone().cross(away).normalize();
-        const len = Math.min(DOME_R * 0.92, FIG_H / Math.max(0.09, Math.tan(Math.max(0.5, now.alt) * DEG)));
-        const w0 = FIG_H * 0.30, w1 = w0 * 0.86;      // constant width — see sunPathShadow
-        const o0 = base.clone().add(up.clone().multiplyScalar(0.0015));
-        const tip = o0.clone().add(away.clone().multiplyScalar(len));
-        const pts = [
-            o0.clone().add(side.clone().multiplyScalar(w0)),
-            o0.clone().add(side.clone().multiplyScalar(-w0)),
-            tip.clone().add(side.clone().multiplyScalar(-w1)),
-            o0.clone().add(side.clone().multiplyScalar(w0)),
-            tip.clone().add(side.clone().multiplyScalar(-w1)),
-            tip.clone().add(side.clone().multiplyScalar(w1))
-        ];
-        th.holderDyn.add(new T.Mesh(new T.BufferGeometry().setFromPoints(pts),
-            new T.MeshBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.62,
-                                      side: T.DoubleSide, depthWrite: false })));
+        // Cast the same way as the dome's, onto the tangent plane the observer is standing on
+        // rather than onto the world's own XZ — which is the whole reason the helper takes a
+        // ground rather than assuming one.
+        const toSun = up.clone().multiplyScalar(Math.sin(now.alt * DEG))
+            .add(east.clone().multiplyScalar(Math.cos(now.alt * DEG) * Math.sin(now.az * DEG)))
+            .add(north.clone().multiplyScalar(Math.cos(now.alt * DEG) * Math.cos(now.az * DEG)))
+            .normalize();
+        const sh = sunPathShadowHull(fig, toSun, {
+            origin: base, up, ax: east, maxLen: DOME_R * 0.92, lift: 0.0015, opacity: 0.6
+        });
+        if (sh) th.holderDyn.add(sh);
     }
 
     // Latitude, marked as the angle from the equatorial plane up to the observer.
@@ -11099,15 +13303,9 @@ function updateGlobeScene(now) {
     const horizonDir = toSun.clone().sub(worldUp.clone().multiplyScalar(toSun.dot(worldUp))).normalize();
     if (horizonDir.lengthSq() > 0.01) {
         th.dyn.add(angleArc(horizonDir, toSun, 0.9, 0xf0a92b, 0.95));
-        const maxAlt = 90 - Math.abs(now.lat - OBLIQUITY_DEG);
-        const minAlt = 90 - Math.abs(now.lat + OBLIQUITY_DEG);
-        // Kept short on purpose: this is the widest sprite in the pane, and the auto-framing
-        // solves for whatever it can see — a long string here shrinks the earth itself.
-        const lab = makeLabel(
-            `sun ${now.alt.toFixed(0)}° · year ${Math.max(minAlt, maxAlt).toFixed(0)}–${Math.min(minAlt, maxAlt).toFixed(0)}°`,
-            '#ffe6b0', 0.10);
-        lab.position.copy(horizonDir.clone().lerp(toSun, 0.5).normalize().multiplyScalar(1.15));
-        th.dyn.add(lab);
+        // No label on this arc. The angle is drawn, the number is in the readout below, and a
+        // sprite here was the widest thing in the pane — the auto-framing solves for whatever it
+        // can see, so a long string shrank the earth itself to make room for it.
     }
 }
 
@@ -11115,7 +13313,10 @@ function updateGlobeScene(now) {
 // Not a fisheye and not the whole track: a 60-degree window that follows the sun round,
 // which is what a person standing there would actually see. Below the horizon the sun keeps
 // going on a dotted line, so "it is coming back up over there" stays visible.
-const GROUND_FOV = 104;         // a wide-angle lens: 60 was a keyhole, and the track left it fast
+// Wider than any real lens, and it can afford to be: with equal angles per pixel there is no
+// edge penalty for opening it up, which is exactly what a rectilinear camera could not do. 150
+// degrees puts most of a day's arc on screen at once without stretching any of it.
+const GROUND_FOV = 150;
 
 // The sky, keyed on the sun's altitude. Two colours per stop — zenith and horizon — because a
 // flat fill can't show the thing that actually makes a sunset read as a sunset: the warm band
@@ -11150,11 +13351,12 @@ function skyColoursFor(alt) {
 
 // A skyline, as a sum of sines of the TRUE azimuth — so the hills are pinned to compass
 // directions and stay put as the camera pans, instead of sliding with the viewport.
-function horizonReliefDeg(azDeg) {
-    const a = azDeg * DEG;
-    return 0.62 + 0.55 * Math.sin(a * 3 + 0.7) + 0.34 * Math.sin(a * 7 + 2.1)
-                + 0.21 * Math.sin(a * 13 + 4.3) + 0.12 * Math.sin(a * 23 + 1.2);
-}
+// A FLAT horizon. What was here was a sum of four sine waves standing in for hills, and it was
+// the one invented thing in a pane full of measured ones: it implied a landscape this mode knows
+// nothing about, and every reading taken against it — where the sun sets, how high it is — was
+// being taken against fiction. Sea level is both honest and the only horizon that means the same
+// thing at every one of the places this pane can be pointed at.
+function horizonReliefDeg() { return 0; }
 
 function drawSunPathHorizon(now) {
     const svgH = d3.select('#sun-path-horizon');
@@ -11166,22 +13368,34 @@ function drawSunPathHorizon(now) {
     const W = 400;
     const H = box.width > 0 ? Math.round(W * Math.max(0.4, Math.min(2.2, box.height / box.width))) : 220;
     svgH.attr('viewBox', `0 0 ${W} ${H}`);
-    // A TRUE rectilinear camera locked on the sun, with the zenith as its up reference.
+    // EQUAL ANGLES, EQUAL PIXELS. A degree of sky is the same number of pixels wherever it sits
+    // in the frame, which is the only sense in which a wide-angle view can be called undistorted,
+    // and the only one that matters here: the whole point of the pane is the SHAPE of the arc,
+    // measured in degrees, and a projection that stretches the edges is drawing a different arc
+    // from the one the sky has.
     //
-    // What was here before was a local equirectangular plot: x from the azimuth difference, y
-    // from the altitude difference. That is fine while the sun is low and hopeless once it is
-    // not — azimuth runs away toward the zenith (at the equator on a solstice it swings the
-    // whole 180° in minutes), so the track sheared and the camera lurched. A gnomonic projection
-    // about the sun's own direction has none of that: great circles stay straight, the arc is
-    // smooth everywhere, and at the zenith the frame simply rolls 180°, which is exactly what a
-    // camera tracking the sun through the zenith does.
-    const focal = (W / 2) / Math.tan(GROUND_FOV / 2 * DEG);
-    const altR = now.alt * DEG, azR = now.az * DEG;
+    // This replaces a rectilinear (gnomonic) camera. Gnomonic is the photographer's undistorted
+    // lens — straight lines stay straight — but it pays for that with a tan(), and across a 104
+    // degree field tan() magnifies the edges more than threefold. That edge stretch is what reads
+    // as a fisheye bulge, even though gnomonic is the exact opposite of a fisheye; it also
+    // flattened the sun's arc toward the frame edges, which is the one thing this pane exists to
+    // show honestly.
+    //
+    // What it costs: the horizon is a great circle and no longer a straight line, so it is
+    // sampled and drawn as a shallow curve. That is what a wide panorama actually looks like.
+    const kpx = (W / 2) / (GROUND_FOV / 2);                 // pixels per degree, both axes
+    // Where the camera looks. Tracking, it is locked on the sun and the sun sits dead centre;
+    // not tracking, it is a compass bearing and an elevation the viewer sets by dragging, and the
+    // sun crosses the frame the way it crosses a window.
+    const camAlt = spTrack('ground') ? now.alt : (sunPathState.groundEl || 0);
+    const camAz = spTrack('ground') ? now.az
+        : ((sunPathState.groundAz == null ? now.az : sunPathState.groundAz) + 360) % 360;
+    const altR = camAlt * DEG, azR = camAz * DEG;
     const dirOf = (aAlt, aAz) => {                          // unit vector in (east, north, up)
         const ca = Math.cos(aAlt * DEG);
         return [ca * Math.sin(aAz * DEG), ca * Math.cos(aAz * DEG), Math.sin(aAlt * DEG)];
     };
-    const f = dirOf(now.alt, now.az);                       // where the camera looks
+    const f = dirOf(camAlt, camAz);                        // where the camera looks
     // right = normalize(f × zenith), which reduces to a purely horizontal vector depending on
     // AZIMUTH ALONE — so it stays well defined right up to the zenith, where the azimuth's own
     // 180° flip rolls the picture over of its own accord.
@@ -11190,15 +13404,15 @@ function drawSunPathHorizon(now) {
     const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     const project = (alt, az) => {
         const p = dirOf(alt, az);
-        const d = dot3(p, f);
-        if (d <= 0.02) return null;                         // behind the camera
-        return [W / 2 + focal * dot3(p, right) / d, H / 2 - focal * dot3(p, upc) / d];
+        const ax = Math.atan2(dot3(p, right), dot3(p, f)) / DEG;    // degrees left/right of centre
+        const ay = Math.asin(Math.max(-1, Math.min(1, dot3(p, upc)))) / DEG;   // degrees up/down
+        if (Math.abs(ax) > 179) return null;                        // directly behind
+        return [W / 2 + kpx * ax, H / 2 - kpx * ay];
     };
-    // The horizon is a great circle, so in this projection it is a straight line — and because
-    // `right` is horizontal, a level one, at y = H/2 + focal·tan(alt).
-    const clampAlt = a => Math.max(-89.5, Math.min(89.5, a));
-    const horizonY = H / 2 + focal * Math.tan(clampAlt(now.alt) * DEG);
-    const altToY = a => H / 2 - focal * Math.tan(clampAlt(a - now.alt) * DEG);
+    // On the centre column the vertical axis IS altitude, exactly, so the tick scale is linear
+    // and needs no trigonometry at all.
+    const altToY = a => H / 2 - kpx * (a - camAlt);
+    const horizonY = altToY(0);
 
     // Sky: the gradient is anchored to the HORIZON rather than to the frame, so the warm band
     // stays where the sun actually is however the camera is pitched or rolled.
@@ -11217,7 +13431,7 @@ function drawSunPathHorizon(now) {
     {
         const pts = [];
         for (let t = -GROUND_FOV; t <= GROUND_FOV; t += 1.5) {
-            const az = now.az + t;
+            const az = camAz + t;
             const q = project(horizonReliefDeg(az), az);
             if (q && q[0] > -W && q[0] < 2 * W) pts.push(q);
         }
@@ -11226,12 +13440,41 @@ function drawSunPathHorizon(now) {
             let d = `M${(-W).toFixed(1)},${H + 80}L${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
             for (let i = 1; i < pts.length; i++) d += `L${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)}`;
             d += `L${(2 * W).toFixed(1)},${H + 80}Z`;
-            svgH.append('path').attr('d', d).attr('fill', groundCol).attr('class', 'sp-ground-fill');
+            // A real ground plane when satellite is on: every pixel below the horizon traced
+            // back to a point on the ground and looked up in the imagery, so the texture
+            // compresses toward the horizon the way ground does. Clipped to the same skyline
+            // polygon, so the relief still cuts into it.
+            const gimg = sunPathState.satellite
+                ? sunPathGroundImage(camAlt, camAz, GROUND_FOV, W, H, now.lat, now.lon) : null;
+            if (gimg) {
+                const cid = 'sp-ground-clip';
+                defs.selectAll('#' + cid).remove();
+                defs.append('clipPath').attr('id', cid).append('path').attr('d', d);
+                const gg = svgH.append('g').attr('clip-path', `url(#${cid})`);
+                gg.append('image').attr('href', gimg)
+                    .attr('x', 0).attr('y', 0).attr('width', W).attr('height', H)
+                    .attr('preserveAspectRatio', 'none');
+                // Night is the same wash the flat fill uses, laid over the imagery.
+                svgH.append('path').attr('d', d).attr('fill', '#0d1017')
+                    .attr('opacity', (1 - dayness) * 0.82).attr('class', 'sp-ground-night');
+            } else {
+                svgH.append('path').attr('d', d).attr('fill', groundCol).attr('class', 'sp-ground-fill');
+            }
         }
     }
-    if (horizonY > -60 && horizonY < H + 60) {
-        svgH.append('line').attr('x1', 0).attr('x2', W).attr('y1', horizonY).attr('y2', horizonY)
-            .attr('class', 'sp-horizon');
+    // The horizon, sampled rather than ruled: it is a great circle, and in an equal-angle
+    // panorama a great circle is a shallow curve unless it runs through the centre.
+    if (horizonY > -80 && horizonY < H + 80) {
+        const hp = [];
+        for (let t = -GROUND_FOV; t <= GROUND_FOV; t += 1.5) {
+            const q = project(0, camAz + t);
+            if (q && q[0] > -W && q[0] < 2 * W) hp.push(q);
+        }
+        if (hp.length > 1) {
+            hp.sort((a, b) => a[0] - b[0]);
+            svgH.append('path').attr('class', 'sp-horizon').attr('fill', 'none')
+                .attr('d', 'M' + hp.map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join('L'));
+        }
     }
 
     // The sun's track, cut into RUNS. Sorting samples into one above/below pair concatenates
@@ -11255,15 +13498,20 @@ function drawSunPathHorizon(now) {
         svgH.append('path').attr('class', 'sp-track' + (r.lit ? '' : ' below')).attr('d', line(r.pts));
     });
 
-    // Altitude ticks up the left edge. Exact on the centre column (the sun's own vertical
-    // circle) and a fair scale elsewhere, which is all an edge gauge needs to be.
+    // Altitude ticks UP THE MIDDLE, where the scale is exact. The vertical axis is only truly
+    // altitude on the centre column — the camera's own vertical circle — and a gauge pinned to
+    // the left edge was reading a column where it is merely close, while sitting as far as it
+    // could get from the arc it is there to measure.
     const horizonInFrame = horizonY > 12 && horizonY < H - 12;
+    const axX = W / 2;
     for (let a = -80; a <= 90; a += 20) {
         if (a === 0 && horizonInFrame) continue;    // the horizon line is already the 0 mark
         const y = altToY(a);
         if (!isFinite(y) || y < 12 || y > H - 12) continue;
-        svgH.append('line').attr('class', 'sp-tick').attr('x1', 0).attr('x2', 8).attr('y1', y).attr('y2', y);
-        svgH.append('text').attr('class', 'sp-ticklabel').attr('x', 11).attr('y', y + 3.5).text(a + '°');
+        svgH.append('line').attr('class', 'sp-tick')
+            .attr('x1', axX - 5).attr('x2', axX + 5).attr('y1', y).attr('y2', y);
+        svgH.append('text').attr('class', 'sp-ticklabel').attr('x', axX + 9)
+            .attr('y', y + 3.5).text(a + '°');
     }
     // Compass ticks along the horizon, wherever that line happens to fall.
     if (horizonInFrame) {
@@ -11271,22 +13519,68 @@ function drawSunPathHorizon(now) {
             const q = project(0, az);
             if (!q || q[0] < 6 || q[0] > W - 6) continue;
             const card = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[az];
+            // Hung off the horizon WHERE IT ACTUALLY IS at that bearing rather than off one ruled
+            // line: the curve means the two part company toward the edges of a wide frame.
+            const hy = q[1];
             svgH.append('line').attr('class', 'sp-tick').attr('x1', q[0]).attr('x2', q[0])
-                .attr('y1', horizonY).attr('y2', horizonY + (card ? 10 : 5));
+                .attr('y1', hy).attr('y2', hy + (card ? 10 : 5));
             if (card || az % 30 === 0) {
                 svgH.append('text').attr('class', card ? 'sp-compass' : 'sp-ticklabel')
-                    .attr('x', q[0]).attr('y', horizonY + (card ? 24 : 18)).attr('text-anchor', 'middle')
+                    .attr('x', q[0]).attr('y', hy + (card ? 24 : 18)).attr('text-anchor', 'middle')
                     .text(card || az + '°');
             }
         }
     }
 
-    // The sun itself — dead centre by construction, since the camera is pointed at it.
-    svgH.append('circle').attr('class', now.alt >= 0 ? 'sp-sun' : 'sp-sun below')
-        .attr('cx', W / 2).attr('cy', H / 2).attr('r', 9);
-    svgH.append('text').attr('class', 'sp-altlabel').attr('x', W / 2)
-        .attr('y', H / 2 - 14 < 12 ? H / 2 + 22 : H / 2 - 14)
-        .attr('text-anchor', 'middle').text(`${now.alt.toFixed(0)}°`);
+    // The moon, when it is asked for: same camera, same projection, its own altitude and azimuth
+    // for this instant. It is drawn as a disc with its lit fraction, which is the one thing about
+    // the moon that changes fast enough to be worth watching alongside the sun.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m) {
+            // The moon's own track across this sky, in white — the same construction as the sun's,
+            // and the whole reason to draw it: the two arcs together are what "the moon rises an
+            // hour later each night" looks like.
+            const mruns = [];
+            let mcur = null;
+            for (let Hh = -180; Hh <= 180; Hh += 1) {
+                const mm = sunPathMoonAt(now, Hh);
+                if (!mm) continue;
+                const q2 = project(mm.alt, mm.az);
+                const lit = mm.alt >= 0;
+                if (!q2 || q2[0] < -W || q2[0] > 2 * W || q2[1] < -H || q2[1] > 2 * H) { mcur = null; continue; }
+                if (!mcur || mcur.lit !== lit) { mcur = { lit, pts: [] }; mruns.push(mcur); }
+                mcur.pts.push(q2);
+            }
+            mruns.forEach(r2 => {
+                if (r2.pts.length < 2) return;
+                svgH.append('path').attr('class', 'sp-moontrack' + (r2.lit ? '' : ' below'))
+                    .attr('d', line(r2.pts));
+            });
+            const q = project(m.alt, m.az);
+            if (q && q[0] > -20 && q[0] < W + 20) {
+                // Which way the lit limb points, ON SCREEN: from the moon toward the sun, in this
+                // projection, so it turns as the pair move round each other rather than being
+                // pinned to one side of the disc.
+                const sq2 = project(now.alt, now.az);
+                const bright = sq2 ? Math.atan2(sq2[1] - q[1], sq2[0] - q[0]) / DEG : 0;
+                const g2 = svgH.append('g').attr('class', m.alt >= 0 ? 'sp-moon' : 'sp-moon below')
+                    .attr('transform', `translate(${q[0].toFixed(1)},${q[1].toFixed(1)})`);
+                sunPathMoonGlyph(g2, 7, m.k, bright);
+            }
+        }
+    }
+
+    // The sun. Dead centre while the camera is tracking it, and wherever it happens to be when
+    // it is not — which is the whole difference the switch makes.
+    const sq = project(now.alt, now.az);
+    if (sq && sq[0] > -20 && sq[0] < W + 20) {
+        svgH.append('circle').attr('class', now.alt >= 0 ? 'sp-sun' : 'sp-sun below')
+            .attr('cx', sq[0]).attr('cy', sq[1]).attr('r', 9);
+        svgH.append('text').attr('class', 'sp-altlabel').attr('x', sq[0])
+            .attr('y', sq[1] - 14 < 12 ? sq[1] + 22 : sq[1] - 14)
+            .attr('text-anchor', 'middle').text(`${now.alt.toFixed(0)}°`);
+    }
 }
 
 // ---- Where in the orbit we are ----
@@ -11294,23 +13588,103 @@ function drawSunPathHorizon(now) {
 // four turning points marked and the earth on it for the current date. Heliocentric longitude
 // is taken as a linear walk of the year anchored so day 79 (the March equinox) is 0 — good to a
 // couple of days, which is inside the width of the dot.
+// ---- the orbit IS the date control ----
+// A slider for the date and four buttons for the turning points were two controls saying the same
+// thing as the picture beside them. The orbit already shows where in the year we are; dragging
+// the earth round it is the same gesture as reading it, and the turning points are places on the
+// ring rather than a separate row of buttons.
+// The ring carries a CALENDAR on the outside of it. "Day 214" is not a date anybody holds in
+// their head, so the one thing the ring could not say was the one thing you are setting; a band
+// of months round the outside turns a bare angle into a place in the year, and it costs nothing
+// to read because it is where you were already looking.
+const SP_ORB = { cx: 60, cy: 60, R: 34, band: [35.5, 45], lab: 21 };
+const SP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// First day-of-year of each month, common year — a day either way is well inside the width of
+// the boundary line.
+const SP_MONTH_START = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366];
+const spOrbAngle = d => ((d - 79) / 365.25) * 360;              // degrees round the orbit
+const spOrbAt = (d, r) => [SP_ORB.cx + Math.cos(spOrbAngle(d) * DEG) * r,
+                           SP_ORB.cy - Math.sin(spOrbAngle(d) * DEG) * r];
+// An annular sector between two days. Screen y runs down while the angle runs anticlockwise, so
+// the outward arc takes sweep 0 and the return arc sweep 1.
+function spOrbWedge(d0, d1, rIn, rOut) {
+    const a = spOrbAt(d0, rOut), b = spOrbAt(d1, rOut);
+    const c = spOrbAt(d1, rIn), e = spOrbAt(d0, rIn);
+    const big = Math.abs(spOrbAngle(d1) - spOrbAngle(d0)) > 180 ? 1 : 0;
+    return `M${a[0]},${a[1]}A${rOut},${rOut} 0 ${big} 0 ${b[0]},${b[1]}` +
+           `L${c[0]},${c[1]}A${rIn},${rIn} 0 ${big} 1 ${e[0]},${e[1]}Z`;
+}
+// Which preset the pointer is near, and which one is currently holding the earth. Kept out here
+// rather than as classes on the elements because the whole inset is redrawn on every clock tick
+// — sixty times a second under Play — so anything written onto a node is gone by the next frame.
+let spOrbHover = null;
+let spOrbGrab = null;
+const spDayOfToday = () => {
+    const t = new Date();
+    return Math.floor((t - new Date(t.getUTCFullYear(), 0, 0)) / 86400000);
+};
+
+// The inverse of the drawing, with the snap. Solstices, equinoxes and today are the days anybody
+// actually wants to land on exactly, and by hand you would never hit day 172 rather than 171.
+const SP_ORB_SNAP_DAYS = 4;
+// Returns the day the pointer is asking for AND which preset, if any, took hold of it — the
+// second half being what lets the drawing show the grab rather than only obey it.
+function spOrbResolve(x, y) {
+    const a = Math.atan2(SP_ORB.cy - y, x - SP_ORB.cx) / DEG;
+    let day = 79 + (a / 360) * 365.25;
+    day = ((day - 1) % 365.25 + 365.25) % 365.25 + 1;
+    let best = null;
+    spOrbStops().forEach(s => {
+        // Round the ring, so late December is close to early January.
+        const d = Math.abs(((s.day - day + 547.875) % 365.25) - 182.625);
+        if (d <= SP_ORB_SNAP_DAYS && (!best || d < best.d)) best = { d, day: s.day };
+    });
+    return best ? { day: best.day, stop: best.day } : { day, stop: null };
+}
+
+const spOrbStops = () => SUNPATH_STOPS.concat([{ day: spDayOfToday(), short: 'today', today: true }]);
+
 function drawSunPathOrbitInset(now) {
     const svg = d3.select('#sun-path-orbit-inset');
     if (svg.empty()) return;
     svg.selectAll('*').remove();
-    const cx = 60, cy = 60, R = 40;
-    const ang = d => ((d - 79) / 365.25) * 360;                 // degrees round the orbit
-    const at = (d, r) => [cx + Math.cos(ang(d) * DEG) * r, cy - Math.sin(ang(d) * DEG) * r];
+    const { cx, cy, R, band, lab } = SP_ORB;
+    const at = spOrbAt;
+
+    // The calendar, outermost: twelve wedges, alternately tinted so the boundaries read without
+    // needing a line at each one, each carrying its own name.
+    const months = svg.append('g').attr('class', 'sp-orb-months');
+    for (let m = 0; m < 12; m++) {
+        const d0 = SP_MONTH_START[m], d1 = SP_MONTH_START[m + 1];
+        months.append('path')
+            .attr('class', 'sp-orb-month' + (m % 2 ? ' alt' : ''))
+            .attr('d', spOrbWedge(d0, d1, band[0], band[1]));
+        const lp = at((d0 + d1) / 2, (band[0] + band[1]) / 2);
+        months.append('text').attr('class', 'sp-orb-month-lab')
+            .attr('x', lp[0]).attr('y', lp[1] + 1.9).attr('text-anchor', 'middle')
+            .text(SP_MONTHS[m]);
+    }
 
     svg.append('circle').attr('class', 'sp-orb-path').attr('cx', cx).attr('cy', cy).attr('r', R);
     svg.append('circle').attr('class', 'sp-orb-sun').attr('cx', cx).attr('cy', cy).attr('r', 6);
-    SUNPATH_STOPS.forEach(s => {
+    spOrbStops().forEach(s => {
         const p = at(s.day, R);
-        svg.append('circle').attr('class', 'sp-orb-stop').attr('cx', p[0]).attr('cy', p[1]).attr('r', 2.4);
-        const lp = at(s.day, R + 11);
-        svg.append('text').attr('class', 'sp-orb-lab')
+        // A stop is HOT when the pointer is close enough that letting go would land on it, and
+        // HELD while it actually has the date. Both are the same fact — that this preset has
+        // caught the pointer — said before and during the drag.
+        const held = spOrbGrab === s.day;
+        const hot = held || spOrbHover === s.day;
+        const cls = 'sp-orb-stop' + (s.today ? ' today' : '') + (hot ? ' hot' : '') + (held ? ' held' : '');
+        if (hot)
+            svg.append('circle').attr('class', 'sp-orb-stop-halo' + (s.today ? ' today' : ''))
+                .attr('cx', p[0]).attr('cy', p[1]).attr('r', 6.6);
+        svg.append('circle').attr('class', cls)
+            .attr('cx', p[0]).attr('cy', p[1]).attr('r', hot ? 3.4 : (s.today ? 2.8 : 2.4));
+        const lp = at(s.day, lab);
+        svg.append('text').attr('class', 'sp-orb-lab' + (s.today ? ' today' : '') + (hot ? ' hot' : ''))
             .attr('x', lp[0]).attr('y', lp[1] + 2.5).attr('text-anchor', 'middle')
-            .text(s.short.split(' ')[1] === 'solstice' ? 'sol' : 'eq');
+            .text(s.today ? 'today' : (s.short.split(' ')[1] === 'solstice' ? 'sol' : 'eq'));
     });
     const e = at(now.day, R);
     // The axis keeps a FIXED direction in space — that is the whole reason the seasons happen —
@@ -11320,122 +13694,67 @@ function drawSunPathOrbitInset(now) {
     svg.append('line').attr('class', 'sp-orb-axis')
         .attr('x1', e[0] - tiltDir[0] * 7).attr('y1', e[1] - tiltDir[1] * 7)
         .attr('x2', e[0] + tiltDir[0] * 7).attr('y2', e[1] + tiltDir[1] * 7);
-    svg.append('circle').attr('class', 'sp-orb-earth').attr('cx', e[0]).attr('cy', e[1]).attr('r', 4.5);
+    svg.append('circle')
+        .attr('class', 'sp-orb-earth' + (spOrbGrab != null ? ' held' : ''))
+        .attr('cx', e[0]).attr('cy', e[1]).attr('r', 4.5);
 }
 
-// ---- GROUND, swapped for ORBIT ----
-// The same viewpoint moved up: still looking along the sun's azimuth from over the observer,
-// but from 700 km, where the terminator is a visible line across the planet rather than a
-// colour change in the sky. Borrows the spaceship mode's Blue Marble texture and its
-// (R+h)/R distance convention; deliberately NOT its atmosphere shell or cap-tile machinery —
-// those exist to make a photographic guessing view, and here they would only obscure the
-// day/night line this pane is about.
-const SUN_PATH_ORBIT_KM = 700;
-// Wider than the spaceship mode's 48°, and deliberately so. From 700 km the horizon sits 64°
-// off nadir, so a 48° lens can frame the observer's own spot OR the curved limb but not both —
-// and this pane needs both: the spot is where you were standing a moment ago in the ground view,
-// and the limb is where the terminator reads. 74° puts nadir and the limb inside one frame.
-const SUN_PATH_ORBIT_FOV = 74;
-
-function ensureSunPathOrbit() {
-    const T = window.THREE;
-    const cell = document.getElementById('sun-path-horizon-cell');
-    if (!T || !cell || !sunPathState || sunPathState.orbit) return;
-    const canvas = document.createElement('canvas');
-    canvas.className = 'sp-orbit-canvas';
-    cell.appendChild(canvas);
-    const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    const scene = new T.Scene();
-    const camera = new T.PerspectiveCamera(SUN_PATH_ORBIT_FOV, 1.6, 0.001, 50);
-
-    const mat = new T.MeshLambertMaterial({ color: 0xffffff });
-    new T.TextureLoader().load(EARTH_TEX_LOW, tex => {
-        if (T.SRGBColorSpace) tex.colorSpace = T.SRGBColorSpace;
-        mat.map = tex; mat.needsUpdate = true;
-        if (sunPathState && sunPathState.orbit) renderSunPathOrbit();
-    }, undefined, () => {
-        // No Blue Marble available (a deploy without the texture): fall back to the same drawn
-        // map the other two panes use, so the pane is never a blank ball.
-        const cv = sunPathState && sunPathState.earthTexCanvas;
-        if (cv) { mat.map = new T.CanvasTexture(cv); mat.needsUpdate = true; renderSunPathOrbit(); }
+// A press anywhere on the ring jumps the date there and starts a drag, because aiming at a 4.5px
+// earth is not a gesture anybody should have to make. The pointer is converted through the SVG's
+// own coordinate system rather than by measuring the element, so it stays right at any size the
+// panel happens to give it.
+function wireSunPathOrbit() {
+    const el = document.getElementById('sun-path-orbit-inset');
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = '1';
+    el.style.touchAction = 'none';
+    let dragging = false;
+    const setFrom = event => {
+        const p = d3.pointer(event, el);
+        const r = spOrbResolve(p[0], p[1]);
+        spOrbGrab = r.stop;
+        spOrbHover = r.stop;
+        sunPathState.day = r.day;
+        updateSunPath();
+    };
+    el.addEventListener('pointerdown', e => {
+        if (!sunPathState) return;
+        dragging = true;
+        try { el.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+        e.preventDefault();
+        setFrom(e);
     });
-    const earth = new T.Mesh(new T.SphereGeometry(1, 96, 64), mat);
-    scene.add(earth);
-    const sun = new T.DirectionalLight(0xffffff, 2.9);
-    scene.add(sun);
-    scene.add(new T.AmbientLight(0x18202e, 0.9));
-    const pin = new T.Mesh(new T.SphereGeometry(0.006, 10, 10),
-        new T.MeshBasicMaterial({ color: 0xd05c4a }));
-    scene.add(pin);
-    sunPathState.orbit = { renderer, scene, camera, canvas, cell, earth, sun, pin, mat };
-    sizeSunPathCanvases();
+    el.addEventListener('pointermove', e => {
+        if (!sunPathState) return;
+        if (dragging) { setFrom(e); return; }
+        // Not dragging: say in advance which preset would catch this press. Only the inset is
+        // redrawn — the panes have not changed and re-rendering three WebGL scenes to light up
+        // a 3 px dot would be absurd.
+        const p = d3.pointer(e, el);
+        const near = spOrbResolve(p[0], p[1]).stop;
+        if (near !== spOrbHover) { spOrbHover = near; drawSunPathOrbitInset(sunPathNow()); }
+    });
+    el.addEventListener('pointerleave', () => {
+        if (spOrbHover == null || dragging) return;
+        spOrbHover = null;
+        if (sunPathState) drawSunPathOrbitInset(sunPathNow());
+    });
+    const up = e => {
+        if (!dragging) return;
+        dragging = false;
+        spOrbGrab = null;
+        try { el.releasePointerCapture(e.pointerId); } catch (_) { /* fine */ }
+        if (sunPathState) drawSunPathOrbitInset(sunPathNow());
+    };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
 }
 
-function disposeSunPathOrbit() {
-    const o = sunPathState && sunPathState.orbit;
-    if (!o) return;
-    try { o.renderer.dispose(); } catch (_) { /* best effort */ }
-    if (o.mat && o.mat.map) { try { o.mat.map.dispose(); } catch (_) { /* best effort */ } }
-    if (o.canvas && o.canvas.parentNode) o.canvas.parentNode.removeChild(o.canvas);
-    sunPathState.orbit = null;
-}
 
-// Which of the two lives in the horizon cell right now.
-function syncSunPathGroundPane() {
-    if (!sunPathState) return;
-    const on = !!sunPathState.fromOrbit;
-    const svgEl = document.getElementById('sun-path-horizon');
-    if (svgEl) svgEl.style.display = on ? 'none' : '';
-    const cap = document.getElementById('sun-path-horizon-cap');
-    if (cap) cap.firstChild.nodeValue = on ? 'From orbit' : 'From the ground';
-    if (on) ensureSunPathOrbit(); else disposeSunPathOrbit();
-}
 
-function updateSunPathOrbit(now) {
-    const T = window.THREE, o = sunPathState && sunPathState.orbit;
-    if (!T || !o) return;
-    // Same frame as the Earth-in-space pane: the light is fixed at +X and the earth spins so
-    // that the sub-solar meridian faces it, which is what keeps the two panes telling one story.
-    o.earth.rotation.set(0, 0, 0);
-    o.earth.rotation.y = (now.H - now.lon) * DEG;
-    o.sun.position.set(50, 0, 0);
 
-    // The observer, in that same frame: latitude off the equator, longitude spun by hour angle.
-    // Same handedness as the globe pane — the -sin(H) is what makes the earth turn eastward.
-    const r = Math.cos(now.lat * DEG), y = Math.sin(now.lat * DEG);
-    const spin = now.H * DEG;
-    const up = new T.Vector3(Math.cos(spin) * r, y, -Math.sin(spin) * r).normalize();
-    // Tip the whole frame by the declination, exactly as the globe pane tips its holder.
-    const tilt = new T.Vector3(0, 0, 1);
-    up.applyAxisAngle(tilt, -now.dec * DEG);
-    o.earth.rotateOnWorldAxis(tilt, -now.dec * DEG);
-    o.pin.position.copy(up.clone().multiplyScalar(1.002));
 
-    const east = new T.Vector3(0, 1, 0).applyAxisAngle(tilt, -now.dec * DEG).cross(up).normalize();
-    const north = up.clone().cross(east).normalize();
-    // Look along the sun's azimuth, so this pane faces the same way the ground pane does.
-    const azv = north.clone().multiplyScalar(Math.cos(now.az * DEG))
-        .add(east.clone().multiplyScalar(Math.sin(now.az * DEG))).normalize();
-    const dist = 1 + SUN_PATH_ORBIT_KM / EARTH_R_KM;
-    o.camera.position.copy(up.clone().multiplyScalar(dist));
-    o.camera.up.copy(up);
-    // Split the difference between nadir and the limb, so both land inside the frame. Aiming AT
-    // the horizon (a surface point one horizon-angle away) put the limb dead centre and left
-    // three quarters of this wide pane in empty space; the spaceship mode's own tilt rule threw
-    // the observer's spot 3 frame-heights below the bottom edge.
-    const horizonAng = Math.asin(1 / dist) * 180 / Math.PI;
-    const offNadir = horizonAng * 0.5;
-    const view = up.clone().multiplyScalar(-Math.cos(offNadir * DEG))
-        .add(azv.clone().multiplyScalar(Math.sin(offNadir * DEG))).normalize();
-    o.camera.lookAt(o.camera.position.clone().add(view));
-    o.camera.updateProjectionMatrix();
-}
 
-function renderSunPathOrbit() {
-    const o = sunPathState && sunPathState.orbit;
-    if (o) o.renderer.render(o.scene, o.camera);
-}
 
 // ---- MAP: the sunrise line, clickable ----
 let sunPathMap = null;
@@ -11447,13 +13766,29 @@ function buildSunPathMap() {
     svgM.selectAll('*').remove();
     const proj = d3.geoEquirectangular().scale(W / (2 * Math.PI)).translate([W / 2, H / 2]).precision(0);
     const p = d3.geoPath().projection(proj);
-    svgM.append('rect').attr('width', W).attr('height', H).attr('class', 'sp-map-ocean');
+    // The sea stops where the world does. 360° of longitude spans the pane's WIDTH, which pins
+    // 180° of latitude to half of it — so a rect filling the pane paints ocean across 20 px of
+    // nothing above the north pole and below the south. Same rectangle the imagery uses.
+    const oceanTop = proj([0, 90])[1], oceanBot = proj([0, -90])[1];
+    svgM.append('rect').attr('y', oceanTop).attr('width', W).attr('height', oceanBot - oceanTop)
+        .attr('class', 'sp-map-ocean');
+    // The satellite basemap sits UNDER the vector coastlines rather than replacing them: the
+    // twilight caps drawn on top are what make it a day/night picture, and an outline still helps
+    // at this size. Its href is set per draw, since the projection may be rotated to follow the
+    // sun and the image has to move with it.
+    const sat = svgM.append('g').attr('class', 'sp-map-sat');
     const land = svgM.append('g');
     // Whatever features this pane draws are also what the Earth-in-space globe is textured
     // with, so they are stashed rather than just drawn — the two panes must be one planet.
     const useFeatures = feats => {
         sunPathState.landFeatures = feats;
-        feats.forEach(f => { const d = p(f); if (d) land.append('path').attr('class', 'sp-map-land').attr('d', d); });
+        // The FEATURE goes on the path. Without it, re-pathing after a rotation calls the path
+        // generator with `undefined` and every country is assigned an empty `d` — which is why
+        // the map vanished the moment Play moved the sun far enough to re-centre it.
+        feats.forEach(f => {
+            const d = p(f);
+            if (d) land.append('path').datum(f).attr('class', 'sp-map-land').attr('d', d);
+        });
         refreshSunPathEarthTexture();
         renderSunPathThree();
     };
@@ -11469,21 +13804,109 @@ function buildSunPathMap() {
             }).catch(() => {});
     }
     const dyn = svgM.append('g').attr('class', 'sp-map-dyn');
+
+    // ZOOM AND PAN as a transform on the whole picture rather than by re-projecting. Every layer
+    // here is drawn in the projection's own units and redrawn constantly, so a transform on one
+    // containing group is the single place a zoom can live and be respected by all of them at
+    // once — imagery, coastlines, terminator and bars — without any of them knowing about it.
+    const wrap = svgM.append('g').attr('class', 'sp-map-zoom');
+    wrap.node().appendChild(sat.node());
+    wrap.node().appendChild(land.node());
+    wrap.node().appendChild(dyn.node());
+
+    // A click MOVES THE OBSERVER and a drag pans, so the two have to be told apart: the same 8 px
+    // slop the rest of the app uses for exactly this question. The pointer is then un-transformed
+    // before it is inverted, or a click on a zoomed map lands wherever it would have landed
+    // unzoomed.
+    let down = null;
+    svgM.on('pointerdown.sp', function (event) { down = d3.pointer(event, this); });
     svgM.on('click', function (event) {
         const pt = d3.pointer(event, this);
-        const ll = proj.invert(pt);
+        if (down && Math.hypot(pt[0] - down[0], pt[1] - down[1]) > 8) return;
+        const t = d3.zoomTransform(svgM.node());
+        const ll = proj.invert([(pt[0] - t.x) / t.k, (pt[1] - t.y) / t.k]);
         if (!ll || isNaN(ll[0])) return;
         sunPathState.lat = Math.max(-89, Math.min(89, ll[1]));
         sunPathState.lon = ll[0];
         updateSunPath();
     });
-    sunPathMap = { svg: svgM, proj, path: p, dyn };
+    svgM.call(d3.zoom().scaleExtent([1, 12])
+        .translateExtent([[0, 0], [W, H]])
+        .on('zoom', ev => wrap.attr('transform', ev.transform)));
+
+    sunPathMap = { svg: svgM, proj, path: p, dyn, sat, land, W, H, wrap };
+}
+
+// The satellite basemap for the sunrise-line pane. The image is equirectangular and so is the
+// pane, so this is a straight blit — rolled sideways when the map is centred on the sun, which is
+// two draws of the same picture rather than a re-projection.
+//
+// The night side needs no image of its own: the twilight caps drawn over the top ARE the night.
+// Where a real Black Marble is present it is clipped to the 90 degree cap and laid under them, so
+// the dark half shows city lights instead of only being dark.
+// WHERE THE IMAGE GOES, and it is not the pane. The projection is fitted so a full 360° of
+// longitude spans the pane's WIDTH, which on an equirectangular pins 180° of latitude to half
+// that — 200 px in a pane 220 tall. Drawn at the pane's own height the imagery was therefore 10%
+// too tall and 10 px too high, so every coastline sat several degrees off the land it belongs to
+// (5 px at 45°, which is 4.5° of latitude). The image is placed on the SPHERE's own projected
+// rectangle instead, which is right whatever aspect the pane happens to be.
+function spSatRect() {
+    const m = sunPathMap;
+    const top = m.proj([0, 90]), bot = m.proj([0, -90]);
+    return { y: top[1], h: bot[1] - top[1] };
+}
+
+function sunPathDrawSatellite(c0) {
+    const m = sunPathMap;
+    if (!m) return;
+    const on = !!(sunPathState.satellite);
+    // The class is what the stylesheet keys the outline-only land off. Hanging that off the mere
+    // EXISTENCE of the satellite group made every map unfilled, satellite or not: the group is
+    // created once and lives there empty.
+    m.svg.classed('sp-sat-on', on && !!sunPathSat.day);
+    if (!on) { m.sat.selectAll('*').remove(); m.satShown = false; m.satAt = null; return; }
+    if (!sunPathSat.day) {
+        ensureSunPathSat(() => { if (sunPathState) updateSunPath(); });
+        return;
+    }
+    if (m.satShown && m.satAt === c0 && !m.satDirty) return;
+    m.satDirty = false;
+    m.satShown = true;
+    m.satAt = c0;
+    m.sat.selectAll('*').remove();
+    const W = m.W, H = m.H;
+    const rect = spSatRect();
+    // A rotation of c0 degrees east shifts the image left by that fraction of its width; two
+    // copies side by side cover whatever wraps round the edge.
+    const dx = -c0 / 360 * W;
+    const put = (href, cls) => {
+        [-1, 0, 1].forEach(k => {
+            m.sat.append('image').attr('class', cls)
+                .attr('href', href).attr('x', dx + k * W).attr('y', rect.y)
+                .attr('width', W).attr('height', rect.h)
+                .attr('preserveAspectRatio', 'none');
+        });
+    };
+    put(sunPathSat.day.src, 'sp-map-sat-day');
+    m.sat.append('rect').attr('y', rect.y).attr('width', W).attr('height', rect.h)
+        .attr('class', 'sp-map-sat-veil');
+    syncSunPathGain();          // the layer was just rebuilt; the exposure is not part of it
 }
 
 function drawSunPathMap(now) {
     if (!sunPathMap) return;
-    const { proj, path: p, dyn } = sunPathMap;
+    const { proj, path: p, dyn, sat, land } = sunPathMap;
     dyn.selectAll('*').remove();
+    // TRACK SUN centres the map on the sub-solar meridian, so the sunrise line stands still and
+    // the earth slides underneath it. Off, the map is the map and the line sweeps across it.
+    // Everything downstream measures longitude relative to `c0`, which is the centre either way.
+    const c0 = spTrack('map') ? (((now.lon - now.H) + 540) % 360) - 180 : 0;
+    if ((sunPathMap.rot || 0) !== c0) {
+        sunPathMap.rot = c0;
+        proj.rotate([-c0, 0]);
+        land.selectAll('path').attr('d', f => (f && p(f)) || '');
+        sunPathMap.satDirty = true;
+    }
 
     // The sub-solar point for this day and hour, then the night cap around its antipode.
     // Hour angle is the observer's longitude MINUS the sub-solar one (H = lon - subLon), so
@@ -11493,11 +13916,34 @@ function drawSunPathMap(now) {
     const subLon = now.lon - now.H;
     const sun = [((subLon + 540) % 360) - 180, now.dec];
     const dark = antipode(sun);
-    const mapW = 400, lonToX = l => mapW / 2 + l * (mapW / 360);   // callers normalise; no wrap
+    // Longitudes are measured as an offset from the map's own centre, which is the only way the
+    // bars below stay right when the projection is rotated to follow the sun. `lonToX` therefore
+    // takes a DELTA rather than a longitude, and never wraps: a span ending exactly at the far
+    // edge has to land there rather than back at the near one.
+    const mapW = sunPathMap.W || 400, lonToX = dl => mapW / 2 + dl * (mapW / 360);
+    sunPathDrawSatellite(c0);
     [102, 96, 90].forEach((r, i) => {
         const d = p(d3.geoCircle().center(dark).radius(r)());
         if (d) dyn.append('path').attr('class', 'sp-map-night n' + i).attr('d', d);
     });
+    // City lights, if the optional Black Marble is present: clipped to the night cap, so it is
+    // the dark half of the world that lights up and the day half is untouched.
+    if (sunPathState.satellite && sunPathSat.night && sunPathSat.day) {
+        const capD = p(d3.geoCircle().center(dark).radius(90)());
+        if (capD) {
+            const cid = 'sp-night-clip';
+            let defs = sunPathMap.svg.select('defs');
+            if (defs.empty()) defs = sunPathMap.svg.append('defs');
+            defs.selectAll('#' + cid).remove();
+            defs.append('clipPath').attr('id', cid).append('path').attr('d', capD);
+            const W = sunPathMap.W, dx = -c0 / 360 * W, rect = spSatRect();
+            const gN = dyn.append('g').attr('clip-path', `url(#${cid})`).attr('class', 'sp-map-sat-night');
+            [-1, 0, 1].forEach(k => gN.append('image').attr('href', sunPathSat.night.src)
+                .attr('x', dx + k * W).attr('y', rect.y).attr('width', W).attr('height', rect.h)
+                .attr('preserveAspectRatio', 'none'));
+        }
+    }
+
     const term = p(d3.geoCircle().center(dark).radius(90)());
     if (term) dyn.append('path').attr('class', 'sp-map-term').attr('d', term);
 
@@ -11507,6 +13953,11 @@ function drawSunPathMap(now) {
     // map — and they slide bodily westward with the sunlight while their proportions change only
     // with the date.
     sunPathParallels(now.lat).forEach(par => {
+        // The observer's own parallel is not furniture — it is where they are — so it survives
+        // the tropic-line switch, which is about the five fixed ones. (`you`, not `me`: the flag
+        // sunPathParallels actually sets. Guessing the name switched off the one line that
+        // should never go.)
+        if (!sunPathState.tropics && !par.you) return;
         const y = proj([0, par.lat]);
         if (!y || !isFinite(y[1])) return;
         const yy = y[1];
@@ -11517,7 +13968,7 @@ function drawSunPathMap(now) {
         // endpoints are normalised BEFORE they are mapped to x, and the mapping itself must not
         // wrap — a span ending at exactly +180° has to land at the right-hand edge, not back at
         // the left one, or every night bar measures the full width of the map.
-        const norm = l => ((l + 540) % 360) - 180;
+        const norm = l => ((l - c0 + 540) % 360) - 180;
         const spansFor = (l0, l1) => {
             const a = norm(l0), b = norm(l1);
             return b <= a ? [[a, 180], [-180, b]] : [[a, b]];
@@ -11533,7 +13984,7 @@ function drawSunPathMap(now) {
                     .attr('x1', x).attr('x2', x).attr('y1', yy - 3).attr('y2', yy + 3));
                 if (!widest || Math.abs(x1 - x0) > Math.abs(widest[1] - widest[0])) widest = [x0, x1];
             });
-            if (widest && Math.abs(widest[1] - widest[0]) > 26) {
+            if (sunPathState.dayLengths && widest && Math.abs(widest[1] - widest[0]) > 26) {
                 g.append('text').attr('class', 'sp-par-hrs' + (lit ? ' lit' : ' dark'))
                     .attr('x', (widest[0] + widest[1]) / 2).attr('y', yy - 3.5)
                     .attr('text-anchor', 'middle').text(`${hours.toFixed(1)} h`);
@@ -11547,6 +13998,25 @@ function drawSunPathMap(now) {
         }
         g.append('text').attr('class', 'sp-par-name').attr('x', 3).attr('y', yy - 3.5).text(par.name);
     });
+
+    // The moon: where it is overhead, and the line where it is rising or setting. Dotted, so it
+    // never reads as the sunrise line — the same distinction Sun & Moon draws.
+    if (sunPathState.showMoon) {
+        const m = sunPathMoonNow(now);
+        if (m && m.sub) {
+            const ml = p(d3.geoCircle().center(antipode(m.sub)).radius(90)());
+            if (ml) dyn.append('path').attr('class', 'sp-map-moonline').attr('d', ml);
+            const mp = proj(m.sub);
+            if (mp) {
+                const g2 = dyn.append('g').attr('class', 'sp-map-moon')
+                    .attr('transform', `translate(${mp[0].toFixed(1)},${mp[1].toFixed(1)})`);
+                // The lit limb points at the sub-solar point, measured on this map.
+                const sp2 = proj(sun);
+                const bright = sp2 ? Math.atan2(sp2[1] - mp[1], sp2[0] - mp[0]) / DEG : 0;
+                sunPathMoonGlyph(g2, 5, m.k, bright);
+            }
+        }
+    }
 
     const sp = proj(sun);
     if (sp) dyn.append('circle').attr('class', 'sp-map-sun').attr('cx', sp[0]).attr('cy', sp[1]).attr('r', 5);
@@ -11567,27 +14037,60 @@ function drawSunPathMap(now) {
                 .attr('x1', me[0]).attr('y1', me[1] + 3)
                 .attr('x2', me[0] + Math.sin(b) * len).attr('y2', me[1] + 3 - Math.cos(b) * len);
         }
+        // The same figure the other panes are showing. A stick figure five pixels high on a world
+        // map was a smudge whatever it was meant to be, which is why the pin is the default here
+        // even though a person is the default in the panes where a person is legible.
         const fg = dyn.append('g').attr('class', 'sp-map-me-fig')
             .attr('transform', `translate(${me[0].toFixed(1)},${me[1].toFixed(1)})`);
-        fg.append('circle').attr('class', 'sp-map-me').attr('cx', 0).attr('cy', -5.4).attr('r', 1.9);
-        fg.append('line').attr('class', 'sp-map-me-body').attr('x1', 0).attr('y1', -3.6).attr('x2', 0).attr('y2', 1.4);
-        fg.append('line').attr('class', 'sp-map-me-body').attr('x1', -2).attr('y1', 3.4).attr('x2', 0).attr('y2', 1.4);
-        fg.append('line').attr('class', 'sp-map-me-body').attr('x1', 2).attr('y1', 3.4).attr('x2', 0).attr('y2', 1.4);
+        const fig = (sunPathState.figure || 'pin');
+        if (fig === 'pin') {
+            fg.append('path').attr('class', 'sp-map-me-pin')
+                .attr('d', 'M0,0 C-4.4,-5.2 -3.4,-10.4 0,-10.4 C3.4,-10.4 4.4,-5.2 0,0 Z');
+            fg.append('circle').attr('class', 'sp-map-me-pinhole').attr('cy', -7).attr('r', 1.5);
+        } else if (fig === 'beacon') {
+            fg.append('line').attr('class', 'sp-map-me-body').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', -9);
+            fg.append('circle').attr('class', 'sp-map-me').attr('cy', -10.4).attr('r', 2.2);
+        } else {
+            fg.append('circle').attr('class', 'sp-map-me').attr('cx', 0).attr('cy', -5.4).attr('r', 1.9);
+            fg.append('line').attr('class', 'sp-map-me-body').attr('x1', 0).attr('y1', -3.6).attr('x2', 0).attr('y2', 1.4);
+            fg.append('line').attr('class', 'sp-map-me-body').attr('x1', -2).attr('y1', 3.4).attr('x2', 0).attr('y2', 1.4);
+            fg.append('line').attr('class', 'sp-map-me-body').attr('x1', 2).attr('y1', 3.4).attr('x2', 0).attr('y2', 1.4);
+        }
     }
 }
 
 // ---- one update, every pane ----
 function updateSunPath() {
     if (!sunPathState) return;
+    // The imagery follows the DATE on the dial. These panes are a picture of one particular day,
+    // and Blue Marble has a picture of that day's month — so walking a year through Play now
+    // walks the snow line down and back up with it, which is the same fact the day-length bars
+    // are reporting and a good deal easier to see.
+    if (sunPathState.satellite)
+        useBmngMonth(sunPathDate(sunPathState).getUTCMonth() + 1, () => {
+            if (!sunPathState) return;
+            refreshSunPathEarthTexture(true);
+            updateSunPath();
+        });
     const now = sunPathNow();
 
-    if (sunPathState.fromOrbit) { updateSunPathOrbit(now); renderSunPathOrbit(); }
-    else drawSunPathHorizon(now);
+    drawSunPathHorizon(now);
     drawSunPathMap(now);
     drawSunPathOrbitInset(now);
     if (sunPathState.three) {
+        // The one place every pane is brought up to date with the shared location. The disc keys
+        // itself on lat/lon, so this costs nothing until the observer actually moves.
+        refreshSunPathDomeGround();
+        // The dome's camera depends on the sun when it is tracking, so it is re-aimed here rather
+        // than only when somebody drags it.
+        const wasAz = sunPathState.sunAz;
+        sunPathState.sunAz = now.az;
+        if (spTrack('dome') && Math.abs((wasAz == null ? 1e9 : wasAz) - now.az) > 0.05)
+            applySunPathDomeCamera();
         updateDomeScene(now);
         updateGlobeScene(now);
+        syncSunPathTropics();
+        syncSunPathNorth();
         sunPathAutoFrame();          // both panes zoom to whatever is actually in them
         renderSunPathThree();
     }
@@ -11602,14 +14105,14 @@ function updateSunPath() {
     set('sun-path-globe-note', ` · sun overhead at ${now.dec.toFixed(1)}°`);
     set('sun-path-horizon-note', ` · sun ${now.alt.toFixed(0)}° at ${Math.round(now.az)}°`);
     set('sun-path-map-note', ' · click to move');
+    // Where and when, and nothing else. Everything the readout used to add — the hours of
+    // daylight, the sun's altitude, the angle the track meets the horizon at — is already said by
+    // the pane captions or by the picture itself, and four lines of it above the orbit left the
+    // orbit no room to be the size it needs to be.
     set('sun-path-readout',
         `<strong>${dateStr}, ${clock}</strong> local solar time<br>` +
         `<strong>${Math.abs(now.lat).toFixed(1)}°${now.lat >= 0 ? 'N' : 'S'} ` +
-        `${Math.abs(now.lon).toFixed(1)}°${now.lon >= 0 ? 'E' : 'W'}</strong><br>` +
-        `Daylight: <strong>${now.hd.polar ? (now.hd.polar === 'day' ? '24 h' : '0 h') : dayH.toFixed(1) + ' h'}</strong> · ` +
-        `sun now <strong>${now.alt.toFixed(1)}°</strong><br>` +
-        `<span class="sandbox-note">Track meets the horizon at ${riseAngle(now.lat).toFixed(0)}° — ` +
-        `steep at the equator, shallow near the poles.</span>`);
+        `${Math.abs(now.lon).toFixed(1)}°${now.lon >= 0 ? 'E' : 'W'}</strong>`);
 
     const sync = (id, val, label) => {
         const el = document.getElementById(id);
@@ -11621,18 +14124,15 @@ function updateSunPath() {
     const spLab = document.getElementById('sun-path-speed-val');
     if (spLab) spLab.textContent = (sp < 1 ? sp.toFixed(2) : sp.toFixed(1)) + '×';
 
-    // Light up whichever turning point we are sitting on, and whichever clock is running. The
-    // year snaps exactly onto these days, so an exact-ish match is the right test.
-    document.querySelectorAll('#sun-path-stops button').forEach(b => {
-        b.classList.toggle('active', Math.abs(+b.dataset.stopDay - sunPathState.day) < 0.75);
-    });
     const dayBtn = document.getElementById('sun-path-play-day');
     const yearBtn = document.getElementById('sun-path-play-year');
     if (dayBtn) dayBtn.classList.toggle('active', !!sunPathState.playing && sunPathState.mode === 'day');
     if (yearBtn) yearBtn.classList.toggle('active', !!sunPathState.playing && sunPathState.mode === 'year');
-    sync('sun-path-lat', sunPathState.lat, `${Math.abs(sunPathState.lat).toFixed(0)}°${sunPathState.lat >= 0 ? 'N' : 'S'}`);
-    sync('sun-path-day', sunPathState.day, dateStr);
     sync('sun-path-hour', sunPathState.hour, clock);
+    SUNPATH_PANES.forEach(v => {
+        const b = document.getElementById('sp-track-' + v.key);
+        if (b) b.checked = spTrack(v.key);
+    });
 }
 
 // ---- panel ----
@@ -11645,25 +14145,41 @@ function buildSunPathPanel() {
         panel.innerHTML = `
             <div class="sandbox-title">Sun Path</div>
             <div class="sandbox-readout" id="sun-path-readout"></div>
+            <svg class="sp-orbit-inset" id="sun-path-orbit-inset" viewBox="0 0 120 120"
+                 preserveAspectRatio="xMidYMid meet"
+                 aria-label="Orbit: drag the earth round it to change the date"></svg>
             <div class="sandbox-edit">
-                <label class="sandbox-slider"><span>Lat</span>
-                    <input type="range" id="sun-path-lat" min="-89" max="89" step="1" value="51">
-                    <span class="sandbox-note" id="sun-path-lat-val"></span></label>
-                <label class="sandbox-slider"><span>Date</span>
-                    <input type="range" id="sun-path-day" min="1" max="365" step="1" value="1">
-                    <span class="sandbox-note" id="sun-path-day-val"></span></label>
                 <label class="sandbox-slider"><span>Hour</span>
                     <input type="range" id="sun-path-hour" min="0" max="24" step="0.25" value="12">
                     <span class="sandbox-note" id="sun-path-hour-val"></span></label>
                 <label class="sandbox-slider"><span>Speed</span>
                     <input type="range" id="sun-path-speed" min="-20" max="20" step="1" value="0">
                     <span class="sandbox-note" id="sun-path-speed-val"></span></label>
-                <div class="sandbox-nudge" id="sun-path-stops"></div>
-                <label class="sandbox-check"><input type="checkbox" id="sun-path-from-orbit">
-                    From orbit instead of the ground</label>
+                <div class="sp-panes" id="sun-path-panes">
+                    <span class="sp-group-lab">Views</span>
+                    ${SUNPATH_PANES.map(v => `<label class="sandbox-check">` +
+                        `<input type="checkbox" id="sp-pane-${v.key}" checked> ${v.label}</label>`).join('')}
+                </div>
+                <div class="sp-panes">
+                    <span class="sp-group-lab">Show</span>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-show-moon">
+                        Show moon</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-satellite">
+                        Satellite</label>
+                    <label class="sandbox-check"><input type="checkbox" id="sp-tropics" checked>
+                        Tropic lines</label>
+                </div>
                 <label class="sandbox-check"><span>Figure</span>
                     <select id="sun-path-figure">${SUNPATH_FIGURE_STYLES.map(f =>
                         `<option value="${f.key}">${f.label}</option>`).join('')}</select></label>
+                <div class="sp-sat-gain" id="sp-sat-gain">
+                    <label class="sandbox-slider"><span>Day</span>
+                        <input type="range" id="sp-gain-day" min="0.3" max="2.5" step="0.05" value="1">
+                        <span class="sandbox-note" id="sp-gain-day-val">1.00×</span></label>
+                    <label class="sandbox-slider"><span>Night</span>
+                        <input type="range" id="sp-gain-night" min="0.2" max="3" step="0.05" value="2.4">
+                        <span class="sandbox-note" id="sp-gain-night-val">2.40×</span></label>
+                </div>
             </div>
             <div class="sandbox-actions">
                 <button class="btn secondary" id="sun-path-here">My latitude</button>
@@ -11673,12 +14189,7 @@ function buildSunPathPanel() {
             <div class="sandbox-status" id="sun-path-status" role="status"></div>`;
         (document.getElementById('globe-side-panel') || document.body).appendChild(panel);
 
-        document.getElementById('sun-path-lat').addEventListener('input', function () {
-            sunPathState.lat = +this.value; updateSunPath();
-        });
-        document.getElementById('sun-path-day').addEventListener('input', function () {
-            sunPathState.day = +this.value; updateSunPath();
-        });
+        wireSunPathOrbit();
         document.getElementById('sun-path-hour').addEventListener('input', function () {
             sunPathState.hour = +this.value; updateSunPath();
         });
@@ -11696,10 +14207,59 @@ function buildSunPathPanel() {
             rebuildSunPathDomeFigure();
             updateSunPath();
         });
-        document.getElementById('sun-path-from-orbit').addEventListener('change', function () {
-            sunPathState.fromOrbit = this.checked;
-            syncSunPathGroundPane();
-            updateSunPath();
+        SUNPATH_PANES.forEach(v => {
+            const box = document.getElementById('sp-pane-' + v.key);
+            if (box) box.addEventListener('change', function () {
+                sunPathState.panes[v.key] = this.checked;
+                // Never all four off: an empty stage is not a view of anything, and the way back
+                // from it is to tick a box you can no longer see the point of.
+                if (!SUNPATH_PANES.some(o => sunPathState.panes[o.key] !== false)) {
+                    sunPathState.panes[v.key] = true;
+                    this.checked = true;
+                }
+                syncSunPathPanes();
+            });
+        });
+        const flag = (id, key, after) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', function () {
+                sunPathState[key] = this.checked;
+                if (after) after();
+                updateSunPath();
+            });
+        };
+        flag('sp-show-moon', 'showMoon');
+        flag('sp-satellite', 'satellite', () => {
+            refreshSunPathEarthTexture(true);
+            refreshSunPathDomeGround(true);
+            syncSunPathGain();
+        });
+        // Blue Marble and Black Marble are two photographs by two instruments of two different
+        // things, and nothing makes their exposures agree. How bright the lights should be against
+        // the daylight is a matter of taste rather than of fact, so it is a pair of knobs.
+        const gain = (id, key, after) => {
+            const el = document.getElementById(id);
+            const out = document.getElementById(id + '-val');
+            if (!el) return;
+            el.value = sunPathState[key];
+            if (out) out.textContent = (+el.value).toFixed(2) + '×';
+            el.addEventListener('input', function () {
+                sunPathState[key] = +this.value;
+                if (out) out.textContent = sunPathState[key].toFixed(2) + '×';
+                if (after) after();
+                syncSunPathGain();
+                updateSunPath();
+            });
+        };
+        gain('sp-gain-day', 'dayGain', () => { if (sunPathMap) sunPathMap.satDirty = true; });
+        gain('sp-gain-night', 'nightGain');
+        syncSunPathGain();
+        // Tropic lines are the same five parallels wherever they are drawn, so one switch reaches
+        // all three views that can show them: the map's bars, the rings round the earth in space,
+        // and the ground the observer is standing on.
+        flag('sp-tropics', 'tropics', () => {
+            syncSunPathTropics();
+            refreshSunPathDomeGround(true);
         });
         document.getElementById('sun-path-play-day').addEventListener('click', () => toggleSunPathPlay('day'));
         document.getElementById('sun-path-play-year').addEventListener('click', () => toggleSunPathPlay('year'));
@@ -11714,16 +14274,6 @@ function buildSunPathPanel() {
                        st.textContent = ''; updateSunPath(); },
                 e => { st.textContent = 'Location unavailable (' + e.message + ').'; },
                 { timeout: 10000, maximumAge: 600000 });
-        });
-        const stops = document.getElementById('sun-path-stops');
-        SUNPATH_STOPS.forEach(s => {
-            const b = document.createElement('button');
-            b.className = 'btn secondary';
-            b.textContent = s.short || s.label;
-            b.dataset.stopDay = String(s.day);
-            b.title = s.label;
-            b.addEventListener('click', () => { sunPathState.day = s.day; updateSunPath(); });
-            stops.appendChild(b);
         });
     }
     panel.style.display = '';
@@ -11824,7 +14374,6 @@ function removeSunPathMode() {
     if (!sunPathState) return;
     if (sunPathState.raf) cancelAnimationFrame(sunPathState.raf);
     if (sunPathState.ro) { try { sunPathState.ro.disconnect(); } catch (_) { /* best effort */ } }
-    disposeSunPathOrbit();
     const th = sunPathState.three;
     if (th) {
         [th.dome, th.globe].forEach(v => {
@@ -11914,14 +14463,10 @@ function applyCoastTuneCodes(codes) {
 function ensureLandRaster() {
     if (landRaster) return landRaster;
     const w = LAND_RASTER_W, h = w / 2;
-    const bits = new Uint8Array(w * h);
     const topo = worldTopoCache[COAST_TOPO_URL];
     const feats = topo ? topojson.feature(topo, topo.objects.countries).features
                        : (gameState.countries || []);
-    try {
-        const cv = document.createElement('canvas');
-        cv.width = w; cv.height = h;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const bits = alphaMask(w, h, ctx => {
         const proj = d3.geoEquirectangular().scale(w / (2 * Math.PI)).translate([w / 2, h / 2]).precision(0);
         const draw = d3.geoPath(proj, ctx);
         ctx.beginPath();
@@ -11937,9 +14482,7 @@ function ensureLandRaster() {
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
         }
-        const data = ctx.getImageData(0, 0, w, h).data;
-        for (let i = 0; i < w * h; i++) bits[i] = data[i * 4 + 3] > 40 ? 1 : 0;
-    } catch (_) { /* no canvas: everything reads as water and the facing sweep just gives up */ }
+    });
     landRaster = { w, h, bits };
     return landRaster;
 }
@@ -12579,8 +15122,8 @@ function decodeSpaceshipSeed(str) {
 
 function randomSpaceshipSpot() {
     return resolveSpaceshipSpot({
-        pos: Math.floor(Math.random() * SPOT_POS_MAX),
-        var: Math.floor(Math.random() * SPOT_VAR_MAX)
+        pos: Math.floor(rnd() * SPOT_POS_MAX),
+        var: Math.floor(rnd() * SPOT_VAR_MAX)
     });
 }
 
@@ -13340,55 +15883,30 @@ const FLAG_SUBMODES = [
 // click things, or put the same world through a dozen projections. They belong together because
 // they are the same activity at two removes, and the View toggle carries you between them.
 function showExploreSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const sel = document.getElementById('mode-selector');
-    sel.classList.remove('hidden');
-    sel.innerHTML = `
-        <h2>Explore</h2>
-        <p class="selector-sub">No questions and no score. Once you are in either, the View button
-            carries you to the other.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-explore="free-explore">
-                <span class="mode-icon material-symbols-outlined">explore</span>
-                <span class="mode-name">The Globe</span>
-                <span class="mode-desc">Click any country for its flag, capital and population</span>
-            </button>
-            <button class="mode-btn" data-explore="projection-lab">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">Projections</span>
-                <span class="mode-desc">The same world through a dozen of them, with the distortion drawn on it</span>
-            </button>
-        </div>
-        <button id="back-from-explore-btn" class="btn secondary" style="margin-top: 20px;">Back</button>`;
-    sel.querySelectorAll('[data-explore]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.explore)));
-    document.getElementById('back-from-explore-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Explore',
+        blocks: [
+            { sub: 'No questions and no score. Once you are in either, the View button carries you to the other.' },
+            { tiles: [
+                { key: 'free-explore', icon: 'explore', label: 'The Globe',
+                  desc: 'Click any country for its flag, capital and population' },
+                { key: 'projection-lab', icon: 'public', label: 'Projections',
+                  desc: 'The same world through twenty of them, with the distortion drawn on it' },
+                { key: 'airocean-lab', icon: 'deployed_code', label: 'Airocean World',
+                  desc: 'The earth on an icosahedron — cut it open and rearrange it yourself' }
+              ], on: startGameWithMode }
+        ]
+    });
 }
 
 function showFlagsSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Flags</h2>
-        <p class="selector-sub">Match them to countries, catch a fake, or make one.</p>
-        <div class="mode-buttons">
-            ${FLAG_SUBMODES.map(m => `
-            <button class="mode-btn" data-flag-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-flags-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-flag-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.flagMode)));
-    document.getElementById('back-from-flags-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Flags',
+        blocks: [
+            { sub: 'Match them to countries, catch a fake, or make one.' },
+            { tiles: FLAG_SUBMODES, on: startGameWithMode }
+        ]
+    });
 }
 
 // ==================== SANDBOX CATEGORY ====================
@@ -13398,8 +15916,6 @@ function showFlagsSelector() {
 // short round — the whole point of which is that it starts fast — took three clicks to reach.
 // Sun & Moon and Who's Missing moved OUT of here entirely, up to the landing page.
 const SANDBOX_SUBMODES = [
-    { key: 'sun-path', icon: 'routine', label: 'Sun Path',
-      desc: 'How sunrise and sunset move through the year at any latitude' },
     { key: 'odd-one-out', icon: 'filter_alt', label: 'Odd One Out',
       desc: 'Four countries, three with something in common' },
     { key: 'missing-sandbox', icon: 'content_cut', label: "Who's Missing Sandbox",
@@ -13420,10 +15936,20 @@ const SB_IN_SHAPE_ID = ['sb-upside-down', 'sb-out-of-scale'];
 // And False Flag is offered in the Flags bin, which is where somebody looking for a question
 // about flags will go.
 const SB_IN_FLAGS = ['sb-fake-flag'];
+// Two more are offered under Shapes, and one under Capitals. Name the Lake and Mercator Lies are
+// both questions about an OUTLINE — one alone on the board, two compared at true size — which is
+// what that folder is; Pin the Capital is a capitals round. Unlike the pair in `SB_IN_SHAPE_ID`
+// these take no region toggle: a lake is a lake and the Mercator's lie is a lie about the world.
+const SB_IN_SHAPES = ['sb-lake', 'sb-mercator-lie'];
+const SB_IN_CAPITALS = ['sb-capital-pin'];
+// And every "put these in order" round is offered under Rank, which is the genre they share.
+const SB_IN_RANK = () => rankSubmodes().map(t => t.key);
 
 function sandboxQuizTiles() {
+    const ranked = SB_IN_RANK();
     return Object.keys(SB_QUIZZES).filter(k => k !== 'sb-missing' &&
-            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k)).map(k => ({
+            !SB_IN_SHAPE_ID.includes(k) && !SB_IN_FLAGS.includes(k) && !ranked.includes(k) &&
+            !SB_IN_SHAPES.includes(k) && !SB_IN_CAPITALS.includes(k)).map(k => ({
         key: k, icon: SB_QUIZZES[k].icon, label: SB_QUIZZES[k].label, desc: SB_QUIZZES[k].desc
     }));
 }
@@ -13440,70 +15966,34 @@ const DRAW_BORDER_REGIONS = [
 ];
 
 function showDrawBorderSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Draw the Border</h2>
-        <p class="selector-sub">The shape is cut out of the map — trace where it belongs.</p>
-        <div class="mode-buttons">
-            ${DRAW_BORDER_REGIONS.map(r => `
-            <button class="mode-btn" data-draw-region="${r.key}">
-                <span class="mode-icon material-symbols-outlined">${r.icon}</span>
-                <span class="mode-name">${r.label}</span>
-                <span class="mode-desc">${r.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-draw-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-draw-region]').forEach(b =>
-        b.addEventListener('click', () => startDrawBorderMode(b.dataset.drawRegion)));
-    document.getElementById('back-from-draw-btn').addEventListener('click', showSandboxSelector);
+    renderSelector({
+        title: 'Draw the Border',
+        blocks: [
+            { sub: 'The shape is cut out of the map — trace where it belongs.' },
+            { tiles: DRAW_BORDER_REGIONS, on: startDrawBorderMode }
+        ],
+        back: showSandboxSelector
+    });
 }
 
 function startDrawBorderMode(region) {
     const m = QUIZ_MODES['draw-border'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['countries'];
+    borrowRegion(m, region);
     m.drawRegion = QUIZ_MODES[region] ? region : 'countries';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.useAlbersUsa = !!base.useAlbersUsa;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.useGlobe = false;           // always a flat, static board
     startGameWithMode('draw-border');
 }
 
 function showSandboxSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Sandbox</h2>
-        <p class="selector-sub">Experiments and tools — rougher edges than the main modes.</p>
-        <div class="mode-buttons">
-            ${SANDBOX_SUBMODES.concat(sandboxQuizTiles()).map(m => `
-            <button class="mode-btn" data-sandbox-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-sandbox-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-sandbox-mode]').forEach(b =>
-        b.addEventListener('click', () => {
-            // Draw the Border picks a geography first; the rest start straight away.
-            if (b.dataset.sandboxMode === 'draw-border') showDrawBorderSelector();
-            else startGameWithMode(b.dataset.sandboxMode);
-        }));
-    document.getElementById('back-from-sandbox-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Sandbox',
+        blocks: [
+            { sub: 'Experiments and tools — rougher edges than the main modes.' },
+            { tiles: SANDBOX_SUBMODES.concat(sandboxQuizTiles()),
+              // Draw the Border picks a geography first; the rest start straight away.
+              on: k => k === 'draw-border' ? showDrawBorderSelector() : startGameWithMode(k) }
+        ]
+    });
 }
 
 // ==================== SANDBOX QUIZZES ====================
@@ -13522,7 +16012,7 @@ function showSandboxSelector() {
 // lets these hook the shared globe without editing setupGlobe or displacing another mode's
 // handler — d3 keeps namespaced listeners side by side.
 
-const SB_EARTH_R_KM = 6371;
+const SB_EARTH_R_KM = EARTH_R_KM;   // one name for it lives above
 
 // ---- shared helpers ----
 function sbFeature(name) {
@@ -13532,17 +16022,11 @@ function sbFeature(name) {
 // Memoised against the feature list itself, so Who's Missing's surgery (which replaces that
 // list wholesale) invalidates it for free. d3.geoArea on a 10m country is not cheap and the
 // draw loops ask for the same handful of countries hundreds of times.
-let sbAreaCache = { src: null, map: new Map() };
-function sbAreaKm2(name) {
-    const src = gameState.countries;
-    if (sbAreaCache.src !== src) sbAreaCache = { src, map: new Map() };
-    if (sbAreaCache.map.has(name)) return sbAreaCache.map.get(name);
+const sbAreaKm2 = memoByCountries(name => {
     const f = sbFeature(name);
     const a = f ? d3.geoArea(f) : 0;               // steradians
-    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : null;
-    sbAreaCache.map.set(name, km2);
-    return km2;
-}
+    return (isFinite(a) && a > 0) ? a * EARTH_R2_KM2 : null;
+});
 
 // The area of the FRAMING CORE, and a note saying so. Several countries own land the question
 // nobody is asking includes: France's is 18% overseas, Denmark's is nine tenths Greenland, and a
@@ -13550,24 +16034,57 @@ function sbAreaKm2(name) {
 // different question from the one on screen. Below the threshold the two are the same figure and
 // the note is not written at all — it exists to be RARE, or it is noise on every prompt.
 const SB_CORE_NOTE_FRAC = 0.92;
-let sbCoreAreaCache = { src: null, map: new Map() };
-function sbCoreAreaKm2(name) {
-    const src = gameState.countries;
-    if (sbCoreAreaCache.src !== src) sbCoreAreaCache = { src, map: new Map() };
-    if (sbCoreAreaCache.map.has(name)) return sbCoreAreaCache.map.get(name);
+const sbCoreAreaKm2 = memoByCountries(name => {
     const f = sbFeature(name);
     const core = f && shapeFramingCore(f);
     const a = core ? d3.geoArea(core) : 0;
-    const km2 = (isFinite(a) && a > 0) ? a * SB_EARTH_R_KM * SB_EARTH_R_KM : sbAreaKm2(name);
-    sbCoreAreaCache.map.set(name, km2);
+    return (isFinite(a) && a > 0) ? a * EARTH_R2_KM2 : sbAreaKm2(name);
+});
+// Land the country holds that the atlas ships as its OWN feature — Greenland, Puerto Rico, New
+// Caledonia — which is the half of this the core could never see. `shapeFramingCore` only ever
+// drops parts of the feature in front of it, so measuring the core against that feature answered
+// "how much of this shape did the framing keep" when the question is "how much of this country is
+// the shape". Denmark's feature is Denmark; nine tenths of the Kingdom is a separate feature, so
+// the note that exists to say exactly that never fired for it.
+const sbTerritoryAreaKm2 = memoByCountries(parent => {
+    let km2 = 0;
+    (gameState.countries || []).forEach(f => {
+        const p = f && f.properties && f.properties.parent;
+        if (!p || !namesMatch(p, parent)) return;
+        const a = d3.geoArea(f);
+        if (isFinite(a) && a > 0) km2 += a * EARTH_R2_KM2;
+    });
     return km2;
-}
-// "" or " (mainland)". Metropolitan France is mainland plus Corsica, which the core keeps, so
-// "mainland" is the word that is true of every case rather than of the famous one.
+});
+
+// Where the generic word is the wrong word, or where no amount of area will ever notice. The
+// threshold still decides WHETHER a note appears; this decides what it says — except for the
+// United States, where it also decides that one appears at all. That is not the table smuggling
+// in an opinion: the American feature genuinely excludes Puerto Rico, Guam, American Samoa, the
+// Virgin Islands and the Northern Marianas, five inhabited territories holding four million
+// people between them — and 0.1% of the country's area, which is why an area test is blind to
+// them and no threshold could ever be tuned to see them.
+const SB_EXTENT_NOTES = {
+    'France': ' (metropolitan)',
+    'Denmark': ' (excluding Greenland)',
+    'Norway': ' (mainland)',
+    'Netherlands': ' (European Netherlands)',
+    'United States of America': { note: ' (50 states)', always: true }
+};
+
+// "" or a parenthetical saying which of the country the figure covers.
 function sbCoreNote(name) {
-    const whole = sbAreaKm2(name), core = sbCoreAreaKm2(name);
-    if (!whole || !core) return '';
-    return core / whole < SB_CORE_NOTE_FRAC ? ' (mainland)' : '';
+    const own = sbAreaKm2(name), core = sbCoreAreaKm2(name);
+    if (!own || !core) return '';
+    const whole = own + sbTerritoryAreaKm2(name);
+    const fires = core / whole < SB_CORE_NOTE_FRAC;
+    const said = Object.keys(SB_EXTENT_NOTES).find(k => namesMatch(k, name));
+    const rule = said ? SB_EXTENT_NOTES[said] : null;
+    const words = rule && (rule.note || rule);
+    if (rule && (rule.always || fires)) return words;
+    // Mainland plus whatever sits just off it: the core keeps Corsica and Sicily, so "mainland"
+    // is the word that is true of every unnamed case rather than of the famous one.
+    return fires ? ' (mainland)' : '';
 }
 function sbCoreLabel(name) { return displayLabelForName(name) + sbCoreNote(name); }
 
@@ -13582,9 +16099,7 @@ function sbCapitalLonLat(name) {
     return d && Array.isArray(d.capitalCoords) ? [d.capitalCoords[1], d.capitalCoords[0]] : null;
 }
 
-function sbKmBetween(a, b) {
-    return d3.geoDistance(a, b) * SB_EARTH_R_KM;
-}
+const sbKmBetween = kmBetween;   // one great-circle distance; see kmBetween
 
 // The distance between two COUNTRIES: nearest point to nearest point, not centroid to
 // centroid. Centroids answer a different question and get it visibly wrong on anything long or
@@ -13677,6 +16192,169 @@ function sbItemLabel() {
     return (QUIZ_MODES[gameState.mode] || {}).itemLabel || 'country';
 }
 
+// ---- five more things to rank countries by ---------------------------------------------
+// Each is deliberately unlike the others — a perimeter, a diameter, an east-west extent, an
+// offset and an intensity — so that ranking the same five countries by any two of them gives
+// orders that barely agree. That is the whole point of a ranking round: if every metric sorted
+// the world the same way there would only ever be one question.
+
+// Points along a country's outline, thinned to a budget. Every vertex against every vertex is
+// far too much at 10m, and a stride is exact to well under the separations these rounds insist
+// on — the same argument sbNearestPair makes.
+const sbCorePoints = memoByCountries(name => {
+    const f = sbFeature(name);
+    if (!f) return null;
+    const core = shapeFramingCore(f) || f;
+    const rings = featureParts(core).map(poly => poly[0]).filter(Boolean);
+    const total = rings.reduce((s, r) => s + r.length, 0);
+    if (!total) return null;
+    const stride = Math.max(1, Math.floor(total / 220));
+    const out = [];
+    rings.forEach(r => { for (let i = 0; i < r.length; i += stride) out.push(r[i]); });
+    return out.length ? out : null;
+});
+
+// The country's own diameter: the greatest distance between any two points of it. Not the same
+// question as area — Chile is small and enormously long — and not the same as the bounding box,
+// which measures a rectangle nobody's country is.
+const sbDiameterKm = memoByCountries(name => {
+    const pts = sbCorePoints(name);
+    if (!pts || pts.length < 2) return null;
+    // Cartesian on the unit sphere: the pair furthest apart in chord length is the pair
+    // furthest apart in arc length, so the great-circle call is made once at the end.
+    const xyz = pts.map(([lon, lat]) => {
+        const p = lon * DEG, q = lat * DEG, c = Math.cos(q);
+        return [c * Math.cos(p), c * Math.sin(p), Math.sin(q)];
+    });
+    let best = -1, bi = 0, bj = 0;
+    for (let i = 0; i < xyz.length; i++)
+        for (let j = i + 1; j < xyz.length; j++) {
+            const dx = xyz[i][0] - xyz[j][0], dy = xyz[i][1] - xyz[j][1], dz = xyz[i][2] - xyz[j][2];
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d > best) { best = d; bi = i; bj = j; }
+        }
+    return best > 0 ? sbKmBetween(pts[bi], pts[bj]) : null;
+});
+
+// A country's own coastline: the arcs no two countries share, restricted to this one. Exactly
+// the predicate the coastline model and Draw the Border use, pointed at a single country.
+const sbCoastlineKm = memoByCountries(name => {
+    const km = sbMeshKm((a, b) => a === b && namesMatch(sbGeomName(a), name), 'coast1:' + name);
+    return km && km > 0 ? km : null;
+});
+
+// How far the capital sits from the middle of the country. Brasília and Canberra were built in
+// the middle on purpose; Reykjavík and Buenos Aires are pressed against an edge.
+const sbCapitalOffsetKm = memoByCountries(name => {
+    const cap = sbCapitalLonLat(name), mid = getCountryCentroid(name);
+    if (!cap || !mid || !isFinite(cap[0]) || !isFinite(mid[0])) return null;
+    return sbKmBetween(cap, mid);
+});
+
+// Diameter with the SIZE divided out: a country's longest span against the square root of its
+// area, which is dimensionless and so says nothing about how big it is — only how stretched.
+const sbElongation = memoByCountries(name => {
+    const d = sbDiameterKm(name), a = sbAreaKm2(name);
+    return (d && a > 0) ? d / Math.sqrt(a) : null;
+});
+
+const sbDensity = memoByCountries(name => {
+    const p = sbPop(name), a = sbAreaKm2(name);
+    return (p && a) ? p / a : null;
+});
+
+const sbLonSpanDeg = memoByCountries(name => {
+    const f = sbFeature(name);
+    const b = f && geoBox(shapeFramingCore(f) || f);
+    // A wrapped box has no meaningful span — see geoBox. Russia is the country everyone would
+    // name for this question and it is exactly the one that cannot be asked.
+    return (b && !b.wrapped && b.lonSpan > 0) ? b.lonSpan : null;
+});
+
+const SB_RANK_METRICS = {
+    'sb-rank-coast': {
+        icon: 'waves', label: 'Most Coastline', of: sbCoastlineKm,
+        what: 'the length of its coastline', desc: 'Order five by how much shore they have',
+        unit: 'km', fmt: v => sbFormatKm(v), gapFrac: 0.28,
+        why: 'Coastline is a perimeter, not an area — a big country can have almost none of it ' +
+             'and a small scattered one can have a great deal.'
+    },
+    // Diameter ALONE is very nearly area — measured over 114 countries the two rank together at
+    // a Spearman of 0.94, so "which is longest" collapses into "which is biggest" and the round
+    // asks nothing new. Dividing by the square root of the area takes the size out and leaves
+    // the SHAPE: how stretched the country is for how much of it there is. Chile and Norway rise
+    // to the top, and the round becomes the one the label was reaching for.
+    'sb-rank-stretch': {
+        icon: 'straighten', label: 'Most Stretched Out', of: sbElongation,
+        what: 'how stretched out it is for its size',
+        desc: 'Order five by how long and thin they are',
+        unit: '×', fmt: v => v.toFixed(2) + '× its own width', gapFrac: 0.14,
+        why: 'Length on its own is very nearly just size. Length against area is a fact about the ' +
+             'SHAPE — Chile and Norway are stretched; Poland and Zimbabwe are not.'
+    },
+    'sb-rank-lonspan': {
+        icon: 'schedule', label: 'Widest East to West', of: sbLonSpanDeg,
+        what: 'how many degrees of longitude it spans',
+        desc: 'Order five by how many time zones they reach across',
+        unit: '°', fmt: v => v.toFixed(1) + '° (' + (v / 15).toFixed(1) + ' hours)', gapFrac: 0.22,
+        why: 'Fifteen degrees of longitude is an hour of sun, which is why this is the number a ' +
+             'country’s clocks are argued over.'
+    },
+    'sb-rank-capital': {
+        icon: 'location_city', label: 'Capital Off Centre', of: sbCapitalOffsetKm,
+        what: 'how far its capital is from the middle of the country',
+        desc: 'Order five by how far the capital sits from the centre',
+        unit: 'km', fmt: v => sbFormatKm(v), gapFrac: 0.35,
+        why: 'Brasília and Canberra were built in the middle on purpose. Most capitals are ' +
+             'wherever the port, the river or the old kingdom happened to be.'
+    },
+    'sb-rank-density': {
+        icon: 'groups_3', label: 'Most Crowded', of: sbDensity,
+        what: 'its population density', desc: 'Order five by people per square kilometre',
+        unit: '/km²', fmt: v => (v >= 100 ? Math.round(v) : v.toFixed(1)) + ' /km²', gapFrac: 0.4,
+        why: 'Population and density pull in opposite directions: the most populous countries are ' +
+             'usually the big ones, and the most crowded are usually the small ones.'
+    }
+};
+
+// One builder for all five. `gapFrac` is how far apart consecutive values must be, as a
+// fraction of the larger — a RATIO rather than an absolute, because these quantities live on
+// wildly different scales and "500 km apart" means nothing shared between a coastline and a
+// capital's offset.
+function sbRankQuizzes() {
+    const out = {};
+    Object.keys(SB_RANK_METRICS).forEach(key => {
+        const m = SB_RANK_METRICS[key];
+        out[key] = {
+            engine: 'order', flat: true, rank: true, icon: m.icon, label: m.label, desc: m.desc,
+            metric: key,
+            build() {
+                const pool = sbPool().filter(n => m.of(n) != null && sbAreaKm2(n) > 20000);
+                if (pool.length < 8) return null;
+                for (let t = 0; t < 30; t++) {
+                    const picks = shuffleArray(pool).slice(0, 5);
+                    if (picks.length < 5) return null;
+                    const vals = picks.map(m.of).sort((a, b) => a - b);
+                    let ok = true;
+                    for (let i = 1; i < vals.length; i++)
+                        if (vals[i] - vals[i - 1] < vals[i] * m.gapFrac) { ok = false; break; }
+                    if (!ok) continue;
+                    return {
+                        items: picks, anchor: null, barValues: true,
+                        correct: [...picks].sort((a, b) => m.of(b) - m.of(a)),
+                        prompt: `Drag these into order by <strong>${m.what}</strong> — the largest at the top.`,
+                        format: n => m.fmt(m.of(n)),
+                        value: m.of, unit: m.unit,
+                        explain: m.why
+                    };
+                }
+                return null;
+            }
+        };
+    });
+    return out;
+}
+
 // ---- the lines drawn on every globe, and what they actually cross ----------------------
 //
 // A bounding box is not an answer. Chile's box spans thirty-eight degrees of latitude it has no
@@ -13687,33 +16365,27 @@ const SB_LINE_SAMPLES = 400;
 function sbLineCrosses(name, line) {
     const f = sbFeature(name);
     if (!f) return false;
-    const b = d3.geoBounds(f);
-    if (!isFinite(b[0][0])) return false;
+    const b = geoBox(f);
+    if (!b) return false;
     if (line.lat != null) {
-        if (line.lat < b[0][1] || line.lat > b[1][1]) return false;
-        // A country straddling +-180 comes back from `d3.geoBounds` with its EAST edge west of
-        // its west edge — Russia reads [19.6, ..., -169.8] — which is the antimeridian-aware
-        // answer and not a mistake. Subtracting one from the other then gives a negative span
-        // and the country is dropped: that is what lost Russia from the Arctic Circle, the first
-        // country anybody would name, and the United States from it via Alaska. There is nothing
-        // to narrow the search to in that case, so the whole parallel is sampled.
-        const wrapped = b[1][0] < b[0][0] || b[1][0] - b[0][0] > 355;
-        const w = wrapped ? -180 : b[0][0], span = wrapped ? 360 : b[1][0] - b[0][0];
+        if (line.lat < b.s || line.lat > b.n) return false;
+        // A wrapped box gives the sampler nothing to narrow to — the country is on both sides of
+        // the seam — so the whole parallel is walked. This is what once lost Russia from the
+        // Arctic Circle, the first country anybody would name, and the USA from it via Alaska.
+        const wide = b.wrapped || b.lonSpan > 355;
+        const w = wide ? -180 : b.w, span = wide ? 360 : b.lonSpan;
         if (!(span > 0)) return false;
-        const n2 = wrapped ? SB_LINE_SAMPLES * 3 : SB_LINE_SAMPLES;
+        const n2 = wide ? SB_LINE_SAMPLES * 3 : SB_LINE_SAMPLES;
         for (let i = 0; i <= n2; i++)
             if (d3.geoContains(f, [w + span * i / n2, line.lat])) return true;
         return false;
     }
-    // Same wrap: a meridian is inside a wrapped box when it is east of the west edge OR west of
-    // the east one, which is the opposite test from the ordinary case.
-    const wrap2 = b[1][0] < b[0][0];
-    const inLon = wrap2 ? (line.lon >= b[0][0] || line.lon <= b[1][0])
-                        : (line.lon >= b[0][0] && line.lon <= b[1][0]);
-    if (!inLon) return false;
-    const s = b[0][1], n = b[1][1];
+    // The unwrapped east edge makes this the ordinary interval test even across the seam; the
+    // meridian is offered at both its own longitude and 360° east of it.
+    if (!((line.lon >= b.w && line.lon <= b.e) ||
+          (line.lon + 360 >= b.w && line.lon + 360 <= b.e))) return false;
     for (let i = 0; i <= SB_LINE_SAMPLES; i++)
-        if (d3.geoContains(f, [line.lon, s + (n - s) * i / SB_LINE_SAMPLES])) return true;
+        if (d3.geoContains(f, [line.lon, b.s + b.latSpan * i / SB_LINE_SAMPLES])) return true;
     return false;
 }
 
@@ -13723,42 +16395,270 @@ function sbLineCrosses(name, line) {
 function sbLineGapDeg(name, line) {
     const f = sbFeature(name);
     if (!f) return Infinity;
-    const b = d3.geoBounds(f);
-    if (!isFinite(b[0][0])) return Infinity;
-    if (line.lat != null) return Math.max(0, b[0][1] - line.lat, line.lat - b[1][1]);
-    if (b[1][0] < b[0][0]) return 0;                 // a wrapped box spans most longitudes
-    return Math.max(0, b[0][0] - line.lon, line.lon - b[1][0]);
+    const b = geoBox(f);
+    if (!b) return Infinity;
+    if (line.lat != null) return Math.max(0, b.s - line.lat, line.lat - b.n);
+    if (b.wrapped) return 0;                         // a wrapped box spans most longitudes
+    return Math.max(0, b.w - line.lon, line.lon - b.e);
 }
 
-// A lon/lat as somebody would say it out loud, with whose water or land it is if that is known.
-function sbLonLatWords(p) {
-    const lat = `${Math.abs(p[1]).toFixed(1)}° ${p[1] >= 0 ? 'N' : 'S'}`;
-    const lon = `${Math.abs(p[0]).toFixed(1)}° ${p[0] >= 0 ? 'E' : 'W'}`;
-    const here = (gameState.countries || []).find(f => {
-        try { return d3.geoContains(f, p); } catch (_) { return false; }
-    });
-    return `${lat}, ${lon}` + (here ? ` — in ${displayLabelForName(here.properties.name)}` : ' — open ocean');
-}
 
 // Walking due north from a point: the first country whose land the meridian meets. Stepping in
 // latitude and testing containment is the honest way to ask it — the question is about a LINE
 // rather than about which centroid is northward, and the two disagree constantly.
-const SB_NORTH_STEP = 0.25;
-function sbFirstAlongMeridian(from, lon, lat) {
-    const feats = (gameState.countries || []).filter(f => f.properties && f.properties.name);
-    for (let y = lat + 1; y <= 84; y += SB_NORTH_STEP) {
-        for (const f of feats) {
-            const nm = f.properties.parent || f.properties.name;
-            if (namesMatch(nm, from)) continue;
-            const b = d3.geoBounds(f);
-            if (!isFinite(b[0][0]) || y < b[0][1] || y > b[1][1] || lon < b[0][0] || lon > b[1][0]) continue;
-            let inside = false;
-            try { inside = d3.geoContains(f, [lon, y]); } catch (_) { inside = false; }
-            // Land the quiz does not deal (a territory, an unnamed id) is still LAND: you have
-            // walked onto it, so the walk is over and there is no question here. Returning null
-            // is the honest answer — skipping it and carrying on would name a country you would
-            // have to have walked straight through somebody else to reach.
-            if (inside) return (gameState.currentQuizList || []).includes(nm) ? nm : null;
+
+// ---------- CONNECTIONS: sixteen countries, four groups of four ----------
+//
+// The whole game is in the OVERLAP. Sixteen names with four hidden categories is only a puzzle if
+// a name can plausibly belong to more than one of them — otherwise the first four you notice are
+// the answer and there is nothing to work out. So the generator does two opposite things at once:
+// it insists the solution is UNIQUE (no country satisfies two of the four chosen categories, or
+// there would be no right answer to find) while choosing categories that OFFER a false reading
+// (Iceland is an island and it ends in -land; Chad is landlocked and starts with C).
+//
+// Every category is computed from data already here — the arc table, the continents, the areas
+// and populations, the names themselves — bar one: the Security Council's permanent five, which
+// is a fact about the world rather than about geometry and is written down.
+const SB_UNSC = ['China', 'France', 'Russia', 'United Kingdom', 'United States of America'];
+
+// Each returns a list of { tag, label, names }. `names` is a POOL — four are drawn from it — so a
+// category with eleven members can produce many different puzzles.
+const SB_CONNECT_CATS = [
+    {
+        key: 'letter',
+        groups: pool => {
+            const by = new Map();
+            pool.forEach(n => {
+                const c = displayLabelForName(n).trim()[0];
+                if (!/[A-Z]/i.test(c)) return;
+                const k = c.toUpperCase();
+                if (!by.has(k)) by.set(k, []);
+                by.get(k).push(n);
+            });
+            return [...by.entries()].filter(e => e[1].length >= 4)
+                .map(([k, names]) => ({ tag: 'letter:' + k, label: `Names beginning with ${k}`, names }));
+        }
+    },
+    {
+        key: 'ending',
+        groups: pool => {
+            const ends = [['stan', 'Names ending in ‑stan'],
+                          ['land', 'Names ending in ‑land'],
+                          ['ia', 'Names ending in ‑ia']];
+            return ends.map(([suf, label]) => ({
+                tag: 'end:' + suf, label,
+                names: pool.filter(n => new RegExp(suf + '$', 'i').test(displayLabelForName(n)))
+            })).filter(g => g.names.length >= 4);
+        }
+    },
+    {
+        key: 'landlocked',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            return [{ tag: 'landlocked', label: 'Landlocked — no coast at all',
+                      names: pool.filter(n => !facts.coastal.has(n)) }];
+        }
+    },
+    {
+        key: 'island',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            return [{ tag: 'island', label: 'No land border with anybody',
+                      names: pool.filter(n => facts.island.has(n)) }];
+        }
+    },
+    {
+        key: 'equator',
+        groups: pool => [{
+            tag: 'equator', label: 'The Equator passes through them',
+            names: pool.filter(n => sbLineCrosses(n, { lat: 0 }))
+        }]
+    },
+    {
+        key: 'continent',
+        groups: pool => {
+            const cd = window.continentData || {};
+            return Object.keys(cd).map(c => {
+                const set = new Set((cd[c] || []).map(normalizeName));
+                return { tag: 'cont:' + c, label: `In ${c}`,
+                         names: pool.filter(n => set.has(normalizeName(n))) };
+            }).filter(g => g.names.length >= 4);
+        }
+    },
+    {
+        key: 'neighbour',
+        groups: pool => {
+            const facts = ensureCountryFacts();
+            if (!facts) return [];
+            const out = [];
+            facts.neighbours.forEach((_, host) => {
+                const nb = playableNeighbours(host).filter(n => pool.includes(n));
+                if (nb.length >= 4) out.push({ tag: 'nb:' + host,
+                    label: `They border ${displayLabelForName(host)}`, names: nb });
+            });
+            return out;
+        }
+    },
+    {
+        key: 'unsc',
+        groups: pool => [{
+            tag: 'unsc', label: 'Permanent members of the UN Security Council',
+            names: pool.filter(n => SB_UNSC.some(u => namesMatch(u, n)))
+        }]
+    },
+    {
+        key: 'huge',
+        groups: pool => {
+            const ranked = [...pool].filter(n => sbAreaKm2(n)).sort((a, b) => sbAreaKm2(b) - sbAreaKm2(a));
+            return [{ tag: 'huge', label: 'The largest countries on earth by area',
+                      names: ranked.slice(0, 8) }];
+        }
+    },
+    {
+        key: 'populous',
+        groups: pool => {
+            const ranked = [...pool].filter(n => sbPop(n)).sort((a, b) => sbPop(b) - sbPop(a));
+            return [{ tag: 'populous', label: 'Over 100 million people',
+                      names: ranked.filter(n => sbPop(n) > 100e6) }];
+        }
+    },
+    {
+        key: 'capinitial',
+        groups: pool => [{
+            tag: 'capinitial', label: 'Capital shares the country’s first letter',
+            names: pool.filter(n => {
+                const cap = getCapital(effectiveDataName(n));
+                const nm = displayLabelForName(n);
+                return cap && nm && cap[0].toUpperCase() === nm[0].toUpperCase();
+            })
+        }]
+    },
+    {
+        key: 'twoword',
+        groups: pool => [{
+            tag: 'twoword', label: 'Names of more than one word',
+            names: pool.filter(n => /\s/.test(displayLabelForName(n).replace(/\s*\(.*$/, '')))
+        }]
+    }
+];
+
+// Which kinds of group may turn up. All of them, until somebody says otherwise in the picker —
+// which exists because "what sort of question is this puzzle allowed to ask" is the one knob
+// worth having on a generator with twelve of them, and because seeing the twelve listed is the
+// only way to know what it can ask at all.
+let sbConnectOn = new Set(SB_CONNECT_CATS.map(c => c.key));
+const SB_CONNECT_NAMES = {
+    letter: 'Beginning with a letter', ending: 'Ending in ‑stan, ‑land or ‑ia',
+    landlocked: 'Landlocked', island: 'No land border with anybody',
+    equator: 'On the Equator', continent: 'On one continent',
+    neighbour: 'Bordering one country', unsc: 'The Security Council',
+    huge: 'The largest by area', populous: 'Over 100 million people',
+    capinitial: 'Capital shares the first letter', twoword: 'More than one word'
+};
+
+// A puzzle needs FOUR categories that can all be satisfied at once, so turning them off is not
+// free: below four kinds there is nothing to build from, and several of the twelve can only ever
+// offer one group each (there is one Security Council). The picker therefore says how many draws
+// out of twelve the current selection actually produces, measured rather than guessed — the only
+// honest answer to "is this combination playable".
+function sbConnectDraws(tries) {
+    let ok = 0;
+    for (let i = 0; i < (tries || 12); i++) if (sbBuildConnections()) ok++;
+    return ok;
+}
+
+function sbOpenConnectCats() {
+    const ov = document.createElement('div');
+    ov.className = 'ws-overlay';
+    const rows = () => SB_CONNECT_CATS.map(c =>
+        `<label class="sb-conn-cat"><input type="checkbox" data-cat="${c.key}"` +
+        `${sbConnectOn.has(c.key) ? ' checked' : ''}> ${SB_CONNECT_NAMES[c.key] || c.key}</label>`).join('');
+    ov.innerHTML =
+        `<div class="ws-dialog"><div class="ws-dialog-head"><strong>Kinds of group</strong>` +
+        `<button type="button" class="ws-x" id="sb-conn-close" title="Close">×</button></div>` +
+        `<div class="ws-hint">Only the ticked kinds are offered to the generator. A puzzle needs ` +
+        `four that can hold at once, so a short list may not draw at all — the tally below says ` +
+        `whether it does.</div>` +
+        `<div class="sb-conn-cats" id="sb-conn-cats">${rows()}</div>` +
+        `<div class="ws-row"><button class="control-btn" id="sb-conn-all">All</button>` +
+        `<button class="control-btn" id="sb-conn-none">None</button>` +
+        `<span class="ws-hint" id="sb-conn-tally"></span></div>` +
+        `<div class="ws-row"><button class="control-btn" id="sb-conn-deal">Deal a new board</button></div></div>`;
+    document.body.appendChild(ov);
+    const tally = () => {
+        const el = document.getElementById('sb-conn-tally');
+        if (el) el.textContent = sbConnectOn.size < 4 ? 'Fewer than four kinds — nothing can be built.'
+                                                     : sbConnectDraws(12) + ' of 12 draws succeed.';
+    };
+    const wire = () => {
+        ov.querySelectorAll('input[data-cat]').forEach(cb => cb.addEventListener('change', () => {
+            if (cb.checked) sbConnectOn.add(cb.dataset.cat); else sbConnectOn.delete(cb.dataset.cat);
+            tally();
+        }));
+    };
+    const repaint = () => { document.getElementById('sb-conn-cats').innerHTML = rows(); wire(); tally(); };
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    document.getElementById('sb-conn-close').addEventListener('click', () => ov.remove());
+    document.getElementById('sb-conn-all').addEventListener('click', () => {
+        sbConnectOn = new Set(SB_CONNECT_CATS.map(c => c.key)); repaint();
+    });
+    document.getElementById('sb-conn-none').addEventListener('click', () => { sbConnectOn = new Set(); repaint(); });
+    document.getElementById('sb-conn-deal').addEventListener('click', () => {
+        ov.remove();
+        startGameWithMode('sb-connections');
+    });
+    wire();
+    tally();
+}
+
+// One puzzle: four categories, four countries each, and no country in two of them.
+function sbBuildConnections() {
+    const pool = sbPool().filter(n => sbAreaKm2(n) > 5000);
+    if (pool.length < 40) return null;
+    // Every group every category can offer, from this pool.
+    const all = [];
+    SB_CONNECT_CATS.filter(c => sbConnectOn.has(c.key)).forEach(c => {
+        let gs = [];
+        try { gs = c.groups(pool) || []; } catch (_) { gs = []; }
+        gs.forEach(g => { if (g && (g.names || []).length >= 4) all.push({ ...g, cat: c.key }); });
+    });
+    if (all.length < 6) return null;
+    const memberOf = g => new Set(g.names.map(normalizeName));
+
+    for (let attempt = 0; attempt < 200; attempt++) {
+        const bag = shuffleArray(all.slice());
+        const chosen = [];
+        const used = new Set();
+        for (const g of bag) {
+            if (chosen.length === 4) break;
+            // No two groups from the same category: "beginning with C" and "beginning with M" in
+            // one puzzle is a spelling test rather than a geography one.
+            if (chosen.some(c => c.cat === g.cat)) continue;
+            // The four have to be drawable from what is not already spoken for, AND none of them
+            // may belong to a category already chosen — that is what makes the answer unique.
+            const others = chosen.map(memberOf);
+            const free = g.names.filter(n => !used.has(normalizeName(n)) &&
+                !others.some(o => o.has(normalizeName(n))));
+            if (free.length < 4) continue;
+            const pick = shuffleArray(free).slice(0, 4);
+            // And the reverse: none of the four already chosen elsewhere may belong to THIS one.
+            const mine = new Set(pick.map(normalizeName));
+            const clash = chosen.some(c => c.pick.some(n => memberOf(g).has(normalizeName(n))));
+            if (clash) continue;
+            pick.forEach(n => used.add(normalizeName(n)));
+            chosen.push({ ...g, pick, mine });
+        }
+        if (chosen.length === 4) {
+            const items = shuffleArray(chosen.flatMap(g => g.pick));
+            return {
+                groups: chosen.map((g, i) => ({ label: g.label, tag: g.tag, order: i,
+                                                names: g.pick.slice() })),
+                items,
+                prompt: 'Find the four groups of four. <span class="sb-aside">Every country belongs ' +
+                        'to exactly one group — but several of them look like they belong to two.</span>'
+            };
         }
     }
     return null;
@@ -13770,7 +16670,7 @@ function sbPool() {
 }
 
 function sbRandom(list) {
-    return list.length ? list[Math.floor(Math.random() * list.length)] : null;
+    return list.length ? pickOne(list) : null;
 }
 
 function sbFormatKm(km) {
@@ -13986,25 +16886,115 @@ function sbCountriesAlong(a, b, skip) {
 // are near-identical blobs and the round is unanswerable, so the NAMES come from that list and
 // the GEOMETRY comes from 10m. Taking the whole 10m list instead would deal obscure reservoirs
 // nobody could name; taking 110m geometry would deal shapes nobody could tell apart.
-function sbLakeFeatures() {
-    if (window.__sbLakes) return window.__sbLakes.length ? window.__sbLakes : null;
-    if (!window.__sbLakesPending) {
-        window.__sbLakesPending = true;
-        const lakeName = f => (f.properties && (f.properties.name || f.properties.Name)) || null;
-        Promise.all([
-            d3.json(lakesUrlForRes('10m')).catch(() => null),
-            d3.json('data/lakes.geo.json').catch(() => null)
-        ]).then(([hi, base]) => {
-            const baseNames = new Set((base && base.features || [])
-                .map(f => normalizeName(lakeName(f) || '')).filter(Boolean));
-            const hiFeats = (hi && hi.features) || [];
-            let out = hiFeats.filter(f => baseNames.has(normalizeName(lakeName(f) || '')));
-            // Offline, or a 10m file that names things differently: fall back to what we have.
-            if (out.length < 4) out = hiFeats.length >= 4 ? hiFeats : ((base && base.features) || []);
-            window.__sbLakes = out;
+// ==================== WATER AS A GEOGRAPHY ====================
+// Lakes and rivers as a pool the silhouette rounds can be played over, alongside the world and
+// the fifty states. Nothing in those rounds had to learn what water is: `sbPool()` and
+// `sbFeature()` read `gameState.currentQuizList` and `gameState.countries` and have never asked
+// where either came from, so water only has to arrive in those two places.
+//
+// The one thing that genuinely differs is that a river is a LINE. It has no area, so anything
+// measuring one has to measure its length instead, and it is drawn stroked rather than filled.
+const WATER_RIVERS_URL = 'https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/' +
+                         '10m/physical/ne_10m_rivers_lake_centerlines.json';
+// Natural Earth's scalerank says at what map scale a river earns its label; 0–5 is roughly
+// "on a world map". The length floor then drops the short ones that rank highly for local
+// reasons. Together they leave about ninety rivers, all of them real rivers of substance.
+const WATER_RIVER_MAX_RANK = 5;
+const WATER_RIVER_MIN_KM = 700;
+
+// Natural Earth ships a river as many features, and the merge key is `name_en` rather than
+// `name` — that is what folds Donau into Danube and Jinsha and Chang Jiang into the Yangtze.
+// It does not catch everything, and two options that are the same river is the one thing this
+// round must never deal, so the stragglers are named here.
+const WATER_RIVER_ALIASES = {
+    'Yellow': 'Huang', 'Tongtian': 'Yangtze', 'Ertis': 'Irtysh', 'Firat': 'Euphrates',
+    'Nu': 'Salween', 'Damqogkanbab': 'Brahmaputra', 'Verkhniy Yenisey': 'Yenisey',
+    'Irrawaddy Delta': 'Irrawaddy', 'Maquan': 'Brahmaputra', 'Yarlung': 'Brahmaputra',
+    'Lancang': 'Mekong', 'Heilong Jiang': 'Amur', 'Argun’': 'Ergun', 'Abay': 'Blue Nile'
+};
+
+const riverKey = p => {
+    const raw = (p.name_en || p.name || '').replace(/\s+/g, ' ').trim();
+    return WATER_RIVER_ALIASES[raw] || raw;
+};
+
+let waterCache = null, waterPending = false;
+
+// The pool, or null while it is still in flight — the same readiness contract sbLakeFeatures
+// has, so a round can gate on it with `preload`.
+function waterFeatures() {
+    if (waterCache) return waterCache.length ? waterCache : null;
+    if (waterPending) return null;
+    waterPending = true;
+    Promise.all([
+        fetchLakePool(),
+        d3.json(WATER_RIVERS_URL).catch(() => null)
+    ]).then(([lakes, riversRaw]) => {
+        const out = [];
+        (lakes || []).forEach(f => {
+            const n = f.properties && (f.properties.name || f.properties.Name);
+            if (!n) return;
+            out.push({ type: 'Feature', geometry: f.geometry,
+                       properties: { name: n, waterKind: 'lake' } });
         });
-    }
+        // One feature per river, its scattered stretches gathered into a MultiLineString.
+        const byName = new Map();
+        ((riversRaw && riversRaw.features) || []).forEach(f => {
+            const p = f.properties || {}, g = f.geometry;
+            // `Lake Centerline` is the line THROUGH a lake, not a river, and the lake itself is
+            // already in the pool as a polygon.
+            if (!p.name || !g || p.featurecla !== 'River') return;
+            const n = riverKey(p);
+            if (!n) return;
+            const e = byName.get(n) || { lines: [], rank: p.scalerank };
+            e.rank = Math.min(e.rank, p.scalerank);
+            (g.type === 'LineString' ? [g.coordinates] : g.coordinates).forEach(l => e.lines.push(l));
+            byName.set(n, e);
+        });
+        byName.forEach((e, n) => {
+            if (e.rank > WATER_RIVER_MAX_RANK) return;
+            const geometry = { type: 'MultiLineString', coordinates: e.lines };
+            const km = d3.geoLength(geometry) * EARTH_R_KM;
+            if (km < WATER_RIVER_MIN_KM) return;
+            out.push({ type: 'Feature', geometry,
+                       properties: { name: n, waterKind: 'river', lengthKm: km } });
+        });
+        waterCache = out;
+    }).catch(() => { waterCache = []; });
     return null;
+}
+
+const waterNames = () => (waterCache || []).map(f => f.properties.name);
+const isRiverFeature = f => !!(f && f.properties && f.properties.waterKind === 'river');
+
+// The region config the silhouette modes borrow, in the shape borrowRegion hands back. It is
+// not a QUIZ_MODES entry because water is not a mode — it is a pool three modes can be played
+// over, and giving it an entry of its own would put an unplayable tile in every region picker.
+function waterRegionConfig() {
+    return { quizList: waterNames(), dataObjKey: null, useGlobe: false, useAlbersUsa: false,
+             mapUrl: null, mapObject: null, waterPool: true,
+             itemLabel: 'body of water', itemLabelPlural: 'bodies of water' };
+}
+
+// The lakes worth asking about are the ones the map itself shows by default — the bundled 110m
+// set, i.e. the Great Lakes, Victoria, Baikal and their peers. But at 110m their outlines are
+// near-identical blobs and a round about the shape is unanswerable, so the NAMES come from that
+// list and the GEOMETRY comes from 10m. Taking the whole 10m list instead would deal obscure
+// reservoirs nobody could name; taking 110m geometry would deal shapes nobody could tell apart.
+function fetchLakePool() {
+    const lakeName = f => (f.properties && (f.properties.name || f.properties.Name)) || null;
+    return Promise.all([
+        d3.json(lakesUrlForRes('10m')).catch(() => null),
+        d3.json('data/lakes.geo.json').catch(() => null)
+    ]).then(([hi, base]) => {
+        const baseNames = new Set((base && base.features || [])
+            .map(f => normalizeName(lakeName(f) || '')).filter(Boolean));
+        const hiFeats = (hi && hi.features) || [];
+        let out = hiFeats.filter(f => baseNames.has(normalizeName(lakeName(f) || '')));
+        // Offline, or a 10m file that names things differently: fall back to what we have.
+        if (out.length < 4) out = hiFeats.length >= 4 ? hiFeats : ((base && base.features) || []);
+        return out;
+    }).catch(() => []);
 }
 
 // ==================== WHO'S MISSING: EATING A COUNTRY ====================
@@ -16590,7 +19580,7 @@ function applyCoreOverride(feature) {
     });
     items.sort((x, y) => y.a - x.a);
     const home = items[0].centroid;
-    items.forEach(it => { it.km = d3.geoDistance(home, it.centroid) * 6371; });
+    items.forEach(it => { it.km = d3.geoDistance(home, it.centroid) * EARTH_R_KM; });
     const kept = items.filter(it => corePartKept(rule, it)).map(it => it.c);
     if (!kept.length || kept.length === parts.length) return feature;
     return { type: 'Feature', properties: feature.properties,
@@ -16615,7 +19605,7 @@ function applyCoreOverride(feature) {
 
 let framingState = null;
 
-const FRAMING_R2 = 6371 * 6371;
+const FRAMING_R2 = EARTH_R2_KM2;
 
 // Area of a lon/lat box on the sphere, in km². Antimeridian-safe, and guarded against a ring
 // wound the wrong way — d3.geoArea would then report the whole sphere minus the box.
@@ -16796,12 +19786,7 @@ function framingDraw() {
     // aimed, and a view that refits under every drag cannot be aimed at anything.
     if (framingState.needFit) {
         framingState.needFit = false;
-        const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.1;
-        try {
-            const c = d3.geoCentroid(framingState.feature);
-            if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
-            projection.fitExtent([[pad, pad], [w - pad, h - pad]], framingState.feature);
-        } catch (_) { /* leave the framing alone */ }
+        fitTo(framingState.feature, { pad: 0.1, recentre: 'lon' });
     }
 
     countriesGroup.selectAll('*').remove();
@@ -16960,6 +19945,1923 @@ function framingExport() {
     } catch (_) { /* the text is on screen either way */ }
 }
 
+// ==================== AIROCEAN WORLD ====================
+// Fuller's Dymaxion, taken apart. The earth is wrapped on an icosahedron and the solid is cut
+// open and rolled flat — and which cuts you make is the whole argument of the thing, because
+// every arrangement keeps some things together by tearing others apart. So the cuts are the
+// interaction: turn the earth inside the solid, and choose edge by edge which of them is a
+// seam and which is a tear.
+//
+// This is NOT d3.geoAirocean with knobs on. That projection bakes each face's placement at
+// construction, and three attempts to drive it from a rewritten tree produced faces sitting on
+// top of one another (17 distinct positions out of 24). The unfolding is done here instead, and
+// it is short because the geometry is kind:
+//
+//   * Every face is projected GNOMONICALLY from the centre of the earth about its own centroid.
+//     A gnomonic sends great circles to straight lines, so a spherical triangle becomes a real
+//     triangle — and since the icosahedron is regular, every face becomes the SAME triangle.
+//   * Congruent triangles mean the join is exact. A child is placed by the one rigid motion
+//     that lands its copy of the shared edge on top of the parent's already-placed copy, with
+//     the child on the far side. No fitting, no residual: the seam closes to the last decimal.
+//
+// THE MAP IS NEVER IN PIECES. The arrangement is a SPANNING TREE over the icosahedron's face
+// adjacency — 19 of the 30 edges joined, always — held as an edge SET rather than as parent
+// pointers, because every operation here is "add this edge, drop that one" and a tree that is
+// edited as a set can never come apart. The parent links the placement walk needs are derived
+// from the set by breadth-first search each time, so connectivity is not a property that has to
+// be maintained: it is a property of the only representation there is.
+const AIRO_SCALE = 200;               // gnomonic units; the same for every face, or they'd not fit
+// Fuller's own orientation, read off d3.geoAirocean — the earth turned inside a solid whose
+// vertices sit at the poles and on two rings at ±atan(1/2).
+const AIRO_FULLER_ROTATE = [-83.65929, 25.44458, -87.45184];
+const AIRO_GLOBE_SIZE = 214;          // the inset that shows the solid over the earth
+
+let airoState = null;
+const airoEdgeKey = (a, b) => (a < b ? a + ':' + b : b + ':' + a);
+
+// ---- the solids ----
+// Six of them, and none is typed out as a face list. Each is a bare bag of POINTS and the faces
+// are worked out by `airoBuildSolid`, because a face list is the part that is tedious to type and
+// impossible to check by eye — a single transposed index gives a solid that looks almost right
+// and unfolds into nonsense. A point list is short, and it is the form every published set of
+// coordinates comes in.
+const AIRO_PHI = (1 + Math.sqrt(5)) / 2;
+
+function airoDedupe(pts) {
+    const seen = new Set(), out = [];
+    pts.forEach(p => {
+        // -0 and 0 must key the same, or a coordinate that is zero doubles every point on it
+        const k = p.map(v => (Math.abs(v) < 1e-9 ? 0 : v).toFixed(6)).join(',');
+        if (seen.has(k)) return;
+        seen.add(k); out.push(p);
+    });
+    return out;
+}
+
+// Cyclic (even) permutations of each triple, with every combination of signs — which is how
+// nearly every published coordinate set for these solids is written.
+function airoCyc(triples) {
+    const out = [];
+    triples.forEach(t => {
+        [[t[0], t[1], t[2]], [t[1], t[2], t[0]], [t[2], t[0], t[1]]].forEach(p => {
+            for (let m = 0; m < 8; m++)
+                out.push([p[0] * ((m & 1) ? -1 : 1), p[1] * ((m & 2) ? -1 : 1), p[2] * ((m & 4) ? -1 : 1)]);
+        });
+    });
+    return airoDedupe(out);
+}
+
+// The snub cube is CHIRAL, and its coordinates say so: the even permutations take an even number
+// of minus signs and the odd permutations an odd number. Take all 48 and you get a different,
+// non-uniform solid; take the wrong parity and you get the mirror image, which is equally valid
+// and not what the rest of the numbers describe.
+function airoSnubCubeVerts() {
+    const t = 1.8392867552141612;      // tribonacci constant, t³ = t² + t + 1
+    const a = 1, b = 1 / t, c = t;
+    const even = [[a, b, c], [b, c, a], [c, a, b]];
+    const odd = [[a, c, b], [c, b, a], [b, a, c]];
+    const out = [];
+    const push = (p, wantOdd) => {
+        for (let m = 0; m < 8; m++) {
+            const neg = (m & 1 ? 1 : 0) + (m & 2 ? 1 : 0) + (m & 4 ? 1 : 0);
+            if ((neg % 2 === 1) !== wantOdd) continue;
+            out.push([p[0] * ((m & 1) ? -1 : 1), p[1] * ((m & 2) ? -1 : 1), p[2] * ((m & 4) ? -1 : 1)]);
+        }
+    };
+    even.forEach(p => push(p, false));
+    odd.forEach(p => push(p, true));
+    return airoDedupe(out);
+}
+
+// THE ICOSAHEDRAL SOLIDS ARE ALL PUT IN ONE FRAME, and it is d3's. Fuller's orientation is the
+// three numbers in AIRO_FULLER_ROTATE, and they are stated in the frame d3's Airocean builds its
+// solid in — an icosahedron with VERTICES AT THE POLES and two rings at ±atan(1/2). The
+// published Cartesian coordinates for these solids use a different orientation of the same
+// icosahedron, the cyclic permutations of (0, ±1, ±φ), which has no vertex at either pole.
+//
+// Quoting them verbatim therefore silently broke Fuller's net: `airoFullerOrder` matches d3's
+// tree onto our faces by direction, and with the solid turned the match ran to the wrong faces
+// every time. It did not look like a failure — every link it produced was between genuinely
+// adjacent faces, so the tree was a perfectly good net, just not the historical one. Measured
+// against d3's own tree: 8 of 19 seams in common. Aligned, all 19.
+//
+// The rotation is found rather than typed: the icosahedron's symmetry group is transitive on
+// (vertex, incident edge) pairs, so carrying ANY such pair of one copy onto any such pair of the
+// other carries the whole solid onto the whole solid.
+let airoAlignCache = null;
+function airoAlignIcosahedral(pts) {
+    if (!airoAlignCache) {
+        const nz = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+        const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        // An orthonormal frame from a vertex and its nearest neighbour.
+        const frame = set => {
+            const V = set.map(nz);
+            const v = V[0];
+            let best = null;
+            V.forEach((w, i) => {
+                if (i === 0) return;
+                const d = dot(v, w);
+                if (!best || d > best.d) best = { d, w };
+            });
+            const t = nz([best.w[0] - v[0] * best.d, best.w[1] - v[1] * best.d, best.w[2] - v[2] * best.d]);
+            return [v, t, cross(v, t)];
+        };
+        const A = frame(airoCyc([[0, 1, AIRO_PHI]]));   // the published frame
+        const B = frame(airoIcoVerts());                // d3's, and Fuller's
+        // R = B·Aᵀ, written out: a source point's components in A become the same components in B.
+        airoAlignCache = [0, 1, 2].map(r => [0, 1, 2].map(c =>
+            B[0][r] * A[0][c] + B[1][r] * A[1][c] + B[2][r] * A[2][c]));
+    }
+    const M = airoAlignCache;
+    return pts.map(p => [M[0][0] * p[0] + M[0][1] * p[1] + M[0][2] * p[2],
+                         M[1][0] * p[0] + M[1][1] * p[1] + M[1][2] * p[2],
+                         M[2][0] * p[0] + M[2][1] * p[1] + M[2][2] * p[2]]);
+}
+
+// The icosahedron with vertices at the poles: d3's frame, and the one Fuller's three numbers are
+// stated in.
+function airoIcoVerts() {
+    const lat = Math.atan(0.5) / DEG;
+    const ll = [[0, 90], [0, -90]];
+    for (let i = 0; i < 5; i++) { ll.push([36 + i * 72, lat]); ll.push([i * 72, -lat]); }
+    return ll.map(([lo, la]) => {
+        const p = lo * DEG, q = la * DEG, c = Math.cos(q);
+        return [c * Math.cos(p), c * Math.sin(p), Math.sin(q)];
+    });
+}
+
+// The rhombic triacontahedron is DERIVED rather than quoted, because the published coordinate
+// sets for it pair an icosahedron with a dodecahedron at a particular relative radius and of a
+// particular chirality, and getting either wrong gives 32 points whose hull is not rhombic at
+// all. Its 30 faces correspond one for one to the icosahedron's 30 EDGES: each rhombus is that
+// edge's two endpoints (the short diagonal) together with the two points sitting over the faces
+// either side of it (the long diagonal). Requiring the diagonals to bisect each other — which is
+// what makes it a rhombus rather than a kite — puts those points at the face's vertex sum over
+// φ², and nothing has to be looked up.
+//
+// Checked on one face: (0,1,φ), (0,-1,φ), (±1/φ, 0, φ) all lie in the plane z = φ, with diagonals
+// 2 and 2/φ — a ratio of exactly φ, which is the golden rhombus this solid is made of.
+function airoRhombicVerts() {
+    const ico = airoIcoVerts();
+    const S = airoBuildSolid(ico);
+    const out = ico.slice();
+    S.faces.forEach(f => {
+        const s = [0, 1, 2].map(k => f.reduce((acc, vi) => acc + ico[vi][k], 0));
+        out.push(s.map(v => v / (AIRO_PHI * AIRO_PHI)));
+    });
+    return out;
+}
+
+const AIRO_SOLIDS = {
+    icosahedron: {
+        label: 'Icosahedron', note: '20 triangles — Fuller’s own',
+        verts: airoIcoVerts
+    },
+    dodecahedron: {
+        label: 'Dodecahedron', note: '12 pentagons',
+        // The dual: one vertex over each face of the icosahedron, which puts it in the same
+        // frame for free rather than needing the published coordinates turned to match.
+        verts: () => {
+            const ico = airoIcoVerts();
+            return airoBuildSolid(ico).faces.map(f =>
+                [0, 1, 2].map(k => f.reduce((a, vi) => a + ico[vi][k], 0)));
+        }
+    },
+    'truncated-icosahedron': {
+        label: 'Truncated icosahedron', note: '12 pentagons, 20 hexagons — the football',
+        verts: () => airoAlignIcosahedral(airoCyc([[0, 1, 3 * AIRO_PHI],
+                              [1, 2 + AIRO_PHI, 2 * AIRO_PHI],
+                              [AIRO_PHI, 2, 2 * AIRO_PHI + 1]]))
+    },
+    'truncated-icosidodecahedron': {
+        label: 'Truncated icosidodecahedron', note: '30 squares, 20 hexagons, 12 decagons',
+        verts: () => {
+            const P = AIRO_PHI, q = 1 / P;
+            return airoAlignIcosahedral(airoCyc([[q, q, 3 + P], [2 * q, P, 1 + 2 * P],
+                            [q, P * P, 3 * P - 1], [2 * P - 1, 2, 2 + P], [P, 3, 2 * P]]));
+        }
+    },
+    'snub-cube': {
+        label: 'Snub cube', note: '32 triangles, 6 squares — chiral',
+        verts: airoSnubCubeVerts
+    },
+    'rhombic-triacontahedron': {
+        label: 'Rhombic triacontahedron', note: '30 golden rhombi',
+        verts: airoRhombicVerts
+    }
+};
+const AIRO_DEFAULT_SOLID = 'icosahedron';
+
+// Turn a bag of points into a solid: which of them are corners of which face, wound the way d3
+// wants, with the edge table the interaction is built on.
+//
+// The faces are found from SUPPORTING PLANES rather than by any hull algorithm, and the candidate
+// planes come from the vertices themselves: every face containing a vertex v contains exactly two
+// of v's edge-neighbours, and those three points are never collinear, so v with each pair of its
+// neighbours enumerates every face of the solid several times over. A plane is kept when no
+// vertex lies outside it. That is 360 candidates for the largest solid here rather than the
+// 280,000 triples a blind search would try, and it needs no tolerance tuning beyond "on the
+// plane".
+//
+// Two things it must NOT do. It must not normalise the points onto the unit sphere: a Catalan
+// solid like the rhombic triacontahedron genuinely has its vertices at two different radii, and
+// flattening them destroys the solid. And it must not assume every face is the same distance
+// from the centre — see airoFaceProjection, where that distance is the whole of what makes an
+// Archimedean net close up.
+function airoBuildSolid(P) {
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const norm = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+    // Scale so the outermost vertex sits on the unit sphere, keeping the RELATIVE radii intact.
+    const R = Math.max(...P.map(p => Math.hypot(p[0], p[1], p[2])));
+    const V = P.map(p => [p[0] / R, p[1] / R, p[2] / R]);
+    const n = V.length;
+
+    const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+    let e2 = Infinity;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) e2 = Math.min(e2, d2(V[i], V[j]));
+    const nb = V.map((v, i) => V.map((_, j) => j).filter(j => j !== i && Math.abs(d2(v, V[j]) - e2) < e2 * 1e-6));
+
+    const faces = [], fn = [], fr = [], seen = new Set();
+    for (let i = 0; i < n; i++)
+        for (let x = 0; x < nb[i].length; x++)
+            for (let y = x + 1; y < nb[i].length; y++) {
+                let m = cross(sub(V[nb[i][x]], V[i]), sub(V[nb[i][y]], V[i]));
+                if (Math.hypot(m[0], m[1], m[2]) < 1e-9) continue;
+                m = norm(m);
+                let off = dot(m, V[i]);
+                if (off < 0) { m = m.map(t => -t); off = -off; }
+                if (off < 1e-6) continue;
+                let ok = true; const on = [];
+                for (let k = 0; k < n; k++) {
+                    const s = dot(m, V[k]) - off;
+                    if (s > 1e-6) { ok = false; break; }
+                    if (s > -1e-6) on.push(k);
+                }
+                if (!ok || on.length < 3) continue;
+                // THE FACE IS ITS SET OF CORNERS, and that is what identifies it. Keying on the
+                // rounded normal instead is the same face found from two different corners of
+                // itself producing two different strings, because -1e-17 formats as "-0.00000"
+                // and +1e-17 as "0.00000" — so any face whose normal lies on an axis with a zero
+                // component was collected TWICE. That is exactly the 12 pentagons of the
+                // truncated icosahedron (which sit on the five-fold axes) and the 12 decagons of
+                // the truncated icosidodecahedron: 44 faces instead of 32, every vertex claimed
+                // by four faces instead of three, and an Euler characteristic of 74. A set of
+                // integers has no such question about it.
+                const key = on.slice().sort((a, b) => a - b).join(',');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                faces.push(airoOrderRing(on, m, V));
+                fn.push(m);
+                fr.push(off);
+            }
+
+    // WIND THEM. d3 reads a ring with the inside on its left, which for a face seen from OUTSIDE
+    // the sphere is clockwise. Left the other way round a face is not a face at all, it is the
+    // whole earth minus that face, and every point on the globe reads as inside all but one of
+    // them while each clips to the complement of itself.
+    faces.forEach((f, i) => {
+        if (dot(cross(sub(V[f[1]], V[f[0]]), sub(V[f[2]], V[f[0]])), fn[i]) > 0) f.reverse();
+    });
+
+    // Adjacency and the edge table, straight off the rings: two faces meet along an edge exactly
+    // when they list the same pair of vertices consecutively.
+    const at = new Map();
+    faces.forEach((f, i) => f.forEach((v, k) => {
+        const w = f[(k + 1) % f.length];
+        const key = v < w ? v + ':' + w : w + ':' + v;
+        if (!at.has(key)) at.set(key, []);
+        at.get(key).push({ f: i, v, w });
+    }));
+    const adj = faces.map(() => []);
+    const edges = [], edgeAt = new Map(), faceEdges = faces.map(() => []);
+    at.forEach((use) => {
+        if (use.length !== 2) return;
+        const a = use[0].f, b = use[1].f, e = edges.length;
+        edges.push({ i: e, a, b, verts: [use[0].v, use[0].w] });
+        edgeAt.set(airoEdgeKey(a, b), e);
+        faceEdges[a].push(e); faceEdges[b].push(e);
+        adj[a].push(b); adj[b].push(a);
+    });
+
+    const verts = V.map(v => {
+        const u = norm(v);
+        return [Math.atan2(u[1], u[0]) / DEG, Math.asin(Math.max(-1, Math.min(1, u[2]))) / DEG];
+    });
+    return { verts, V, faces, fn, fr, adj, edges, edgeAt, faceEdges };
+}
+
+// Put a face's vertices in order round its own plane. They arrive in whatever order the vertex
+// list happened to be in, and a polygon read out of order is a star rather than a face.
+function airoOrderRing(ids, nrm, V) {
+    const c = [0, 1, 2].map(k => ids.reduce((a, i) => a + V[i][k], 0) / ids.length);
+    let u = Math.abs(nrm[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const nz = a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+    const e1 = nz(cross(nrm, u)), e2 = cross(nrm, e1);
+    const ang = i => {
+        const d = [V[i][0] - c[0], V[i][1] - c[1], V[i][2] - c[2]];
+        return Math.atan2(d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2],
+                          d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2]);
+    };
+    return ids.slice().sort((a, b) => ang(a) - ang(b));
+}
+
+let airoSolidCache = null, airoSolidKey = '';
+function airoSolid() {
+    const key = (airoState && airoState.solid) || AIRO_DEFAULT_SOLID;
+    if (airoSolidCache && airoSolidKey === key) return airoSolidCache;
+    airoSolidKey = key;
+    airoSolidCache = airoBuildSolid((AIRO_SOLIDS[key] || AIRO_SOLIDS[AIRO_DEFAULT_SOLID]).verts());
+    return airoSolidCache;
+}
+
+// Where a face sits on the EARTH, given the current locus. The solid is held still and the
+// world turned inside it, so a vertex's earth position is the rotation run backwards.
+//
+// The centre is the face's PLANE NORMAL, not the average of its corners. They coincide for a
+// regular polygon and the difference only shows on a face that is not one — but the gnomonic has
+// to be aimed square at the plane or the face does not project to its own shape, and a rhombus
+// is not a regular polygon.
+// THE GNOMONIC IS AIMED IN THE SOLID'S FRAME, NOT THE EARTH'S, and that is what makes the net's
+// shape a genuine constant. Aiming it at the face's centre in earth coordinates — `rotate([-lon,
+// -lat])` on a centre that moves as the world turns — leaves the in-plane orientation to be
+// settled by whatever the local north happens to be there, so every tile quietly SPUN IN PLACE as
+// the world was turned. Nothing looked broken, and the shape of the net really was the same
+// triangle throughout; each copy of it was drawn at a different angle.
+//
+// Composed the other way round — turn the earth into the solid, THEN bring this face's normal to
+// the origin — the second half is a constant of the solid, so a face's projected corners are pure
+// polyhedron and do not depend on the orientation at all. Three things fall out of that. The
+// placement walk and the board's fit stop depending on the orientation, so turning the world no
+// longer makes the net jump. Dragging becomes exact rather than approximate, because the
+// projection now factors as (something fixed) ∘ (the rotation being dragged), which is the one
+// assumption the versor formula rests on. And a drag frame has only the LAND to redraw.
+function airoFaceEarth(fi) {
+    const S = airoSolid();
+    const inv = d3.geoRotation(airoState.rot).invert;
+    const ring = S.faces[fi].map(i => inv(S.verts[i]));
+    const m = S.fn[fi];
+    const nLon = Math.atan2(m[1], m[0]) / DEG;
+    const nLat = Math.asin(Math.max(-1, Math.min(1, m[2]))) / DEG;
+    const centre = inv([nLon, nLat]);
+    // `multiply(a, b)` applies b first, so this is: the world's orientation inside the solid,
+    // then the fixed turn that puts this face's normal at the origin.
+    const aim = versor.rotation(versor.multiply(versor([-nLon, -nLat, 0]), versor(airoState.rot)));
+    return { ring, centre, aim, r: S.fr[fi], ids: S.faces[fi] };
+}
+
+// The face's own gnomonic, clipped to the face. Every great circle becomes a straight line, so
+// the spherical polygon lands as a real one — and at the face's own TRUE SIZE, which is the
+// whole of what lets an Archimedean net close up.
+//
+// THE SCALE IS THE FACE'S OWN DISTANCE FROM THE CENTRE. A gnomonic at scale k sends a direction
+// θ off the axis to k·tan θ, while the real face — which lies in a plane at distance d — puts it
+// at d·tan θ. So k = S·d draws the face at exactly S times its real self, and two faces sharing
+// an edge draw that edge at exactly the same length however different they are.
+//
+// On a Platonic solid every d is equal and this is one constant, which is why it never had to be
+// thought about. On an Archimedean one it is not: the truncated icosahedron's pentagons sit at
+// 0.9393 of its circumradius and its hexagons at 0.9150, so a single scale draws every shared
+// pentagon-hexagon edge 2.7% longer on one side than the other. `airoJoin` maps corner to corner
+// regardless, so nothing would look broken — it would quietly stop being a rigid motion and
+// start being a similarity, shrinking every hexagon by that much and compounding it down the
+// tree.
+//
+// THE CLIP POLYGON IS IN ROTATED COORDINATES, and that one word is the whole of what made this
+// mode unreadable. d3's pipeline runs rotate → preclip → project, so a preclip is handed points
+// that have ALREADY been turned by the projection's own rotation; a clip ring given in raw
+// lon/lat is therefore a ring somewhere else entirely. It did not fail loudly — it clipped each
+// face to a region beside itself, so all twenty faces drew land belonging to their neighbours,
+// overlapping, and the board came out as one smear of coastline with the triangles lost inside
+// it. Measured on face 0: the raw ring draws land across [-18,-356]..[322,-8] with the triangle
+// at [-119,-151]..[142,95] — wholly outside it — and the rotated ring draws it across
+// [-113,-150]..[121,87], which is inside the triangle, as a face of a polyhedron must be.
+function airoFaceProjection(fe) {
+    const rot = d3.geoRotation(fe.aim);
+    const spun = fe.ring.map(rot);
+    const p = d3.geoGnomonic().rotate(fe.aim)
+        .scale(AIRO_SCALE * fe.r).translate([0, 0]).precision(0.35);
+    if (airoCanClip()) {
+        try {
+            p.preclip(d3.geoClipPolygon({ type: 'Polygon', coordinates: [[...spun, spun[0]]] }));
+        } catch (_) { /* no clip */ }
+    }
+    return { proj: p, poly: { type: 'Polygon', coordinates: [[...fe.ring, fe.ring[0]]] } };
+}
+
+// One rigid motion carrying a child's copy of the shared edge onto the parent's placed copy.
+// Written with complex numbers because that is what a rigid motion of the plane IS: multiply
+// by a unit complex to turn, add one to move, and conjugate first for the mirrored case. Both
+// are tried and the one that puts the child on the FAR side of the seam is kept — the other
+// folds it back over its parent.
+function airoJoin(childA, childB, childC, placedA, placedB, parentC) {
+    const sub = (p, q) => [p[0] - q[0], p[1] - q[1]];
+    const mul = (p, q) => [p[0] * q[0] - p[1] * q[1], p[0] * q[1] + p[1] * q[0]];
+    const div = (p, q) => {
+        const d = q[0] * q[0] + q[1] * q[1];
+        return d ? [(p[0] * q[0] + p[1] * q[1]) / d, (p[1] * q[0] - p[0] * q[1]) / d] : [1, 0];
+    };
+    const side = (a, b, p) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    const want = -Math.sign(side(placedA, placedB, parentC) || 1);
+    const dAB = sub(placedB, placedA);
+    for (const flip of [false, true]) {
+        const cB = sub(childB, childA);
+        const m = div(dAB, flip ? [cB[0], -cB[1]] : cB);
+        const map = z => {
+            const d = sub(z, childA);
+            const w = mul(m, flip ? [d[0], -d[1]] : d);
+            return [placedA[0] + w[0], placedA[1] + w[1]];
+        };
+        const third = map(childC);
+        if (Math.sign(side(placedA, placedB, third) || want) === want) {
+            // As an SVG matrix. Multiplying by m is [[mx,-my],[my,mx]]; conjugating first flips
+            // the sign of the second column.
+            const a = m[0], b = m[1];
+            const M = flip ? [a, b, b, -a] : [a, b, -b, a];
+            const e = placedA[0] - (M[0] * childA[0] + M[2] * childA[1]);
+            const f = placedA[1] - (M[1] * childA[0] + M[3] * childA[1]);
+            return [M[0], M[1], M[2], M[3], e, f];
+        }
+    }
+    return null;
+}
+
+const airoApply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
+
+// The gnomonic faces, cached against the solid and the orientation they were built at. Turning
+// the world inside the solid is the only thing that changes them — folding the net about an edge
+// does not, because a face is the same shape whatever it is holding — so the whole expensive
+// half of a redraw (a clipped world path per face, and the satellite raster if it is on) is
+// skipped on every fold.
+let airoGeomCache = null, airoGeomKey = '';
+function airoGeom() {
+    const S = airoSolid();
+    const key = airoSolidKey + '|' + airoState.rot.map(v => v.toFixed(4)).join(',') +
+                '|' + airoCanClip() + '|' + ((gameState.countries || []).length);
+    if (airoGeomCache && airoGeomKey === key) return airoGeomCache;
+    airoGeomKey = key;
+    airoGeomCache = S.faces.map((_, i) => {
+        const fe = airoFaceEarth(i);
+        const fp = airoFaceProjection(fe);
+        // The face's own bounding cap, about its centre rather than about the average of its
+        // corners: the centre is where the gnomonic is aimed, so it is the axis the corners are
+        // actually spread around.
+        const ax = versor.cartesian(fe.centre);
+        let lo = 1;
+        fe.ring.forEach(v => {
+            const c = versor.cartesian(v);
+            const d = ax[0] * c[0] + ax[1] * c[1] + ax[2] * c[2];
+            if (d < lo) lo = d;
+        });
+        const cap = { ax, ang: Math.acos(Math.max(-1, Math.min(1, lo))) };
+        return { fe, cap, ...fp, local: fe.ring.map(v => fp.proj(v)) };
+    });
+    return airoGeomCache;
+}
+
+// Parent links, derived from the edge set by breadth-first search rather than stored. The set is
+// a spanning tree by invariant, so every face is reached and the walk cannot leave anything
+// stranded — which is the whole reason the tree is kept as a set of edges.
+function airoParents() {
+    const S = airoSolid();
+    const parent = S.faces.map(() => null);
+    const seen = new Set([airoState.root]);
+    const q = [airoState.root];
+    while (q.length) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            if (!airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (seen.has(n)) return;
+            seen.add(n); parent[n] = f; q.push(n);
+        });
+    }
+    return parent;
+}
+
+// Walk the tree and give every face an absolute placement. The root sits at the identity and
+// everything else is derived from its parent by the one rigid motion that lands the shared edge
+// on the shared edge — so folding an edge moves everything hanging beyond it without anything
+// being told to follow.
+function airoLayout() {
+    const S = airoSolid();
+    const geom = airoGeom();
+    const parent = airoParents();
+    const kids = S.faces.map(() => []);
+    parent.forEach((p, i) => { if (p != null) kids[p].push(i); });
+    const place = {};
+    place[airoState.root] = [1, 0, 0, 1, 0, 0];
+    const stack = [airoState.root];
+    while (stack.length) {
+        const f = stack.pop();
+        kids[f].forEach(c => {
+            // The point deciding which side the child lands on is its CENTROID, not "the other
+            // vertex" — a triangle has exactly one of those and a decagon has eight.
+            const e = S.edges[S.edgeAt.get(airoEdgeKey(f, c))];
+            const iA = S.faces[f].indexOf(e.verts[0]), iB = S.faces[f].indexOf(e.verts[1]);
+            const jA = S.faces[c].indexOf(e.verts[0]), jB = S.faces[c].indexOf(e.verts[1]);
+            const m = airoJoin(geom[c].local[jA], geom[c].local[jB], airoMid(geom[c].local),
+                               airoApply(place[f], geom[f].local[iA]),
+                               airoApply(place[f], geom[f].local[iB]),
+                               airoApply(place[f], airoMid(geom[f].local)));
+            if (m) { place[c] = m; stack.push(c); }
+        });
+    }
+    return { geom, place, parent };
+}
+
+const airoMid = pts => [pts.reduce((a, p) => a + p[0], 0) / pts.length,
+                        pts.reduce((a, p) => a + p[1], 0) / pts.length];
+
+// The faces reachable from `fi` through tree edges, with edge `skip` pretended cut. Dropping an
+// edge splits a tree in exactly two, and which side a face fell on is what every edit here has
+// to know: a replacement edge may only run between the two sides, or it makes a cycle rather
+// than a map.
+function airoSide(fi, skip) {
+    const S = airoSolid();
+    const out = new Set([fi]);
+    const q = [fi];
+    while (q.length) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            if (ei === skip || !airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (!out.has(n)) { out.add(n); q.push(n); }
+        });
+    }
+    return out;
+}
+
+// The tree edges between two faces, in order from `a`. Adding a cut edge closes exactly one
+// cycle, and this is that cycle: one of these has to go.
+function airoTreePath(a, b) {
+    const S = airoSolid();
+    const from = new Map([[a, null]]);
+    const q = [a];
+    while (q.length) {
+        const f = q.shift();
+        if (f === b) break;
+        S.faceEdges[f].forEach(ei => {
+            if (!airoState.tree.has(ei)) return;
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            if (!from.has(n)) { from.set(n, { prev: f, edge: ei }); q.push(n); }
+        });
+    }
+    const out = [];
+    let cur = b;
+    while (cur !== a) {
+        const step = from.get(cur);
+        if (!step) return [];
+        out.unshift(step.edge);
+        cur = step.prev;
+    }
+    return out;
+}
+
+// The default arrangement is d3's own Airocean tree, read off it once so the mode opens on
+// Fuller's cuts rather than on an arbitrary spanning tree of my own. Only the icosahedron has
+// one; every other solid opens on a breadth-first net, which `airoRepairTree` supplies for free
+// from an empty set.
+function airoDefaultTree() {
+    const S = airoSolid();
+    const tree = new Set();
+    if (airoSolidKey === 'icosahedron')
+        airoFullerOrder().forEach(([c, p]) => {
+            const ei = S.edgeAt.get(airoEdgeKey(c, p));
+            if (ei != null) tree.add(ei);
+        });
+    return airoUnoverlap(airoRepairTree(tree));
+}
+
+// Whatever a tree is built from, it leaves here spanning. Anything short of nineteen edges is
+// topped up breadth-first and anything that closes a cycle is refused, so no caller can put a
+// broken arrangement on the board — including a Fuller net read off a library that answered
+// only partly.
+function airoRepairTree(tree) {
+    const S = airoSolid();
+    const comp = S.faces.map((_, i) => i);
+    const find = x => { while (comp[x] !== x) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; };
+    const out = new Set();
+    const tryAdd = ei => {
+        const e = S.edges[ei], ra = find(e.a), rb = find(e.b);
+        if (ra === rb) return false;
+        comp[ra] = rb; out.add(ei); return true;
+    };
+    tree.forEach(tryAdd);
+    // Topped up BREADTH-FIRST from face 0 rather than in edge-index order. Both give a spanning
+    // tree, but index order gives a straggling one, and this is what a solid with no historical
+    // net of its own opens on.
+    const seen = new Set([0]), q = [0];
+    while (q.length && out.size < S.faces.length - 1) {
+        const f = q.shift();
+        S.faceEdges[f].forEach(ei => {
+            const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+            tryAdd(ei);
+            if (!seen.has(n)) { seen.add(n); q.push(n); }
+        });
+    }
+    S.edges.forEach((_, ei) => { if (out.size < S.faces.length - 1) tryAdd(ei); });
+    return out;
+}
+
+// Fuller's unfolding, as parent links. Derived by matching d3.geoAirocean's tree onto our own
+// face numbering when the library is present, and falling back to a breadth-first spanning tree
+// from the face holding the north pole when it is not — which is a perfectly good net, just not
+// the historical one.
+//
+// THE MATCH IS MADE IN THE SOLID'S FRAME, not the earth's. d3's tree nodes carry a `centroid` in
+// the coordinates of the icosahedron itself — its own projection carries the rotation that puts
+// the world inside it, and the tree is built downstream of that. Rotating OUR centroids into
+// earth coordinates before comparing therefore measured every face against a face somewhere
+// else: 10 of 19 links came out non-adjacent, the mismatched ones were dropped, and the net was
+// topped up arbitrarily into a pinwheel that is nobody's Dymaxion map. Compared in the frame
+// they are both already in, all twenty whole faces match at a distance of exactly 0 — the two
+// entries at 0.23 rad are the pair of faces Fuller SPLIT IN HALF, whose halves legitimately sit
+// off-centre, and which is why d3's tree has 24 nodes for 20 faces of ours.
+let airoFullerCache = null;
+function airoFullerOrder() {
+    if (airoFullerCache) return airoFullerCache;
+    const S = airoSolid();
+    const centres = S.faces.map((_, i) => {
+        let c = [0, 0, 0];
+        S.faces[i].forEach(k => { const v = S.V[k]; c = [c[0] + v[0], c[1] + v[1], c[2] + v[2]]; });
+        const n = Math.hypot(c[0], c[1], c[2]);
+        return [Math.atan2(c[1] / n, c[0] / n) / DEG,
+                Math.asin(Math.max(-1, Math.min(1, c[2] / n))) / DEG];
+    });
+    const links = [];
+    let matched = false;
+    try {
+        if (d3.geoAirocean) {
+            const root = d3.geoAirocean().tree();
+            const mine = c => {
+                let best = -1, bd = Infinity;
+                centres.forEach((q, i) => { const d = d3.geoDistance(c, q); if (d < bd) { bd = d; best = i; } });
+                return bd < 0.35 ? best : -1;
+            };
+            (function walk(n, pid) {
+                const id = mine(n.centroid);
+                if (id >= 0 && pid >= 0 && id !== pid) links.push([id, pid]);
+                (n.children || []).forEach(c => walk(c, id >= 0 ? id : pid));
+            })(root, -1);
+            // A split face turns up twice, so the walk can produce a face twice or link it to
+            // itself; keep the first sane link per face and check it very nearly spans.
+            const seen = new Set();
+            const clean = links.filter(([c, p]) => {
+                if (seen.has(c) || !S.adj[c].includes(p)) return false;
+                seen.add(c); return true;
+            });
+            if (clean.length >= 17) { airoFullerCache = clean; matched = true; }
+        }
+    } catch (_) { matched = false; }
+    if (!matched) {
+        // Breadth-first from whichever face holds the north pole.
+        const start = 0;
+        const out = [], seen = new Set([start]), q = [start];
+        while (q.length) {
+            const f = q.shift();
+            S.adj[f].forEach(n => { if (seen.has(n)) return; seen.add(n); out.push([n, f]); q.push(n); });
+        }
+        airoFullerCache = out;
+    }
+    return airoFullerCache;
+}
+
+function renderAirocean() {
+    gameState.questionType = 'airocean';
+    document.getElementById('multiple-choice-container').classList.add('hidden');
+    document.getElementById('flag-display').style.display = 'none';
+    setModeChrome({ giveUp: false, next: false });
+    const restart = document.getElementById('restart-btn');
+    if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
+    document.getElementById('question-text').innerHTML =
+        '<strong>Airocean World.</strong> Click an edge to fold the world open along it, or to ' +
+        'close it up again.';
+    airoSolid();
+    airoGeomCache = null;
+    airoState = { solid: AIRO_DEFAULT_SOLID, rot: AIRO_FULLER_ROTATE.slice(), root: 0,
+                  gview: [0, 0, 0], spin: 0, zoom: 1, pan: [0, 0],
+                  sat: false, hoverEdge: null, drag: null, turn: null };
+    airoSolidCache = null;
+    airoState.tree = airoDefaultTree();
+    airoState.spin = airoBestSpin();
+    buildAiroPanel();
+    airoSyncSpin();
+    airoDraw();
+    airoBindMap();
+    // Two things come from the libraries: the clip that cuts the world into faces
+    // (d3-geo-polygon) and Fuller's own net, read off d3-geo-projection's Airocean. Without the
+    // clip a face would draw land spilling past its own edges, so the land is held back rather
+    // than drawn wrong — the empty solid is a true picture of it and the folding still works.
+    // Both usually arrive in a few hundred milliseconds, and instantly if the projection lab has
+    // already been opened.
+    withLabLibs(() => {
+        if (!airoState) return;
+        airoFullerCache = null;               // the fallback net was cached; Fuller's is available now
+        airoGeomCache = null;
+        // Unless the libraries were slow and somebody has already started folding: swapping the
+        // net out from under a hand that is using it is worse than opening on the fallback.
+        if (!airoState.touched) {
+            airoState.tree = airoDefaultTree();
+            airoState.spin = airoBestSpin();
+            airoSyncSpin();
+        }
+        airoDraw();
+    });
+}
+
+// Whether a face's own outline can be used to cut the world down to it. Without it the mode
+// still draws the solid, just not the map on it.
+const airoCanClip = () => typeof d3.geoClipPolygon === 'function';
+
+// ---- which countries can possibly show on a face ----
+// The clipped world path is the expensive half of a redraw, and it was being paid in full on
+// every face: d3 is handed the whole world once per face and walks all of it once per face, when
+// a face of the truncated icosidodecahedron covers a sixtieth of the sphere and cannot touch all
+// but a handful of countries. So each feature gets a bounding CAP once — an axis and the angle
+// out to its furthest point — and a face is handed only the features whose cap meets its own.
+//
+// The clip itself is untouched, so this is a pure speed-up rather than an approximation, and the
+// path string it produces is the same one: verified byte-identical on every face of all six
+// solids, at 3.6x to 7.9x the speed (the 62-face solid 798 ms -> 101 ms, the icosahedron
+// 238 -> 65). That is what makes turning the world inside the solid something you can watch
+// happen rather than something you wait for.
+//
+// The axis is the normalised mean of the feature's own points and the radius is its worst point
+// against that axis, which is a loose cap rather than the smallest one. Loose is the safe
+// direction — it can only hand a face a country it did not need — and a feature whose points
+// average out to nothing (one spread over the whole sphere) falls back to a cap covering
+// everything, so nothing can be wrongly dropped.
+const AIRO_THIN_STEP = 4;             // vertices kept, one in N, while the world is being dragged
+let airoCapCache = null, airoCapKey = null;
+
+function airoCapOf(pts) {
+    let x = 0, y = 0, z = 0;
+    pts.forEach(v => { x += v[0]; y += v[1]; z += v[2]; });
+    const L = Math.hypot(x, y, z);
+    const ax = L > 1e-9 ? [x / L, y / L, z / L] : [0, 0, 1];
+    let lo = 1;
+    pts.forEach(v => { const d = ax[0] * v[0] + ax[1] * v[1] + ax[2] * v[2]; if (d < lo) lo = d; });
+    return { ax, ang: L > 1e-9 ? Math.acos(Math.max(-1, Math.min(1, lo))) : Math.PI };
+}
+
+// Every ring of a feature, as unit vectors, so a cap can be measured without going through
+// d3.geoBounds — which reports a wrapped box for anything straddling the antimeridian and has no
+// meaning on a sphere-wide feature. Three-vectors have no antimeridian.
+function airoRingPoints(geom) {
+    const out = [];
+    if (!geom) return out;
+    const polys = geom.type === 'Polygon' ? [geom.coordinates]
+                : geom.type === 'MultiPolygon' ? geom.coordinates : [];
+    polys.forEach(poly => poly.forEach(ring => ring.forEach(p => out.push(versor.cartesian(p)))));
+    return out;
+}
+
+function airoLandCaps() {
+    const feats = gameState.countries || [];
+    if (airoCapCache && airoCapKey === feats) return airoCapCache;
+    airoCapKey = feats;
+    // The thinned copy is built alongside, because it is wanted at exactly the moments there is
+    // no time to build it — every frame of a drag.
+    const thinRing = r => {
+        if (r.length <= 8) return r;
+        const o = [];
+        for (let i = 0; i < r.length - 1; i += AIRO_THIN_STEP) o.push(r[i]);
+        o.push(r[r.length - 1]);
+        return o.length >= 4 ? o : r;
+    };
+    airoCapCache = feats.map(f => {
+        const pts = airoRingPoints(f.geometry);
+        if (!pts.length) return null;
+        let thin = f;
+        const g = f.geometry;
+        if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+            const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+            const cut = polys.map(poly => poly.map(thinRing).filter(r => r.length >= 4))
+                             .filter(poly => poly.length);
+            if (cut.length)
+                thin = { type: 'Feature', properties: f.properties,
+                         geometry: { type: g.type,
+                                     coordinates: g.type === 'Polygon' ? cut[0] : cut } };
+        }
+        return { ...airoCapOf(pts), f, thin };
+    }).filter(Boolean);
+    return airoCapCache;
+}
+
+// The features a face could possibly draw, as a collection ready for `d3.geoPath`.
+function airoLandFor(cap, thin) {
+    if (!cap) return { type: 'FeatureCollection', features: gameState.countries || [] };
+    const feats = [];
+    airoLandCaps().forEach(c => {
+        const d = c.ax[0] * cap.ax[0] + c.ax[1] * cap.ax[1] + c.ax[2] * cap.ax[2];
+        if (Math.acos(Math.max(-1, Math.min(1, d))) < c.ang + cap.ang) feats.push(thin ? c.thin : c.f);
+    });
+    return { type: 'FeatureCollection', features: feats };
+}
+
+// ---- satellite: Blue Marble, reprojected onto each face ----
+// The imagery is equirectangular and each face is a gnomonic, so the only way across is to walk
+// the DESTINATION pixels and invert: for every pixel of a face, ask the projection which point of
+// the earth is there and read that point out of the texture. Forward-mapping the source instead
+// would leave gaps wherever the projection stretches.
+//
+// It is rasterised per face rather than per board, because a face's imagery does not depend on
+// how the net is folded — only on the orientation of the world inside the solid. So it rides in
+// `airoGeomCache` alongside the geometry, and folding, spinning and refitting all reuse it: the
+// cost is paid once per turn of the globe.
+//
+// Pixels outside the face are left transparent instead of being clipped by SVG, which is a
+// convexity test per pixel and saves a clip path per face; the test also runs FIRST, so the
+// expensive inverse projection is only done for pixels that will be kept.
+// How finely a face is rasterised follows how big it is ON SCREEN, so zooming in gets more
+// imagery rather than bigger pixels of the imagery it already had. Bounded at both ends: below,
+// because a face the size of a postage stamp gains nothing from more; above, because a data URL
+// per face is memory and `toDataURL` is the slow half of making one.
+const AIRO_SAT_PX_MIN = 0.9, AIRO_SAT_PX_MAX = 3.2;
+const AIRO_SAT_MAX = 700;             // longest edge of one face's canvas, in pixels
+const airoSatPx = () =>
+    Math.max(AIRO_SAT_PX_MIN, Math.min(AIRO_SAT_PX_MAX, airoScreenK() * 1.3));
+let airoSatSrc = null;
+
+function airoSatData() {
+    if (airoSatSrc) return airoSatSrc;
+    const im = sunPathSat.day;
+    if (!im || !im.width) return null;
+    const c = document.createElement('canvas');
+    c.width = im.width; c.height = im.height;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(im, 0, 0);
+    try {
+        airoSatSrc = { d: x.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+    } catch (_) { airoSatSrc = null; }      // tainted canvas; the vector map still works
+    return airoSatSrc;
+}
+
+function airoSatFace(g) {
+    if (g.satUrl) return g.satUrl;
+    const src = airoSatData();
+    if (!src) return null;          // NOT memoised: the texture may simply not have landed yet
+    const pts = g.local;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    pts.forEach(p => { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]);
+                       y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
+    // Room for the bleed below: a canvas cut to the polygon's exact bounds has nowhere to put
+    // the spill on the edges that touch those bounds.
+    const grow = 0.02 * Math.max(x1 - x0, y1 - y0);
+    x0 -= grow; y0 -= grow; x1 += grow; y1 += grow;
+    const w = x1 - x0, h = y1 - y0;
+    const k = Math.min(airoSatPx(), AIRO_SAT_MAX / Math.max(w, h));
+    g.satPx = k;
+    const cw = Math.max(8, Math.round(w * k)), ch = Math.max(8, Math.round(h * k));
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    const out = ctx.createImageData(cw, ch);
+    const O = out.data;
+    // Edge half-planes, once, for the inside test. The ring is wound one way throughout, so a
+    // point is inside when it is on the same side of every edge. The normals are UNIT length, so
+    // the quantity is a signed distance in board units and the bleed below means what it says.
+    const n = pts.length, ex = [], ey = [], ec = [];
+    for (let i = 0; i < n; i++) {
+        const p = pts[i], q = pts[(i + 1) % n];
+        const L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+        const nx = -(q[1] - p[1]) / L, ny = (q[0] - p[0]) / L;
+        ex.push(nx); ey.push(ny); ec.push(nx * p[0] + ny * p[1]);
+    }
+    let flip = 0;
+    { const c0 = airoMid(pts);
+      flip = (ex[0] * c0[0] + ey[0] * c0[1] - ec[0]) < 0 ? -1 : 1; }
+    // Painted a little PAST the face's own edge. Stopping exactly on it leaves the background
+    // showing through as a hairline down every seam, because the raster's pixels are square and
+    // the edge is not: half a pixel of each boundary pixel falls outside and is dropped. The
+    // spill lands under the neighbouring face, which is drawn from the same imagery and agrees
+    // with it, so a seam closes invisibly instead of glowing.
+    const bleed = 2 * Math.max(w / cw, h / ch);
+    for (let yy = 0; yy < ch; yy++) {
+        const Y = y0 + (yy + 0.5) * h / ch;
+        for (let xx = 0; xx < cw; xx++) {
+            const X = x0 + (xx + 0.5) * w / cw;
+            let inside = true;
+            for (let i = 0; i < n; i++)
+                if ((ex[i] * X + ey[i] * Y - ec[i]) * flip < -bleed) { inside = false; break; }
+            if (!inside) continue;
+            const ll = g.proj.invert && g.proj.invert([X, Y]);
+            if (!ll) continue;
+            const sx = Math.min(src.w - 1, Math.max(0, Math.floor((ll[0] + 180) / 360 * src.w)));
+            const sy = Math.min(src.h - 1, Math.max(0, Math.floor((90 - ll[1]) / 180 * src.h)));
+            const s = (sy * src.w + sx) * 4, d = (yy * cw + xx) * 4;
+            O[d] = src.d[s]; O[d + 1] = src.d[s + 1]; O[d + 2] = src.d[s + 2]; O[d + 3] = 255;
+        }
+    }
+    ctx.putImageData(out, 0, 0);
+    g.satBox = [x0, y0, w, h];
+    return (g.satUrl = cv.toDataURL('image/png'));
+}
+
+// Rasterising every face again is far too slow to do while the wheel is still turning, so it
+// happens once the zoom has settled — and only when the change is worth paying for, which a third
+// again of detail is and a nudge of the wheel is not. Zooming back OUT never triggers it: the
+// imagery in hand is finer than needed, which costs nothing to look at.
+let airoSatTimer = null;
+function airoSatWatch() {
+    clearTimeout(airoSatTimer);
+    if (!airoState || !airoState.sat) return;
+    airoSatTimer = setTimeout(() => {
+        if (!airoState || !airoState.sat || !airoState.geomRef) return;
+        const px = airoSatPx();
+        if (!airoState.geomRef.some(g => g.satUrl && g.satPx < px / 1.35)) return;
+        airoState.geomRef.forEach(g => { g.satUrl = null; g.satPx = 0; });
+        airoDraw();
+    }, 260);
+}
+
+// Which faces have folded on top of one another. On a PLATONIC solid the answer is always none:
+// Horiyama and Shoji proved in 2011 that no edge unfolding of one ever overlaps, and it was
+// checked here before being relied on — 300 random spanning trees of the icosahedron's face
+// graph, zero overlapping. That is not true of the others. An Archimedean or Catalan net can and
+// does fold back over itself, so the test has to be a real one.
+//
+// It is the separating axis theorem, which is the whole of what convex-versus-convex overlap is:
+// two convex polygons miss each other exactly when some edge normal of one of them separates
+// them. Faces sharing an edge are skipped — they touch along it by construction — and the pairs
+// are filtered on bounding circles first, so 62 faces cost a few hundred real tests rather than
+// 1,891.
+function airoOverlaps(geom, place) {
+    const S = airoSolid();
+    const poly = [], cen = [], rad = [];
+    S.faces.forEach((_, i) => {
+        if (!place[i]) { poly.push(null); cen.push(null); rad.push(0); return; }
+        const t = geom[i].local.map(p => airoApply(place[i], p));
+        const c = airoMid(t);
+        poly.push(t); cen.push(c);
+        rad.push(Math.max(...t.map(p => Math.hypot(p[0] - c[0], p[1] - c[1]))));
+    });
+    const gap = (A, B) => {                       // is there a separating edge normal of A?
+        for (let k = 0; k < A.length; k++) {
+            const p = A[k], q = A[(k + 1) % A.length];
+            const nx = -(q[1] - p[1]), ny = q[0] - p[0];
+            let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+            A.forEach(v => { const d = v[0] * nx + v[1] * ny; aMin = Math.min(aMin, d); aMax = Math.max(aMax, d); });
+            B.forEach(v => { const d = v[0] * nx + v[1] * ny; bMin = Math.min(bMin, d); bMax = Math.max(bMax, d); });
+            const slack = 1e-6 * (Math.abs(nx) + Math.abs(ny));
+            if (aMax <= bMin + slack || bMax <= aMin + slack) return true;
+        }
+        return false;
+    };
+    const dup = new Set();
+    for (let i = 0; i < poly.length; i++) {
+        if (!poly[i]) continue;
+        for (let j = i + 1; j < poly.length; j++) {
+            if (!poly[j] || S.adj[i].includes(j)) continue;
+            if (Math.hypot(cen[i][0] - cen[j][0], cen[i][1] - cen[j][1]) > rad[i] + rad[j]) continue;
+            if (gap(poly[i], poly[j]) || gap(poly[j], poly[i])) continue;
+            dup.add(i); dup.add(j);
+        }
+    }
+    return dup;
+}
+
+// ---- overlap is REFUSED, not reported ----
+// Marking the clash in red says the map is wrong and leaves it wrong. On a Platonic solid there
+// is nothing to say — no unfolding of one ever overlaps — but on the other four the folding can
+// walk a face straight on top of another, and a flat world with two countries drawn over each
+// other is not a picture of anything.
+//
+// Refusing is affordable because no edit here has only one answer. Adding an edge to a spanning
+// tree closes exactly one cycle and ANY edge on that cycle may give way; tearing a seam leaves
+// the loose face a choice of every other edge it owns. The pointer only says which is PREFERRED.
+// So the candidates are walked in the order the pointer asked for and the first arrangement with
+// nothing on top of anything is taken — the click lands where you aimed it whenever it can, and
+// somewhere else rather than nowhere when it cannot.
+//
+// A tree that will not lay out at all counts as infinitely bad, which folds two failures into
+// one test: a join that cannot be built and a join that overlaps are both simply not taken.
+function airoClashCount(tree) {
+    const save = airoState.tree;
+    airoState.tree = tree;
+    let n = Infinity;
+    try {
+        const L = airoLayout();
+        if (Object.keys(L.place).length === airoSolid().faces.length)
+            n = airoOverlaps(L.geom, L.place).size;
+    } catch (_) { /* an arrangement that will not lay out is no arrangement */ }
+    airoState.tree = save;
+    return n;
+}
+
+// Walk a list of [drop, add] swaps in preference order; return the first clean tree, or null.
+function airoPickEdit(swaps) {
+    for (const [drop, add] of swaps) {
+        const t = new Set(airoState.tree);
+        t.delete(drop); t.add(add);
+        if (airoClashCount(t) === 0) return t;
+    }
+    return null;
+}
+
+// A tree arriving from somewhere other than a fold — the historical net, the fan, the default for
+// a solid just picked — has not been through the rule above, so it is walked clean here: take a
+// face that is sitting on another, try re-hanging it on each of its other edges, and keep
+// whichever leaves the fewest clashes. A hill-climb, bounded, returning the best it reached
+// rather than looping; the six defaults are all clean already, so in practice it does nothing.
+function airoUnoverlap(tree) {
+    const S = airoSolid(), save = airoState.tree;
+    let cur = tree, best = airoClashCount(cur);
+    for (let pass = 0; pass < 40 && best > 0; pass++) {
+        airoState.tree = cur;
+        let L = null;
+        try { L = airoLayout(); } catch (_) { break; }
+        const bad = L ? airoOverlaps(L.geom, L.place) : new Set();
+        if (!bad.size) { best = 0; break; }
+        let moved = null;
+        for (const f of bad) {
+            const par = L.parent[f];
+            if (par == null) continue;                    // the root is held by nothing
+            const hinge = S.edgeAt.get(airoEdgeKey(f, par));
+            if (hinge == null) continue;
+            for (const x of S.faceEdges[f]) {
+                if (x === hinge || cur.has(x)) continue;
+                const t = new Set(cur); t.delete(hinge); t.add(x);
+                const n = airoClashCount(t);
+                if (n < best) { best = n; moved = t; if (!n) break; }
+            }
+            if (moved) break;
+        }
+        if (!moved) break;
+        cur = moved;
+    }
+    airoState.tree = save;
+    return cur;
+}
+
+// Which way up to hang the net. Nothing about the arrangement decides this — the root face is
+// placed at the identity and its own gnomonic settles the angle, which is arbitrary — so the
+// frame is turned to whichever angle fills the board best. That leaves TWO answers, since a
+// bounding box is the same under a half-turn, and the tie is broken by asking that north come
+// out up.
+//
+// NORTH IS AVERAGED OVER ALL TWENTY FACES, not read off the poles. A net is folded, so "up" is
+// not one direction on it: measured face by face, the mean of the twenty unit north vectors has
+// length 3.43 out of a possible 20, which is how weakly coherent the thing is. Two points are
+// therefore no evidence at all — the north and south poles happen to sit on faces folded against
+// the bulk of the map, so a pole-above-pole test chooses -67° and puts Africa upside down, while
+// the average chooses 113°, the layout everyone knows: North America upper left, Antarctica
+// lower left, Australia lower right. Measured, the mean north vector spun by 113° is (-0.1,
+// -3.4) — straight up the screen — against (0.1, 3.4) at -67°.
+function airoBestSpin() {
+    const S = airoSolid();
+    const { geom, place } = airoLayout();
+    const pts = [];
+    let ux = 0, uy = 0;
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        geom[i].local.forEach(p => pts.push(airoApply(place[i], p)));
+        const c = geom[i].fe.centre;
+        const a = airoApply(place[i], geom[i].proj(c));
+        const b = airoApply(place[i], geom[i].proj([c[0], Math.min(89.5, c[1] + 0.5)]));
+        const n = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        ux += (b[0] - a[0]) / n; uy += (b[1] - a[1]) / n;
+    });
+    if (!pts.length) return 0;
+    const W = width || 800, H = height || 600, pad = 26;
+    let best = 0, bk = -Infinity;
+    for (let a = 0; a < 180; a++) {
+        const r = a * DEG, cs = Math.cos(r), sn = Math.sin(r);
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        pts.forEach(p => {
+            const x = p[0] * cs - p[1] * sn, y = p[0] * sn + p[1] * cs;
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        });
+        const k = Math.min((W - 2 * pad) / (x1 - x0), (H - 2 * pad) / (y1 - y0));
+        if (k > bk) { bk = k; best = a; }
+    }
+    const r = best * DEG;
+    return (ux * Math.sin(r) + uy * Math.cos(r)) < 0 ? best : best - 180;
+}
+
+// ---- the board's own transform ----
+// Three things stacked in one matrix, in the order they were decided: the fit that puts the whole
+// net on the board, the frame's own rotation, and then the zoom and pan the reader has asked for.
+// Zoom and pan sit OUTSIDE the fit deliberately — the fit is recomputed whenever the net changes
+// shape, and a zoom taken before a fold would otherwise mean something different after it.
+function airoFitBoard(place, geom) {
+    const S = airoSolid();
+    const a = airoState.spin * DEG, cs = Math.cos(a), sn = Math.sin(a);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        geom[i].local.forEach(p => {
+            const q = airoApply(place[i], p);
+            const x = q[0] * cs - q[1] * sn, y = q[0] * sn + q[1] * cs;
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        });
+    });
+    const W = width || 800, H = height || 600, pad = 26;
+    const k = Math.min((W - 2 * pad) / Math.max(1, maxX - minX),
+                       (H - 2 * pad) / Math.max(1, maxY - minY));
+    const ox = (W - (maxX + minX) * k) / 2, oy = (H - (maxY + minY) * k) / 2;
+    // Where the net lands on the board before any zoom — which is what the pan is bounded against.
+    return { k, ox, oy, box: [minX * k + ox, minY * k + oy, maxX * k + ox, maxY * k + oy] };
+}
+
+function airoTransform() {
+    const v = airoState.view, p = airoState.pan, z = airoState.zoom;
+    return `translate(${p[0]},${p[1]}) scale(${z}) ` +
+           `translate(${v.ox},${v.oy}) scale(${v.k}) rotate(${airoState.spin})`;
+}
+
+// Screen pixels per board unit: what a stroke width is divided by so it comes out the same size
+// on screen however far in the picture is zoomed.
+const airoScreenK = () =>
+    Math.max(0.05, (airoState.view ? airoState.view.k : 1) * (airoState.zoom || 1));
+
+// The pan is bounded by the NET rather than by the viewport: it may be pushed to the edge of the
+// board but not off it, so there is always something to take hold of and no way to mislay the map.
+function airoClampPan() {
+    const v = airoState.view;
+    if (!v) return;
+    if (!(airoState.zoom > 1.0001)) { airoState.zoom = 1; airoState.pan = [0, 0]; return; }
+    const W = width || 800, H = height || 600, z = airoState.zoom, b = v.box, keep = 0.25;
+    airoState.pan = [
+        Math.max(W * keep - z * b[2], Math.min(W * (1 - keep) - z * b[0], airoState.pan[0])),
+        Math.max(H * keep - z * b[3], Math.min(H * (1 - keep) - z * b[1], airoState.pan[1]))
+    ];
+}
+
+function airoDraw() {
+    if (!airoState || !svg || !countriesGroup) return;
+    const S = airoSolid();
+    const { geom, place } = airoLayout();
+    countriesGroup.selectAll('*').remove();
+    svg.selectAll('g.airo-layer').remove();
+    const host = countriesGroup.node() && countriesGroup.node().parentNode
+        ? d3.select(countriesGroup.node().parentNode) : svg;
+    // While the world is being turned the imagery cannot keep up — a raster per face is tens of
+    // times the cost of a frame — so the vector map stands in for it until the hand stops.
+    const sat = airoState.sat && !airoState.turning;
+    const layer = host.append('g').attr('class', 'airo-layer' + (sat ? ' airo-sat-on' : ''));
+    const defs = layer.append('defs');
+
+    airoState.view = airoFitBoard(place, geom);
+    airoClampPan();
+    layer.attr('transform', airoTransform());
+
+    const dup = airoOverlaps(geom, place);
+    const faces = layer.append('g').attr('class', 'airo-faces');
+    S.faces.forEach((_, i) => {
+        if (!place[i]) return;
+        const g = faces.append('g')
+            .attr('class', 'airo-face' + (dup.has(i) ? ' airo-clash' : ''))
+            .attr('data-face', i)
+            .attr('transform', `matrix(${place[i].join(',')})`);
+        // The tile is drawn from the projected vertices rather than through the clipped path
+        // generator: a gnomonic face IS a straight-sided polygon, so its corners say it exactly
+        // and there is nothing for the clip to round off.
+        const outline = 'M' + geom[i].local.map(p => p.join(',')).join('L') + 'Z';
+        g.append('path').attr('class', 'airo-tile').attr('d', outline);
+        const url = sat ? airoSatFace(geom[i]) : null;
+        if (url) {
+            // CLIPPED BY SVG, not by where the raster's own pixels happen to stop. A raster edge
+            // is a staircase at the resolution it was rasterised at, and the net's outline and
+            // every tear are precisely the places where no neighbouring face covers that
+            // staircase — so the imagery ended in visible steps against the background. The
+            // tile's own polygon is the true edge and the browser draws it antialiased at the
+            // resolution of the SCREEN, whatever the raster's happens to be.
+            const cid = 'airo-clip-' + i;
+            defs.append('clipPath').attr('id', cid).append('path').attr('d', outline);
+            g.append('image').attr('class', 'airo-sat').attr('href', url)
+                .attr('clip-path', `url(#${cid})`)
+                .attr('x', geom[i].satBox[0]).attr('y', geom[i].satBox[1])
+                .attr('width', geom[i].satBox[2]).attr('height', geom[i].satBox[3])
+                .attr('preserveAspectRatio', 'none');
+        } else if (airoCanClip()) {
+            // The vector map, and also what satellite falls back to while Blue Marble is still
+            // in flight — a face with neither is a blank tile, which reads as the mode breaking
+            // rather than as an image loading.
+            //
+            // Cached on the face. Clipping the world to a face is the expensive half of a
+            // redraw and it does not depend on how the net is FOLDED, so paying it per fold was
+            // pure waste: the truncated icosidodecahedron's 62 faces cost 972 ms a click.
+            if (airoState.turning)
+                g.append('path').attr('class', 'airo-land')
+                    .attr('d', d3.geoPath(geom[i].proj)(airoLandFor(geom[i].cap, true)) || '');
+            else {
+                if (geom[i].landPath === undefined)
+                    geom[i].landPath = d3.geoPath(geom[i].proj)(airoLandFor(geom[i].cap)) || null;
+                if (geom[i].landPath)
+                    g.append('path').attr('class', 'airo-land').attr('d', geom[i].landPath);
+            }
+        }
+    });
+
+    // The edges, in the net's own coordinates rather than inside the faces, because a cut edge
+    // has TWO drawings — one on each of the faces it used to join — and they belong to each
+    // other rather than to the triangles they sit on.
+    const eg = layer.append('g').attr('class', 'airo-edges');
+    airoState.edgeNode = eg.node();
+    const copies = [];
+    S.edges.forEach((e, ei) => {
+        const joined = airoState.tree.has(ei);
+        [e.a, e.b].forEach(f => {
+            if (!place[f]) return;
+            const k0 = S.faces[f].indexOf(e.verts[0]), k1 = S.faces[f].indexOf(e.verts[1]);
+            copies.push({ ei, face: f, joined,
+                          p0: airoApply(place[f], geom[f].local[k0]),
+                          p1: airoApply(place[f], geom[f].local[k1]) });
+        });
+    });
+    airoState.copies = copies;
+    airoState.place = place;
+    airoState.geomRef = geom;
+
+    const line = sel => sel.attr('x1', d => d.p0[0]).attr('y1', d => d.p0[1])
+                           .attr('x2', d => d.p1[0]).attr('y2', d => d.p1[1]);
+    line(eg.selectAll('line.airo-edge').data(copies).enter().append('line')
+        .attr('class', d => 'airo-edge ' + (d.joined ? 'seam' : 'cut')));
+    line(eg.selectAll('line.airo-hit').data(copies).enter().append('line')
+        .attr('class', 'airo-hit')
+        .style('stroke-width', 16 / airoScreenK())
+        .on('pointerenter', (ev, d) => airoSetHover(d.ei))
+        .on('pointerleave', () => airoSetHover(null))
+        // A double-click resets the zoom, and on an edge that would be two folds and a reset at
+        // once — three things nobody asked for from one gesture.
+        .on('dblclick', ev => ev.stopPropagation())
+        // The board is one big handle for turning the frame, and everything else on it is
+        // pointer-transparent — so without this a press on an edge would start a frame drag
+        // underneath the fold it was meant to be. The right button is let through on purpose:
+        // turning the world is the same gesture wherever on the board it starts.
+        .on('pointerdown', ev => { if (ev.button !== 2) ev.stopPropagation(); })
+        .on('click', (ev, d) => { ev.stopPropagation(); airoEdgeClick(ev, d); }));
+
+    airoPaintHover();
+    airoReadout(dup.size);
+    airoGlobeDraw();
+}
+
+// Turning the frame moves nothing but the outer matrix: the net's shape does not depend on the
+// angle it is looked at, so refitting and rewriting one transform is the whole of it. Redrawing
+// instead would rebuild twenty clipped world paths on every pointermove of a spin.
+function airoApplyFrame() {
+    if (!airoState || !svg) return;
+    const layer = svg.select('g.airo-layer');
+    if (layer.empty() || !airoState.place || !airoState.geomRef) { airoDraw(); return; }
+    airoState.view = airoFitBoard(airoState.place, airoState.geomRef);
+    airoClampPan();
+    layer.attr('transform', airoTransform());
+    svg.selectAll('line.airo-hit').style('stroke-width', 16 / airoScreenK());
+}
+
+// One frame of a turn of the world. The net's shape, its placement, the edges and the board's fit
+// are all constants of the solid and the tree — which is exactly what aiming each face's gnomonic
+// in the solid's own frame bought — so a frame rewrites one `d` per face and touches nothing
+// else. No relayout, no refit, no rebuilt edges, no rebuilt hit lines.
+//
+// Two economies make it a frame rate rather than a slideshow. Each face is handed only the
+// countries whose bounding cap meets its own, and while the hand is moving it is handed a copy of
+// them with one vertex in four: at that speed nobody can see the difference and everybody can see
+// the motion. Full detail comes back the moment the hand stops, which is the moment it is worth
+// looking at closely.
+function airoDragRedraw() {
+    if (!airoState || !svg) return;
+    const layer = svg.select('g.airo-layer');
+    if (layer.empty()) return;
+    const geom = airoGeom();
+    airoState.geomRef = geom;
+    layer.selectAll('image.airo-sat').style('display', 'none');
+    layer.classed('airo-sat-on', false);
+    const NS = 'http://www.w3.org/2000/svg';
+    layer.selectAll('g.airo-face').each(function () {
+        const i = +this.getAttribute('data-face');
+        const g = geom[i];
+        if (!g || !airoCanClip()) return;
+        let p = this.querySelector('path.airo-land');
+        if (!p) {
+            p = document.createElementNS(NS, 'path');
+            p.setAttribute('class', 'airo-land');
+            this.appendChild(p);
+        }
+        p.setAttribute('d', d3.geoPath(g.proj)(airoLandFor(g.cap, true)) || '');
+    });
+}
+
+// Hover marks the edge AND its twin, because for a cut edge those are two places on the map that
+// are one place on the earth — which is the single fact a flat world has to hide and this mode
+// exists to show.
+function airoSetHover(ei) {
+    if (!airoState || airoState.hoverEdge === ei) return;
+    airoState.hoverEdge = ei;
+    airoPaintHover();
+    airoGlobeDraw();
+}
+
+function airoPaintHover() {
+    if (!airoState || !airoState.edgeNode) return;
+    const ei = airoState.hoverEdge;
+    d3.select(airoState.edgeNode).selectAll('line.airo-edge')
+        .classed('hot', d => ei != null && d.ei === ei);
+    const hint = document.getElementById('airo-hint');
+    if (!hint) return;
+    if (ei == null) { hint.textContent = ''; hint.classList.remove('on'); return; }
+    hint.classList.add('on');
+    hint.textContent = airoState.tree.has(ei)
+        ? 'Joined. Click to tear it open — the triangle you click will swing round onto whichever of its other two edges you clicked nearest.'
+        : 'Torn. The two highlighted edges are the same edge of the solid. Click to close it up.';
+}
+
+// Distance from a point to an edge as it is drawn on one particular face.
+function airoEdgeDist(ei, face, pt) {
+    const c = (airoState.copies || []).find(x => x.ei === ei && x.face === face);
+    if (!c) return Infinity;
+    const dx = c.p1[0] - c.p0[0], dy = c.p1[1] - c.p0[1];
+    const L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((pt[0] - c.p0[0]) * dx + (pt[1] - c.p0[1]) * dy) / L)) : 0;
+    return Math.hypot(pt[0] - (c.p0[0] + t * dx), pt[1] - (c.p0[1] + t * dy));
+}
+
+function airoFaceCentre(f) {
+    const g = airoState.geomRef, p = airoState.place;
+    if (!g || !p || !p[f]) return [0, 0];
+    const t = g[f].local.map(q => airoApply(p[f], q));
+    return [(t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3];
+}
+
+// Close a tear. Adding an edge to a spanning tree closes exactly one cycle, so exactly one edge
+// on that cycle has to go — and the one taken is the hinge holding the CLICKED triangle where it
+// is. That makes the motion the one the eye expects: the piece you pointed at lets go of what it
+// was attached to and swings round to meet its twin, bringing whatever hangs off it.
+// The cycle is walked in order — the hinge holding the clicked face first, then outward — and the
+// first arrangement that does not fold a face onto another is taken, so the piece you pointed at
+// is the piece that lets go whenever letting go of it works.
+function airoConnect(ei, face) {
+    const S = airoSolid(), e = S.edges[ei];
+    const far = e.a === face ? e.b : e.a;
+    const path = airoTreePath(face, far);
+    if (!path.length) return false;
+    const t = airoPickEdit(path.map(drop => [drop, ei]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+// Tear a seam open. The map may never come apart, so the face that lets go has to take hold
+// again immediately — with whichever of its OTHER edges the pointer was nearer. (Two others on a
+// triangle, nine on a decagon; the rule is the same and only the count changes.) Only an edge
+// running to the FAR side of the cut will do: one leading back into the piece that came away
+// with this face closes a cycle instead of holding anything.
+function airoDisconnect(ei, face, pt) {
+    const S = airoSolid();
+    const side = airoSide(face, ei);
+    const cand = S.faceEdges[face].filter(x => {
+        if (x === ei) return false;
+        const o = S.edges[x];
+        return !side.has(o.a === face ? o.b : o.a);
+    });
+    if (!cand.length) return false;
+    cand.sort((x, y) => airoEdgeDist(x, face, pt) - airoEdgeDist(y, face, pt));
+    const t = airoPickEdit(cand.map(add => [ei, add]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+// When neither face of the seam can swing, SOMETHING else still can, and a dead click is the one
+// outcome this mode cannot afford. A face whose every edge is a seam is a hinge for that many
+// subtrees and cannot itself be the thing that moves — six of the icosahedron's twenty faces are
+// like that under Fuller's net, which is why five of its nineteen seams refused outright before
+// this existed. So the loose side is re-hung at whichever torn edge spanning the two sides is
+// nearest the click, which is the same "nearest to the pointer" rule one step further out.
+//
+// It can always be done, and that is a fact about polyhedra rather than luck: by Steinitz's
+// theorem the face adjacency graph of any convex polyhedron is 3-connected, so removing one edge
+// from it never separates anything. There is always another edge across the cut.
+function airoRehang(ei, pt) {
+    const S = airoSolid(), e = S.edges[ei];
+    const side = airoSide(e.a, ei);
+    const cand = [];
+    S.edges.forEach((o, x) => {
+        if (x === ei || airoState.tree.has(x)) return;
+        if (side.has(o.a) === side.has(o.b)) return;      // must span the cut
+        cand.push({ d: Math.min(airoEdgeDist(x, o.a, pt), airoEdgeDist(x, o.b, pt)), x });
+    });
+    if (!cand.length) return false;
+    cand.sort((a, b) => a.d - b.d);
+    const t = airoPickEdit(cand.map(c => [ei, c.x]));
+    if (!t) return false;
+    airoState.tree = t;
+    return true;
+}
+
+function airoEdgeClick(event, copy) {
+    if (!airoState) return;
+    airoState.touched = true;
+    const S = airoSolid(), e = S.edges[copy.ei];
+    const pt = d3.pointer(event, airoState.edgeNode);
+    let ok;
+    if (airoState.tree.has(copy.ei)) {
+        // A seam is one line with a triangle on either side of it, so which of them was clicked
+        // is a question about the pointer rather than about which copy caught the event.
+        const da = Math.hypot(...airoFaceCentre(e.a).map((v, i) => v - pt[i]));
+        const db = Math.hypot(...airoFaceCentre(e.b).map((v, i) => v - pt[i]));
+        const first = da <= db ? e.a : e.b, second = da <= db ? e.b : e.a;
+        ok = airoDisconnect(copy.ei, first, pt) || airoDisconnect(copy.ei, second, pt) ||
+             airoRehang(copy.ei, pt);
+    } else {
+        ok = airoConnect(copy.ei, copy.face);
+    }
+    // Every way of making this fold would have put one face on top of another. Say so, rather
+    // than doing nothing (which reads as a broken click) or doing it anyway (which is the thing
+    // the rule exists to prevent).
+    if (!ok) { airoRefuse(copy.ei); return; }
+    airoState.hoverEdge = null;
+    airoDraw();
+}
+
+// The one piece of feedback a refused fold gets: the hint line says why, and the edge flashes so
+// it is clear WHICH fold was refused when the board has not changed at all.
+let airoRefuseTimer = null;
+function airoRefuse(ei) {
+    const hint = document.getElementById('airo-hint');
+    if (hint) {
+        hint.classList.add('on', 'bad');
+        hint.textContent = 'No. Every way of making that fold puts one face on top of another.';
+    }
+    if (airoState.edgeNode)
+        d3.select(airoState.edgeNode).selectAll('line.airo-edge')
+            .classed('refused', d => d.ei === ei);
+    clearTimeout(airoRefuseTimer);
+    airoRefuseTimer = setTimeout(() => {
+        if (hint) hint.classList.remove('bad');
+        if (airoState && airoState.edgeNode)
+            d3.select(airoState.edgeNode).selectAll('line.airo-edge').classed('refused', false);
+        airoPaintHover();
+    }, 1400);
+}
+
+function airoReadout(clashes) {
+    const el = document.getElementById('airo-readout');
+    if (!el) return;
+    const S = airoSolid();
+    const F = S.faces.length, E = S.edges.length, V = S.verts.length;
+    const seams = F - 1, tears = E - seams;
+    const r = airoState.rot.map(v => Math.round(v));
+    // Face types, by corner count — which is what tells a truncated icosahedron from a football
+    // at a glance, and there is no other place the solid says what it is made of.
+    const kinds = {};
+    S.faces.forEach(f => { kinds[f.length] = (kinds[f.length] || 0) + 1; });
+    const NAME = { 3: 'triangles', 4: 'quadrilaterals', 5: 'pentagons', 6: 'hexagons',
+                   8: 'octagons', 10: 'decagons' };
+    const made = Object.keys(kinds).sort((a, b) => a - b)
+        .map(k => `${kinds[k]} ${NAME[k] || k + '-gons'}`).join(', ');
+    const platonic = Object.keys(kinds).length === 1;
+    el.innerHTML =
+        `<div class="lab-row"><span>Faces</span><span class="lab-k">${made}</span></div>` +
+        `<div class="lab-row"><span>Seams</span><span class="lab-k">${seams} of ${E}</span></div>` +
+        `<div class="lab-row"><span>Tears</span><span class="lab-k">${tears}</span></div>` +
+        `<div class="lab-row"><span>Orientation</span><span class="lab-k">${r[0]}°, ${r[1]}°, ${r[2]}°</span></div>` +
+        (clashes
+            ? `<div class="lab-row"><span>Overlapping</span><span class="lab-k bad">${clashes} faces</span></div>`
+            : '') +
+        `<div class="lab-note">${V} corners, ${E} edges, ${F} faces. A net is a spanning tree, so ` +
+        `exactly ${seams} edges can be joined at once and ${tears} must be torn — the fewest any ` +
+        `flat world made on this solid can have. Every arrangement keeps something together by ` +
+        `tearing something else apart, and that is the whole argument of a Dymaxion map.` +
+        (platonic
+            ? ' Which tears you make is free here: no net of a Platonic solid ever overlaps ' +
+              'itself, which Horiyama and Shoji proved in 2011.'
+            : ' On a solid with more than one kind of face that freedom runs out — some ' +
+              'arrangements fold back over themselves. A fold with no arrangement that avoids ' +
+              'it is refused rather than drawn, so the net you are looking at never overlaps.') +
+        `</div>`;
+}
+
+// ---- the globe, with the solid over it ----
+// The wireframe is drawn STATIC and the earth turns under it, which is the honest picture of what
+// the mode does: the solid is a fixed thing and the world is what gets turned inside it. That
+// falls out of one identity rather than out of any bookkeeping — a solid vertex v corresponds to
+// the earth point inv(v), and an orthographic carrying the same rotation sends inv(v) straight
+// back to v. So the earth's projection takes the rotation and the solid's takes none, and the two
+// agree on where every vertex belongs.
+function airoGlobeDraw() {
+    const el = d3.select('#airo-globe');
+    if (el.empty() || !airoState) return;
+    const S = airoSolid();
+    const sz = AIRO_GLOBE_SIZE, c = sz / 2, R = c - 5;
+    const earth = d3.geoOrthographic().rotate(airoEarthRot()).clipAngle(90).scale(R).translate([c, c]);
+    const solid = d3.geoOrthographic().rotate(airoState.gview).clipAngle(90).scale(R).translate([c, c]);
+    airoState.globeProj = earth;
+    const pe = d3.geoPath(earth), ps = d3.geoPath(solid);
+    el.selectAll('*').remove();
+    el.append('circle').attr('class', 'airo-g-ocean').attr('cx', c).attr('cy', c).attr('r', R);
+    el.append('path').attr('class', 'airo-g-grat').attr('d', pe(d3.geoGraticule10()) || '');
+    el.append('path').attr('class', 'airo-g-land')
+        .attr('d', pe({ type: 'FeatureCollection', features: gameState.countries || [] }) || '');
+    // The whole wireframe first, then the near half over it. An orthographic IS the see-through
+    // view — a point on the far side projects exactly where it would appear through a glass
+    // globe — so dropping the clip draws the back of the solid correctly rather than as a
+    // reflection. Without it a hovered edge on the far side had nothing to highlight and the
+    // hover simply did nothing: of the eleven tears, only the ones facing you answered.
+    const behind = d3.geoOrthographic().rotate(airoState.gview).clipAngle(null).scale(R).translate([c, c]);
+    const pb = d3.geoPath(behind);
+    [[pb, ' ghost'], [ps, '']].forEach(([gen, extra]) => {
+        const wire = el.append('g');
+        S.edges.forEach((e, ei) => {
+            const d = gen({ type: 'LineString', coordinates: [S.verts[e.verts[0]], S.verts[e.verts[1]]] });
+            if (!d) return;
+            wire.append('path')
+                .attr('class', 'airo-g-edge ' + (airoState.tree.has(ei) ? 'seam' : 'cut') +
+                               (airoState.hoverEdge === ei ? ' hot' : '') + extra)
+                .attr('d', d);
+        });
+    });
+    el.append('circle').attr('class', 'airo-g-rim').attr('cx', c).attr('cy', c).attr('r', R);
+}
+
+// The inset carries TWO rotations because it shows two things that have to agree: the solid, and
+// the earth turned to whatever orientation it holds inside the solid. The view rotation is
+// applied to both, so it changes where you are standing and nothing else; the world's own
+// orientation is applied to the earth alone, and moving it is what moves the cuts.
+//
+// `multiply(a, b)` applies b first, so the earth's screen rotation is the world's orientation
+// followed by the view. That one identity is the whole of what separates the two gestures below:
+// hold the earth's screen rotation still while the view moves, and the world's orientation is
+// forced to whatever keeps the equation true — which is the same as saying the cage turned and
+// the earth did not.
+const airoQinv = q => [q[0], -q[1], -q[2], -q[3]];
+const airoEarthRot = () =>
+    versor.rotation(versor.multiply(versor(airoState.gview || [0, 0, 0]), versor(airoState.rot)));
+
+function airoBindGlobe() {
+    const el = d3.select('#airo-globe');
+    if (el.empty()) return;
+    const node = el.node();
+    const sz = AIRO_GLOBE_SIZE, c = sz / 2, R = c - 5;
+    const proj = () => d3.geoOrthographic().clipAngle(90).scale(R).translate([c, c]);
+    let drag = null;
+    // A right-drag that ends in a popup menu is not a drag.
+    el.on('contextmenu', ev => ev.preventDefault());
+    el.on('pointerdown', function (event) {
+        if (!airoState) return;
+        const p = d3.pointer(event, node);
+        const g0 = (airoState.gview || [0, 0, 0]).slice();
+        // Both gestures take hold of the SOLID — in the left one the earth simply comes with it —
+        // so both invert through the solid's own projection, and both keep inverting through the
+        // rotation it had at the START, which is what makes the grabbed point track the pointer
+        // rather than accelerate away from it.
+        const inv = proj().rotate(g0).invert(p);
+        if (!inv) return;
+        drag = { cut: event.button === 2, g0, q0: versor(g0),
+                 v0: versor.cartesian(inv), earth: airoEarthRot() };
+        try { node.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
+        event.preventDefault();
+    });
+    el.on('pointermove', function (event) {
+        if (!drag || !airoState) return;
+        const inv = proj().rotate(drag.g0).invert(d3.pointer(event, node));
+        if (!inv) return;
+        airoState.gview = versor.rotation(
+            versor.multiply(drag.q0, versor.delta(drag.v0, versor.cartesian(inv))));
+        if (drag.cut) {
+            // The earth is pinned where it was on screen, so turning the view IS turning the
+            // solid against the world.
+            airoState.rot = versor.rotation(
+                versor.multiply(airoQinv(versor(airoState.gview)), versor(drag.earth)));
+            airoState.touched = true;
+        }
+        // The net's clipped world paths are the expensive half of a redraw, so the inset alone
+        // follows the hand and the net is rebuilt on release. A left-drag changes no part of the
+        // net at all, so there is nothing to rebuild for it either way.
+        airoGlobeDraw();
+    });
+    const up = function (event) {
+        if (!drag) return;
+        const cut = drag.cut;
+        drag = null;
+        try { node.releasePointerCapture(event.pointerId); } catch (_) { /* fine */ }
+        if (airoState && cut) airoDraw();
+    };
+    el.on('pointerup', up);
+    el.on('pointercancel', up);
+}
+
+// ---- the board ----
+// Is this point inside a face? A face of a convex solid is a convex polygon, so it is one sign
+// test per edge and the answer is the same sign for all of them.
+function airoPointInPoly(poly, pt) {
+    let sign = 0;
+    for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const s = (b[0] - a[0]) * (pt[1] - a[1]) - (b[1] - a[1]) * (pt[0] - a[0]);
+        if (!s) continue;
+        if (!sign) sign = Math.sign(s);
+        else if (Math.sign(s) !== sign) return false;
+    }
+    return true;
+}
+
+// Which face the pointer is over — tested geometrically rather than by asking what caught the
+// event, because the tiles are deliberately pointer-transparent so the board can be one big
+// handle. A press in the gap outside the net falls back to the nearest face, so a right-drag
+// started anywhere at all still turns the world.
+function airoFaceUnder(event) {
+    const S = airoSolid(), place = airoState.place, geom = airoState.geomRef;
+    if (!place || !geom || !airoState.edgeNode) return null;
+    const pt = d3.pointer(event, airoState.edgeNode);
+    let near = null, nearD = Infinity;
+    for (let i = 0; i < S.faces.length; i++) {
+        if (!place[i]) continue;
+        const poly = geom[i].local.map(p => airoApply(place[i], p));
+        if (airoPointInPoly(poly, pt)) return i;
+        const c = airoMid(poly);
+        const d = Math.hypot(c[0] - pt[0], c[1] - pt[1]);
+        if (d < nearD) { nearD = d; near = i; }
+    }
+    return near;
+}
+
+// The point of the EARTH under the pointer, through a particular face: undo that face's placement
+// to get into the face's own plane, then ask its gnomonic. The placement is an affine matrix, so
+// undoing it is one 2x2 inverse.
+function airoGrabPoint(turn, event) {
+    const m = turn.mat, det = m[0] * m[3] - m[1] * m[2];
+    if (!det) return null;
+    const pt = d3.pointer(event, airoState.edgeNode);
+    const dx = pt[0] - m[4], dy = pt[1] - m[5];
+    const local = [(dx * m[3] - dy * m[2]) / det, (dy * m[0] - dx * m[1]) / det];
+    return turn.proj.invert ? turn.proj.invert(local) : null;
+}
+
+// Right-drag on the board turns the world inside the solid, and it is a GRAB: the point of the
+// earth under the pointer stays under the pointer, so the map slides across the tiles while the
+// cage holds still. That is the same relative motion as dragging the wireframe over the inset
+// globe, seen from the other side — there the earth is the fixed thing and the cage moves, here
+// the cage is the frame and the earth moves. Each grabs whatever it is you are touching.
+//
+// The projection and the placement are frozen at the moment of the press and inverted through
+// throughout, which is what the versor formula assumes and what makes the grab exact rather than
+// merely close.
+function airoBoardTurnStart(event, node) {
+    const face = airoFaceUnder(event);
+    if (face == null || !airoState.geomRef[face]) return false;
+    const turn = { face, proj: airoState.geomRef[face].proj, mat: airoState.place[face],
+                   q0: versor(airoState.rot) };
+    const ll = airoGrabPoint(turn, event);
+    if (!ll) return false;
+    turn.v0 = versor.cartesian(ll);
+    airoState.turn = turn;
+    airoState.turning = true;
+    airoState.touched = true;
+    try { node.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
+    event.preventDefault();
+    return true;
+}
+
+function airoBoardTurnMove(event) {
+    const t = airoState.turn;
+    const ll = airoGrabPoint(t, event);
+    if (!ll) return;
+    airoState.rot = versor.rotation(
+        versor.multiply(t.q0, versor.delta(t.v0, versor.cartesian(ll))));
+    airoDragRedraw();
+    airoGlobeDraw();
+}
+
+function airoBoardTurnEnd(event, node) {
+    if (!airoState.turn) return;
+    airoState.turn = null;
+    airoState.turning = false;
+    try { if (node) node.releasePointerCapture(event.pointerId); } catch (_) { /* fine */ }
+    airoDraw();
+}
+
+// Three gestures, and each takes hold of a different thing. The left button turns the FRAME — the
+// picture, not the world. The right button turns the WORLD inside the solid, which moves the cuts
+// and re-cuts the map. The wheel zooms into whatever is under the cursor, and once there is
+// something to move about in, shift or the middle button pans.
+const AIRO_ZOOM_MAX = 14;
+function airoBindMap() {
+    if (!svg) return;
+    const node = svg.node();
+    const angle = ev => {
+        const p = d3.pointer(ev, node);
+        return Math.atan2(p[1] - (height || 600) / 2, p[0] - (width || 800) / 2) / DEG;
+    };
+    svg.on('contextmenu.airo', ev => { if (airoState) ev.preventDefault(); });
+
+    svg.on('pointerdown.airo', function (event) {
+        if (!airoState) return;
+        if (event.button === 2) { airoBoardTurnStart(event, node); return; }
+        if (event.button === 1 || event.shiftKey) {
+            airoState.drag = { kind: 'pan', from: d3.pointer(event, node),
+                               pan: airoState.pan.slice() };
+            event.preventDefault();
+            return;
+        }
+        airoState.drag = { kind: 'spin', from: angle(event), spin: airoState.spin };
+    });
+    svg.on('pointermove.airo', function (event) {
+        if (!airoState) return;
+        if (airoState.turn) { airoBoardTurnMove(event); return; }
+        const d = airoState.drag;
+        if (!d) return;
+        if (d.kind === 'pan') {
+            const p = d3.pointer(event, node);
+            airoState.pan = [d.pan[0] + p[0] - d.from[0], d.pan[1] + p[1] - d.from[1]];
+            airoClampPan();
+            airoApplyFrame();
+            return;
+        }
+        airoState.spin = d.spin + (angle(event) - d.from);
+        airoState.touched = true;
+        airoSyncSpin();
+        airoApplyFrame();
+    });
+    const drop = event => {
+        if (!airoState) return;
+        if (airoState.turn) airoBoardTurnEnd(event, node);
+        airoState.drag = null;
+    };
+    svg.on('pointerup.airo', drop);
+    svg.on('pointercancel.airo', drop);
+    svg.on('pointerleave.airo', event => { drop(event); airoSetHover(null); });
+
+    // Anchored on the cursor, so zooming in on a tear keeps that tear under the pointer instead
+    // of sending it off the edge.
+    svg.on('wheel.airo', function (event) {
+        if (!airoState || !airoState.view) return;
+        event.preventDefault();
+        const p = d3.pointer(event, node);
+        const z0 = airoState.zoom;
+        const z1 = Math.max(1, Math.min(AIRO_ZOOM_MAX, z0 * Math.exp(-event.deltaY * 0.0016)));
+        if (z1 === z0) return;
+        airoState.zoom = z1;
+        airoState.pan = [p[0] - (z1 / z0) * (p[0] - airoState.pan[0]),
+                         p[1] - (z1 / z0) * (p[1] - airoState.pan[1])];
+        airoClampPan();
+        airoApplyFrame();
+        airoSatWatch();
+    });
+    // The way back out, without hunting for a control: the picture is the thing being looked at,
+    // so double-clicking it is where a reset belongs.
+    svg.on('dblclick.airo', function (event) {
+        if (!airoState) return;
+        event.preventDefault();
+        airoState.zoom = 1;
+        airoState.pan = [0, 0];
+        airoApplyFrame();
+        airoSatWatch();
+    });
+}
+
+function buildAiroPanel() {
+    const host = document.getElementById('question-container');
+    if (!host) return;
+    let box = document.getElementById('airocean-panel');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'airocean-panel';
+    box.className = 'lab-panel';
+    box.innerHTML =
+        '<div class="lab-note">Fuller wrapped the earth on an icosahedron and cut the solid open. ' +
+        'Which cuts you make is the whole argument, so the cuts are the interaction: hover an edge ' +
+        'to see it and its twin, and click to fold the world open along it or close it up again. ' +
+        'The map is never in pieces, and it never overlaps itself. Drag the board to turn the ' +
+        'frame, <b>right-drag</b> it to turn the world inside the solid, and use the wheel to ' +
+        'zoom (shift-drag to pan, double-click to come back out).</div>' +
+        '<label class="lab-slider"><span>Solid</span></label>' +
+        '<select id="airo-solid" class="airo-select">' +
+        Object.keys(AIRO_SOLIDS).map(k =>
+            `<option value="${k}">${AIRO_SOLIDS[k].label}</option>`).join('') +
+        '</select>' +
+        '<div id="airo-solid-note" class="lab-note airo-globe-note"></div>' +
+        `<svg id="airo-globe" class="airo-globe" width="${AIRO_GLOBE_SIZE}" height="${AIRO_GLOBE_SIZE}" ` +
+        `viewBox="0 0 ${AIRO_GLOBE_SIZE} ${AIRO_GLOBE_SIZE}"></svg>` +
+        '<div class="lab-note airo-globe-note">Drag to turn the globe and the solid together — ' +
+        'the same arrangement, looked at from somewhere else. <b>Right-drag</b> to turn the ' +
+        'wireframe alone against a held earth, which moves the cut points and re-cuts the map.' +
+        '</div>' +
+        '<button type="button" class="lab-proj" id="airo-default">Default orientation</button>' +
+        '<div id="airo-hint" class="airo-hint"></div>' +
+        '<div id="airo-readout" class="lab-readout"></div>' +
+        '<label class="lab-slider"><span>Turn the frame</span>' +
+        '<input type="range" id="airo-spin" min="-180" max="180" step="1" value="0">' +
+        '<output id="airo-spin-out">0°</output></label>' +
+        '<div class="lab-grid">' +
+        '<button type="button" class="lab-proj" id="airo-map">Map</button>' +
+        '<button type="button" class="lab-proj" id="airo-sat">Satellite</button>' +
+        '</div>' +
+        '<div class="lab-grid">' +
+        '<button type="button" class="lab-proj" id="airo-fuller">Default net</button>' +
+        '<button type="button" class="lab-proj" id="airo-fan">Fan it out</button>' +
+        '</div>';
+    host.appendChild(box);
+
+    const solid = document.getElementById('airo-solid');
+    if (solid) {
+        solid.value = airoState.solid;
+        solid.addEventListener('change', () => {
+            // A new solid is a new everything: different faces, so a tree over the old ones is
+            // meaningless and both caches are stale.
+            airoState.solid = solid.value;
+            airoSolidCache = null;
+            airoGeomCache = null;
+            airoState.tree = airoDefaultTree();
+            airoState.root = 0;
+            airoState.hoverEdge = null;
+            airoState.spin = airoBestSpin();
+            airoSyncSpin();
+            airoSyncSolidNote();
+            airoDraw();
+        });
+    }
+    airoSyncSolidNote();
+
+    const spin = document.getElementById('airo-spin');
+    if (spin) spin.addEventListener('input', () => {
+        airoState.spin = +spin.value;
+        const o = document.getElementById('airo-spin-out');
+        if (o) o.textContent = spin.value + '°';
+        airoApplyFrame();
+    });
+    // Blue Marble is fetched only when it is first asked for — several megabytes that the vector
+    // map never needs — and `ensureSunPathSat` calls back ONLY on success, so a missing file
+    // leaves the button unlit rather than looping.
+    const setSurface = sat => {
+        airoState.sat = sat;
+        airoSyncSurface();
+        if (sat) {
+            // This view claims to be the earth, not the earth last June, so it asks for the month
+            // it is being looked at in. The committed June image draws in the meantime.
+            ensureSunPathSat(() => {
+                if (!airoState) return;
+                useBmngMonth(bmngNowMonth(), () => { if (airoState) airoDraw(); });
+                airoDraw();
+            });
+            useBmngMonth(bmngNowMonth(), () => { if (airoState) airoDraw(); });
+        }
+        airoDraw();
+    };
+    document.getElementById('airo-map').addEventListener('click', () => setSurface(false));
+    document.getElementById('airo-sat').addEventListener('click', () => setSurface(true));
+    airoSyncSurface();
+    document.getElementById('airo-default').addEventListener('click', () => {
+        airoState.rot = AIRO_FULLER_ROTATE.slice();
+        airoState.gview = [0, 0, 0];
+        airoState.zoom = 1;
+        airoState.pan = [0, 0];
+        airoState.tree = airoDefaultTree();
+        airoGeomCache = null;
+        airoState.spin = airoBestSpin();
+        airoSyncSpin();
+        airoDraw();
+    });
+    document.getElementById('airo-fuller').addEventListener('click', () => {
+        airoState.tree = airoDefaultTree();
+        airoState.spin = airoBestSpin();
+        airoSyncSpin();
+        airoDraw();
+    });
+    // A fan is the other honest net: keep one face still and hang everything off it in a ring,
+    // which spreads the tearing evenly instead of hiding it in the ocean.
+    document.getElementById('airo-fan').addEventListener('click', () => {
+        const S = airoSolid();
+        const tree = new Set(), seen = new Set([airoState.root]), q = [airoState.root];
+        while (q.length) {
+            const f = q.shift();
+            S.faceEdges[f].forEach(ei => {
+                const e = S.edges[ei], n = e.a === f ? e.b : e.a;
+                if (seen.has(n)) return;
+                seen.add(n); tree.add(ei); q.push(n);
+            });
+        }
+        airoState.tree = airoUnoverlap(airoRepairTree(tree));
+        airoDraw();
+    });
+    airoBindGlobe();
+}
+
+function airoSyncSpin() {
+    const el = document.getElementById('airo-spin'), o = document.getElementById('airo-spin-out');
+    const v = Math.round(((airoState.spin % 360) + 540) % 360 - 180);
+    if (el) el.value = v;
+    if (o) o.textContent = v + '°';
+}
+
+function airoSyncSolidNote() {
+    const el = document.getElementById('airo-solid-note');
+    if (el) el.textContent = (AIRO_SOLIDS[airoState.solid] || {}).note || '';
+}
+
+function airoSyncSurface() {
+    const m = document.getElementById('airo-map'), s = document.getElementById('airo-sat');
+    if (m) m.classList.toggle('active', !airoState.sat);
+    if (s) s.classList.toggle('active', !!airoState.sat);
+}
+
 // ==================== PROJECTION LAB ====================
 // Every projection is a lie about a sphere, and each one chooses which lie to tell: Mercator
 // keeps angles and wrecks areas, the equal-area family keeps areas and wrecks shapes, and the
@@ -16978,28 +21880,152 @@ function framingExport() {
 const LAB_TISSOT_RADIUS = 4;      // degrees of arc
 const LAB_TISSOT_STEP = 30;       // degrees between them
 
+// Six of these need d3-geo-projection (and, for the butterfly, d3-geo-polygon), which are
+// loaded on demand rather than on every page load — nothing outside this one mode wants them.
+const LAB_EXTRA_LIBS = [
+    'https://cdn.jsdelivr.net/npm/d3-geo-projection@4',
+    'https://cdn.jsdelivr.net/npm/d3-geo-polygon@1'
+];
+let labLibsState = 'idle';   // idle | loading | ready | failed
+
+function withLabLibs(fn) {
+    if (labLibsState === 'ready' || labLibsState === 'failed') { fn(); return; }
+    if (labLibsState === 'loading') {
+        const h = () => { window.removeEventListener('lab-libs', h); fn(); };
+        window.addEventListener('lab-libs', h);
+        return;
+    }
+    labLibsState = 'loading';
+    const load = src => new Promise((ok, no) => {
+        const s = document.createElement('script');
+        s.src = src; s.onload = ok; s.onerror = no;
+        document.head.appendChild(s);
+    });
+    // Sequential: d3-geo-polygon builds on d3-geo-projection.
+    load(LAB_EXTRA_LIBS[0]).then(() => load(LAB_EXTRA_LIBS[1]))
+        .then(() => { labLibsState = 'ready'; })
+        .catch(() => { labLibsState = 'failed'; })
+        .then(() => { window.dispatchEvent(new Event('lab-libs')); fn(); });
+}
+
+// The Spilhaus orientation, found by SEARCH rather than taken from a paper. See the note in
+// CLAUDE.md: d3 ships no Adams World in a Square II, which is what Spilhaus actually used, so
+// this is an oblique Peirce quincuncial turned until as much of the cut as possible falls on
+// land. Measured over a 2° grid, 67% of the tear runs over land against 12.5% for the upright
+// Peirce and 42.9% for the best of the rotations in circulation.
+const LAB_SPILHAUS_ROTATE = [-174, 26, 2];
+
+// Each entry carries a verbatim sentence from its Wikipedia article and a link to it. A
+// projection is a claim about what can be preserved and what must be given up, and the
+// encyclopaedia says that in one sentence better than a caption invented here would.
 const LAB_PROJECTIONS = [
-    { key: 'mercator',    label: 'Mercator',              make: () => d3.geoMercator(),            kind: 'conformal' },
-    { key: 'equirect',    label: 'Equirectangular',       make: () => d3.geoEquirectangular(),     kind: 'neither' },
-    { key: 'equalEarth',  label: 'Equal Earth',           make: () => d3.geoEqualEarth(),          kind: 'equalArea' },
-    { key: 'natural',     label: 'Natural Earth',         make: () => d3.geoNaturalEarth1(),       kind: 'neither' },
-    { key: 'ortho',       label: 'Orthographic',          make: () => d3.geoOrthographic().clipAngle(90), kind: 'neither' },
-    { key: 'azEqualArea', label: 'Azimuthal equal-area',  make: () => d3.geoAzimuthalEqualArea(),  kind: 'equalArea' },
-    { key: 'azEquidist',  label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant().clipAngle(170), kind: 'neither' },
-    { key: 'stereo',      label: 'Stereographic',         make: () => d3.geoStereographic().clipAngle(150), kind: 'conformal' },
-    { key: 'gnomonic',    label: 'Gnomonic',              make: () => d3.geoGnomonic().clipAngle(60), kind: 'neither' },
-    { key: 'transverse',  label: 'Transverse Mercator',   make: () => d3.geoTransverseMercator(),  kind: 'conformal' },
-    { key: 'conicEqArea', label: 'Conic equal-area',      make: () => d3.geoConicEqualArea(),      kind: 'equalArea', conic: true },
-    { key: 'conicConf',   label: 'Conic conformal',       make: () => d3.geoConicConformal().clipAngle(150), kind: 'conformal', conic: true },
-    { key: 'conicEqDist', label: 'Conic equidistant',     make: () => d3.geoConicEquidistant(),    kind: 'neither', conic: true },
-    { key: 'albers',      label: 'Albers',                make: () => d3.geoAlbers(),              kind: 'equalArea', conic: true }
+    { key: 'mercator', label: 'Mercator', make: () => d3.geoMercator(), kind: 'conformal',
+      wiki: 'Mercator_projection',
+      quote: 'When applied to world maps, the Mercator projection inflates the size of lands the farther they are from the equator.' },
+    { key: 'equirect', label: 'Equirectangular', make: () => d3.geoEquirectangular(), kind: 'neither',
+      wiki: 'Equirectangular_projection',
+      quote: 'a simple map projection attributed to Marinus of Tyre who, Ptolemy claims, invented the projection about AD 100.' },
+    { key: 'equalEarth', label: 'Equal Earth', make: () => d3.geoEqualEarth(), kind: 'equalArea',
+      wiki: 'Equal_Earth_projection',
+      quote: 'It is inspired by the widely used Robinson projection, but unlike the Robinson projection, it retains the relative size of areas.' },
+    { key: 'natural', label: 'Natural Earth', make: () => d3.geoNaturalEarth1(), kind: 'neither',
+      wiki: 'Natural_Earth_projection',
+      quote: 'It is neither conformal nor equal-area, but a compromise between the two.' },
+    { key: 'winkel3', label: 'Winkel tripel', kind: 'neither', lib: true,
+      make: () => d3.geoWinkel3(), wiki: 'Winkel_tripel_projection',
+      quote: 'The name tripel refers to Winkel’s goal of minimizing three kinds of distortion: area, direction, and distance.' },
+    { key: 'ortho', label: 'Orthographic', make: () => d3.geoOrthographic().clipAngle(90), kind: 'neither',
+      wiki: 'Orthographic_map_projection',
+      quote: 'It depicts a hemisphere of the globe as it appears from outer space, where the horizon is a great circle.' },
+    { key: 'azEqualArea', label: 'Azimuthal equal-area', make: () => d3.geoAzimuthalEqualArea(), kind: 'equalArea',
+      wiki: 'Lambert_azimuthal_equal-area_projection',
+      quote: 'It accurately represents area in all regions of the sphere, but it does not accurately represent angles.' },
+    { key: 'azEquidist', label: 'Azimuthal equidistant', make: () => d3.geoAzimuthalEquidistant().clipAngle(170), kind: 'neither',
+      wiki: 'Azimuthal_equidistant_projection',
+      quote: 'all points on the map are at proportionally correct distances from the center point' },
+    { key: 'stereo', label: 'Stereographic', make: () => d3.geoStereographic().clipAngle(150), kind: 'conformal',
+      wiki: 'Stereographic_map_projection',
+      quote: 'a conformal map projection whose use dates back to antiquity.' },
+    { key: 'gnomonic', label: 'Gnomonic', make: () => d3.geoGnomonic().clipAngle(60), kind: 'neither',
+      wiki: 'Gnomonic_projection',
+      quote: 'Under gnomonic projection every great circle on the sphere is projected to a straight line in the plane.' },
+    { key: 'transverse', label: 'Transverse Mercator', make: () => d3.geoTransverseMercator(), kind: 'conformal',
+      wiki: 'Transverse_Mercator_projection',
+      quote: 'the transverse Mercator delivers high accuracy in zones less than a few degrees in east-west extent.' },
+    { key: 'conicEqArea', label: 'Conic equal-area', make: () => d3.geoConicEqualArea(), kind: 'equalArea', conic: true,
+      wiki: 'Albers_projection',
+      quote: 'Although scale and shape are not preserved, distortion is minimal between the standard parallels.' },
+    { key: 'conicConf', label: 'Conic conformal', make: () => d3.geoConicConformal().clipAngle(150), kind: 'conformal', conic: true,
+      wiki: 'Lambert_conformal_conic_projection',
+      quote: 'a conic map projection used for aeronautical charts, portions of the State Plane Coordinate System, and many national and regional mapping systems.' },
+    { key: 'conicEqDist', label: 'Conic equidistant', make: () => d3.geoConicEquidistant(), kind: 'neither', conic: true,
+      wiki: 'Equidistant_conic_projection',
+      quote: 'commonly used for maps of small countries as well as for larger regions such as the continental United States that are elongated east-to-west.' },
+    { key: 'albers', label: 'Albers', make: () => d3.geoAlbers(), kind: 'equalArea', conic: true,
+      wiki: 'Albers_projection',
+      quote: 'It was first described by Heinrich Christian Albers (1773-1833) in a German geography and astronomy periodical in 1805.' },
+
+    // ---- the six added, each saying something the fourteen above cannot ----
+    { key: 'peirce', label: 'Peirce quincuncial', kind: 'conformal', lib: true,
+      make: () => d3.geoPeirceQuincuncial(), wiki: 'Peirce_quincuncial_projection',
+      quote: 'Each octant projects onto an isosceles right triangle, with eight such triangles arranged into a square.',
+      note: 'Conformal EVERYWHERE bar four points, and it tiles the plane — lay copies edge to edge and the world repeats forever.' },
+    { key: 'spilhaus', label: 'Spilhaus (ocean)', kind: 'conformal', lib: true,
+      make: () => d3.geoPeirceQuincuncial().rotate(LAB_SPILHAUS_ROTATE),
+      wiki: 'Athelstan_Spilhaus',
+      quote: 'Spilhaus is credited with proposing the establishment of Sea Grant Colleges',
+      note: 'The world cut along the LAND instead of the sea, so the ocean reads as the one body of ' +
+            'water it actually is. Not the true Spilhaus: that is an Adams World in a Square II, which ' +
+            'd3 does not ship, so this is an oblique Peirce turned until as much of the cut as possible ' +
+            'falls on land — 67% of it, measured, against 12.5% upright.' },
+    { key: 'goode', label: 'Goode homolosine', kind: 'equalArea', lib: true,
+      make: () => d3.geoInterruptedHomolosine(), wiki: 'Goode_homolosine_projection',
+      quote: 'Normally it is presented with multiple interruptions, most commonly of the major oceans.',
+      interrupted: true,
+      note: 'The map that gives up on being one piece: cut the ocean into lobes and the land keeps both its area and its shape.' },
+    { key: 'vanDerGrinten', label: 'Van der Grinten', kind: 'neither', lib: true,
+      make: () => d3.geoVanDerGrinten(), wiki: 'Van_der_Grinten_projection',
+      quote: 'Van der Grinten projects the entire Earth into a circle.',
+      note: 'National Geographic’s world map from 1922 to 1988 — a compromise drawn with compass and straightedge rather than derived.' },
+    { key: 'retro', label: 'Hammer retroazimuthal', kind: 'neither', lib: true,
+      make: () => d3.geoHammerRetroazimuthal(), wiki: 'Hammer_retroazimuthal_projection',
+      quote: 'azimuths (directions) are correct from any point to the designated center point.',
+      note: 'A third kind of true, after angle and area: from anywhere on this map, the direction ' +
+            'HOME is the bearing you read off it. The two hemispheres overlap, which is the price.' },
+    { key: 'waterman', label: 'Waterman butterfly', kind: 'neither', lib: true,
+      make: () => d3.geoPolyhedralWaterman(), wiki: 'Waterman_butterfly_projection',
+      quote: 'The arrangement is an unfolding of a polyhedral globe with the shape of a truncated octahedron',
+      note: 'Fold the earth onto a solid, then unfold the solid flat. Every cut is a choice about what to keep whole.' }
 ];
 
-const LAB_KIND_WORDS = {
-    conformal: 'Conformal — angles are true everywhere, so every indicatrix is a CIRCLE. What it pays is area: the circles grow without limit toward the edges.',
-    equalArea: 'Equal-area — every indicatrix covers the same AREA wherever it sits. What it pays is shape: they squash into ellipses.',
-    neither:   'Neither conformal nor equal-area — the indicatrices change both shape and size. A compromise like this is drawn to look right rather than to be right about any one thing.'
-};
+// BY FAMILY, because the family is what the picture is. Twenty-one buttons in one undifferentiated
+// grid is a list to be searched; grouped, the shapes on screen and the headings above them say the
+// same thing, and switching within a group is a comparison rather than a jump. Membership is the
+// standard taxonomy bar one deliberate placement: Goode homolosine is pseudocylindrical by
+// construction and INTERRUPTED by the only property anybody picks it for, so it sits with the cuts.
+const LAB_GROUPS = [
+    { label: 'Cylindrical', keys: ['mercator', 'equirect', 'transverse'] },
+    { label: 'Pseudocylindrical', keys: ['equalEarth', 'natural'] },
+    { label: 'Azimuthal', keys: ['ortho', 'azEqualArea', 'azEquidist', 'stereo', 'gnomonic'] },
+    { label: 'Conic', keys: ['conicEqArea', 'conicConf', 'conicEqDist', 'albers'] },
+    { label: 'Compromise', keys: ['winkel3', 'vanDerGrinten', 'retro'] },
+    { label: 'Interrupted & polyhedral', keys: ['goode', 'peirce', 'spilhaus', 'waterman'] }
+];
+
+// The three rotation sliders and the two conic ones, as one table: the label, where the value
+// lives, and what it resets to. A right-drag writes to the first two unless they are locked.
+const LAB_SLIDERS = [
+    { id: 'lam', label: 'Centre on longitude', min: -180, max: 180, def: 0,
+      get: () => -labState.rotate[0], set: v => { labState.rotate[0] = -v; } },
+    { id: 'phi', label: 'Centre on latitude', min: -90, max: 90, def: 0,
+      get: () => -labState.rotate[1], set: v => { labState.rotate[1] = -v; } },
+    { id: 'gam', label: 'Tilt', min: -180, max: 180, def: 0,
+      get: () => labState.rotate[2], set: v => { labState.rotate[2] = v; } },
+    { id: 'p1', label: 'Standard parallel 1', min: -89, max: 89, def: 30, conic: true,
+      get: () => labState.parallels[0], set: v => { labState.parallels[0] = v; } },
+    { id: 'p2', label: 'Standard parallel 2', min: -89, max: 89, def: 60, conic: true,
+      get: () => labState.parallels[1], set: v => { labState.parallels[1] = v; } }
+];
 
 let labState = null;
 
@@ -17012,12 +22038,29 @@ function renderProjectionLab() {
     const restart = document.getElementById('restart-btn');
     if (restart) { restart.style.display = 'inline-block'; restart.textContent = 'Exit'; }
     document.getElementById('question-text').innerHTML =
-        '<strong>Projections.</strong> Drag the map to turn the world under the projection.';
+        '<strong>Projections.</strong> Drag to turn the world east–west; right-drag to move the centre.';
     labState = { proj: 'mercator', rotate: [0, 0, 0], parallels: [30, 60],
-                 tissot: true, graticule: true };
+                 tissot: true, graticule: true, locks: {} };
     buildLabPanel();
     labBindMap();
     labDraw();
+    // Six of the twenty come from d3-geo-projection; fetch it in the background and repaint
+    // once it is in, so the first fourteen are usable immediately.
+    withLabLibs(() => { if (labState) { labSyncLibNotice(); labDraw(); } });
+}
+
+// Grey out what cannot be drawn yet, and say why if the fetch failed outright.
+function labSyncLibNotice() {
+    const box = document.getElementById('lab-panel');
+    if (!box) return;
+    box.querySelectorAll('[data-proj]').forEach(b => {
+        const spec = LAB_PROJECTIONS.find(p => p.key === b.dataset.proj);
+        b.classList.toggle('pending', !!(spec && spec.lib && labLibsState !== 'ready'));
+    });
+    const note = document.getElementById('lab-lib-note');
+    if (note) note.textContent = labLibsState === 'failed'
+        ? 'Six of these need d3-geo-projection, which could not be fetched — they will show a Mercator instead.'
+        : labLibsState === 'ready' ? '' : 'Fetching six more projections…';
 }
 
 function labSpec() { return LAB_PROJECTIONS.find(p => p.key === labState.proj) || LAB_PROJECTIONS[0]; }
@@ -17027,87 +22070,220 @@ function labSpec() { return LAB_PROJECTIONS.find(p => p.key === labState.proj) |
 // of, and switching between them by setting properties leaves the old ones in force.
 function labProjection() {
     const spec = labSpec();
+    // A projection whose library has not landed (or failed to) falls back to the plain Mercator
+    // rather than throwing — the panel says which one is showing either way.
+    if (spec.lib && labLibsState !== 'ready') return d3.geoMercator()
+        .fitExtent([[10, 10], [(width || 800) - 10, (height || 600) - 10]], { type: 'Sphere' });
     const p = spec.make();
     if (p.rotate) p.rotate(labState.rotate);
     if (spec.conic && p.parallels) p.parallels(labState.parallels);
     const w = width || 800, h = height || 600, m = 10;
-    try { p.fitExtent([[m, m], [w - m, h - m]], { type: 'Sphere' }); }
+    // A conic conformal runs to INFINITY at the pole opposite its apex, so the whole sphere is not
+    // something it can be fitted to: `fitExtent` came back with the world squashed into a 780x204
+    // strip and paths running 2,800 units wide across a 780 board. It is CLIPPED to the band it is
+    // honest over — clipped rather than merely fitted, because fitting alone leaves the geometry
+    // beyond the band still drawn, as a smear along whichever edge of the board it ran off.
+    //
+    // With the clip installed BEFORE the fit, the sphere's own outline becomes the band's outline
+    // and one `fitExtent` to the Sphere does the right thing. `labFitBand` is the fallback for
+    // when d3-geo-polygon has not landed: a grid of POINTS, whose bounds need no winding, no
+    // clipping and no opinion about what is inside.
+    const bandClip = labBandClip(spec);
+    if (bandClip) p.preclip(bandClip);
+    const band = bandClip ? null : labFitBand(spec, p);
+    try { p.fitExtent([[m, m], [w - m, h - m]], band || { type: 'Sphere' }); }
     catch (_) { /* leave the default framing rather than lose the projection */ }
+    // And nothing may paint outside the board, whatever it does out there. This is in PROJECTED
+    // space and applied after the fit, since d3's own `fit` nulls the clip extent while measuring
+    // and puts it back afterwards.
+    if (p.clipExtent) { try { p.clipExtent([[0, 0], [w, h]]); } catch (_) { /* fine */ } }
     return p;
+}
+
+// How far a conic conformal may be trusted. rho(phi)/rho(0) = tan(pi/4 + phi/2)^-n, so the
+// latitude at which the map is K times its own equatorial radius is one inversion of that — and
+// the sign of n says which pole it is running away to, so the same expression covers a cone
+// pitched over either hemisphere.
+const LAB_CONIC_MAX_K = 3;
+function labConicCutLat(parallels) {
+    const y0 = parallels[0] * DEG, y1 = parallels[1] * DEG;
+    const t = φ => Math.tan(Math.PI / 4 + φ / 2);
+    if (Math.abs(y0 - y1) < 1e-6) return null;
+    const n = Math.log(Math.cos(y0) / Math.cos(y1)) / Math.log(t(y1) / t(y0));
+    if (!isFinite(n) || Math.abs(n) < 1e-6) return null;
+    const φ = 2 * (Math.atan(Math.pow(LAB_CONIC_MAX_K, -1 / n)) - Math.PI / 4) / DEG;
+    return Math.max(-89, Math.min(89, φ));
+}
+
+function labConicBand(spec) {
+    if (spec.key !== 'conicConf') return null;
+    const cut = labConicCutLat(labState.parallels);
+    if (cut == null) return null;
+    return cut < 0 ? [cut, 89.5] : [-89.5, cut];
+}
+
+function labFitBand(spec, p) {
+    const b = labConicBand(spec);
+    if (!b) return null;
+    const pts = [];
+    for (let lon = -180; lon <= 180; lon += 10)
+        for (let lat = b[0]; lat <= b[1]; lat += 5) pts.push([lon, lat]);
+    return { type: 'MultiPoint', coordinates: pts };
+}
+
+// A lon/lat rectangle as a spherical polygon whose INSIDE is the rectangle.
+//
+// Two things it has to get right, and both were wrong first.
+//
+// The corners are held a hundredth of a degree off the poles: a ring's top edge at exactly ±90 is
+// a run of identical points on the sphere, which is a degenerate ring and clips to nothing.
+//
+// And the WINDING is settled by measurement rather than by reasoning about it. Walking the box
+// anticlockwise in the (lon, lat) plane looks like it should be anticlockwise on the sphere, and
+// it is not: measured, the northern lobe's ring came back with an area of 10.12 steradians out of
+// 4π — the whole earth except the lobe — and `geoContains` put the middle of the box outside it
+// and the far side of the world inside. A backwards ring is not a clip that fails, it is a clip
+// that keeps exactly the wrong half, so the map looked untouched and the smear stayed.
+//
+// Testing the box's own centre is exact and needs no convention: it also holds for a band covering
+// more than half the sphere, where any area threshold would get it backwards.
+const LAB_POLE_EPS = 0.01;
+function labLonLatRing(w, e, s, n) {
+    const ss = Math.max(-90 + LAB_POLE_EPS, s), nn = Math.min(90 - LAB_POLE_EPS, n);
+    const ring = [], step = 2;
+    for (let x = w; x < e; x += step) ring.push([x, ss]);
+    for (let y = ss; y < nn; y += step) ring.push([e, y]);
+    for (let x = e; x > w; x -= step) ring.push([x, nn]);
+    for (let y = nn; y > ss; y -= step) ring.push([w, y]);
+    ring.push([w, ss]);
+    const poly = { type: 'Polygon', coordinates: [ring] };
+    const mid = [(w + e) / 2, (ss + nn) / 2];
+    if (!d3.geoContains(poly, mid)) poly.coordinates[0] = ring.slice().reverse();
+    return poly;
+}
+
+function labBandClip(spec) {
+    const b = labConicBand(spec);
+    if (!b || typeof d3.geoClipPolygon !== 'function') return null;
+    try { return d3.geoClipPolygon(labLonLatRing(-180, 180, b[0], b[1])); }
+    catch (_) { return null; }
+}
+
+// The lobes of an interrupted projection, as spherical polygons to clip each pass to.
+//
+// d3-geo-projection's `interrupt` does the interruption inside the RAW FORWARD — each lobe is
+// projected about its own central meridian — and installs no clip at all: measured,
+// `geoInterruptedHomolosine().preclip()` is the plain `geoClipAntimeridian`. So the outline comes
+// out lobed for free while anything crossing a boundary is drawn as a straight line from one lobe
+// to the next, which is the smear: Antarctica and the Arctic as bands right across the map.
+//
+// The cure is to give it the clip it never had. Each lobe is a lon/lat rectangle — `lobes()`
+// hands back `[[west, 0], [centre, ±90], [east, 0]]` per lobe per hemisphere — and the world is
+// drawn once per lobe with `geoClipPolygon` set to that rectangle. The clip runs AFTER the
+// rotation, and so do the lobes, so the rectangle is passed in raw: turning the world moves the
+// geography through interruptions that stay where they are on the paper, which is what an
+// interrupted map means.
+function labLobeClips(p) {
+    if (!p || typeof p.lobes !== 'function' || typeof d3.geoClipPolygon !== 'function') return null;
+    let lobes;
+    try { lobes = p.lobes(); } catch (_) { return null; }
+    if (!lobes || !lobes.length) return null;
+    const out = [];
+    lobes.forEach(hemi => hemi.forEach(lobe => {
+        const w = lobe[0][0], e = lobe[2][0], pole = lobe[1][1];
+        try { out.push(d3.geoClipPolygon(labLonLatRing(w, e, Math.min(0, pole), Math.max(0, pole)))); }
+        catch (_) { /* a lobe that will not clip is simply not one of the passes */ }
+    }));
+    return out.length ? out : null;
 }
 
 function labDraw() {
     if (!labState || !countriesGroup || !svg) return;
     projection = labProjection();
     path = d3.geoPath().projection(projection);
+    // One pass per lobe on an interrupted projection, one pass otherwise. The passes are the OUTER
+    // loop and the features the inner one, because swapping the preclip rebuilds the projection's
+    // stream and doing that per feature would pay for it a couple of hundred times over.
+    const clips = labLobeClips(projection);
+    const base = projection.preclip ? projection.preclip() : null;
+    const one = o => { try { return path(o) || ''; } catch (_) { return ''; } };
+    const dOf = objects => {
+        const out = objects.map(() => '');
+        if (!clips) { objects.forEach((o, i) => { out[i] = one(o); }); return out; }
+        clips.forEach(c => {
+            projection.preclip(c);
+            objects.forEach((o, i) => { out[i] += one(o); });
+        });
+        if (base) projection.preclip(base);
+        return out;
+    };
+
     countriesGroup.selectAll('*').remove();
     svg.selectAll('g.lab-layer').remove();
     const host = countriesGroup.node() && countriesGroup.node().parentNode
         ? d3.select(countriesGroup.node().parentNode) : svg;
     // Under the land: the sphere and the graticule are the frame the countries are drawn on.
     const under = host.insert('g', () => countriesGroup.node()).attr('class', 'lab-layer');
-    const sphere = { type: 'Sphere' };
     // The world does not fill a rectangle on half of these, so without the sphere's own outline
     // there is no telling where the map stops and the page starts.
-    under.append('path').attr('class', 'lab-sphere').attr('d', path(sphere) || '');
+    const frame = dOf(labState.graticule
+        ? [{ type: 'Sphere' }, d3.geoGraticule10()]
+        : [{ type: 'Sphere' }]);
+    // AND THEN CLIP EVERYTHING TO IT. The sphere's outline is the one thing that comes out of an
+    // interrupted projection correctly whatever else does — it is the lobes themselves — so it is
+    // also the exact statement of where the map is allowed to have ink. A ring that d3's spherical
+    // clip could not cut (Antarctica encircles the pole, which leaves the clip's own boundary
+    // running through the middle of the subject) is drawn straight from one lobe to the next, and
+    // that straight line lies in the GAP between them, which is precisely what this removes. The
+    // browser applies it at screen resolution, so the lobe edges stay as clean as the outline.
+    const cid = 'lab-world-clip';
+    let defs = svg.select('defs');
+    if (defs.empty()) defs = svg.append('defs');
+    defs.select('#' + cid).remove();
+    defs.append('clipPath').attr('id', cid).append('path').attr('d', frame[0]);
+    under.attr('clip-path', `url(#${cid})`);
+    countriesGroup.attr('clip-path', `url(#${cid})`);
+    under.append('path').attr('class', 'lab-sphere').attr('d', frame[0]);
     if (labState.graticule)
-        under.append('path').attr('class', 'lab-grat').attr('d', path(d3.geoGraticule10()) || '');
+        under.append('path').attr('class', 'lab-grat').attr('d', frame[1]);
+    const feats = gameState.countries || [];
+    const land = dOf(feats);
     countriesGroup.selectAll('path.country')
-        .data(gameState.countries || []).enter().append('path')
-        .attr('class', 'country lab-land').attr('d', path);
+        .data(feats).enter().append('path')
+        .attr('class', 'country lab-land').attr('d', (d, i) => land[i]);
     // The indicatrices go ON TOP of the land: they are the instrument, and an instrument you
     // have to look underneath is no use.
     if (labState.tissot) {
-        const over = host.append('g').attr('class', 'lab-layer lab-tissot');
+        const over = host.append('g').attr('class', 'lab-layer lab-tissot')
+            .attr('clip-path', `url(#${cid})`);
         const circle = d3.geoCircle().radius(LAB_TISSOT_RADIUS).precision(2);
+        const cells = [];
         for (let lat = -90 + LAB_TISSOT_STEP; lat <= 90 - LAB_TISSOT_STEP + 0.001; lat += LAB_TISSOT_STEP)
-            for (let lon = -180; lon < 180; lon += LAB_TISSOT_STEP) {
-                const d = path(circle.center([lon, lat])());
-                if (d) over.append('path').attr('class', 'lab-tissot-cell').attr('d', d);
-            }
+            for (let lon = -180; lon < 180; lon += LAB_TISSOT_STEP)
+                cells.push(circle.center([lon, lat])());
+        dOf(cells).forEach(d => {
+            if (d) over.append('path').attr('class', 'lab-tissot-cell').attr('d', d);
+        });
     }
     labReadout();
 }
 
-// What the projection is doing to one country, as a number. The indicatrices show the pattern;
-// this says how bad it gets, in the terms the argument is always had in — Greenland against
-// Africa. Measured on the DRAWN path: the projected polygon's own area in board units against
-// that country's true share of the sphere. So it is a fact about the picture on screen rather
-// than a formula about the projection, and it is wrong in exactly the ways the picture is.
-function labInflation(name) {
-    const f = sbFeature(name);
-    if (!f || !path) return null;
-    const drawn = Math.abs(path.area(f));
-    const whole = Math.abs(path.area({ type: 'Sphere' }));
-    const trueShare = d3.geoArea(f) / (4 * Math.PI);
-    if (!drawn || !whole || !trueShare) return null;
-    return (drawn / whole) / trueShare;
-}
-
-const LAB_MEASURED = ['Greenland', 'Australia', 'India', 'Democratic Republic of the Congo'];
-
+// The readout is the QUOTE and nothing else. The inflation table went with the four paragraphs
+// that used to sit under it: "Greenland 5.22x too big" is the one fact about projections everybody
+// already arrives knowing, and the indicatrices above it say the same thing continuously, over the
+// whole map, without asking anybody to trust a number computed off a clipped path. `labInflation`
+// and `LAB_MEASURED` are gone with it, and so is the interrupted-projection caveat, which existed
+// only to explain a figure the panel no longer prints.
 function labReadout() {
     const el = document.getElementById('lab-readout');
     if (!el) return;
     const spec = labSpec();
-    const rows = LAB_MEASURED.map(n => ({ n, k: labInflation(n) })).filter(x => x.k && isFinite(x.k));
-    el.innerHTML =
-        '<div class="lab-kind">' + LAB_KIND_WORDS[spec.kind] + '</div>' +
-        (rows.length
-          ? '<div class="lab-rows">' + rows.map(x =>
-                '<div class="lab-row"><span>' + displayLabelForName(x.n) + '</span>' +
-                '<span class="lab-k' + (x.k > 1.6 || x.k < 0.65 ? ' bad' : '') + '">' +
-                (x.k >= 1 ? x.k.toFixed(2) + '× too big' : (1 / x.k).toFixed(2) + '× too small') +
-                '</span></div>').join('') +
-            '</div><div class="lab-note">Share of the picture against share of the earth — ' +
-            'which is exactly what "Greenland looks as big as Africa" means. On an equal-area ' +
-            'projection every one reads <strong>1.00×</strong>, and that is the only claim any ' +
-            'projection can make about every country at once.</div>' +
-            '<div class="lab-note">Two ways to read low that are not the projection being kind: ' +
-            'a country partly outside the clip is only partly there, and one near the centre of ' +
-            'a projection with a wildly stretched rim loses share because the RIM has eaten the ' +
-            'picture.</div>'
-          : '');
+    el.innerHTML = spec.quote
+        ? '<blockquote class="lab-quote">“' + spec.quote + '”' +
+          '<cite><a href="https://en.wikipedia.org/wiki/' + spec.wiki +
+          '" target="_blank" rel="noopener">Wikipedia: ' +
+          spec.wiki.replace(/_/g, ' ') + '</a></cite></blockquote>'
+        : '';
 }
 
 function buildLabPanel() {
@@ -17118,29 +22294,38 @@ function buildLabPanel() {
     box = document.createElement('div');
     box.id = 'lab-panel';
     box.className = 'lab-panel';
+    // A slider, its lock and its own reset on one line. The lock holds the value against a
+    // right-drag, which writes the same numbers; without it the drag is a way of accidentally
+    // throwing away a standard parallel you had chosen on purpose.
+    // Source order IS the grid order: the four things on the top line first, then the track, which
+    // spans all four beneath them. Writing the range second — where it reads naturally — makes it
+    // claim a row of its own between the label and its value, which is how the label ended up
+    // alone on one line and its number alone on the next.
+    const sliderHtml = s =>
+        '<div class="lab-slider"><span class="lab-slider-lab">' + s.label + '</span>' +
+        '<output id="lab-' + s.id + '-out">' + s.def + '°</output>' +
+        '<button type="button" class="lab-mini lab-reset-one" id="lab-reset-' + s.id +
+        '" title="Back to ' + s.def + '°" disabled>⟲</button>' +
+        '<label class="lab-lock" title="Hold this against a right-drag">' +
+        '<input type="checkbox" id="lab-lock-' + s.id + '"><span>lock</span></label>' +
+        '<input type="range" id="lab-' + s.id + '" min="' + s.min + '" max="' + s.max +
+        '" step="1" value="' + s.def + '"></div>';
+
     box.innerHTML =
-        '<div class="lab-grid">' +
-        LAB_PROJECTIONS.map(p =>
-            '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
-            '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
-        '</div>' +
+        LAB_GROUPS.map(grp =>
+            '<div class="lab-group-lab">' + grp.label + '</div><div class="lab-grid">' +
+            grp.keys.map(k => LAB_PROJECTIONS.find(p => p.key === k)).filter(Boolean).map(p =>
+                '<button type="button" class="lab-proj' + (p.key === labState.proj ? ' active' : '') +
+                '" data-proj="' + p.key + '">' + p.label + '</button>').join('') +
+            '</div>').join('') +
+        '<div id="lab-lib-note" class="lab-note lab-lib-note"></div>' +
         '<div id="lab-readout" class="lab-readout"></div>' +
-        '<label class="lab-slider"><span>Centre on longitude</span>' +
-        '<input type="range" id="lab-lam" min="-180" max="180" step="1" value="0">' +
-        '<output id="lab-lam-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Centre on latitude</span>' +
-        '<input type="range" id="lab-phi" min="-90" max="90" step="1" value="0">' +
-        '<output id="lab-phi-out">0°</output></label>' +
-        '<label class="lab-slider"><span>Tilt</span>' +
-        '<input type="range" id="lab-gam" min="-180" max="180" step="1" value="0">' +
-        '<output id="lab-gam-out">0°</output></label>' +
+        '<div class="lab-controls-head"><span>Orientation</span>' +
+        '<button type="button" class="lab-mini" id="lab-reset-all" ' +
+        'title="Everything back to where it started" disabled>Reset all</button></div>' +
+        LAB_SLIDERS.filter(s => !s.conic).map(sliderHtml).join('') +
         '<div id="lab-conic" class="lab-conic">' +
-        '<label class="lab-slider"><span>Standard parallel 1</span>' +
-        '<input type="range" id="lab-p1" min="-89" max="89" step="1" value="30">' +
-        '<output id="lab-p1-out">30°</output></label>' +
-        '<label class="lab-slider"><span>Standard parallel 2</span>' +
-        '<input type="range" id="lab-p2" min="-89" max="89" step="1" value="60">' +
-        '<output id="lab-p2-out">60°</output></label>' +
+        LAB_SLIDERS.filter(s => s.conic).map(sliderHtml).join('') +
         '<div class="lab-note">A cone wrapped round the globe touches it along these two ' +
         'circles, so the map is true along them and drifts either side. Bring them together and ' +
         'the cone becomes a tangent one; move them apart and the error is spread wider and ' +
@@ -17159,21 +22344,17 @@ function buildLabPanel() {
         labSyncConic();
         labDraw();
     }));
-    const wire = (id, out, set) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', () => {
-            set(+el.value);
-            const o = document.getElementById(out);
-            if (o) o.textContent = el.value + '°';
-            labDraw();
-        });
-    };
-    wire('lab-lam', 'lab-lam-out', v => { labState.rotate[0] = -v; });
-    wire('lab-phi', 'lab-phi-out', v => { labState.rotate[1] = -v; });
-    wire('lab-gam', 'lab-gam-out', v => { labState.rotate[2] = v; });
-    wire('lab-p1', 'lab-p1-out', v => { labState.parallels[0] = v; });
-    wire('lab-p2', 'lab-p2-out', v => { labState.parallels[1] = v; });
+    labSyncLibNotice();
+    LAB_SLIDERS.forEach(s => {
+        const el = document.getElementById('lab-' + s.id);
+        if (el) el.addEventListener('input', () => { s.set(+el.value); labSyncSliders(); labDraw(); });
+        const r = document.getElementById('lab-reset-' + s.id);
+        if (r) r.addEventListener('click', () => labResetOne(s));
+        const lk = document.getElementById('lab-lock-' + s.id);
+        if (lk) lk.addEventListener('change', () => { labState.locks[s.id] = lk.checked; });
+    });
+    const all = document.getElementById('lab-reset-all');
+    if (all) all.addEventListener('click', labResetAll);
     const chk = (id, set) => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => { set(el.checked); labDraw(); });
@@ -17181,6 +22362,7 @@ function buildLabPanel() {
     chk('lab-tissot', v => { labState.tissot = v; });
     chk('lab-grat', v => { labState.graticule = v; });
     labSyncConic();
+    labSyncSliders();
 }
 
 function labSyncConic() {
@@ -17188,39 +22370,82 @@ function labSyncConic() {
     if (el) el.style.display = labSpec().conic ? '' : 'none';
 }
 
-// Dragging turns the WORLD, not the picture: it moves the rotation, so what changes is which
-// part of the earth the projection is being unkind to. That is the whole lesson here, and it is
-// invisible if the map merely slides.
+// TWO GESTURES, and NEITHER of them moves the picture. The frame this map is fitted into is fixed
+// — it is the board, and every projection here is fitted to fill it — so a drag that translated
+// the drawing would only take the map off the edge of the thing it had just been fitted to.
+//
+// LEFT turns the world EAST–WEST under it: one number, `rotate[0]`, so the map wraps through the
+// projection and the outline stays exactly where the fit put it.
+//
+// RIGHT moves the projection's FOCUS — both the centre longitude and the centre latitude — which
+// is the lesson this mode exists for: what changes is which part of the earth is being distorted,
+// and that is invisible if the picture merely slides.
+//
+// Both write the same numbers the sliders do, so a LOCKED slider holds against the drag as well.
+// That is what makes the lock worth having: otherwise a drag is a way of quietly undoing a centre
+// longitude or a standard parallel that was chosen on purpose.
 function labBindMap() {
     if (!svg) return;
     let from = null;
+    svg.on('contextmenu.lab', ev => ev.preventDefault());
     svg.on('pointerdown.lab', function (event) {
-        from = { p: d3.pointer(event, this), r: labState.rotate.slice() };
+        from = { p: d3.pointer(event, this), r: labState.rotate.slice(), btn: event.button };
+        try { this.setPointerCapture(event.pointerId); } catch (_) { /* not fatal */ }
     });
     svg.on('pointermove.lab', function (event) {
         if (!from) return;
         const p = d3.pointer(event, this);
+        const dx = p[0] - from.p[0], dy = p[1] - from.p[1];
         const k = 0.4;
-        labState.rotate = [from.r[0] + (p[0] - from.p[0]) * k,
-                           Math.max(-90, Math.min(90, from.r[1] - (p[1] - from.p[1]) * k)),
-                           from.r[2]];
+        const lam = labState.locks.lam ? labState.rotate[0] : from.r[0] + dx * k;
+        const phi = from.btn === 2 && !labState.locks.phi
+            ? Math.max(-90, Math.min(90, from.r[1] - dy * k))
+            : labState.rotate[1];
+        labState.rotate = [lam, phi, labState.rotate[2]];
         labSyncSliders();
         labDraw();
     });
     const stop = () => { from = null; };
     svg.on('pointerup.lab', stop);
+    svg.on('pointercancel.lab', stop);
     svg.on('pointerleave.lab', stop);
 }
 
 function labSyncSliders() {
-    const set = (id, out, v) => {
-        const el = document.getElementById(id), o = document.getElementById(out);
-        if (el) el.value = Math.round(v);
-        if (o) o.textContent = Math.round(v) + '°';
-    };
-    set('lab-lam', 'lab-lam-out', -labState.rotate[0]);
-    set('lab-phi', 'lab-phi-out', -labState.rotate[1]);
-    set('lab-gam', 'lab-gam-out', labState.rotate[2]);
+    LAB_SLIDERS.forEach(s => {
+        const el = document.getElementById('lab-' + s.id);
+        const o = document.getElementById('lab-' + s.id + '-out');
+        const v = Math.round(s.get());
+        if (el) el.value = v;
+        if (o) o.textContent = v + '°';
+        const r = document.getElementById('lab-reset-' + s.id);
+        if (r) r.disabled = v === s.def;
+    });
+    labSyncReset();
+}
+
+// Off-default is the state the reset is FOR, so it is the state it advertises.
+function labIsDefault() {
+    if (!labState) return true;
+    return LAB_SLIDERS.every(s => Math.round(s.get()) === s.def);
+}
+
+function labSyncReset() {
+    const b = document.getElementById('lab-reset-all');
+    if (b) b.disabled = labIsDefault();
+}
+
+function labResetOne(s) {
+    s.set(s.def);
+    labSyncSliders();
+    labDraw();
+}
+
+function labResetAll() {
+    labState.rotate = [0, 0, 0];
+    labState.parallels = [30, 60];
+    labSyncSliders();
+    labDraw();
 }
 
 function removeProjectionLab() {
@@ -17230,7 +22455,9 @@ function removeProjectionLab() {
         svg.on('pointerdown.lab', null);
         svg.on('pointermove.lab', null);
         svg.on('pointerup.lab', null);
+        svg.on('pointercancel.lab', null);
         svg.on('pointerleave.lab', null);
+        svg.on('contextmenu.lab', null);
         svg.selectAll('g.lab-layer').remove();
     }
     labState = null;
@@ -18219,8 +23446,17 @@ function sbSvgColourNodes(doc) {
     return out;
 }
 
-// One flag's SVG, parsed, with the network and the obvious duds handled once.
+// One flag's SVG, parsed, with the network handled once.
+//
+// EVERY flag that parses is returned. The size cap that used to live here — 40 kB, on the grounds
+// that a big coat of arms is slow and recolours badly — was a QUIZ concern being enforced at the
+// fetch, and it fell hardest on exactly the flags the workshop exists for: a third of the world's
+// flags carry arms, and arms are what makes a file big. So Mexico, Ecuador, Croatia, Serbia,
+// Portugal and their like previewed perfectly in the picker (an `<img>` needs no parse) and then
+// reported that they could not be read. The judgement moves to `sbFlagSimple`, which the quiz
+// consults and the workshop does not.
 const sbFlagDocCache = new Map();
+const SB_FLAG_SIMPLE_MAX = 40000;
 async function sbFlagDoc(code) {
     if (sbFlagDocCache.has(code)) return sbFlagDocCache.get(code);
     let out = null;
@@ -18228,17 +23464,27 @@ async function sbFlagDoc(code) {
         const res = await fetch(`https://flagcdn.com/${code}.svg`);
         if (res.ok) {
             const text = await res.text();
-            // Enormous files (Mexico's coat of arms is 140 kB of gradients) are slow and
-            // recolour badly; a raster embedded in an SVG cannot be recoloured at all.
-            if (text && text.length <= 40000 && !/<image/i.test(text)) {
+            if (text) {
                 const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-                if (doc && !doc.querySelector('parsererror') && doc.documentElement) out = doc;
+                if (doc && !doc.querySelector('parsererror') && doc.documentElement) {
+                    // Kept on the document rather than recomputed: serialising a 140 kB flag back
+                    // to a string to ask how big it is costs more than the fetch did.
+                    doc.__sbBytes = text.length;
+                    doc.__sbRaster = /<image/i.test(text);
+                    out = doc;
+                }
             }
         }
     } catch (_) { out = null; }
     sbFlagDocCache.set(code, out);
     return out;
 }
+
+// Suitable as a QUIZ seed: small enough to recolour quickly and cleanly, and vector throughout —
+// a raster embedded in an SVG cannot be recoloured at all, so a fake built on one would be a real
+// flag with a few stripes changed round it.
+const sbFlagSimple = doc =>
+    !!doc && !doc.__sbRaster && (doc.__sbBytes || 0) <= SB_FLAG_SIMPLE_MAX;
 
 // How much of the CLOTH each colour covers, which is the only ranking that means anything here.
 // Counting nodes instead is off by whole orders of magnitude in the one direction that matters:
@@ -18261,19 +23507,6 @@ async function sbFlagAreas(code, doc) {
         const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
         const ar = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[3] / vb[2] : 2 / 3;
         const W = SB_AREA_W, H = Math.max(8, Math.round(W * ar));
-        const url = 'data:image/svg+xml;charset=utf-8,' +
-            encodeURIComponent(new XMLSerializer().serializeToString(doc));
-        const img = await new Promise((res, rej) => {
-            const im = new Image();
-            im.onload = () => res(im);
-            im.onerror = () => rej(new Error('decode'));
-            im.src = url;
-        });
-        const cv = document.createElement('canvas');
-        cv.width = W; cv.height = H;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, W, H);
-        const data = ctx.getImageData(0, 0, W, H).data;
         // The flag's own distinct source colours: a pixel belongs to whichever of THESE it is
         // nearest, not to whichever of the twenty nominal buckets it is nearest, or a slightly
         // off navy is filed under "blue" while the flag's real blue is filed under "navy" too and
@@ -18285,23 +23518,10 @@ async function sbFlagAreas(code, doc) {
             }
         });
         if (!srcs.length) throw new Error('no colours');
-        const area = new Map();
-        let counted = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            if (data[i + 3] < 200) continue;          // transparent margin
-            const px = [data[i], data[i + 1], data[i + 2]];
-            let bk = null, bd = Infinity;
-            for (const s of srcs) {
-                const d = sbRgbDist(px, s.rgb);
-                if (d < bd) { bd = d; bk = s.key; }
-            }
-            if (bd > 40) continue;                    // an antialiased blend of two colours
-            area.set(bk, (area.get(bk) || 0) + 1);
-            counted++;
-        }
-        if (counted) {
+        const shares = tallyByColour(await rasteriseSvg(doc, W, H), srcs.map(s => s.rgb), 40);
+        if (shares) {
             out = new Map();
-            area.forEach((n, k) => out.set(k, n / counted));
+            shares.forEach((v, i) => { if (v > 0) out.set(srcs[i].key, v); });
         }
     } catch (_) { out = null; }
     sbFlagAreaCache.set(code, out);
@@ -18424,33 +23644,8 @@ async function wsScopedPalette(doc) {
         const vb = (root.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
         const ar = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[3] / vb[2] : 2 / 3;
         const W = SB_AREA_W, H = Math.max(8, Math.round(W * ar));
-        const url = 'data:image/svg+xml;charset=utf-8,' +
-            encodeURIComponent(new XMLSerializer().serializeToString(copy));
-        const img = await new Promise((res, rej) => {
-            const im = new Image();
-            im.onload = () => res(im);
-            im.onerror = () => rej(new Error('decode'));
-            im.src = url;
-        });
-        const cv = document.createElement('canvas');
-        cv.width = W; cv.height = H;
-        const ctx = cv.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, W, H);
-        const data = ctx.getImageData(0, 0, W, H).data;
-        counts = new Array(groups.length).fill(0);
-        let total = 0;
-        for (let i = 0; i < data.length; i += 4) {
-            if (data[i + 3] < 200) continue;
-            const px = [data[i], data[i + 1], data[i + 2]];
-            let bi = -1, bd = Infinity;
-            for (let g = 0; g < groups.length; g++) {
-                const d = sbRgbDist(px, probe(g));
-                if (d < bd) { bd = d; bi = g; }
-            }
-            if (bd > 20) continue;                        // an antialiased blend of two probes
-            counts[bi]++; total++;
-        }
-        if (total) counts = counts.map(c => c / total); else counts = null;
+        counts = tallyByColour(await rasteriseSvg(copy, W, H),
+                               groups.map((g, i) => probe(i)), 20);
     } catch (_) { counts = null; }
     const out = groups.map((g, i) => ({
         hex: sbHex(g.rgb), rgb: g.rgb, scope: g.scope,
@@ -18512,8 +23707,38 @@ function sbHarmonic(donor, i, wantL) {
 // Every arrangement is tried and scored on total pairwise contrast error. A palette is at most
 // six colours, so that is at most C(6,5) x 5! = 720 arrangements, which is nothing.
 const SB_MIN_APART = 60;      // two colours nearer than this merge the shapes they distinguish
-function sbMatchPalettes(base, donor) {
+
+// Three ways of deciding where a colour should go, because "best" is a question about intent and
+// the three answers are genuinely different flags.
+//
+// `contrast` weighs how well the arrangement preserves the seed's own pairwise separations — the
+// relationships that ARE the design. `cross` weighs how far each colour ends up from where it
+// started: positive to push it away, negative to pull it back. The two are independent, which is
+// what lets `keep` ask for both at once — hold the design's internal separations AND move every
+// colour as far from its original as that allows, which is the arrangement that both reads as the
+// same design and reads as repainted.
+//
+// The merge penalty is not one of the three. Two colours landing on top of each other destroys
+// the shapes they distinguished whatever anybody was aiming at, so it applies to all of them —
+// and it is what stops `Closest` collapsing a flag's two similar reds onto the donor's one red.
+const SB_RGB_MAX = Math.sqrt(3) * 255;
+const SB_CROSS_SCALE = 6;      // puts a 0..1 mean distance on the same footing as a contrast sum
+const SB_MATCH_ALGOS = {
+    keep: { label: 'Keep the separations',
+            desc: 'Hold the gaps the design already has between its own colours, and move each one as far from itself as that allows.',
+            contrast: 1, cross: 0.35 },
+    near: { label: 'Closest colours',
+            desc: 'Every colour becomes the nearest thing the donor has to it. The most conservative repaint there is.',
+            contrast: 0, cross: -1 },
+    far:  { label: 'Furthest colours',
+            desc: 'Every colour becomes the least like itself the donor can offer.',
+            contrast: 0, cross: 1 }
+};
+const SB_MATCH_DEFAULT = 'keep';
+
+function sbMatchPalettes(base, donor, algoKey) {
     if (!base || !base.length || !donor || !donor.length) return null;
+    const algo = SB_MATCH_ALGOS[algoKey] || SB_MATCH_ALGOS[SB_MATCH_DEFAULT];
     const n = base.length;
     // The WHOLE donor palette is on offer, not its first few. A two-colour seed against a
     // four-colour donor was being shown only the donor's two biggest, so Japan's white had to
@@ -18553,11 +23778,23 @@ function sbMatchPalettes(base, donor) {
     let best = null;
     const score = acc => {
         let err = 0;
-        for (let i = 0; i < n; i++)
-            for (let j = i + 1; j < n; j++)
-                err += Math.abs(C[i][j] - sbContrast(acc[i], acc[j]));
+        // How well the design's own internal separations survive.
+        if (algo.contrast) {
+            let c = 0;
+            for (let i = 0; i < n; i++)
+                for (let j = i + 1; j < n; j++)
+                    c += Math.abs(C[i][j] - sbContrast(acc[i], acc[j]));
+            err += algo.contrast * c;
+        }
+        // How far each colour ends up from where it started. Positive weight pushes it away
+        // (a repaint you can see), negative pulls it back (a repaint you can barely see).
+        if (algo.cross) {
+            let d = 0;
+            for (let i = 0; i < n; i++) d += sbRgbDist(base[i].rgb, acc[i]) / SB_RGB_MAX;
+            err -= algo.cross * SB_CROSS_SCALE * (d / n);
+        }
         // Two colours landing on top of each other merges the shapes they distinguished, and no
-        // amount of contrast fidelity is worth that.
+        // objective above is worth that.
         for (let i = 0; i < n; i++)
             for (let j = i + 1; j < n; j++) {
                 const d2 = sbRgbDist(acc[i], acc[j]);
@@ -18609,7 +23846,7 @@ function sbMatchPalettes(base, donor) {
 // this seed is unsuitable.
 async function sbBuildFakeFlag(seedName, code, region, donor) {
     const src = await sbFlagDoc(code);
-    if (!src) return null;
+    if (!sbFlagSimple(src)) return null;
     // A private copy: the parsed docs are cached and a fake must not scribble on one.
     const doc = new DOMParser().parseFromString(
         new XMLSerializer().serializeToString(src), 'image/svg+xml');
@@ -18644,12 +23881,12 @@ async function sbBuildFakeFlag(seedName, code, region, donor) {
 // entries: two of a flag's colours landing on one MERGES the shapes they distinguished, which is
 // a defect when a machine does it by accident and a design decision when a person does it on
 // purpose — a tricolour with two of its bands the same is a bicolour, and somebody may want one.
-function sbRepaint(doc, palette, donor, pick) {
+function sbRepaint(doc, palette, donor, pick, algo) {
     const nodes = sbSvgColourNodes(doc);
     if (!nodes.length || !palette || !palette.length) return null;
     const pool = donor && donor.palette && donor.palette.length ? donor.palette : null;
     if (!pool) return null;
-    let map = sbMatchPalettes(palette, pool);
+    let map = sbMatchPalettes(palette, pool, algo);
     if (!map) return null;
     const keyOf = e => e.key || e.hex;
     if (pick && pick.size) map = map.map(m => pick.has(keyOf(m.from)) ? { from: m.from, to: pick.get(keyOf(m.from)) } : m);
@@ -18807,7 +24044,7 @@ function wsParts(code, doc) {
                         // to find. Order matters the moment several are taken together — an
                         // outline drawn after the shape it outlines covers it — so the composite
                         // is assembled by `seq` and the ranking is only ever a way of looking.
-                        out.push({ xml: new XMLSerializer().serializeToString(c), defs, ctm: pctm, inherit, box,
+                        out.push({ xml: new XMLSerializer().serializeToString(c), defs, code, ctm: pctm, inherit, box,
                                    vb: { x: X0v, y: Y0v, w: W, h: H },
                                    tag: c.tagName.toLowerCase(), frac, seq: out.length });
                     }
@@ -18838,7 +24075,8 @@ function wsParts(code, doc) {
 
 let wsState = null;
 const wsFresh = () => ({ base: null, donor: null, tweak: new Map(), pick: new Map(), extra: [],
-                         menu: [], added: [], browse: null, sel: new Set(), wheel: 0 });
+                         menu: [], added: [], browse: null, sel: new Set(), wheel: 0,
+                         algo: SB_MATCH_DEFAULT });
 // The donor's palette as it currently stands: its own colours, any hand edits laid over them, and
 // any colours added from the placeholder. A palette a person has extended is still the donor's
 // scheme as far as everything downstream is concerned.
@@ -18939,7 +24177,7 @@ async function wsCompose() {
         const pal = wsDonorPal();
         const pick = new Map();
         st.pick.forEach((di, key) => { if (pal[di]) pick.set(key, pal[di].rgb); });
-        changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick);
+        changes = sbRepaint(doc, palette, { ...st.donor, palette: pal }, pick, st.algo);
         mapping = sbRepaint.lastMap;
         // Anything the mapping had to INVENT is adopted into the donor's palette. A colour the
         // flag is wearing but the donor column does not show is a colour nobody can edit or
@@ -19021,8 +24259,22 @@ let sbFakeFlagPending = false;
 // to a tricolour. They still appear as real options; they are simply never the thing forged.
 const SB_NO_FORGE = new Set(['sa', 'af', 'iq', 'ir']);
 
+// A STREAM OF ITS OWN, and the reason is subtle enough to be worth stating: this preparation is
+// asynchronous and runs alongside whatever round is on screen, so its draws would land in the
+// middle of the main stream at network-dependent points and put every later question out of step.
+// A seeded link would then reproduce nothing in this mode -- and in no other, because no other
+// mode draws off the clock. Derived from the game seed so it is still deterministic per
+// preparation, and stepped per preparation so consecutive ones differ.
+let sbFakePrep = 0;
 function sbPrepareFakeFlag() {
     if (sbFakeFlagReady || sbFakeFlagPending) return;
+    const mainRng = gameRng;
+    gameRng = mulberry32(((gameState.seed || 1) ^ (0x9E3779B9 * (++sbFakePrep))) >>> 0);
+    const ownRng = gameRng;
+    gameRng = mainRng;
+    // Every draw inside the preparation borrows the private stream and puts the main one back,
+    // since the preparation is interleaved with the round's own draws by the event loop.
+    const sbRnd = fn => { const keep = gameRng; gameRng = ownRng; try { return fn(); } finally { gameRng = keep; } };
     const pool = sbPool().filter(n => {
         const d = (window.countryData || {})[effectiveDataName(n)];
         return d && d.code && !SB_NO_FORGE.has(d.code);
@@ -19035,7 +24287,7 @@ function sbPrepareFakeFlag() {
     const codeOf = n => { const d = (window.countryData || {})[effectiveDataName(n)]; return d && d.code; };
     (async () => {
         for (let t = 0; t < 8 && !sbFakeFlagReady; t++) {
-            const seed = sbRandom(pool);
+            const seed = sbRnd(() => sbRandom(pool));
             const code = codeOf(seed);
             if (!code) continue;
             try {
@@ -19049,7 +24301,7 @@ function sbPrepareFakeFlag() {
                 // round wants to be making.
                 let donor = null;
                 for (let d2 = 0; d2 < 4; d2++) {
-                    const dn = sbRandom(pool.filter(n => !namesMatch(n, seed)));
+                    const dn = sbRnd(() => sbRandom(pool.filter(n => !namesMatch(n, seed))));
                     const dc = dn && codeOf(dn);
                     if (!dc) continue;
                     const palette = await sbDonorPalette(dc);
@@ -19101,6 +24353,7 @@ function wsCombine(parts0) {
             return `<g transform="matrix(${(q.ctm || [1, 0, 0, 1, 0, 0]).join(',')})"${inh}>${q.xml}</g>`;
         }).join(''),
         defs: parts[0].defs,
+        code: parts[0].code,
         vb: parts[0].vb,
         ctm: [1, 0, 0, 1, 0, 0],
         inherit: {},
@@ -19169,6 +24422,9 @@ function renderFlagWorkshop() {
     // (Which is the same trap the note below warns about, sprung on the sibling container.)
     const mc = document.getElementById('multiple-choice-container');
     if (mc) mc.classList.add('hidden');
+    // The workshop has no rounds, so it has nothing to advance to — and a Next button it never
+    // set was showing whatever the last mode wrote on it ("Submit Guess", off Find the Capital).
+    setModeChrome({ next: false });
     if (!wsState) wsState = wsFresh();
 
     // APPENDED, not written over the container. `#question-container` holds `#feedback` and
@@ -19194,6 +24450,15 @@ function renderFlagWorkshop() {
         `<div class="ws-hint">Drag a wire to send one of your colours somewhere else \u2014 several may ` +
         `share a donor colour. Drag a dot on the wheel to change that colour itself.</div>` +
         `<div class="ws-drop" id="ws-donor-drop"></div>` +
+        // WHERE a colour goes is a question about intent, not a question with one right answer,
+        // so the three intents are on offer rather than settled in the code.
+        `<div class="ws-row ws-algo-row"><label for="ws-algo">Send each colour to</label>` +
+        `<select id="ws-algo" class="ws-filter">` +
+        Object.keys(SB_MATCH_ALGOS).map(k =>
+            `<option value="${k}"${(wsState.algo || SB_MATCH_DEFAULT) === k ? ' selected' : ''}>` +
+            `${SB_MATCH_ALGOS[k].label}</option>`).join('') +
+        `</select></div>` +
+        `<div class="ws-hint" id="ws-algo-desc"></div>` +
         `<div id="ws-wheel-wrap"></div>` +
         `<div id="ws-wire"></div></section>` +
 
@@ -19241,6 +24506,20 @@ function renderFlagWorkshop() {
         wsRefresh();
     };
     wsFlagSelect('ws-donor-drop', wsState.donor && wsState.donor.name, setDonor, 'Keep its own colours');
+
+    const algoSel = document.getElementById('ws-algo');
+    const algoDesc = () => {
+        const d = document.getElementById('ws-algo-desc');
+        if (d) d.textContent = (SB_MATCH_ALGOS[wsState.algo] || SB_MATCH_ALGOS[SB_MATCH_DEFAULT]).desc;
+    };
+    if (algoSel) algoSel.addEventListener('change', () => {
+        wsState.algo = algoSel.value;
+        // The hand-made wires are answers to the old question; a new objective is a new answer.
+        wsState.pick = new Map();
+        algoDesc();
+        wsRefresh();
+    });
+    algoDesc();
 
     document.getElementById('ws-open-charges').addEventListener('click', wsOpenCharges);
     document.getElementById('ws-save').addEventListener('click', wsSave);
@@ -19490,7 +24769,7 @@ function wsPaintBrowse() {
     }
     box.innerHTML = src.parts.map((pt, i) =>
         `<button type="button" class="ws-swatch${wsState.sel.has(i) ? ' on' : ''}" data-i="${i}">` +
-        `${wsPartSvg(pt, 'br' + i)}</button>`).join('');
+        `${wsPartSvg(pt)}</button>`).join('');
     box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
         const i = +bt.dataset.i;
         if (wsState.sel.has(i)) wsState.sel.delete(i); else wsState.sel.add(i);
@@ -19505,7 +24784,7 @@ function wsPaintMenu() {
     if (!wsState.menu.length) { box.innerHTML = `<div class="ws-hint">Nothing in the menu yet.</div>`; return; }
     box.innerHTML = wsState.menu.map((m, i) =>
         `<span class="ws-menu-item"><button type="button" class="ws-swatch" data-i="${i}" ` +
-        `title="Place ${displayLabelForName(m.from)}'s charge">${wsPartSvg(m.part, 'mn' + i)}</button>` +
+        `title="Place ${displayLabelForName(m.from)}'s charge">${wsPartSvg(m.part)}</button>` +
         `<button type="button" class="ws-x" data-drop="${i}" title="Remove from the menu">\u00d7</button></span>`).join('');
     box.querySelectorAll('.ws-swatch').forEach(bt => bt.addEventListener('click', () => {
         const m = wsState.menu[+bt.dataset.i];
@@ -19520,11 +24799,53 @@ function wsPaintMenu() {
     }));
 }
 
-// One piece, drawn alone on a tile. Ids are namespaced per tile: twenty pieces of one flag share
-// a document, so they would otherwise all define the same "a" and every one of them draw the
-// first.
-function wsPartSvg(pt, tag0) {
-    const tag = 'sw' + tag0 + '_';
+// THE DEFINITIONS GO IN THE PAGE ONCE, not into every tile.
+//
+// The whole source flag rides along with every piece, because a charge is usually a <use> of
+// something defined elsewhere and a <use> serialised on its own draws nothing. Written into each
+// TILE, that is the flag serialised once per tile — San Marino offers 24 pieces and carries 94 kB
+// of definitions, so its browse panel was **2.4 MB of markup**, twenty-four copies of a
+// 300-element document for the browser to parse, style and lay out. That is what "a really long
+// time to render" was, and no amount of SVG complexity accounts for it.
+//
+// Separate inline <svg> elements in one HTML document share ONE id space, so the definitions only
+// need to be in the page once. They go into a hidden svg keyed by the source flag, ids prefixed
+// with that flag's code, and every tile merely references them. 2.4 MB becomes 97 kB.
+const wsDefsDone = new Set();
+const WS_SVG_NS = 'http://www.w3.org/2000/svg';
+function wsDefsPrefix(pt) {
+    const code = (pt && pt.code) || '_';
+    const tag = 'wsd' + code.replace(/[^a-z0-9]/gi, '') + '_';
+    if (wsDefsDone.has(tag) || !pt || !pt.defs) return tag;
+    let host = document.getElementById('ws-defs-host');
+    if (!host) {
+        host = document.createElementNS(WS_SVG_NS, 'svg');
+        host.id = 'ws-defs-host';
+        host.setAttribute('aria-hidden', 'true');
+        host.setAttribute('style', 'position:absolute;width:0;height:0;overflow:hidden');
+        document.body.appendChild(host);
+    }
+    const xml = pt.defs
+        .replace(/(href=")#([^"]+)"/g, (m, pre, id) => `${pre}#${tag}${id}"`)
+        .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`)
+        .replace(/\bid="([^"]+)"/g, (m, id) => `id="${tag}${id}"`);
+    try {
+        const frag = new DOMParser().parseFromString(
+            `<svg xmlns="${WS_SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink">${xml}</svg>`,
+            'image/svg+xml');
+        if (!frag.querySelector('parsererror')) {
+            [...frag.documentElement.children].forEach(c => host.appendChild(document.importNode(c, true)));
+        }
+    } catch (_) { /* a flag whose defs will not re-parse simply draws without them */ }
+    wsDefsDone.add(tag);
+    return tag;
+}
+
+// One piece, drawn alone on a tile — a reference into the page's shared definitions and nothing
+// else. The drawn copy keeps its renamed REFERENCES and loses its own ids, since those now live
+// in the host and one document cannot carry an id twice.
+function wsPartSvg(pt) {
+    const tag = wsDefsPrefix(pt);
     const pad = Math.max(pt.box.w, pt.box.h) * 0.06;
     const vb = `${pt.box.x - pad} ${pt.box.y - pad} ${pt.box.w + pad * 2} ${pt.box.h + pad * 2}`;
     const refs = xml => xml
@@ -19532,8 +24853,7 @@ function wsPartSvg(pt, tag0) {
         .replace(/url\(#([^)]+)\)/g, (m, id) => `url(#${tag}${id})`);
     const m = pt.ctm || [1, 0, 0, 1, 0, 0];
     const inh = Object.keys(pt.inherit || {}).map(k => ` ${k}="${pt.inherit[k]}"`).join('');
-    const body = refs(pt.defs || '').replace(/\bid="([^"]+)"/g, (mm, id) => `id="${tag}${id}"`) +
-                 `<g transform="matrix(${m.join(',')})"${inh}>` +
+    const body = `<g transform="matrix(${m.join(',')})"${inh}>` +
                  refs(pt.xml).replace(/\bid="[^"]+"/g, '') + `</g>`;
     return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet">${body}</svg>`;
 }
@@ -19617,13 +24937,13 @@ function wsSave() {
 function sbClaimSavedFake() {
     const saved = wsLoadSaved();
     if (!saved.length) return null;
-    const f = saved[Math.floor(Math.random() * saved.length)];
+    const f = pickOne(saved);
     return { url: f.url, seed: f.seed || null, donor: f.donor || null, changes: [], made: f.name || 'you' };
 }
 
 function sbClaimFakeFlag() {
     const saved = sbClaimSavedFake();
-    if (saved && Math.random() < 0.5) return saved;
+    if (saved && rnd() < 0.5) return saved;
     const r = sbFakeFlagReady;
     sbFakeFlagReady = null;
     sbPrepareFakeFlag();          // start the next one now, so no round has to wait on the network
@@ -19658,19 +24978,7 @@ const SB_QUIZZES = {
             // drawn smaller than the area it is being compared on. Both are the same problem:
             // for those countries "the area" is a question about which bits count, and this
             // round is not the place to argue it.
-            // Memoised: shapeFramingCore over the whole pool is 600 ms, and build() runs it on
-            // every draw and retry.
-            const whole = n => {
-                if (sbWholeCache.has(n)) return sbWholeCache.get(n);
-                const f = sbFeature(n);
-                let ok = false;
-                if (f) {
-                    const core = d3.geoArea(shapeFramingCore(f)), all = d3.geoArea(f);
-                    ok = all > 0 && core / all > 0.92;
-                }
-                sbWholeCache.set(n, ok);
-                return ok;
-            };
+            const whole = sbWholeCache;
             // A floor of 1,000 km². Below it the two silhouettes carried to the equator are
             // specks the comparison cannot be read off, and the question stops being about the
             // projection and becomes about whether you happen to know two microstates.
@@ -19733,7 +25041,7 @@ const SB_QUIZZES = {
                 };
                 if (found.lie && found.honest) break;
             }
-            if (found.lie && found.honest) return Math.random() < 0.5 ? found.lie : found.honest;
+            if (found.lie && found.honest) return rnd() < 0.5 ? found.lie : found.honest;
             return found.lie || found.honest || null;
         }
     },
@@ -19859,33 +25167,40 @@ const SB_QUIZZES = {
 
     // ---------- the sky ----------
     'sb-lake': {
-        engine: 'fact', hiRes: true, flat: true, icon: 'water_drop', label: 'Name the Lake',
-        desc: 'One outline, no map to help you',
-        preload: () => !!sbLakeFeatures(),      // the lakes file is fetched lazily
+        engine: 'fact', hiRes: true, flat: true, icon: 'water_drop', label: 'Name the Water',
+        desc: 'One lake or river, alone on the board',
+        preload: () => !!waterFeatures(),      // lakes and rivers are both fetched lazily
         build() {
-            const lakes = sbLakeFeatures();
-            if (!lakes || lakes.length < 4) return null;
-            const named = lakes.filter(f => f.properties && (f.properties.name || f.properties.Name));
-            if (named.length < 4) return null;
-            const lakeName = f => f.properties.name || f.properties.Name;
-            // There are only two dozen lakes worth asking about, so a ten-round set draws a
-            // repeat by chance more often than not. Answers are held for the game and only
-            // released when the pool runs dry.
+            const pool = waterFeatures();
+            if (!pool || pool.length < 8) return null;
+            const nameOf = f => f.properties.name;
+            // There are only a couple of dozen lakes worth asking about, so a ten-round set
+            // draws a repeat by chance more often than not. Answers are held for the game and
+            // only released when the pool runs dry.
             const used = gameState.sbUsedLakes || (gameState.sbUsedLakes = new Set());
-            let avail = named.filter(f => !used.has(lakeName(f)));
-            if (avail.length < 1) { used.clear(); avail = named; }
+            let avail = pool.filter(f => !used.has(nameOf(f)));
+            if (avail.length < 1) { used.clear(); avail = pool; }
             const pick = sbRandom(avail);
-            used.add(lakeName(pick));
-            const others = named.filter(f => lakeName(f) !== lakeName(pick));
+            if (!pick) return null;
+            used.add(nameOf(pick));
+            // The three wrong answers are the SAME KIND as the right one. A line on the board
+            // against three lake names and one river name answers itself — the shape says which
+            // sort of thing it is before it says which one.
+            const kind = pick.properties.waterKind;
+            const others = pool.filter(f => f.properties.waterKind === kind && nameOf(f) !== nameOf(pick));
+            if (others.length < 3) return null;
+            const word = kind === 'river' ? 'river' : 'lake';
             // Shown alone rather than highlighted on the world map: with the continents around
             // it, "which lake" was really "which lake is in North America", and the shape — the
             // one thing that actually distinguishes them — was a few pixels wide.
             return {
-                highlight: [], solo: { feature: pick, kind: 'lake' },
-                correct: lakeName(pick),
-                options: shuffleArray([pick, ...shuffleArray(others).slice(0, 3)].map(lakeName)),
-                prompt: 'Which lake is this?',
-                explain: `${lakeName(pick)}.`
+                highlight: [], solo: { feature: pick, kind },
+                correct: nameOf(pick),
+                options: shuffleArray([pick, ...shuffleArray(others).slice(0, 3)].map(nameOf)),
+                prompt: `Which ${word} is this?`,
+                explain: kind === 'river'
+                    ? `${nameOf(pick)} — ${sbFormatKm(pick.properties.lengthKm)} of it.`
+                    : `${nameOf(pick)}.`
             };
         }
     },
@@ -20026,7 +25341,7 @@ const SB_QUIZZES = {
             if (pool.length < 20) return null;
             const ranked = [...pool].sort((a, b) => sbPop(b) - sbPop(a));
             // Anywhere but the very bottom, which has no country below it to find.
-            const i = Math.floor(Math.random() * (ranked.length - 6));
+            const i = Math.floor(rnd() * (ranked.length - 6));
             const target = ranked[i], answer = ranked[i + 1];
             if (!target || !answer) return null;
             return {
@@ -20048,7 +25363,7 @@ const SB_QUIZZES = {
             const pool = sbPool().filter(n => sbAreaKm2(n));
             if (pool.length < 20) return null;
             const ranked = [...pool].sort((a, b) => sbAreaKm2(b) - sbAreaKm2(a));
-            const i = Math.floor(Math.random() * (ranked.length - 6));
+            const i = Math.floor(rnd() * (ranked.length - 6));
             const target = ranked[i], answer = ranked[i + 1];
             if (!target || !answer) return null;
             const fmt = n => Math.round(sbAreaKm2(n)).toLocaleString() + ' km²';
@@ -20203,7 +25518,7 @@ const SB_QUIZZES = {
                 const picks = shuffleArray([seed, ...shuffleArray(near).slice(0, 3)]);
                 const areas = picks.map(sbCoreAreaKm2);
                 if (Math.max(...areas) / Math.min(...areas) > 3) continue;
-                const idx = Math.floor(Math.random() * 4);
+                const idx = Math.floor(rnd() * 4);
                 const factor = sbRandom([2.1, 2.4, 1 / 2.1, 1 / 2.4]);
                 return {
                     highlight: [],
@@ -20304,345 +25619,98 @@ const SB_QUIZZES = {
         }
     },
 
-    // ---------- straight through the middle ----------
-    'sb-antipode': {
-        engine: 'pinpoint', flat: true, icon: 'swap_vert', label: 'Antipodes',
-        desc: 'Dig straight down — where do you come out?',
-        build() {
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 90000 && getCountryCentroid(n));
-            const name = sbRandom(pool);
-            if (!name) return null;
-            const c = getCountryCentroid(name);
-            if (!c || !isFinite(c[0])) return null;
-            const anti = [((c[0] + 360) % 360) - 180, -c[1]];
-            return {
-                highlight: [name], target: anti, scaleKm: 2500,
-                prompt: `Dig straight down through the middle of <strong>${displayLabelForName(name)}</strong> ` +
-                        `and out the other side. <strong>Click where you surface.</strong>`,
-                explain: `The antipode of ${name} is ${sbLonLatWords(anti)} — almost always ocean, ` +
-                         `since only about 4% of the earth's land has land opposite it.`
-            };
-        }
-    },
+    // ---------- five more measurements to rank by ----------
+    // Every "put these in order" round is the same round with a different measurement, so the
+    // measurements are a table and one builder serves all five. Each is deliberately unlike the
+    // others: a perimeter, a diameter, an east-west extent, an offset, and an intensity. Rank
+    // five countries by any two of them and the orders barely agree.
+    ...sbRankQuizzes(),
 
-    // ---------- two capitals, and which is further north ----------
-    // Only pairs the map argues with: the one people would guess is further north has to be the
-    // southern one, or there is nothing here but reading two numbers off a table.
-    'sb-further-north': {
-        engine: 'fact', flat: true, icon: 'north', label: 'Further North',
-        desc: 'Two capitals — which one is nearer the pole?',
+    // ---------- five, by an extreme point ----------
+    // Two rounds became one, and the merge is what made either of them a real question. Ordering
+    // by CENTRES is a question about where the middle of a country is, which is not a thing anybody
+    // pictures; ordering by the point that reaches furthest one way is a question about the shape
+    // itself, and it has four different versions of itself for free. Chile's southernmost point and
+    // Chile's middle are two thousand kilometres apart, and only one of them is on the map you
+    // remember.
+    'sb-extreme-order': {
+        engine: 'order', flat: true, icon: 'straighten', label: 'Furthest That Way',
+        desc: 'Order five countries by the point that reaches furthest one way',
         build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbPop(n) > 3000000);
-            for (let t = 0; t < 60; t++) {
-                const a = sbRandom(pool), b = sbRandom(pool);
-                if (!a || !b || namesMatch(a, b)) continue;
-                const ca = sbCapitalLonLat(a), cb = sbCapitalLonLat(b);
-                const gap = Math.abs(ca[1] - cb[1]);
-                // Close enough that nobody can be sure, far enough apart in LONGITUDE that the
-                // two are not simply neighbours on the same meridian.
-                if (gap < 1.5 || gap > 9) continue;
-                if (Math.abs(ca[0] - cb[0]) < 40) continue;
-                const north = ca[1] > cb[1] ? a : b;
-                return {
-                    highlight: [a, b],
-                    options: shuffleArray([a, b].map(n =>
-                        `${getCapital(effectiveDataName(n))}, ${displayLabelForName(n)}`)),
-                    correct: `${getCapital(effectiveDataName(north))}, ${displayLabelForName(north)}`,
-                    prompt: 'Which of these two capitals is <strong>further north</strong>?',
-                    explain: `${getCapital(effectiveDataName(a))} is at ${ca[1].toFixed(1)}° and ` +
-                             `${getCapital(effectiveDataName(b))} at ${cb[1].toFixed(1)}° — ` +
-                             `${Math.round(gap * 111)} km apart in latitude.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- the two facts the arc table gives away ----------
-    'sb-landlocked': {
-        engine: 'multi', flat: true, icon: 'terrain', label: 'Landlocked',
-        desc: 'Pick the ones with no coast at all',
-        build() {
-            const facts = ensureCountryFacts();
-            if (!facts) return null;
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 20000);
-            const inland = pool.filter(n => !facts.coastal.has(n));
-            const coastal = pool.filter(n => facts.coastal.has(n));
-            if (inland.length < 4 || coastal.length < 6) return null;
-            // Drawn from ONE neighbourhood, so the round is answered by picturing that part of
-            // the map rather than by recognising a famous landlocked name in a global shuffle.
-            const seed = sbRandom(inland);
-            const near = n => { const a = getCountryCentroid(seed), b = getCountryCentroid(n);
-                                return a && b ? sbKmBetween(a, b) : Infinity; };
-            const hits = inland.filter(n => near(n) < 3500).slice(0, 6);
-            const miss = coastal.map(n => ({ n, d: near(n) })).filter(x => isFinite(x.d))
-                .sort((a, b) => a.d - b.d).slice(0, 7).map(x => x.n);
-            if (hits.length < 3 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: 'Pick <strong>every</strong> one of these that is <strong>landlocked</strong> — ' +
-                        'no coast anywhere, not even on a lake.',
-                explain: `${hits.slice().sort().join(', ')} have no coastline. ` +
-                         `It is read off the map rather than a list: an edge no two countries share is a shore.`
-            };
-        }
-    },
-
-    'sb-islands': {
-        engine: 'multi', flat: true, icon: 'water', label: 'Island Nations',
-        desc: 'Pick the ones with no land neighbour at all',
-        build() {
-            const facts = ensureCountryFacts();
-            if (!facts) return null;
-            const pool = sbPool();
-            const hits = shuffleArray(pool.filter(n => facts.island.has(n))).slice(0, 6);
-            const miss = shuffleArray(pool.filter(n => !facts.island.has(n) && facts.coastal.has(n))).slice(0, 7);
-            if (hits.length < 3 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: 'Pick <strong>every</strong> one of these that shares <strong>no land border with anybody</strong>.',
-                explain: `${hits.slice().sort().join(', ')} have coast and no land neighbour. ` +
-                         `The others all touch somebody, however short the border.`
-            };
-        }
-    },
-
-    // ---------- one of these is not like the others ----------
-    'sb-not-neighbour': {
-        engine: 'fact', flat: true, icon: 'block', label: 'Not a Neighbour',
-        desc: 'Three of these border it. One does not.',
-        build() {
-            const pool = sbPool();
-            for (let t = 0; t < 50; t++) {
-                const name = sbRandom(pool);
-                const nb = playableNeighbours(name);
-                if (nb.length < 3) continue;
-                const nbSet = new Set(nb.map(normalizeName));
-                const c0 = getCountryCentroid(name);
-                if (!c0) continue;
-                // The impostor is a country that comes CLOSE and does not touch. Anything else
-                // and the round is answered by continent rather than by border.
-                const near = pool.filter(n => !namesMatch(n, name) && !nbSet.has(normalizeName(n)))
-                    .map(n => ({ n, d: getCountryCentroid(n) ? sbKmBetween(c0, getCountryCentroid(n)) : Infinity }))
-                    .filter(x => isFinite(x.d)).sort((a, b) => a.d - b.d).slice(0, 6);
-                if (!near.length) continue;
-                const odd = sbRandom(near).n;
-                const three = shuffleArray(nb).slice(0, 3);
-                return {
-                    highlight: [name],
-                    options: shuffleArray([...three, odd].map(displayLabelForName)),
-                    correct: displayLabelForName(odd),
-                    prompt: `Three of these border <strong>${displayLabelForName(name)}</strong>. ` +
-                            `Which one <strong>does not</strong>?`,
-                    explain: `${odd} does not touch ${name}; ${three.sort().join(', ')} do.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- people per square kilometre ----------
-    'sb-crowded': {
-        engine: 'fact', flat: true, icon: 'groups_2', label: 'Room to Move',
-        desc: 'Four countries — which is the most crowded?',
-        build() {
-            const dens = n => { const p = sbPop(n), a = sbAreaKm2(n); return p && a ? p / a : null; };
-            const pool = sbPool().filter(n => dens(n) && sbAreaKm2(n) > 10000);
-            if (pool.length < 8) return null;
-            for (let t = 0; t < 40; t++) {
-                const picks = shuffleArray(pool).slice(0, 4);
-                const ds = picks.map(dens);
-                const hi = Math.max(...ds), lo = Math.min(...ds);
-                // A clear winner but not a walkover: at ten times the runner-up it is a question
-                // about which one is Bangladesh, and at 1.2x it is a coin toss.
-                const sorted = [...ds].sort((a, b) => b - a);
-                if (sorted[0] / sorted[1] < 1.5 || sorted[0] / sorted[1] > 6) continue;
-                if (hi / lo < 3) continue;
-                const win = picks[ds.indexOf(hi)];
-                return {
-                    highlight: picks,
-                    options: shuffleArray(picks.map(displayLabelForName)),
-                    correct: displayLabelForName(win),
-                    prompt: 'Which of these has the <strong>most people per square kilometre</strong>?',
-                    explain: picks.map(n => `${displayLabelForName(n)} ${Math.round(dens(n)).toLocaleString()}`)
-                        .join(' · ') + ' people per km².'
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- walk due north ----------
-    // Not "which country is north of this one" — which one you MEET, walking up the meridian
-    // from where you started. It is the question a straight line asks, and the answer is
-    // regularly not the country anybody names.
-    'sb-due-north': {
-        engine: 'fact', flat: true, icon: 'explore', label: 'Straight Up',
-        desc: 'Leave going due north — where do you make landfall?',
-        build() {
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 60000 && getCountryCentroid(n));
-            for (let t = 0; t < 40; t++) {
-                const name = sbRandom(pool);
-                const c = getCountryCentroid(name);
-                if (!c) continue;
-                const hit = sbFirstAlongMeridian(name, c[0], c[1]);
-                if (!hit) continue;
-                // The distractors are the plausible ones: countries at a similar longitude,
-                // further north, that the meridian happens to miss.
-                const others = pool.filter(n => !namesMatch(n, name) && !namesMatch(n, hit))
-                    .map(n => ({ n, c2: getCountryCentroid(n) })).filter(x => x.c2 && x.c2[1] > c[1])
-                    .map(x => ({ n: x.n, d: Math.abs(((x.c2[0] - c[0] + 540) % 360) - 180) }))
-                    .sort((a, b) => a.d - b.d).slice(0, 8);
-                if (others.length < 3) continue;
-                const three = shuffleArray(others).slice(0, 3).map(x => x.n);
-                return {
-                    highlight: [name],
-                    options: shuffleArray([hit, ...three].map(displayLabelForName)),
-                    correct: displayLabelForName(hit),
-                    prompt: `Set out from the middle of <strong>${displayLabelForName(name)}</strong> and walk ` +
-                            `<strong>due north</strong>, swimming where you must. Whose land do you set foot on first?`,
-                    explain: `Straight up the ${Math.abs(c[0]).toFixed(0)}° ` +
-                             `${c[0] < 0 ? 'W' : 'E'} meridian, the next land is ${hit}.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- the far side of the clock ----------
-    'sb-noon': {
-        engine: 'fact', flat: true, icon: 'schedule', label: 'Noon and Midnight',
-        desc: 'The sun is overhead here — where is it midnight?',
-        build() {
-            const pool = sbPool().filter(n => sbCapitalLonLat(n) && sbPop(n) > 2000000);
-            for (let t = 0; t < 40; t++) {
-                const name = sbRandom(pool);
-                const c = sbCapitalLonLat(name);
-                if (!c) continue;
-                // How far round the world each candidate is, as an angle: 180 is midnight.
-                const away = n => { const q = sbCapitalLonLat(n);
-                    return q ? Math.abs(((q[0] - c[0] + 540) % 360) - 180) : null; };
-                const ranked = pool.filter(n => !namesMatch(n, name) && away(n) != null)
-                    .sort((a, b) => away(b) - away(a));
-                const win = ranked[0];
-                if (!win || away(win) < 150) continue;
-                const three = shuffleArray(ranked.slice(Math.floor(ranked.length / 3))).slice(0, 3);
-                if (three.length < 3) continue;
-                return {
-                    highlight: [name, win],
-                    options: shuffleArray([win, ...three].map(displayLabelForName)),
-                    correct: displayLabelForName(win),
-                    prompt: `It is <strong>solar noon in ${getCapital(effectiveDataName(name))}</strong>. ` +
-                            `In which of these is it <strong>closest to midnight</strong>?`,
-                    explain: `${getCapital(effectiveDataName(win))} is ${away(win).toFixed(0)}° round the ` +
-                             `world from ${getCapital(effectiveDataName(name))} — ` +
-                             `${(away(win) / 15).toFixed(1)} hours out of twelve.`
-                };
-            }
-            return null;
-        }
-    },
-
-    // ---------- which continent ----------
-    'sb-continent-pick': {
-        engine: 'multi', flat: true, icon: 'public', label: 'Which Continent',
-        desc: 'Pick every one of these from the named continent',
-        build() {
-            const cd = window.continentData;
-            if (!cd) return null;
-            const names = Object.keys(cd).filter(k => (cd[k] || []).length >= 8);
-            const cont = sbRandom(names);
-            if (!cont) return null;
-            const pool = sbPool();
-            const inSet = new Set((cd[cont] || []).map(normalizeName));
-            const hits = shuffleArray(pool.filter(n => inSet.has(normalizeName(n)))).slice(0, 6);
-            const miss = shuffleArray(pool.filter(n => !inSet.has(normalizeName(n)))).slice(0, 7);
-            if (hits.length < 4 || miss.length < 5) return null;
-            return {
-                correctSet: hits.map(displayLabelForName),
-                options: [...hits, ...miss].map(displayLabelForName).sort((a, b) => a.localeCompare(b)),
-                labelToName: Object.fromEntries([...hits, ...miss].map(n => [displayLabelForName(n), n])),
-                boardMarksOnAnswer: [...hits],
-                prompt: `Pick <strong>every</strong> one of these that is in <strong>${cont}</strong>.`,
-                explain: `${hits.slice().sort().join(', ')} are in ${cont}.`
-            };
-        }
-    },
-
-    // ---------- five, north to south ----------
-    'sb-lat-order': {
-        engine: 'order', flat: true, icon: 'swap_vert', label: 'North to South',
-        desc: 'Order five countries by how far north they sit',
-        build() {
-            const pool = sbPool().filter(n => getCountryCentroid(n) && sbAreaKm2(n) > 40000);
-            const picks = shuffleArray(pool).slice(0, 5);
-            if (picks.length < 5) return null;
-            const lat = n => getCountryCentroid(n)[1];
-            const vals = picks.map(lat).sort((a, b) => b - a);
-            // Far enough apart to be decidable without a ruler, close enough to be a question.
-            for (let i = 1; i < vals.length; i++) if (vals[i - 1] - vals[i] < 4) return null;
-            if (vals[0] - vals[vals.length - 1] > 110) return null;
-            return {
-                items: picks, anchor: null,
-                correct: [...picks].sort((a, b) => lat(b) - lat(a)),
-                prompt: 'Drag these into order <strong>north to south</strong> — the northernmost at the top. ' +
-                        'Measured at the middle of each country.',
-                format: n => `${Math.abs(lat(n)).toFixed(1)}° ${lat(n) >= 0 ? 'N' : 'S'}`,
-                explain: 'Measured at each country’s own centre, which is not where its capital is.'
-            };
-        }
-    },
-
-    // ---------- the extremes ----------
-    'sb-reaches': {
-        engine: 'fact', flat: true, icon: 'open_in_full', label: 'Reaches Furthest',
-        desc: 'Four countries — which one gets furthest that way?',
-        build() {
+            // `at` finds the actual VERTEX the extreme is measured at, so the reveal can put a
+            // pin on it. The bounds give the number; only a point can be drawn on a map.
             const DIRS = [
-                { key: 'n', word: 'north', pick: b => b[1][1], best: Math.max },
-                { key: 's', word: 'south', pick: b => b[0][1], best: Math.min },
-                { key: 'e', word: 'east',  pick: b => b[1][0], best: Math.max },
-                { key: 'w', word: 'west',  pick: b => b[0][0], best: Math.min }
+                { key: 'n', word: 'north', pick: b => b[1][1], desc: 'northernmost', sign: -1, ns: true,
+                  at: (p, q) => q[1] > p[1] },
+                { key: 's', word: 'south', pick: b => b[0][1], desc: 'southernmost', sign: 1,  ns: true,
+                  at: (p, q) => q[1] < p[1] },
+                { key: 'e', word: 'east',  pick: b => b[1][0], desc: 'easternmost',  sign: -1, ns: false,
+                  at: (p, q) => q[0] > p[0] },
+                { key: 'w', word: 'west',  pick: b => b[0][0], desc: 'westernmost',  sign: 1,  ns: false,
+                  at: (p, q) => q[0] < p[0] }
             ];
             const dir = sbRandom(DIRS);
-            const pool = sbPool().filter(n => sbAreaKm2(n) > 50000);
-            for (let t = 0; t < 40; t++) {
-                const picks = shuffleArray(pool).slice(0, 4);
-                const vals = picks.map(n => {
+            const pool = sbPool().filter(n => sbAreaKm2(n) > 40000);
+            for (let t = 0; t < 30; t++) {
+                const picks = shuffleArray(pool).slice(0, 5);
+                if (picks.length < 5) return null;
+                const at = {}, where = {};
+                let bad = false;
+                picks.forEach(n => {
                     const f = sbFeature(n);
-                    if (!f) return null;
-                    // On the framing core, or a remote islet answers the question for its
-                    // country and the map on screen disagrees with the answer given.
-                    const core = shapeFramingCore(f) || f;
-                    const b = d3.geoBounds(core);
-                    return isFinite(b[0][0]) ? dir.pick(b) : null;
+                    // The framing CORE, not the raw feature. "How far south does France reach" has
+                    // an answer nobody means if Kerguelen is allowed to count, and the whole round
+                    // is about the shape somebody can picture.
+                    const core = f && (shapeFramingCore(f) || f);
+                    const b = core && d3.geoBounds(core);
+                    if (!b || !isFinite(b[0][0])) { bad = true; return; }
+                    // A wrapped box has no meaningful east or west edge, so those draws skip it.
+                    if (!dir.ns && b[1][0] < b[0][0]) { bad = true; return; }
+                    at[n] = dir.pick(b);
+                    // The bounds give the NUMBER; the reveal needs the POINT, so the actual
+                    // vertex the extreme sits at is found here while the core is in hand.
+                    let win = null;
+                    featureParts(core).forEach(poly => (poly[0] || []).forEach(p => {
+                        if (!win || dir.at(win, p)) win = p;
+                    }));
+                    where[n] = win;
                 });
-                if (vals.some(v => v == null)) continue;
-                // East and west are only well-posed away from the antimeridian.
-                if ((dir.key === 'e' || dir.key === 'w') && vals.some(v => Math.abs(v) > 168)) continue;
-                const win = dir.best(...vals);
-                const sorted = [...vals].sort((a, b) => Math.abs(b - win) - Math.abs(a - win));
-                if (Math.abs(sorted[sorted.length - 2] - win) < 3) continue;   // too close to call
-                const name = picks[vals.indexOf(win)];
-                const unit = (dir.key === 'n' || dir.key === 's') ? '° lat' : '° lon';
+                if (bad) continue;
+                const vals = picks.map(n => at[n]).sort((a, b) => a - b);
+                // Far enough apart to be decidable by eye, and not spread over so much of the
+                // world that the order is obvious from a glance at a globe.
+                let gap = Infinity;
+                for (let i2 = 1; i2 < vals.length; i2++) gap = Math.min(gap, vals[i2] - vals[i2 - 1]);
+                if (gap < 4) continue;
+                if (vals[vals.length - 1] - vals[0] > 130) continue;
+                const fmt = v => dir.ns
+                    ? `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'N' : 'S'}`
+                    : `${Math.abs(v).toFixed(1)}\u00b0 ${v >= 0 ? 'E' : 'W'}`;
                 return {
-                    highlight: picks,
-                    options: shuffleArray(picks.map(displayLabelForName)),
-                    correct: displayLabelForName(name),
-                    prompt: `Which of these reaches <strong>furthest ${dir.word}</strong>? ` +
-                            `<span class="sb-aside">Mainland only — outlying islands do not count.</span>`,
-                    explain: picks.map((n, i) => `${displayLabelForName(n)} ${vals[i].toFixed(1)}${unit}`)
-                        .join(' · ') + `. ${name} is furthest ${dir.word}.`
+                    items: picks, anchor: null, extremeAt: where, extremeNS: dir.ns,
+                    correct: [...picks].sort((a, b) => dir.sign * (at[a] - at[b])),
+                    prompt: `Drag these into order by their <strong>${dir.desc} point</strong> \u2014 ` +
+                            `the one reaching furthest ${dir.word} at the top.` +
+                            (picks.some(n => sbCoreNote(n))
+                              ? ` <span class="sb-aside">Mainland only, where a country has outlying parts.</span>` : ''),
+                    format: n => fmt(at[n]),
+                    explain: `Measured at the ${dir.desc} point of each country's mainland, which is ` +
+                             `nowhere near its middle: Chile's southern tip and Chile's centre are ` +
+                             `2,000 km apart.`
                 };
             }
             return null;
         }
+    },
+
+    // ---------- sixteen at once ----------
+    'sb-connections': {
+        engine: 'connect', icon: 'grid_view', label: 'Connections', noMap: true,
+        desc: 'Sixteen countries, four hidden groups of four',
+        // ONE puzzle is the game. Ten rounds of this would be a long evening, and the shape of the
+        // thing is a single board worked out to the end.
+        rounds: 1,
+        build() { return sbBuildConnections(); }
     },
 
     // ---------- riffs ----------
@@ -20710,7 +25778,9 @@ Object.keys(SB_QUIZZES).forEach(key => {
         name: q.label,
         quizList: quizCountries,
         dataObjKey: 'countryData',
-        totalQuestions: 10,
+        // Ten rounds unless the quiz says otherwise. One says otherwise: a Connections board is
+        // the whole game, and ten of them is an evening rather than a round.
+        totalQuestions: q.rounds || 10,
         // Every engine loads the map, INCLUDING the ordering one: population density is
         // people over d3.geoArea, so it needs the features even though it shows no map.
         // sbRenderOrder hides #map-container instead of skipping the load.
@@ -20831,6 +25901,126 @@ function renderSandboxQuizQuestion() {
     if (spec.engine === 'multi') return sbRenderMulti(q, head);
     if (spec.engine === 'estimate') return sbRenderEstimate(q, head);
     if (spec.engine === 'picker') return sbRenderPicker(q, head);
+    if (spec.engine === 'connect') return sbRenderConnect(q, head);
+}
+
+// ---- engine: connect (sixteen tiles, four groups) ----
+//
+// Not scored per round like the other engines: one puzzle IS the game, so the mode runs a single
+// round and the score is out of ten — four for solving it at all and up to six for how few
+// mistakes it took. Four mistakes ends it and shows the answer, which is the rule everybody
+// already knows from the game this borrows its shape from.
+const SB_CONNECT_LIVES = 4;
+
+function sbRenderConnect(q, head) {
+    gameState.questionType = 'sandbox-connect';
+    clearMultipleChoice();
+    document.getElementById('question-text').innerHTML = head + q.prompt;
+    document.getElementById('multiple-choice-container').classList.remove('hidden');
+    const grid = document.getElementById('options-grid');
+    grid.className = 'options-grid sb-connect';
+    q.solved = q.solved || [];
+    q.picked = [];
+    q.mistakes = q.mistakes || 0;
+    sbPaintConnect(q);
+    const next = document.getElementById('next-btn');
+    next.textContent = 'Submit';
+    next.disabled = true;
+    next.style.display = 'inline-block';
+    document.getElementById('give-up-btn').style.display = 'inline-block';
+    document.getElementById('give-up-btn').textContent = 'Give Up';
+}
+
+function sbPaintConnect(q) {
+    const grid = document.getElementById('options-grid');
+    if (!grid) return;
+    const solvedNames = new Set(q.solved.flatMap(g => g.names.map(normalizeName)));
+    grid.innerHTML =
+        // The solved groups rise to the top and keep their colour, so the board shrinks as it is
+        // worked out — which is the whole feedback loop of this shape of puzzle.
+        q.solved.map(g =>
+            `<div class="sb-conn-band c${g.order}">` +
+            `<div class="sb-conn-band-lab">${g.label}</div>` +
+            `<div class="sb-conn-band-names">${g.names.map(displayLabelForName).join(' · ')}</div>` +
+            `</div>`).join('') +
+        `<div class="sb-conn-grid">` +
+        q.items.filter(n => !solvedNames.has(normalizeName(n))).map(n =>
+            `<button type="button" class="sb-conn-tile${q.picked.includes(n) ? ' picked' : ''}" ` +
+            `data-name="${displayLabelForName(n).replace(/"/g, '&quot;')}">` +
+            `${displayLabelForName(n)}</button>`).join('') +
+        `</div>` +
+        `<div class="sb-conn-lives">${'●'.repeat(Math.max(0, SB_CONNECT_LIVES - q.mistakes))}` +
+        `${'○'.repeat(Math.min(SB_CONNECT_LIVES, q.mistakes))}` +
+        `<span class="sb-conn-lives-lab">mistakes left</span>` +
+        `<button type="button" class="sb-conn-cats-btn" id="sb-conn-open">Kinds of group…</button></div>`;
+
+    const byLabel = new Map(q.items.map(n => [displayLabelForName(n), n]));
+    grid.querySelectorAll('.sb-conn-tile').forEach(b => b.addEventListener('click', () => {
+        if (gameState.sbAnswered) return;
+        const n = byLabel.get(b.dataset.name);
+        const at = q.picked.indexOf(n);
+        if (at >= 0) q.picked.splice(at, 1);
+        else if (q.picked.length < 4) q.picked.push(n);
+        sbPaintConnect(q);
+        const next = document.getElementById('next-btn');
+        if (next) next.disabled = q.picked.length !== 4;
+    }));
+    const open = document.getElementById('sb-conn-open');
+    if (open) open.addEventListener('click', sbOpenConnectCats);
+    const next = document.getElementById('next-btn');
+    if (next && !gameState.sbAnswered) next.disabled = q.picked.length !== 4;
+}
+
+function sbSubmitConnect() {
+    const q = gameState.sbQuestion;
+    if (!q || gameState.sbAnswered || q.picked.length !== 4) return;
+    const pickSet = new Set(q.picked.map(normalizeName));
+    const hit = q.groups.find(g => !q.solved.includes(g) &&
+        g.names.every(n => pickSet.has(normalizeName(n))));
+    const fb = document.getElementById('feedback');
+    if (hit) {
+        q.solved.push(hit);
+        q.picked = [];
+        if (q.solved.length === q.groups.length) { sbFinishConnect(q, true); return; }
+        fb.innerHTML = `<strong>${hit.label}.</strong> ${q.groups.length - q.solved.length} to go.`;
+        fb.className = 'feedback correct';
+        sbPaintConnect(q);
+        return;
+    }
+    q.mistakes++;
+    // "One away" is the one piece of feedback this shape of puzzle gives, and it is what makes a
+    // near miss useful rather than merely wrong.
+    const near = q.groups.filter(g => !q.solved.includes(g))
+        .some(g => g.names.filter(n => pickSet.has(normalizeName(n))).length === 3);
+    fb.innerHTML = near ? 'One away.' : 'Not a group.';
+    fb.className = 'feedback ' + (near ? 'partial' : 'incorrect');
+    if (q.mistakes >= SB_CONNECT_LIVES) { sbFinishConnect(q, false); return; }
+    q.picked = [];
+    sbPaintConnect(q);
+}
+
+function sbFinishConnect(q, solved) {
+    gameState.sbAnswered = true;
+    // Four for solving it, six spread over the mistakes: a clean solve is ten and a fourth mistake
+    // is nothing, with the two in between worth having.
+    const pts = solved ? 4 + Math.round(6 * (SB_CONNECT_LIVES - q.mistakes) / SB_CONNECT_LIVES) : 0;
+    gameState.score += pts;
+    document.getElementById('score').textContent = gameState.score;
+    syncScoreDisplay();
+    // Whatever is left goes up in its own colour, so the finished board always shows all four.
+    q.groups.forEach(g => { if (!q.solved.includes(g)) q.solved.push(g); });
+    q.picked = [];
+    sbPaintConnect(q);
+    const fb = document.getElementById('feedback');
+    fb.innerHTML = solved
+        ? `<strong>${pts}/10</strong> — solved with ${q.mistakes} mistake${q.mistakes === 1 ? '' : 's'}.`
+        : `<strong>0/10</strong> — out of mistakes. Here are the four.`;
+    fb.className = 'feedback ' + sbScoreClass(pts);
+    const next = document.getElementById('next-btn');
+    next.textContent = 'See Results';
+    next.disabled = false;
+    document.getElementById('give-up-btn').style.display = 'none';
+    clearAutoAdvance();
 }
 
 // ---- engine: picker (type to filter, choose any country) ----
@@ -21284,20 +26474,7 @@ function sbFlagOffsets(bm) {
 // which is what "the sandbox clips the map for no apparent reason" was — the map was framed on
 // somebody's island 6,000 km away.
 function sbFitToFeatures(names, padFrac) {
-    if (!projection || !projection.fitExtent) return false;
-    const feats = names.map(sbFeature).filter(Boolean).map(f => {
-        const core = shapeFramingCore(f);
-        if (!core) return f;
-        return core.type === 'Feature' ? core : { type: 'Feature', properties: {}, geometry: core };
-    });
-    if (!feats.length) return false;
-    const w = width || 800, h = height || 600;
-    const pad = Math.min(w, h) * (padFrac == null ? 0.08 : padFrac);
-    try {
-        projection.fitExtent([[pad, pad], [w - pad, h - pad]],
-            { type: 'FeatureCollection', features: feats });
-    } catch (_) { return false; }
-    return true;
+    return fitTo(names, { core: true, pad: padFrac == null ? 0.08 : padFrac });
 }
 
 // Every Neighbour's reveal: the silhouette was alone on purpose (with the map around it, its
@@ -21845,13 +27022,41 @@ function sbRenderRouteOptions(routes, correct) {
 // ---- silhouette transforms ----
 // The five ways a country outline can be turned or flipped and still be the same outline.
 // y runs DOWN in projected space, so `mirrorUD` is the one that negates y.
-const SB_SHAPE_TRANSFORMS = [
-    { key: 'rot90cw',  mat: [0, -1, 1, 0],  say: 'turned a quarter-turn clockwise' },
-    { key: 'rot90ccw', mat: [0, 1, -1, 0],  say: 'turned a quarter-turn anticlockwise' },
-    { key: 'rot180',   mat: [-1, 0, 0, -1], say: 'turned upside down' },
-    { key: 'mirrorLR', mat: [-1, 0, 0, 1],  say: 'mirrored left-to-right' },
-    { key: 'mirrorUD', mat: [1, 0, 0, -1],  say: 'mirrored top-to-bottom' }
-];
+// Screen coordinates have y DOWN, so a clockwise turn by t is [cos, -sin, sin, cos] — which is
+// where the quarter-turn's [0,-1,1,0] comes from.
+function sbRotMat(deg) {
+    const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    const z = v => Math.abs(v) < 1e-12 ? 0 : v;
+    return [z(c), z(-s), z(s), z(c)];
+}
+
+// The two mirrors, and every turn in 15° steps FROM 45° TO 315°. The odd angles are what the
+// Shape ID "Turned" tier used to ask on its own — a whole outline at an unknown angle — and it
+// is the same question as this one, so it is asked here instead of on a screen of its own.
+//
+// The small angles are excluded and that exclusion is the whole of what makes the merge work.
+// The selection rule below takes whichever transform leaves the silhouette looking MOST like
+// its true self, and with tiny rotations available that rule has a degenerate optimum: a 15°
+// turn barely changes any shape, so it wins nearly every time. Measured with 15° in the
+// vocabulary, **88 of 120 eligible countries** were dealt a 15° turn — and a 15° turn is not a
+// question about which way a country points, it is a question about whether you can see 15°.
+// Below 45° there is nothing to recognise; at 45° and beyond the shape is visibly not upright
+// and the question is the one this round exists to ask.
+const SB_SHAPE_MIN_TURN = 45;
+const SB_SHAPE_TRANSFORMS = (() => {
+    const out = [
+        { key: 'mirrorLR', mat: [-1, 0, 0, 1], say: 'mirrored left-to-right' },
+        { key: 'mirrorUD', mat: [1, 0, 0, -1], say: 'mirrored top-to-bottom' }
+    ];
+    for (let d = SB_SHAPE_MIN_TURN; d <= 360 - SB_SHAPE_MIN_TURN; d += 15) {
+        const say = d === 90 ? 'turned a quarter-turn clockwise'
+                  : d === 180 ? 'turned upside down'
+                  : d === 270 ? 'turned a quarter-turn anticlockwise'
+                  : `turned ${d <= 180 ? d + '° clockwise' : (360 - d) + '° anticlockwise'}`;
+        out.push({ key: 'rot' + d, mat: sbRotMat(d), say });
+    }
+    return out;
+})();
 
 // Project a feature to the plane once, then apply a 2x2 matrix to the RESULT.
 //
@@ -21877,20 +27082,15 @@ function sbPlanarFeature(f, mat) {
 // Rasterise a planar silhouette into an NxN bitmap, fitted to its own bounds — so comparing
 // two masks compares SHAPE, with position and size already normalised away.
 function sbSilhouetteMask(planar, N) {
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = N;
-    const ctx = cv.getContext('2d');
     let proj;
     try { proj = d3.geoIdentity().fitExtent([[1, 1], [N - 1, N - 1]], planar); }
     catch (_) { return null; }
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    d3.geoPath(proj, ctx)(planar);
-    ctx.fill();
-    const data = ctx.getImageData(0, 0, N, N).data;
-    const mask = new Uint8Array(N * N);
-    for (let i = 0; i < N * N; i++) mask[i] = data[i * 4 + 3] > 40 ? 1 : 0;
-    return mask;
+    return alphaMask(N, N, ctx => {
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        d3.geoPath(proj, ctx)(planar);
+        ctx.fill();
+    });
 }
 
 function sbMaskIoU(a, b) {
@@ -22181,9 +27381,33 @@ function recordSandboxAnswer(picked, correct) {
         syncScoreDisplay();
         if (correct) extra = ` <strong>${1 + bonus}/10</strong> — ${secs.toFixed(1)}s.`;
     }
-    feedback.innerHTML = (correct ? '' : `It was <strong>${q.correct}</strong>. `) + (q.explain || '') + extra;
-    feedback.className = 'feedback ' + (correct ? 'correct' : 'incorrect');
+    const html = (correct ? '' : `It was <strong>${q.correct}</strong>. `) + (q.explain || '') + extra;
+    const cls = 'feedback ' + (correct ? 'correct' : 'incorrect');
+    // A round that withholds its buttons has to withhold this too, and for a stronger reason:
+    // the box is green or red before the animation has drawn a single frame, and on a wrong
+    // answer it opens by naming the country. `deferMark` exists so the picture argues first,
+    // and a verdict popped over the top of it is the argument being given away — so the box is
+    // held and flushed by sbMarkCorrectOption at the end of the hold, with everything else.
+    if (q.deferMark) {
+        q.pendingFeedback = { html, cls };
+        feedback.innerHTML = '';
+        feedback.className = 'feedback';
+    } else {
+        feedback.innerHTML = html;
+        feedback.className = cls;
+    }
     sbPlayRevealAnimation();
+}
+
+// Write out a verdict that was held back for the reveal. Idempotent — the reveal's marking
+// step and its own unconditional backstop both call it.
+function sbFlushFeedback() {
+    const q = gameState.sbQuestion;
+    const box = document.getElementById('feedback');
+    if (!q || !q.pendingFeedback || !box) return;
+    box.innerHTML = q.pendingFeedback.html;
+    box.className = q.pendingFeedback.cls;
+    q.pendingFeedback = null;
 }
 
 // Rounds that have something to SHOW once the answer is in, rather than just say. One entry
@@ -22209,17 +27433,11 @@ function sbPlayRevealAnimation() {
     // whole point of dividing the land at the arc level rather than by redrawing polygons.
     if (q.surgery && q.surgery.goneFeature) {
         const feat = q.surgery.goneFeature;
-        if (projection && projection.fitExtent) {
-            // Fitted to the COUNTRY, with a wide margin rather than to the whole neighbourhood.
-            // Fitting to every absorber framed the DRC or Kazakhstan and left the country that
-            // vanished as a speck in the middle of it; a generous pad round the country itself
-            // shows the same neighbours and puts the thing being talked about in the middle.
-            const w = width || 800, h = height || 600, pad = Math.min(w, h) * 0.34;
-            try {
-                projection.fitExtent([[pad, pad], [w - pad, h - pad]], feat);
-                drawCountries();
-            } catch (_) { /* keep the framing we had */ }
-        }
+        // Fitted to the COUNTRY, with a wide margin rather than to the whole neighbourhood.
+        // Fitting to every absorber framed the DRC or Kazakhstan and left the country that
+        // vanished as a speck in the middle of it; a generous pad round the country itself
+        // shows the same neighbours and puts the thing being talked about in the middle.
+        if (fitTo(feat, { pad: 0.34 })) drawCountries();
         const d = path(feat);
         if (d) sbOverlay().append('path').datum(feat).attr('class', 'sb-ghost').attr('d', d);
         const c = d3.geoCentroid(feat);
@@ -22262,6 +27480,9 @@ function sbPlayRevealAnimation() {
         const q0 = q, at = hold * SB_MARK_AT;
         setTimeout(() => { if (gameState.sbQuestion === q0) sbMarkCorrectOption(q0.correct); }, at);
         setTimeout(() => { if (gameState.sbQuestion === q0) scheduleAutoAdvance(hold); }, 0);
+    } else {
+        // No reveal to wait for, so nothing is being held back — say it now rather than never.
+        sbFlushFeedback();
     }
 }
 
@@ -22271,6 +27492,8 @@ const SB_MARK_AT = 0.8;
 // Mark the option carrying this answer. `data-answer` first, because a tile need not wear its
 // answer — Upside Down's are blank until the reveal names them.
 function sbMarkCorrectOption(correct) {
+    // The held-back verdict arrives with the marking, which is the moment the round is decided.
+    sbFlushFeedback();
     if (!correct) return;
     document.querySelectorAll('.option-btn').forEach(btn => {
         if ((btn.dataset.answer || btn.textContent) === correct) btn.classList.add('correct');
@@ -22418,14 +27641,86 @@ function sbSubmitOrder() {
     // The guess→truth grid with its connecting arrows, exactly as population-order draws it —
     // the only thing this round supplies of its own is how to print the value column.
     renderOrderingResult(userOrder, gameState.sbCorrectOrder, q.format);
+    // Two ways of showing what the five numbers actually were, and which one depends on what
+    // was being ranked. A quantity gets a BAR CHART, because five numbers in a column are five
+    // numbers and five bars are a shape. A direction gets a MAP, because "furthest north" is a
+    // claim about a place and the only honest picture of it is the point itself on the globe.
+    if (q.barValues) sbRevealRankBars(q);
+    else if (q.extremeAt) sbRevealExtremeMap(q);
     // ...and the map the whole question was about. Five names in a column say nothing about
     // where they are; five spokes off the anchor say the entire answer at a glance.
-    sbRevealDistanceMap(q);
+    else sbRevealDistanceMap(q);
 
     const nextBtn = document.getElementById('next-btn');
     nextBtn.textContent = (gameState.currentQuestion >= gameState.totalQuestions) ? 'See Results' : 'Next';
     // Like population-order, the result grid IS the payoff — no timed advance pulling it away.
     clearAutoAdvance();
+}
+
+// Five numbers in a column are five numbers; five bars are a shape. The bar chart is the only
+// place the round says how far apart the answers actually were — an order can be right by a
+// hair or by a factor of ten, and the list cannot tell you which.
+//
+// Bars are drawn against the LARGEST of the five, not against zero-to-anything, so the picture
+// fills its width whatever scale the metric lives on. A country the player put out of order is
+// marked, so the chart shows the mistake as well as the answer.
+function sbRevealRankBars(q) {
+    const host = document.getElementById('ordering-container');
+    if (!host || !q.value) return;
+    const order = q.correct || q.items;
+    const vals = order.map(n => q.value(n)).filter(v => v != null && isFinite(v));
+    const max = d3.max(vals);
+    if (!max) return;
+    const mine = new Set((gameState.sbDrag ? gameState.sbDrag.getCurrentOrder() : [])
+        .filter((n, i) => !namesMatch(n, order[i])));
+    const box = document.createElement('div');
+    box.className = 'sb-rank-bars';
+    box.innerHTML = '<div class="sb-rank-title">What the numbers were</div>' +
+        order.map(n => {
+            const v = q.value(n);
+            const pct = (v == null || !isFinite(v)) ? 0 : Math.max(1.5, 100 * v / max);
+            return `<div class="sb-rank-row${mine.has(n) ? ' misplaced' : ''}">` +
+                `<span class="sb-rank-name">${displayLabelForName(n)}</span>` +
+                `<span class="sb-rank-track"><span class="sb-rank-fill" style="width:${pct.toFixed(1)}%"></span></span>` +
+                `<span class="sb-rank-val">${q.format ? q.format(n) : v}</span></div>`;
+        }).join('') +
+        (mine.size ? '<div class="sb-rank-key">Marked rows are the ones you placed out of order.</div>' : '');
+    host.appendChild(box);
+}
+
+// "Furthest north" is a claim about a PLACE, so the reveal is the place. Each country is drawn
+// with a pin on the exact point the ranking was measured at, and a parallel (or meridian) ruled
+// through the winner — the line everything else falls short of.
+function sbRevealExtremeMap(q) {
+    document.getElementById('map-container').classList.remove('hidden');
+    const names = q.correct || q.items;
+    q.boardMarks = { marks: names.reduce((m, n, i) => (m[n] = i === 0 ? 'target' : 'right', m), {}) };
+    if (!sbFitToFeatures(names, 0.1)) return;
+    drawCountries();
+    const layer = sbOverlay();
+    const ns = q.extremeNS;
+    // The winner's line first and underneath: it is the standard everything else is measured
+    // against, not another mark on top of them.
+    const top = q.extremeAt[names[0]];
+    if (top) {
+        const line = ns
+            ? { type: 'LineString', coordinates: d3.range(-180, 181, 2).map(l => [l, top[1]]) }
+            : { type: 'LineString', coordinates: d3.range(-89, 90, 2).map(p => [top[0], p]) };
+        const d = path(line);
+        if (d) layer.append('path').datum(line).attr('class', 'sb-extreme-line').attr('d', d);
+    }
+    names.forEach((n, i) => {
+        const at = q.extremeAt[n];
+        if (!at) return;
+        const pt = projection(at);
+        if (!pt || !isFinite(pt[0])) return;
+        const g = layer.append('g').datum({ at, dy: 0 })
+            .attr('class', 'sb-anchored sb-extreme-pin' + (i === 0 ? ' first' : ''))
+            .attr('transform', `translate(${pt[0]}, ${pt[1]})`);
+        g.append('circle').attr('r', 4);
+        g.append('text').attr('text-anchor', 'middle').attr('dy', -8)
+            .text(`${i + 1}. ${displayLabelForName(n)}`);
+    });
 }
 
 // ---- overlay layer (guess pins, the parallel) ----
@@ -22563,20 +27858,13 @@ function sbDrawCoastOnly() {
 function sbSoloDraw() {
     const q = gameState.sbQuestion;
     const solo = q && q.solo;
-    if (!solo || !solo.feature || !countriesGroup || !projection || !projection.fitExtent) return false;
-    const core = (solo.kind === 'lake' ? solo.feature : (shapeFramingCore(solo.feature) || solo.feature));
-    // fitExtent works in PROJECTION units, which are the SVG's viewBox units — not client
-    // pixels. The svg is viewBox-scaled, so measuring it with clientWidth overshoots the fit
-    // by the display ratio and pushes the shape off the edges.
-    const w = width || 800, h = height || 600;
-    const pad = Math.min(w, h) * 0.14;
-    try {
-        // Recentre longitude first, or a shape straddling the antimeridian fits to a box
-        // spanning the whole world (the same guard renderCountryShapeIdQuestion uses).
-        const c = d3.geoCentroid(core);
-        if (typeof projection.rotate === 'function' && isFinite(c[0])) projection.rotate([-c[0], 0]);
-        projection.fitExtent([[pad, pad], [w - pad, h - pad]], core);
-    } catch (_) { return false; }
+    if (!solo || !solo.feature || !countriesGroup) return false;
+    // A lake is framed as it is; only a country needs its remote scraps taken off first. Note
+    // fitTo works in PROJECTION units, which are the SVG's viewBox units and not client pixels
+    // — the svg is viewBox-scaled, so measuring it with clientWidth overshoots the fit by the
+    // display ratio and pushes the shape off the edges.
+    if (!fitTo(solo.feature, { core: solo.kind !== 'lake', pad: 0.14, recentre: 'lon' }))
+        return false;
 
     countriesGroup.selectAll('*').remove();
     // The dot markers and the lake overlay are SIBLINGS of countriesGroup, not children, so
@@ -22586,6 +27874,9 @@ function sbSoloDraw() {
     if (lakesGroup) { lakesGroup.remove(); lakesGroup = null; }
 
     if (solo.kind === 'lake') sbDrawSoloLake(solo.feature);
+    // A river has no inside to fade inward from, so it is simply the line it is.
+    else if (solo.kind === 'river')
+        countriesGroup.append('path').attr('class', 'sb-solo-river').attr('d', path(solo.feature));
     else countriesGroup.append('path').attr('class', 'country sb-solo-shape').attr('d', path(solo.feature));
     return true;
 }
@@ -22622,8 +27913,14 @@ function sbDrawSoloLake(feature) {
 // of the same move, and it is the one that shows the shape changing rather than only the size.
 //
 // Slide first, then zoom. Split so each motion can be read on its own.
-// Whether a country's framing core IS the country, memoised across build() calls.
-const sbWholeCache = new Map();
+// Whether a country's framing core IS the country. Memoised across build() calls -- running
+// shapeFramingCore over the whole pool is 600 ms and build() does it on every draw and retry.
+const sbWholeCache = memoByCountries(n => {
+    const f = sbFeature(n);
+    if (!f) return false;
+    const core = d3.geoArea(shapeFramingCore(f)), all = d3.geoArea(f);
+    return all > 0 && core / all > 0.92;
+});
 
 // A cheap stand-in for the animation. Re-projecting 10m geometry every frame costs 63 ms for
 // Canada, which is a slideshow rather than a motion; every nth vertex is 2 ms and, while the
@@ -22867,8 +28164,12 @@ function sbRevealEquator(pair) {
         a.attr('x', items[i].X).attr('y', labY + 20 / S).attr('font-size', (13 / S) + 'px')
          .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
     });
-    sign.attr('x', (items[0].X + items[1].X) / 2).attr('y', anchorY + 8 / S)
-        .attr('font-size', (34 / S) + 'px')
+    // On the NAMES' baseline, not floating between the shapes. The sign belongs to the caption
+    // — it is the relation between the two areas written underneath — and sitting it up at the
+    // shapes' own midpoint made it a third object in the picture rather than punctuation
+    // between the two labels.
+    sign.attr('x', (items[0].X + items[1].X) / 2).attr('y', labY)
+        .attr('font-size', (26 / S) + 'px')
         .transition().delay(moveMs + zoomMs).duration(tellMs).attr('opacity', 1);
     const paintAll = () => shapes.forEach(s => s.paint());
     if (!tellMs) paintAll();
@@ -22998,26 +28299,15 @@ function sbTeardown() {
 // ==================== ORBIT CATEGORY ====================
 // The orbital quiz. Its sandbox now lives under the Sandbox tile instead.
 function showSpaceshipSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Where Is My Spaceship?</h2>
-        <p class="selector-sub">Guess your orbital position. The seed sandbox now lives under Sandbox.</p>
-        <div class="mode-buttons">
-            <button class="mode-btn" data-orbit-mode="spaceship">
-                <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                <span class="mode-name">Play</span>
-                <span class="mode-desc">10 rounds from low Earth orbit</span>
-            </button>
-        </div>
-        <button id="back-from-orbit-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-orbit-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.orbitMode)));
-    document.getElementById('back-from-orbit-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Where Is My Spaceship?',
+        blocks: [
+            { sub: 'Guess your orbital position. The seed sandbox now lives under Sandbox.' },
+            { tiles: [{ key: 'spaceship', icon: 'rocket_launch', label: 'Play',
+                        desc: '10 rounds from low Earth orbit' }],
+              on: startGameWithMode }
+        ]
+    });
 }
 
 // ==================== CAPITALS CATEGORY ====================
@@ -23029,32 +28319,22 @@ const CAPITAL_SUBMODES = [
     { key: 'capitals-race',   icon: 'keyboard',       label: 'Capitals Race',
       desc: 'Type the capital of each highlighted country' },
     { key: 'find-capital',    icon: 'location_city',  label: 'Find the Capital',
-      desc: 'Pin a capital on the map — scored by distance' }
+      desc: 'Pin a capital on the map — scored by distance' },
+    // Promoted out of the quick quizzes. It is the same question as Find the Capital with the
+    // rest of the world taken away, which makes it the harder of the two rather than a different
+    // genre — and somebody looking for a capitals round looks here.
+    { key: 'sb-capital-pin',  icon: 'location_on',    label: 'Pin the Capital',
+      desc: 'Inside the country, with no other map to steer by' }
 ];
 
 function showCapitalsSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Capitals</h2>
-        <p class="selector-sub">Three ways to test the same thing — pick one.</p>
-        <div class="mode-buttons">
-            ${CAPITAL_SUBMODES.map(m => `
-            <button class="mode-btn" data-capital-mode="${m.key}">
-                <span class="mode-icon material-symbols-outlined">${m.icon}</span>
-                <span class="mode-name">${m.label}</span>
-                <span class="mode-desc">${m.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-capitals-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-    modeSelector.querySelectorAll('[data-capital-mode]').forEach(b =>
-        b.addEventListener('click', () => startGameWithMode(b.dataset.capitalMode)));
-    document.getElementById('back-from-capitals-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Capitals',
+        blocks: [
+            { sub: 'Four ways to test the same thing — pick one.' },
+            { tiles: CAPITAL_SUBMODES, on: startGameWithMode }
+        ]
+    });
 }
 
 // The geographies the puzzle can be played on. Each names the QUIZ_MODES entry its map and
@@ -23069,56 +28349,30 @@ const PUZZLE_REGIONS = [
 ];
 
 // Region + difficulty picker for the puzzle.
+const PUZZLE_DIFF_HINTS = {
+    easy: 'Every piece outlined and named on the board. Generous snap, and the piece turns green over the right spot.',
+    medium: 'Only the outer coastline — no internal borders. A fifth of the snap distance, and no green cue.',
+    hard: 'One piece at a time against the bare outline. Nothing snaps and nothing stays on the map, ' +
+          'so every piece is placed blind — scored on how far off you were and how long you took.'
+};
+
 function showStatePuzzleSelector() {
-    teardownActiveGame();
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Map Puzzle</h2>
-        <p class="selector-sub">Drag every piece onto the map — they snap into place when they're close.</p>
-        <div class="place-setup">
-            <div class="place-setup-group">
-                <div class="place-setup-label">Difficulty</div>
-                <div class="scope-toggle" id="puzzle-diff">
-                    <button class="scope-btn active" data-diff="easy">Easy</button>
-                    <button class="scope-btn" data-diff="medium">Medium</button>
-                    <button class="scope-btn" data-diff="hard">Hard</button>
-                </div>
-                <div class="place-setup-hint" id="puzzle-diff-hint"></div>
-            </div>
-        </div>
-        <div class="mode-buttons">
-            ${PUZZLE_REGIONS.map(r => `
-            <button class="mode-btn" data-puzzle-region="${r.key}">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">${r.label}</span>
-                <span class="mode-desc">${r.desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-puzzle-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    const hints = {
-        easy: 'Every piece outlined and named on the board. Generous snap, and the piece turns green over the right spot.',
-        medium: 'Only the outer coastline — no internal borders. A fifth of the snap distance, and no green cue.',
-        hard: 'One piece at a time against the bare outline. Nothing snaps and nothing stays on the map, ' +
-              'so every piece is placed blind — scored on how far off you were and how long you took.'
-    };
     const state = { diff: 'easy' };
-    const hintEl = document.getElementById('puzzle-diff-hint');
-    hintEl.textContent = hints.easy;
-
-    modeSelector.querySelectorAll('#puzzle-diff .scope-btn').forEach(b => b.addEventListener('click', () => {
-        state.diff = b.dataset.diff;
-        hintEl.textContent = hints[state.diff];
-        modeSelector.querySelectorAll('#puzzle-diff .scope-btn').forEach(x => x.classList.toggle('active', x === b));
-    }));
-    modeSelector.querySelectorAll('[data-puzzle-region]').forEach(b => b.addEventListener('click',
-        () => startStatePuzzleMode(b.dataset.puzzleRegion, state.diff)));
-    document.getElementById('back-from-puzzle-btn').addEventListener('click', resetModeSelector);
+    renderSelector({
+        title: 'Map Puzzle',
+        blocks: [
+            { sub: 'Drag every piece onto the map — they snap into place when they’re close.' },
+            { toggle: { label: 'Difficulty', value: 'easy', hint: PUZZLE_DIFF_HINTS.easy,
+                        options: [{ key: 'easy', label: 'Easy' }, { key: 'medium', label: 'Medium' },
+                                  { key: 'hard', label: 'Hard' }],
+                        on: (k, btn, hint) => {
+                            state.diff = k;
+                            if (hint) hint.textContent = PUZZLE_DIFF_HINTS[k];
+                        } } },
+            { tiles: PUZZLE_REGIONS.map(r => Object.assign({ icon: 'extension' }, r)),
+              on: k => startStatePuzzleMode(k, state.diff) }
+        ]
+    });
 }
 
 // Copy the chosen geography's map/list onto the puzzle config, then start. useGlobe is
@@ -23126,16 +28380,9 @@ function showStatePuzzleSelector() {
 // coordinates, which a rotatable globe would invalidate on the first drag.
 function startStatePuzzleMode(region, difficulty) {
     const m = QUIZ_MODES['state-puzzle'];
-    const base = QUIZ_MODES[region] || QUIZ_MODES['us-states'];
+    borrowRegion(m, region, 'us-states');
     m.puzzleRegion = QUIZ_MODES[region] ? region : 'us-states';
-    m.quizList = base.quizList;
-    m.dataObjKey = base.dataObjKey;
-    m.mapUrl = base.mapUrl;
-    m.mapObject = base.mapObject;
-    m.useAlbersUsa = !!base.useAlbersUsa;
     m.useGlobe = false;
-    m.itemLabel = base.itemLabel;
-    m.itemLabelPlural = base.itemLabelPlural;
     m.puzzleDifficulty = difficulty || 'easy';
     startGameWithMode('state-puzzle');
 }
@@ -23156,7 +28403,6 @@ let orbDrag = null;            // pointer-drag state for look-around
 let orbitalResizeBound = false;
 let orbitAltitudeKm = 250;        // camera altitude — tunable via the Orbit-height slider
 const SPACESHIP_FOV = 48;         // vertical field of view (degrees)
-const EARTH_R_KM = 6371;
 // Distance ratio (R+h)/R and the derived viewing geometry. The camera-nadir→horizon
 // angle grows toward 90° as altitude drops, so the default tilt (which frames the
 // curved limb in the upper third) and the pan clamp are both derived from altitude.
@@ -23178,12 +28424,15 @@ const capTileUrl = (col, row) => `data/textures/earth-cap-c${col}-r${row}.jpg`;
 // Marble equirectangular source and drape that crop on a partial-sphere mesh — full detail in
 // view, texture always within the GPU ceiling. Default source is the single 21600×10800 globe;
 // the "500 m tiles" opt-in stitches from the eight full-res 21600² tiles (the build script's).
-const NASA_BMNG_DIR = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/june';
-const NASA_GLOBE_URLS = [ // tried in order — prefer 21600×10800, drop to 5400 if it won't decode
-    `${NASA_BMNG_DIR}/world.200406.3x21600x10800.jpg`,
-    `${NASA_BMNG_DIR}/world.200406.3x5400x2700.jpg`,
+// All of NASA's own imagery here follows the CURRENT month (see the Blue Marble note above); only
+// the committed base sphere and the locally-built cap tiles are stuck at June, because those are
+// files on disk rather than requests.
+const nasaGlobeUrls = () => [ // tried in order — prefer 21600×10800, drop to 5400 if it won't decode
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x21600x10800.jpg`,
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x5400x2700.jpg`,
 ];
-const NASA_500M_URL = t => `${NASA_BMNG_DIR}/world.200406.3x21600x21600.${t}.jpg`;
+const NASA_500M_URL = t =>
+    `${bmngDir(bmngNowMonth())}/world.${bmngStamp(bmngNowMonth())}.3x21600x21600.${t}.jpg`;
 const NASA_500M_COLS = ['A', 'B', 'C', 'D'];            // 90° lon columns: A[-180,-90] … D[90,180]
 const NASA_500M_ROWS = { '1': [0, 90], '2': [-90, 0] }; // row 1 = north, row 2 = south
 const NASA_500M_PPD = 21600 / 90;                       // 240 px/deg — native 500 m detail
@@ -23327,7 +28576,7 @@ function computeCoastHeading(target) {
         east += w * Math.cos(ar);
         north += w * Math.sin(ar);
     }
-    if (east === 0 && north === 0) return Math.random() * 2 * Math.PI;
+    if (east === 0 && north === 0) return rnd() * 2 * Math.PI;
     return Math.atan2(east, north); // forward = cosψ·north + sinψ·east
 }
 
@@ -23371,13 +28620,14 @@ function capDestSize(rect, pxPerDeg) {
 function loadNasaGlobe() {
     if (orbitalGlobePromise) return orbitalGlobePromise;
     orbitalGlobePromise = new Promise((resolve, reject) => {
+        const urls = nasaGlobeUrls();
         let i = 0;
         const tryNext = () => {
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.onload = () => (img.naturalWidth ? resolve(img) : img.onerror());
-            img.onerror = () => (++i < NASA_GLOBE_URLS.length ? tryNext() : reject(new Error('NASA globe failed')));
-            img.src = NASA_GLOBE_URLS[i];
+            img.onerror = () => (++i < urls.length ? tryNext() : reject(new Error('NASA globe failed')));
+            img.src = urls[i];
         };
         tryNext();
     });
@@ -23528,6 +28778,27 @@ function loadEarthTextures() {
         if (orbital) { orbital.earth.material.map = orbitalTexLow; orbital.earth.material.needsUpdate = true; }
         orbitalRender();
     }, undefined, () => useNasaFallback()); // base also missing → NASA supplies the cap
+    loadCurrentMonthBase();
+}
+
+// The committed base sphere is June. Ask NASA for the CURRENT month alongside it and swap it in
+// when it arrives: the local file has already painted by then and is covering the far side, so
+// nothing is ever waiting on the network for it. In June there is nothing to do — the file in
+// hand is already the right month.
+function loadCurrentMonthBase() {
+    const m = bmngNowMonth();
+    if (m === BMNG_LOCAL_MONTH) return;
+    ensureBmngMonth(m, img => {
+        const T = window.THREE;
+        if (!T) return;
+        const t = new T.Texture(img);
+        t.colorSpace = T.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+        const old = orbitalTexLow;
+        orbitalTexLow = t;
+        if (orbital) { orbital.earth.material.map = t; orbital.earth.material.needsUpdate = true; }
+        if (old && old !== t && old.dispose) old.dispose();
+        orbitalRender();
+    });
 }
 
 // Geographic bounds of a cap grid tile.
@@ -24077,7 +29348,7 @@ function orbitalSetTarget(target) {
         tilt: defaultOrbitTilt(),
         // Seeded runs pin the roll too — heading and tilt are derived, but roll is random,
         // and an unpinned roll would show the same ground at a different angle.
-        roll: (gameState.spaceshipRoll != null) ? gameState.spaceshipRoll : (Math.random() * 2 - 1) * 5,
+        roll: (gameState.spaceshipRoll != null) ? gameState.spaceshipRoll : (rnd() * 2 - 1) * 5,
         fov: SPACESHIP_FOV
     };
     orbitalRefreshCap(target); // local tiles, NASA globe crop, or 500 m stitch — whichever is active
@@ -24284,7 +29555,7 @@ function frameSpaceshipResult(answer, guess) {
 function submitSpaceshipGuess() {
     if (gameState.capitalSubmitted || !gameState.currentGuess) return;
     gameState.capitalSubmitted = true;
-    const dKm = d3.geoDistance(gameState.currentGuess, gameState.spaceshipTarget) * 6371;
+    const dKm = d3.geoDistance(gameState.currentGuess, gameState.spaceshipTarget) * EARTH_R_KM;
     gameState.totalDistanceKm += dKm;
 
     // Score = accuracy + speed − panning (weights are slider-tunable).
@@ -24331,16 +29602,7 @@ function startNameAllMode(region) {
     // ends there is nothing left to say where it came from.
     nm.sourceRegion = region;
     if (NAME_ALL_STATE_MODES.includes(region)) {
-        const base = QUIZ_MODES[region];
-        nm.quizList = base.quizList;
-        nm.dataObjKey = base.dataObjKey;
-        nm.useGlobe = base.useGlobe;
-        nm.useAlbersUsa = base.useAlbersUsa || false;
-        nm.mapUrl = base.mapUrl;
-        nm.mapObject = base.mapObject;
-        nm.itemLabel = base.itemLabel;
-        nm.itemLabelPlural = base.itemLabelPlural;
-        nm.regionLabel = base.name;
+        nm.regionLabel = borrowRegion(nm, region).name;
     } else {
         nm.quizList = (region && region !== 'world' && window.continentData && window.continentData[region])
             ? window.continentData[region] : quizCountries;
@@ -24358,47 +29620,28 @@ function startNameAllMode(region) {
 
 // Region picker for Name All: World + continents (unchanged groups), plus one entry per
 // state-level map.
+// icon → a material-symbols glyph, flag → a flagcdn code (the convention the Find/Identify
+// region pickers use for the state-level geographies).
+const NAME_ALL_REGIONS = [
+    { key: 'world', icon: 'public', label: 'World', desc: 'Name every country on Earth' },
+    { key: 'North America', icon: 'globe', label: 'North America', desc: 'Name all North American countries' },
+    { key: 'South America', icon: 'globe', label: 'South America', desc: 'Name all South American countries' },
+    { key: 'Europe', icon: 'globe', label: 'Europe', desc: 'Name all European countries' },
+    { key: 'Africa', icon: 'globe', label: 'Africa', desc: 'Name all African countries' },
+    { key: 'Asia', icon: 'globe', label: 'Asia', desc: 'Name all Asian countries' },
+    { key: 'Oceania', icon: 'globe', label: 'Oceania', desc: 'Name all countries in Oceania' },
+    { key: 'us-states', flag: 'us', label: 'USA', desc: 'Name all US states' },
+    { key: 'indian-states', flag: 'in', label: 'India', desc: 'Name all Indian states' },
+    { key: 'german-states', flag: 'de', label: 'Germany', desc: 'Name all German Bundesländer' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England', desc: 'Name all English counties' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexico', desc: 'Name all Mexican states' }
+];
+
 function showNameAllModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    // icon: 'icon' → material-symbols glyph, 'flag' → flagcdn country flag (matches the
-    // Find/Identify region-picker convention for the state-level geographies).
-    const regions = [
-        ['world', 'icon', 'public', 'World', 'Name every country on Earth'],
-        ['North America', 'icon', 'globe', 'North America', 'Name all North American countries'],
-        ['South America', 'icon', 'globe', 'South America', 'Name all South American countries'],
-        ['Europe', 'icon', 'globe', 'Europe', 'Name all European countries'],
-        ['Africa', 'icon', 'globe', 'Africa', 'Name all African countries'],
-        ['Asia', 'icon', 'globe', 'Asia', 'Name all Asian countries'],
-        ['Oceania', 'icon', 'globe', 'Oceania', 'Name all countries in Oceania'],
-        ['us-states', 'flag', 'us', 'USA', 'Name all US states'],
-        ['indian-states', 'flag', 'in', 'India', 'Name all Indian states'],
-        ['german-states', 'flag', 'de', 'Germany', 'Name all German Bundesländer'],
-        ['uk-states', 'flag', 'gb-eng', 'England', 'Name all English counties'],
-        ['mexican-states', 'flag', 'mx', 'Mexico', 'Name all Mexican states']
-    ];
-    modeSelector.innerHTML = `
-        <h2>Name All — Choose a Region</h2>
-        <div class="mode-buttons">
-            ${regions.map(([key, iconType, iconVal, name, desc]) => `
-            <button class="mode-btn" data-nameall-region="${key}">
-                ${iconType === 'flag'
-                    ? `<img class="mode-icon" src="https://flagcdn.com/${iconVal}.svg" alt="${name}" />`
-                    : `<span class="mode-icon material-symbols-outlined">${iconVal}</span>`}
-                <span class="mode-name">${name}</span>
-                <span class="mode-desc">${desc}</span>
-            </button>`).join('')}
-        </div>
-        <button id="back-from-nameall-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    document.querySelectorAll('[data-nameall-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => startNameAllMode(e.currentTarget.dataset.nameallRegion));
+    renderSelector({
+        title: 'Name All — Choose a Region',
+        blocks: [{ tiles: NAME_ALL_REGIONS, on: startNameAllMode }]
     });
-    document.getElementById('back-from-nameall-btn').addEventListener('click', () => resetModeSelector());
 }
 
 // ---- Find/Identify "All" vs "Random 10" scope toggle --------------------------------
@@ -24410,15 +29653,6 @@ function showNameAllModeSelector() {
 let findQuizScopeAll = true;
 let identifyQuizScopeAll = false;
 
-function scopeToggleHtml(kind, isAll) {
-    return `
-        <div class="scope-toggle" data-for="${kind}" role="group" aria-label="Number of questions">
-            <span class="scope-toggle-label">Questions:</span>
-            <button type="button" class="scope-btn${isAll ? ' active' : ''}" data-scope="all">All</button>
-            <button type="button" class="scope-btn${isAll ? '' : ' active'}" data-scope="random10">Random 10</button>
-        </div>`;
-}
-
 // Override a Find-screen mode's totalQuestions per the current toggle state. Identify
 // mode computes its own totalQuestions inline (startIdentifyMode) since it always
 // reconfigures QUIZ_MODES.identify from scratch per region.
@@ -24429,153 +29663,62 @@ function applyQuizScope(mode, scopeAll) {
     }
 }
 
+const SCOPE_OPTIONS = [{ key: 'all', label: 'All' }, { key: 'random10', label: 'Random 10' }];
+
+const FIND_REGIONS = [
+    { key: 'countries', icon: 'public', label: 'World', desc: 'Find countries on the globe' },
+    { key: 'us-states', flag: 'us', label: 'USA', desc: 'Find US states on the map' },
+    { key: 'indian-states', flag: 'in', label: 'India', desc: 'Find Indian states on the map' },
+    { key: 'german-states', flag: 'de', label: 'Germany', desc: 'Find German Bundesländer on the map' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England', desc: 'Find English counties on the map' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexico', desc: 'Find Mexican states on the map' },
+    { key: 'mystery-flag', icon: 'flag', label: 'Flags', desc: 'See the flag, find the country on the globe' },
+    { key: 'find-capital', icon: 'location_city', label: 'Capitals', desc: 'Pin a capital’s location on the map by distance' }
+];
+
+const IDENTIFY_REGIONS = [
+    { key: 'countries', icon: 'public', label: 'World Countries', desc: 'Identify highlighted countries' },
+    { key: 'us-states', flag: 'us', label: 'US States', desc: 'Identify highlighted US states' },
+    { key: 'indian-states', flag: 'in', label: 'Indian States', desc: 'Identify highlighted Indian states' },
+    { key: 'german-states', flag: 'de', label: 'German States', desc: 'Identify highlighted German Bundesländer' },
+    { key: 'uk-states', flag: 'gb-eng', label: 'England Counties', desc: 'Identify highlighted English counties' },
+    { key: 'mexican-states', flag: 'mx', label: 'Mexican States', desc: 'Identify highlighted Mexican states' }
+];
+
 function showFindModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    modeSelector.innerHTML = `
-        <h2>Find on the Map</h2>
-        ${scopeToggleHtml('find', findQuizScopeAll)}
-        <div class="mode-buttons">
-            <button class="mode-btn" data-mode="countries">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World</span>
-                <span class="mode-desc">Find countries on the globe</span>
-            </button>
-            <button class="mode-btn" data-mode="us-states">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">USA</span>
-                <span class="mode-desc">Find US states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="indian-states">
-                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
-                <span class="mode-name">India</span>
-                <span class="mode-desc">Find Indian states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="german-states">
-                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
-                <span class="mode-name">Germany</span>
-                <span class="mode-desc">Find German Bundesländer on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="uk-states">
-                <img class="mode-icon" src="https://flagcdn.com/gb-eng.svg" alt="England" />
-                <span class="mode-name">England</span>
-                <span class="mode-desc">Find English counties on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="mexican-states">
-                <img class="mode-icon" src="https://flagcdn.com/mx.svg" alt="Mexico" />
-                <span class="mode-name">Mexico</span>
-                <span class="mode-desc">Find Mexican states on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="mystery-flag">
-                <span class="mode-icon material-symbols-outlined">flag</span>
-                <span class="mode-name">Flags</span>
-                <span class="mode-desc">See the flag, find the country on the globe</span>
-            </button>
-            <button class="mode-btn" data-mode="find-capital">
-                <span class="mode-icon material-symbols-outlined">location_city</span>
-                <span class="mode-name">Capitals</span>
-                <span class="mode-desc">Pin a capital's location on the map by distance</span>
-            </button>
-        </div>
-        <button id="back-from-find-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            applyQuizScope(mode, findQuizScopeAll);
-            startGameWithMode(mode);
-        });
-    });
-
-    document.getElementById('back-from-find-btn').addEventListener('click', () => {
-        resetModeSelector();
+    renderSelector({
+        title: 'Find on the Map',
+        blocks: [
+            { toggle: { label: 'Questions:', options: SCOPE_OPTIONS,
+                        value: findQuizScopeAll ? 'all' : 'random10',
+                        on: k => { findQuizScopeAll = k === 'all'; } } },
+            { tiles: FIND_REGIONS, on: mode => {
+                applyQuizScope(mode, findQuizScopeAll);
+                startGameWithMode(mode);
+              } }
+        ]
     });
 }
 
-// Show identify mode selector (choose region)
 function showIdentifyModeSelector() {
-    document.getElementById('top-bar').style.display = 'none';
-    document.getElementById('landing-header').style.display = '';
-
-    // Create a temporary selector for identify mode regions
-    const modeSelector = document.getElementById('mode-selector');
-    modeSelector.classList.remove('hidden');
-    const html = `
-        <h2>Select Region for Identify Mode</h2>
-        ${scopeToggleHtml('identify', identifyQuizScopeAll)}
-        <div class="mode-buttons">
-            <button class="mode-btn" data-identify-region="countries">
-                <span class="mode-icon material-symbols-outlined">public</span>
-                <span class="mode-name">World Countries</span>
-                <span class="mode-desc">Identify highlighted countries</span>
-            </button>
-            <button class="mode-btn" data-identify-region="us-states">
-                <img class="mode-icon" src="https://flagcdn.com/us.svg" alt="USA" />
-                <span class="mode-name">US States</span>
-                <span class="mode-desc">Identify highlighted US states</span>
-            </button>
-            <button class="mode-btn" data-identify-region="indian-states">
-                <img class="mode-icon" src="https://flagcdn.com/in.svg" alt="India" />
-                <span class="mode-name">Indian States</span>
-                <span class="mode-desc">Identify highlighted Indian states</span>
-            </button>
-            <button class="mode-btn" data-identify-region="german-states">
-                <img class="mode-icon" src="https://flagcdn.com/de.svg" alt="Germany" />
-                <span class="mode-name">German States</span>
-                <span class="mode-desc">Identify highlighted German Bundesländer</span>
-            </button>
-            <button class="mode-btn" data-identify-region="uk-states">
-                <img class="mode-icon" src="https://flagcdn.com/gb-eng.svg" alt="England" />
-                <span class="mode-name">England Counties</span>
-                <span class="mode-desc">Identify highlighted English counties</span>
-            </button>
-            <button class="mode-btn" data-identify-region="mexican-states">
-                <img class="mode-icon" src="https://flagcdn.com/mx.svg" alt="Mexico" />
-                <span class="mode-name">Mexican States</span>
-                <span class="mode-desc">Identify highlighted Mexican states</span>
-            </button>
-        </div>
-        <button id="back-from-identify-btn" class="btn secondary" style="margin-top: 20px;">Back</button>
-    `;
-
-    modeSelector.innerHTML = html;
-
-    // Add event listeners for identify region buttons
-    document.querySelectorAll('[data-identify-region]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const region = e.currentTarget.dataset.identifyRegion;
-            startIdentifyMode(region);
-        });
-    });
-
-    // Back button
-    document.getElementById('back-from-identify-btn').addEventListener('click', () => {
-        resetModeSelector();
+    renderSelector({
+        title: 'Select Region for Identify Mode',
+        blocks: [
+            { toggle: { label: 'Questions:', options: SCOPE_OPTIONS,
+                        value: identifyQuizScopeAll ? 'all' : 'random10',
+                        on: k => { identifyQuizScopeAll = k === 'all'; } } },
+            { tiles: IDENTIFY_REGIONS, on: startIdentifyMode }
+        ]
     });
 }
 
 // Start identify mode with selected region
 function startIdentifyMode(region) {
     // Configure identify mode with the selected region's data
-    const baseMode = region === 'countries' ? 'countries' : region;
-    const baseModeConfig = QUIZ_MODES[baseMode];
-
-    // Update identify mode configuration
-    QUIZ_MODES.identify.quizList = baseModeConfig.quizList;
-    QUIZ_MODES.identify.dataObjKey = baseModeConfig.dataObjKey;
-    QUIZ_MODES.identify.useGlobe = baseModeConfig.useGlobe;
-    QUIZ_MODES.identify.useAlbersUsa = baseModeConfig.useAlbersUsa || false;
-    QUIZ_MODES.identify.mapUrl = baseModeConfig.mapUrl;
-    QUIZ_MODES.identify.mapObject = baseModeConfig.mapObject;
-    QUIZ_MODES.identify.itemLabel = baseModeConfig.itemLabel;
-    QUIZ_MODES.identify.itemLabelPlural = baseModeConfig.itemLabelPlural;
+    const base = borrowRegion(QUIZ_MODES.identify, region);
     QUIZ_MODES.identify.totalQuestions = identifyQuizScopeAll
-        ? baseModeConfig.quizList.length
-        : Math.min(10, baseModeConfig.quizList.length);
+        ? base.quizList.length
+        : Math.min(10, base.quizList.length);
 
     // Start game with identify mode
     startGameWithMode('identify');
@@ -24588,115 +29731,8 @@ function resetModeSelector() {
     // first, or its stage stays sitting on top of the menu it just returned to.
     teardownActiveGame();
     const modeSelector = document.getElementById('mode-selector');
-    modeSelector.innerHTML = `
-        <h2>Select Quiz Mode</h2>
-        <div class="mode-buttons" id="mode-buttons">
-            <button class="mode-btn" data-mode="find">
-                <span class="mode-icon material-symbols-outlined">search</span>
-                <span class="mode-name">Find on the Map</span>
-                <span class="mode-desc">Find countries or states on the globe/map</span>
-            </button>
-            <button class="mode-btn" data-mode="identify">
-                <span class="mode-icon material-symbols-outlined">help</span>
-                <span class="mode-name">Identify Mode</span>
-                <span class="mode-desc">Identify highlighted locations on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="name-all">
-                <span class="mode-icon material-symbols-outlined">keyboard</span>
-                <span class="mode-name">Name All Countries</span>
-                <span class="mode-desc">Type as many countries as you can!</span>
-            </button>
-            <button class="mode-btn" data-mode="population-order">
-                <span class="mode-icon material-symbols-outlined">bar_chart</span>
-                <span class="mode-name">Order by Population</span>
-                <span class="mode-desc">Drag countries to order them by population</span>
-            </button>
-            <button class="mode-btn" data-mode="flags">
-                <span class="mode-icon material-symbols-outlined">flag</span>
-                <span class="mode-name">Flags</span>
-                <span class="mode-desc">Find the country from its flag, or match every flag at once</span>
-            </button>
-            <button class="mode-btn" data-mode="capitals">
-                <span class="mode-icon material-symbols-outlined">star</span>
-                <span class="mode-name">Capitals</span>
-                <span class="mode-desc">Multiple choice, typing race, or pin it on the map</span>
-            </button>
-            <button class="mode-btn" data-mode="explore">
-                <span class="mode-icon material-symbols-outlined">explore</span>
-                <span class="mode-name">Explore</span>
-                <span class="mode-desc">Roam the globe, or put the world through a dozen projections</span>
-            </button>
-            <button class="mode-btn" data-mode="places">
-                <span class="mode-icon material-symbols-outlined">push_pin</span>
-                <span class="mode-name">Places I've Been</span>
-                <span class="mode-desc">Fill in the map with your travels and share it</span>
-            </button>
-            <button class="mode-btn" data-mode="shapes">
-                <span class="mode-icon material-symbols-outlined">extension</span>
-                <span class="mode-name">Shapes</span>
-                <span class="mode-desc">Name an outline, trace one, or drag the pieces into place</span>
-            </button>
-            <button class="mode-btn" data-mode="sb-missing">
-                <span class="mode-icon material-symbols-outlined">search_off</span>
-                <span class="mode-name">Who's Missing?</span>
-                <span class="mode-desc">A country has been absorbed by its neighbours — which one?</span>
-            </button>
-            <button class="mode-btn" data-mode="sun-moon">
-                <span class="mode-icon material-symbols-outlined">wb_twilight</span>
-                <span class="mode-name">Sun &amp; Moon</span>
-                <span class="mode-desc">Day, night and the sunrise line at any date and time</span>
-            </button>
-            <button class="mode-btn" data-mode="spaceship">
-                <span class="mode-icon material-symbols-outlined">rocket_launch</span>
-                <span class="mode-name">Where Is My Spaceship?</span>
-                <span class="mode-desc">Guess your orbital location from the view below</span>
-            </button>
-            <button class="mode-btn" data-mode="sandbox">
-                <span class="mode-icon material-symbols-outlined">science</span>
-                <span class="mode-name">Sandbox</span>
-                <span class="mode-desc">Sun &amp; moon, sun path, odd one out, draw the border</span>
-            </button>
-            <!-- Skyline ID: hidden until the photo pool is vetted (mode still fully works —
-                 see skylineIdMode in game.js). Uncomment to bring it back to the menu. -->
-            <!-- <button class="mode-btn" data-mode="skyline-id">
-                <span class="mode-icon material-symbols-outlined">apartment</span>
-                <span class="mode-name">Skyline ID</span>
-                <span class="mode-desc">Name the city from a photo of its skyline</span>
-            </button> -->
-        </div>
-    `;
-
-    // Re-attach event listeners
-    document.querySelectorAll('#mode-selector .mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.currentTarget.dataset.mode;
-            if (mode === 'find') {
-                showFindModeSelector();
-            } else if (mode === 'identify') {
-                showIdentifyModeSelector();
-            } else if (mode === 'name-all') {
-                showNameAllModeSelector();
-            } else if (mode === 'places') {
-                showPlacesModeSelector();
-            } else if (mode === 'state-puzzle') {
-                showStatePuzzleSelector();
-            } else if (mode === 'shapes' || mode === 'country-shape-id') {
-                showShapeIdSelector();
-            } else if (mode === 'explore') {
-                showExploreSelector();
-            } else if (mode === 'capitals') {
-                showCapitalsSelector();
-            } else if (mode === 'flags') {
-                showFlagsSelector();
-            } else if (mode === 'spaceship') {
-                showSpaceshipSelector();
-            } else if (mode === 'sandbox') {
-                showSandboxSelector();
-            } else {
-                startGameWithMode(mode);
-            }
-        });
-    });
+    modeSelector.innerHTML = `<h2>Select Quiz Mode</h2><div class="mode-buttons" id="mode-buttons"></div>`;
+    renderLandingGrid();
 }
 
 // Initialize when DOM is ready

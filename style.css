@@ -32,6 +32,48 @@
     --selected:      #4a708f;   --selected-dark: #345470;
     --partial-soft:  #f3ead2;   --partial-text: #7a5d1e; --partial-border: #cdab5e;
 
+    /* ===== Map style tokens =====
+       THEME and STYLE are two independent axes and must stay that way. The theme decides the
+       palette (Atlas parchment, Slate blue-grey); the style decides how the map is DRAWN — how
+       heavy the ink is, whether a border is a hairline or a rule, how big a dot has to be before
+       you can hit it. Asking one control to do both is what makes a "dark mode" that also
+       secretly changes your line weights.
+
+       So every map mark reads a --map-* token, and each of those falls back to the theme's own
+       colour where it is a colour. A style that only wants heavier ink sets the widths and says
+       nothing about colour, and the theme still decides how the map looks; a style that IS a look
+       (Blueprint) overrides the colours too, and that is a decision it is making on purpose.
+
+       WIDTHS ARE IN VIEWBOX UNITS, NOT PIXELS. The map svg is viewBox-scaled — 800x600 whatever
+       size it renders at — so 0.5 here is 0.5 user units and stays the same fraction of the map
+       on a phone and on a desktop. Writing `0.5px` instead would pin the stroke to the screen and
+       make every line proportionally fatter the smaller the map got. The handful of marks that
+       genuinely want screen pixels (a text halo, a non-scaling pin) say px explicitly and are not
+       tokenised here.
+
+       --map-ink multiplies every width at once, so a style can say "a bit heavier" without
+       enumerating twenty numbers, and the accessibility case (a projector, poor eyesight) is one
+       slider rather than a new style. */
+    --map-ink:         1;
+
+    --map-w-border:    0.5;    /* country and state borders */
+    --map-w-mark:      1;      /* the target, and a wrong answer */
+    --map-w-select:    1.5;    /* the one you picked */
+    --map-w-coast:     0.5;    /* lake edges, coastline overlays */
+    --map-w-dot:       1.25;   /* island / microstate markers */
+    --map-w-dot-hover: 1.75;
+    --map-w-grat:      0.3;    /* graticule, inset coastlines */
+    --map-w-pin:       2;      /* guess and answer pins, and the line between */
+    --map-w-trace:     2.2;    /* Draw the Border's ink */
+    --map-dash-border: none;   /* a dashed border is a style, not a state */
+
+    /* Colours: the theme's, unless a style says otherwise. */
+    --map-land:        var(--land);
+    --map-land-stroke: var(--land-stroke);
+    --map-land-hover:  var(--land-hover);
+    --map-ocean-1:     var(--ocean-1);
+    --map-ocean-2:     var(--ocean-2);
+
     /* Elevation */
     --shadow-sm: 0 1px 3px rgba(60, 50, 30, 0.10);
     --shadow-md: 0 2px 10px rgba(60, 50, 30, 0.12);
@@ -69,11 +111,23 @@
 }
 
 /* Floating theme toggle */
-#theme-toggle {
+/* The app-wide tools, in the corner: palette, settings, debug. None of them belongs to a mode,
+   so none of them belongs in the controls bar. */
+:root {
+    /* Three 38px buttons, two 6px gaps, and the 10px it is inset from the edge. */
+    --app-tools-w: 136px;
+}
+
+#app-tools {
     position: fixed;
     top: 10px;
     right: 10px;
     z-index: 2000;
+    display: flex;
+    gap: 6px;
+}
+
+.app-tool {
     width: 38px;
     height: 38px;
     border-radius: 50%;
@@ -85,15 +139,133 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    /* transform and box-shadow only. Transitioning `background` here does not merely animate
+       the pressed state, it SUPPRESSES it: both the base and the pressed rule set the shorthand
+       through a var(), and Chrome will not restart a transition for that — measured, the button
+       stayed cream indefinitely with the transition on and turned primary instantly with it off.
+       Same trap as .country's fill under a map-style swap, documented in CLAUDE.md. */
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-#theme-toggle:hover {
-    transform: rotate(18deg) scale(1.06);
+.app-tool:hover {
+    transform: scale(1.06);
     box-shadow: var(--shadow-md);
 }
 
-#theme-toggle .material-symbols-outlined {
+/* The palette is the one that keeps its little twist — it is the playful one of the three. */
+#theme-toggle:hover {
+    transform: rotate(18deg) scale(1.06);
+}
+
+/* The palette menu hangs off its own button rather than off the cluster, so adding it cannot
+   change --app-tools-w and push the top bar's score about. */
+.app-tool-wrap { position: relative; }
+
+.palette-menu {
+    position: absolute;
+    top: 46px;
+    right: 0;
+    width: 250px;
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+    padding: 12px 14px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
+    text-align: left;
+}
+.palette-menu.hidden { display: none; }
+.palette-menu .tuning-group-title { margin-top: 10px; }
+.palette-menu .tuning-group-title:first-child { margin-top: 0; }
+.palette-menu .tuning-item { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.palette-menu .tuning-label { flex: 0 0 82px; font-size: 0.78rem; }
+.palette-menu .tuning-item input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.palette-menu .tuning-item select { flex: 1 1 auto; min-width: 0; }
+.palette-menu .tuning-note { font-size: 0.72rem; opacity: 0.75; margin-top: 6px; line-height: 1.35; }
+
+.palette-themes { display: flex; gap: 8px; margin-top: 8px; }
+.palette-swatch {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+.palette-swatch:hover { background: var(--surface-hover); }
+.palette-swatch[aria-pressed="true"] { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+/* A theme names itself badly and shows itself well, so each button carries a chip of its own
+   two principal colours. These are LITERAL rather than var()s on purpose: a swatch has to show
+   the theme it offers, not the theme currently in force. */
+.palette-chip {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+}
+/* Free Explore's projection picker, in the floating overlay column with the prompt. The column is
+   pointer-transparent so drags between its cards still turn the globe; each card takes its own
+   events back, and this is one of them. */
+.explore-proj-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow-sm);
+    padding: 8px 10px;
+    margin-top: 8px;
+}
+.explore-proj-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text);
+}
+.explore-proj-row select { flex: 1 1 auto; min-width: 0; }
+
+/* Enabled only when there is something to undo — a reset that is always available says nothing
+   about whether the view has been moved, which is half of what this button is for. */
+.explore-reset {
+    display: block;
+    width: 100%;
+    margin-top: 7px;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 0.74rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.explore-reset:hover:not(:disabled) { background: var(--primary); color: #fff; border-color: var(--primary); }
+.explore-reset:disabled { opacity: 0.4; cursor: default; }
+.explore-hint {
+    margin-top: 6px;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    color: var(--text-muted, var(--text));
+    opacity: 0.72;
+}
+
+.palette-chip-ocean   { background: linear-gradient(135deg, #e8e0cf 50%, #284b63 50%); }
+.palette-chip-emerald { background: linear-gradient(135deg, #dde2e6 50%, #324a5e 50%); }
+
+/* Debug is a state rather than an action, so it says so instead of carrying "On"/"Off" text. */
+.app-tool[aria-pressed="true"] {
+    background: var(--primary);
+    color: var(--surface);
+    border-color: var(--primary);
+}
+
+.app-tool .material-symbols-outlined {
     font-size: 1.4rem;
 }
 
@@ -212,7 +384,10 @@ header h1 .material-symbols-outlined {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 4px 12px;
+    /* The app-tools cluster is fixed over this corner, so the bar has to keep out from under
+       it — with one palette button it clipped the tail of the score, with three it covered the
+       score outright. --app-tools-w is the cluster's own width, so the two cannot drift apart. */
+    padding: 4px var(--app-tools-w) 4px 12px;
     margin-bottom: 6px;
     box-shadow: var(--shadow-sm);
     display: flex;
@@ -860,40 +1035,54 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 }
 
 .country {
-    fill: var(--land);
-    stroke: var(--land-stroke);
-    stroke-width: 0.5;
+    fill: var(--map-land);
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-border) * var(--map-ink));
+    stroke-dasharray: var(--map-dash-border);
     transition: fill 0.2s ease;
     cursor: pointer;
 }
 
 .country:hover {
-    fill: var(--land-hover);
+    fill: var(--map-land-hover);
 }
 
+/* Held for two frames while a style is applied. See applyMapStyle: a transitioned property does
+   not notice the custom property behind it changing, so the land kept its old colour for good. */
+:root.map-style-swapping .country,
+:root.map-style-swapping .island-marker,
+:root.map-style-swapping .lake { transition: none !important; }
+
+/* A state is not a style: the target, the wrong answer and the one you picked keep their own
+   solid stroke whatever the style does to ordinary borders, or a dashed style would make the
+   answer look provisional. */
 .country.target {
     fill: var(--correct);
     stroke: var(--correct-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 .country.target-muted {
     fill: var(--correct);
     stroke: var(--correct-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
     opacity: 0.55;
 }
 
 .country.incorrect {
     fill: var(--incorrect);
     stroke: var(--incorrect-dark);
-    stroke-width: 1;
+    stroke-width: calc(var(--map-w-mark) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 .country.selected {
     fill: var(--selected);
     stroke: var(--selected-dark);
-    stroke-width: 1.5;
+    stroke-width: calc(var(--map-w-select) * var(--map-ink));
+    stroke-dasharray: none;
 }
 
 /* "Places I've Been" category fills for country paths and island dots. Defined AFTER
@@ -910,16 +1099,16 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
    as polygons at this map detail. They carry the .country class, so the
    .target / .incorrect / .selected feedback states above style them too. */
 .island-marker {
-    fill: var(--land);
-    stroke: var(--land-stroke);
-    stroke-width: 1.25;
+    fill: var(--map-land);
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-dot) * var(--map-ink));
     paint-order: stroke;
     cursor: pointer;
 }
 
 .island-marker:hover {
-    fill: var(--land-hover);
-    stroke-width: 1.75;
+    fill: var(--map-land-hover);
+    stroke-width: calc(var(--map-w-dot-hover) * var(--map-ink));
 }
 
 /* Find the Capital / Spaceship — guess pin, true-location pin, and the line between
@@ -929,7 +1118,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .guess-marker {
     fill: var(--selected);
     stroke: #fff;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     vector-effect: non-scaling-stroke;
     cursor: pointer;
 }
@@ -937,13 +1126,13 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .answer-marker {
     fill: var(--correct);
     stroke: #fff;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     vector-effect: non-scaling-stroke;
 }
 
 .guess-line {
     stroke: var(--incorrect);
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-pin) * var(--map-ink));
     stroke-dasharray: 4 3;
     vector-effect: non-scaling-stroke;
     pointer-events: none;
@@ -984,15 +1173,15 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .inset-land {
     fill: #46614a;
     stroke: #7f9b83;
-    stroke-width: 0.3;
+    stroke-width: calc(var(--map-w-grat) * var(--map-ink));
     vector-effect: non-scaling-stroke; /* crisp coastlines at any inset zoom */
 }
 
 /* Major lakes overlay (fill is set per-view in drawLakes to match the ocean).
    A thin coastline stroke mirrors the land>ocean border. */
 .lake {
-    stroke: var(--land-stroke);
-    stroke-width: 0.5;
+    stroke: var(--map-land-stroke);
+    stroke-width: calc(var(--map-w-coast) * var(--map-ink));
     pointer-events: none;
 }
 
@@ -1004,6 +1193,260 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     stroke: none;
     cursor: default;
     pointer-events: none;
+}
+
+/* Airocean: twenty triangles of earth. The tile is the face itself — it has to be filled and
+   not merely outlined, or the net would read as twenty coastlines rather than as one solid
+   opened out. It is the OCEAN, so it takes the ocean colour and the net becomes a shape. */
+.airo-tile {
+    fill: var(--map-ocean-1, var(--ocean-1, #b6c4cf));
+    stroke: none;
+    pointer-events: none;
+}
+
+.airo-land {
+    fill: var(--map-land, var(--land, #b9c9a8));
+    stroke: var(--map-land-stroke, var(--land-stroke, #7d8c6d));
+    stroke-width: 0.4;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+/* A spanning tree of an icosahedron is not guaranteed to lie flat: fold the wrong way and two
+   faces land on the same cell of the lattice. Saying so is worth more than forbidding it. */
+.airo-clash .airo-tile { fill: var(--incorrect, #c0503f); fill-opacity: 0.35; }
+
+/* The edges are the whole subject. A SEAM is where the solid is still joined; a CUT is where
+   the world has been torn to let the rest lie flat, and it is drawn twice — once on each of
+   the faces that used to meet along it. */
+.airo-edge {
+    fill: none;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+    transition: stroke-width 0.12s, opacity 0.12s;
+}
+/* A tear is the subject and a seam is only where the solid still holds, so they are not two
+   weights of the same line: the tear is three times the seam and at full strength. */
+.airo-edge.seam { stroke: var(--primary); stroke-width: 0.8; opacity: 0.33; }
+.airo-edge.cut  { stroke: var(--primary); stroke-width: 2.6; opacity: 1; }
+.airo-edge.hot  { stroke: var(--accent, #d08a2c); stroke-width: 4.5; opacity: 1; }
+/* A fold with no arrangement that avoids an overlap is refused, and the board then does not
+   change at all — so the edge has to say that it was the one refused, or a legitimate "no" is
+   indistinguishable from a dead click. */
+.airo-edge.refused { stroke: var(--incorrect, #c0503f); stroke-width: 5; opacity: 1; }
+
+/* Fat transparent lines are the hit targets: an edge is a line, and a line one pixel wide is
+   not something anybody can point at. */
+.airo-hit {
+    stroke: transparent;
+    fill: none;
+    cursor: pointer;
+    pointer-events: stroke;
+}
+
+/* Blue Marble, reprojected onto the face. */
+.airo-sat { pointer-events: none; }
+
+/* The tile UNDER the imagery goes dark. Two rasters meeting along a seam can leave a sub-pixel
+   hairline however carefully they are bled into each other — the pixels are square and the seam
+   is not — and against the cream ocean tile that hairline glows. Against the colour Blue Marble
+   paints its own ocean it is invisible, which is a far more reliable fix than chasing the last
+   half pixel. The seam and tear strokes go light for the same reason: their usual dark navy
+   disappears entirely over open water at night. */
+.airo-sat-on .airo-tile { fill: #050a12; }
+.airo-sat-on .airo-edge.seam { stroke: #cfe0f2; opacity: 0.28; }
+.airo-sat-on .airo-edge.cut { stroke: #eaf2fb; opacity: 0.85; }
+
+.airo-select {
+    width: 100%;
+    padding: 0.35rem 0.4rem;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border, rgba(0, 0, 0, 0.2));
+    border-radius: 4px;
+    margin-top: -0.45rem;
+}
+
+/* The inset globe, with the solid held still over it. */
+.airo-globe {
+    display: block;
+    margin: 0 auto;
+    cursor: grab;
+    touch-action: none;
+}
+.airo-globe:active { cursor: grabbing; }
+.airo-g-ocean { fill: var(--map-ocean-1, var(--ocean-1, #b6c4cf)); }
+.airo-g-rim { fill: none; stroke: var(--primary); stroke-width: 1; opacity: 0.5; }
+.airo-g-grat { fill: none; stroke: var(--primary); stroke-width: 0.4; opacity: 0.22; }
+.airo-g-land {
+    fill: var(--map-land, var(--land, #b9c9a8));
+    stroke: var(--map-land-stroke, var(--land-stroke, #7d8c6d));
+    stroke-width: 0.4;
+}
+.airo-g-edge { fill: none; stroke-linecap: round; pointer-events: none; }
+.airo-g-edge.seam { stroke: var(--text, #2c2c2c); stroke-width: 1; opacity: 0.45; }
+.airo-g-edge.cut { stroke: var(--text, #2c2c2c); stroke-width: 2; opacity: 0.9; }
+.airo-g-edge.hot { stroke: var(--accent, #d08a2c); stroke-width: 3; opacity: 1; }
+/* The far side of the solid, seen through the earth: faint and dashed, so it reads as behind
+   rather than as another edge — and so a tear on the back still has something to light up. */
+.airo-g-edge.ghost { opacity: 0.18; stroke-dasharray: 3 3; stroke-width: 1; }
+.airo-g-edge.hot.ghost { stroke: var(--accent, #d08a2c); opacity: 0.5; stroke-width: 2; }
+.airo-globe-note { margin-top: -0.3rem; text-align: center; }
+
+/* One line that says what clicking the edge under the pointer will do. It keeps its height
+   whether or not anything is hovered, so the panel below it never jumps. */
+.airo-hint {
+    font-size: 0.74rem;
+    line-height: 1.4;
+    min-height: 2.8em;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.airo-hint.on { opacity: 0.8; }
+.airo-hint.warn { color: var(--incorrect, #c0503f); opacity: 1; }
+.airo-hint.bad  { color: var(--incorrect, #c0503f); opacity: 1; }
+
+/* The ranking bar chart. Five numbers in a column are five numbers; five bars are a shape —
+   this is the only place the round says whether the order was close or a landslide. */
+.sb-rank-bars {
+    margin: 14px auto 0;
+    max-width: 620px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.sb-rank-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    opacity: 0.75;
+    margin-bottom: 2px;
+}
+
+.sb-rank-row {
+    display: grid;
+    grid-template-columns: 8.5rem 1fr auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.82rem;
+}
+
+.sb-rank-name { text-align: right; opacity: 0.85; }
+
+.sb-rank-track {
+    height: 13px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.sb-rank-fill {
+    display: block;
+    height: 100%;
+    background: var(--primary);
+    border-radius: 3px;
+}
+
+.sb-rank-val { font-variant-numeric: tabular-nums; opacity: 0.8; white-space: nowrap; }
+
+/* A row the player put out of order — the chart shows the mistake as well as the answer. */
+.sb-rank-row.misplaced .sb-rank-fill { background: var(--incorrect, #c0503f); }
+.sb-rank-row.misplaced .sb-rank-name { font-weight: 700; opacity: 1; }
+
+.sb-rank-key { font-size: 0.72rem; opacity: 0.6; margin-top: 3px; }
+
+/* The winner's parallel (or meridian) on the Furthest That Way reveal: the standard everything
+   else falls short of, so it is a rule rather than another mark. */
+.sb-extreme-line {
+    fill: none;
+    stroke: var(--primary);
+    stroke-width: 1.2;
+    stroke-dasharray: 5 4;
+    opacity: 0.7;
+    vector-effect: non-scaling-stroke;
+}
+
+.sb-extreme-pin circle { fill: var(--surface); stroke: var(--primary); stroke-width: 1.6; }
+.sb-extreme-pin.first circle { fill: var(--primary); }
+.sb-extreme-pin text {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11px;
+    fill: var(--text);
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
+}
+
+/* A river on a solo board: the same blue the lake fill uses, as a line. */
+.sb-solo-river {
+    fill: none;
+    stroke: var(--map-lake, #4a7ba7);
+    stroke-width: 3.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+}
+
+/* The geography strip on the Shapes screen: pick what the outlines are cut from, BY outline. */
+.region-strip {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 auto 18px;
+}
+
+.region-glyph {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 78px;
+    padding: 8px 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.region-glyph svg {
+    width: 40px;
+    height: 40px;
+    display: block;
+}
+
+/* The shape is the button, so the shape carries the state: muted when it is one of several
+   choices, the accent colour when it is the one in force. */
+.region-glyph .rg-fill { fill: currentColor; stroke: none; }
+.region-glyph .rg-line { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.region-glyph .rg-globe { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.5; }
+
+.region-glyph:hover {
+    color: var(--text);
+    border-color: var(--primary);
+}
+
+.region-glyph.active {
+    color: var(--primary);
+    border-color: var(--primary);
+    box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+/* A river has no inside, so it is drawn as the line it is. Round caps and joins because a
+   river's course is a smooth thing and mitred corners on a 4px stroke read as barbs. */
+.country.shape-target.shape-line {
+    fill: none;
+    stroke: var(--correct);
+    stroke-width: 4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
 }
 
 /* Orbital "from orbit" view — three.js WebGL canvas overlaid on the map container.
@@ -1144,6 +1587,26 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     min-width: 3.2em;
     text-align: right;
     font-variant-numeric: tabular-nums;
+}
+
+.tuning-item select {
+    width: 100%;
+    font: inherit;
+    padding: 3px 5px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+}
+
+/* A style needs a sentence — the labels alone ("Fine", "Blueprint") do not say what changes. */
+.tuning-note {
+    margin: -2px 0 4px 9.5em;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    color: var(--text-muted, #666);
+    opacity: 0.85;
 }
 
 /* ---- Atmosphere gradient editor (Settings ▸ Spaceship) ---------------------------- */
@@ -1478,7 +1941,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
 .country.target {
     fill: var(--correct) !important;
     stroke: var(--correct-dark) !important;
-    stroke-width: 2;
+    stroke-width: calc(var(--map-w-mark) * 2 * var(--map-ink));
     animation: glow 2s ease-in-out infinite;
 }
 
@@ -1498,11 +1961,25 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
         font-size: 2rem;
     }
 
+    /* On a phone the bar wraps and centres anyway, and 136px of reserved corner is most of the
+       width — so the cluster shrinks and the bar only keeps clear of the first row. */
+    :root { --app-tools-w: 106px; }
+
+    .app-tool {
+        width: 30px;
+        height: 30px;
+    }
+
+    .app-tool .material-symbols-outlined {
+        font-size: 1.15rem;
+    }
+
     .top-bar {
         flex-wrap: wrap;
         justify-content: center;
         gap: 6px;
         padding: 6px 10px;
+        padding-right: var(--app-tools-w);
     }
 
     .top-bar-title {
@@ -3108,7 +3585,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     fill: var(--accent);
     fill-opacity: 0.18;
     stroke: var(--accent);
-    stroke-width: 2.2;
+    stroke-width: calc(var(--map-w-trace) * var(--map-ink));
     stroke-linejoin: round;
     stroke-linecap: round;
     pointer-events: none;
@@ -3118,7 +3595,7 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     fill: var(--correct);
     fill-opacity: 0.25;
     stroke: var(--correct-dark);
-    stroke-width: 1.6;
+    stroke-width: calc(var(--map-w-trace) * 0.73 * var(--map-ink));
     pointer-events: none;
 }
 
@@ -3370,6 +3847,26 @@ body.sb-wide-panel .container.globe-side-layout .globe-side-panel { flex: 1 1 0;
     padding: 4px;
 }
 
+/* THE VISIBLE PANES FILL THE STAGE. Any of the four can be switched off, and what is left has to
+   take the whole area rather than sitting in a 2x2 with holes in it — a single pane on its own is
+   the reason to turn the others off, and it would be absurd for it to occupy a quarter of the
+   screen. Driven by a `data-shown` count on the stage rather than by measuring anything.
+
+   Three is the only awkward number: two across the top and one spanning the bottom, which gives
+   the odd one out the room its extra width is worth. */
+.sun-path-stage[data-shown="1"] { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.sun-path-stage[data-shown="2"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+.sun-path-stage[data-shown="3"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+/* The odd one out is marked by JavaScript rather than by an `nth-child(... of ...)` selector:
+   that form cannot see `[hidden]`, so a rule counting cells would count the hidden ones too. */
+.sun-path-stage[data-shown="3"] .sun-path-cell.sp-wide { grid-column: span 2; }
+.sun-path-cell[hidden] { display: none; }
+
+/* A tall, narrow stage would rather stack two panes than sit them side by side. */
+@media (max-aspect-ratio: 4/5) {
+    .sun-path-stage[data-shown="2"] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
+
 /* The four panes ARE the mode, so they get the height. Constraining the stage to
    #map-container (see .map-container position) means it now competes with everything below it,
    and the readout/sliders left it about 280px — enough to clip the globe out of its own pane.
@@ -3437,6 +3934,31 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     background: rgba(20, 26, 38, 0.8);
 }
 
+/* The dome's compass. A needle rather than a word, because what it is saying — which way north
+   has got to — is a direction, and it says it by pointing. Dimmed while north is already up:
+   the control is for the state it is advertising, and hiding it outright would leave nobody
+   knowing it exists. */
+.sp-north {
+    width: 26px; height: 26px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(20, 26, 38, 0.55);
+    border: 1px solid rgba(200, 214, 232, 0.35);
+    border-radius: 50%;
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, background 0.15s ease;
+}
+.sp-north.off-north { opacity: 1; }
+
+/* The two exposures. Only shown with Satellite on, since with it off there is no photograph to
+   expose — the vector map is drawn in the theme's own colours. */
+.sp-sat-gain { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.sp-north:hover { opacity: 1; background: rgba(20, 26, 38, 0.85); }
+.sp-north svg { width: 20px; height: 20px; display: block; }
+.sp-north-ring { fill: none; stroke: rgba(200, 214, 232, 0.35); stroke-width: 1; }
+.sp-north-n { fill: #d05c4a; }
+.sp-north-s { fill: #cfd7e4; }
+
 /* Must out-specify `.sun-path-cell > svg { width:100%; height:100% }`, which otherwise blows the
    inset up to fill the whole pane. */
 .sun-path-cell > svg.sp-orbit-inset {
@@ -3457,31 +3979,67 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     font-weight: 700;
 }
 
-/* The six parallels on the sunrise-line map, split into their lit and dark spans. */
-.sp-par-bar { stroke-width: 2.2; stroke-linecap: butt; }
-.sp-par-bar.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
-.sp-par-bar.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
-.sp-par-cap { stroke-width: 1.4; }
-.sp-par-cap.lit { stroke: #ffd98a; stroke-opacity: 0.95; }
-.sp-par-cap.dark { stroke: #4b5f83; stroke-opacity: 0.85; }
-.sp-par-hrs { font-size: 7.5px; font-weight: 700; paint-order: stroke;
-              stroke: rgba(10, 14, 22, 0.75); stroke-width: 2.4px; }
+/* EVERY LABEL IN THIS MODE IS UNBOLDED SERIF. These panes are diagrams — a dome with its arcs, a
+   globe with its angles, a map with its bars — and a bold sans label reads as a user-interface
+   element sitting on top of the picture rather than as an annotation belonging to it. A serif at
+   normal weight recedes into the drawing, which is what an annotation should do. */
+#sun-path-stage text,
+.sun-path-cap {
+    font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Times New Roman', serif;
+    font-weight: 400;
+}
+
+/* The six parallels on the sunrise-line map, split into their lit and dark spans. Hairlines: the
+   bars are a MEASUREMENT laid over the map, and at 2.2 units they were burying the coastline they
+   are measured against. */
+.sp-par-bar { stroke-width: 1.1; stroke-linecap: butt; }
+.sp-par-bar.lit { stroke: #ffd98a; stroke-opacity: 0.9; }
+.sp-par-bar.dark { stroke: #4b5f83; stroke-opacity: 0.75; }
+.sp-par-cap { stroke-width: 0.8; }
+.sp-par-cap.lit { stroke: #ffd98a; stroke-opacity: 0.9; }
+.sp-par-cap.dark { stroke: #4b5f83; stroke-opacity: 0.75; }
+.sp-par-hrs { font-size: 6.4px; font-weight: 400; paint-order: stroke;
+              stroke: rgba(10, 14, 22, 0.6); stroke-width: 1.6px; }
 .sp-par-hrs.lit { fill: #ffe9bd; }
 .sp-par-hrs.dark { fill: #b9c8e2; }
-.sp-par-name { font-size: 6.5px; fill: rgba(232, 240, 250, 0.85); paint-order: stroke;
-               stroke: rgba(10, 14, 22, 0.7); stroke-width: 2px; }
-.sp-par-you .sp-par-bar { stroke-width: 3.2; }
-.sp-par-you .sp-par-name { fill: #ffc9c0; font-weight: 700; }
+.sp-par-name { font-size: 6px; font-weight: 400; fill: rgba(232, 240, 250, 0.72);
+               paint-order: stroke; stroke: rgba(10, 14, 22, 0.55); stroke-width: 1.4px; }
+.sp-par-you .sp-par-bar { stroke-width: 1.8; }
+.sp-par-you .sp-par-name { fill: #ffc9c0; font-weight: 400; }
 
-.sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.55); stroke-width: 3; stroke-linecap: round; }
-.sp-map-me-body { stroke: #d0392b; stroke-width: 1.5; stroke-linecap: round; }
+.sp-map-me-shadow { stroke: rgba(12, 16, 24, 0.5); stroke-width: 1.8; stroke-linecap: round; }
+.sp-map-me-body { stroke: #d0392b; stroke-width: 1; stroke-linecap: round; }
 
-.sp-orb-path { fill: none; stroke: rgba(214, 227, 244, 0.7); stroke-width: 1.1; stroke-dasharray: 3 3; }
-.sp-orb-sun { fill: #ffcf5c; }
-.sp-orb-stop { fill: rgba(214, 227, 244, 0.95); }
-.sp-orb-earth { fill: #7cc0f0; stroke: #f2f8fd; stroke-width: 1.2; }
-.sp-orb-axis { stroke: #ffd28a; stroke-width: 1.4; }
-.sp-orb-lab { font-size: 8px; font-weight: 700; fill: rgba(224, 234, 247, 0.95); }
+/* THESE READ AGAINST THE PANEL NOW, not against a black canvas. The near-white ring and labels
+   were right when the orbit floated over the Earth-in-space pane, and invisible the moment it
+   moved onto a cream surface — so they take the theme's own ink instead of a fixed pale grey.
+   The sun, the earth and the axis keep their literal colours, because those are saying which
+   body is which rather than following the palette. */
+.sp-orb-path { fill: none; stroke: var(--primary); opacity: 0.42; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.sp-orb-sun { fill: #f0b429; stroke: rgba(0, 0, 0, 0.18); stroke-width: 0.5; }
+.sp-orb-stop { fill: var(--primary); opacity: 0.65; }
+.sp-orb-earth { fill: #3b82c4; stroke: var(--surface, #fff); stroke-width: 1.2; }
+.sp-orb-axis { stroke: #c07a1e; stroke-width: 1.4; }
+.sp-orb-lab { font-size: 6.6px; font-weight: 700; fill: var(--primary); opacity: 0.7; }
+
+/* The calendar band. Alternating tints rather than a line at every boundary: twelve radial
+   rules round a 34-unit ring is a starburst, and the thing being read is which month, not
+   where it starts. */
+.sp-orb-month { fill: var(--primary); opacity: 0.07; stroke: none; }
+.sp-orb-month.alt { opacity: 0.15; }
+.sp-orb-month-lab {
+    font-size: 5.4px; font-weight: 700; fill: var(--primary); opacity: 0.72;
+    letter-spacing: 0.2px; pointer-events: none;
+}
+
+/* A preset that has caught the pointer, before the press (hover) and during it (held). The halo
+   is what makes a 3 px dot legible as a target at arm's length. */
+.sp-orb-stop.hot { opacity: 1; }
+.sp-orb-stop.held { stroke: var(--surface, #fff); stroke-width: 1; }
+.sp-orb-stop-halo { fill: var(--primary); opacity: 0.18; pointer-events: none; }
+.sp-orb-stop-halo.today { fill: var(--accent, #d08a2c); opacity: 0.26; }
+.sp-orb-lab.hot { opacity: 1; }
+.sp-orb-earth.held { stroke-width: 1.8; }
 
 /* The orbit view replaces the ground SVG in the same cell, so it fills it the same way. */
 .sp-orbit-canvas {
@@ -3514,8 +4072,8 @@ body.sun-path-active #sun-path-panel .sandbox-title {
     max-width: calc(100% - 84px);   /* leaves room for the Reset-view button */
     width: fit-content;
     z-index: 2;
-    font-size: 0.76rem;
-    font-weight: 700;
+    font-size: 0.74rem;
+    font-weight: 400;
     /* A light chip on a translucent dark pill. These captions sit over a pale dome, a bright
        sky, a lit globe and a dark ground by turns; text alone could not survive all four. */
     color: #f2f5fa;
@@ -3570,10 +4128,15 @@ body.sun-path-active #sun-path-panel .sandbox-title {
 }
 
 @media (max-width: 1024px) {
-    .sun-path-stage {
+    .sun-path-stage,
+    .sun-path-stage[data-shown="1"],
+    .sun-path-stage[data-shown="2"],
+    .sun-path-stage[data-shown="3"] {
         grid-template-columns: 1fr;
-        grid-template-rows: repeat(4, minmax(160px, 1fr));
+        grid-template-rows: none;
+        grid-auto-rows: minmax(160px, 1fr);
     }
+    .sun-path-stage[data-shown="3"] .sun-path-cell.sp-wide { grid-column: auto; }
 }
 
 /* ==================== SANDBOX QUIZZES ====================
@@ -3971,17 +4534,17 @@ circle.island-marker.sb-mark-wrong { fill: var(--incorrect, #c0503f); fill-opaci
 }
 
 .sp-altlabel {
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 400;
     fill: #6b4b12;
     paint-order: stroke;
-    stroke: rgba(255, 255, 255, 0.75);
-    stroke-width: 3px;
+    stroke: rgba(255, 255, 255, 0.7);
+    stroke-width: 2.2px;
 }
 
 /* The sunrise-line pane. */
 .sp-map-ocean { fill: #9fb8cc; }
-.sp-map-land { fill: #cbc3a4; stroke: #a79c78; stroke-width: 0.3; }
+.sp-map-land { fill: #cbc3a4; stroke: #a79c78; stroke-width: 0.25; }
 .sp-map-night { fill: #0a1020; pointer-events: none; }
 .sp-map-night.n0 { fill-opacity: 0.16; }
 .sp-map-night.n1 { fill-opacity: 0.16; }
@@ -3990,12 +4553,13 @@ circle.island-marker.sb-mark-wrong { fill: var(--incorrect, #c0503f); fill-opaci
 .sp-map-term {
     fill: none;
     stroke: #ffd28a;
-    stroke-width: 1.2;
+    stroke-width: 0.7;
+    stroke-opacity: 0.9;
     pointer-events: none;
 }
 
-.sp-map-sun { fill: #ffcf5c; stroke: #fff; stroke-width: 1; pointer-events: none; }
-.sp-map-me { fill: #d05c4a; stroke: #fff; stroke-width: 1.2; pointer-events: none; }
+.sp-map-sun { fill: #ffcf5c; stroke: #fff; stroke-width: 0.7; pointer-events: none; }
+.sp-map-me { fill: #d05c4a; stroke: #fff; stroke-width: 0.8; pointer-events: none; }
 .sp-map-me-ring { fill: none; stroke: #d05c4a; stroke-width: 1.1; stroke-opacity: 0.7; pointer-events: none; }
 
 #sun-path-map { cursor: crosshair; }
@@ -4416,9 +4980,65 @@ g.ms-story { pointer-events: none; }
 .lab-k { font-variant-numeric: tabular-nums; }
 .lab-k.bad { color: var(--incorrect, #c0503f); font-weight: 600; }
 .lab-note { font-size: 0.74rem; line-height: 1.45; opacity: 0.62; }
-.lab-slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 0.5rem; font-size: 0.8rem; }
-.lab-slider input[type="range"] { grid-column: 1 / 3; width: 100%; }
-.lab-slider output { grid-column: 2; font-variant-numeric: tabular-nums; opacity: 0.75; }
+/* A projection whose library has not landed yet. It still draws — as a Mercator — so this says
+   "not what you asked for" rather than disabling the button and losing the label. */
+.lab-proj.pending { opacity: 0.5; font-style: italic; }
+.lab-lib-note:empty { display: none; }
+/* Wikipedia in its own words. Serif and indented, because it is a QUOTATION sitting among the
+   app's own prose and needs to read as somebody else talking. */
+.lab-quote {
+    margin: 0;
+    padding: 0.5rem 0 0.5rem 0.7rem;
+    border-left: 2px solid var(--border, #ccc);
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+.lab-quote cite {
+    display: block;
+    margin-top: 0.35rem;
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-style: normal;
+    opacity: 0.7;
+}
+.lab-quote cite a { color: inherit; }
+.lab-why { opacity: 0.85; }
+/* The family headings. Small and quiet: they organise the grid, they are not a thing to read. */
+.lab-group-lab {
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-bottom: -0.35rem;
+}
+.lab-group-lab + .lab-grid { margin-bottom: 0.1rem; }
+.lab-controls-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.62;
+    border-top: 1px solid var(--border); padding-top: 0.55rem;
+}
+.lab-mini {
+    font: inherit; font-size: 0.68rem; line-height: 1;
+    padding: 2px 6px; cursor: pointer;
+    color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 4px;
+}
+.lab-mini:hover:not(:disabled) { border-color: var(--accent, #d08a2c); }
+.lab-mini:disabled { opacity: 0.32; cursor: default; }
+/* Label, value, per-slider reset and lock on the top line; the track underneath spans them all. */
+.lab-slider {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center; gap: 2px 0.4rem; font-size: 0.8rem;
+}
+.lab-slider input[type="range"] { grid-column: 1 / 5; width: 100%; margin-top: 1px; }
+.lab-slider output { font-variant-numeric: tabular-nums; opacity: 0.75; text-align: right; }
+.lab-slider-lab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-reset-one { padding: 1px 5px; font-size: 0.72rem; }
+.lab-lock { display: flex; align-items: center; gap: 2px; font-size: 0.64rem; opacity: 0.7; cursor: pointer; }
+.lab-lock input { margin: 0; }
+.lab-lock:hover { opacity: 1; }
 .lab-conic { display: flex; flex-direction: column; gap: 0.45rem; }
 .lab-checks { display: flex; gap: 0.9rem; font-size: 0.8rem; flex-wrap: wrap; }
 .lab-checks label { display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
@@ -4483,3 +5103,136 @@ g.ms-story { pointer-events: none; }
     .ws-stage { position: static; }
     .ws-stage img { max-height: 38vh; }
 }
+
+
+/* Sun Path's two rows of switches. Grouped and labelled, because "Views" and "Show" are two
+   different kinds of decision — which panes exist, and what is drawn in all of them. */
+.sp-panes {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+    padding: 4px 0; border-top: 1px solid var(--border);
+}
+.sp-group-lab {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.55; font-weight: 700; flex: 0 0 auto;
+}
+
+
+/* The moon in the first-person panes: a disc, its lit fraction as an ellipse, and the lit half
+   picked out. Same construction as the map's moon marker, so the two read as one object. */
+/* The moon glyph: a dark disc with the lit part laid over it, so the shape is continuous in the
+   illuminated fraction rather than one of a handful of named phases. */
+.sp-moon-dark { fill: #363c48; }
+.sp-moon-lit  { fill: #eeece4; }
+.sp-moon-rim  { fill: none; stroke: #8d8a80; stroke-width: 0.6; }
+.sp-moon.below .sp-moon-glyph { opacity: 0.45; }
+/* The moon's own track across the sky, white against the sun's amber. */
+.sp-moontrack { fill: none; stroke: #f2f4f8; stroke-width: 1.2; stroke-opacity: 0.85; }
+.sp-moontrack.below { stroke-dasharray: 3 4; stroke-opacity: 0.4; }
+.sp-ground-night { pointer-events: none; }
+
+
+/* Satellite basemap in the sunrise-line pane. The land outlines stay on top of it at a low
+   opacity: at 400 units across a coastline is easier to read as a line than as a colour change,
+   and the veil keeps the imagery from shouting over the terminator, which is the subject. */
+.sp-map-sat-day { opacity: 1; }
+.sp-map-sat-veil { fill: #0a1018; opacity: 0.1; pointer-events: none; }
+.sp-map-sat-night image { opacity: 0.95; }
+/* Outline-only land, but ONLY while the satellite basemap is actually under it. */
+#sun-path-map.sp-sat-on .sp-map-land { fill: none; stroke: rgba(255,255,255,0.3); stroke-width: 0.35; }
+/* The moon's rise/set line: dotted, so it is never mistaken for the sunrise line. */
+.sp-map-moonline { fill: none; stroke: #cfd6e2; stroke-width: 0.6; stroke-dasharray: 2 3; opacity: 0.7; }
+.sp-map-moon { pointer-events: none; }
+
+
+/* The orbit diagram moved out of the Earth-in-space pane and into the panel. It is a REFERENCE
+   — where in the year we are — rather than something happening in that pane, and floating it
+   over the globe made it compete with the thing it was annotating. */
+/* And it is now the DATE CONTROL as well as the reference, which is why it takes the panel's
+   whole width: an 84px ring is a thing to read, and dragging the earth round it is a thing to
+   aim at. The date slider and the four turning-point buttons it replaces are gone. */
+#sun-path-panel .sp-orbit-inset {
+    display: block;
+    width: 100%;
+    max-width: 260px;
+    margin: 6px auto 2px;
+    aspect-ratio: 1 / 1;
+    height: auto;
+    position: static; background: none; border: none; padding: 0;
+    cursor: grab;
+    touch-action: none;
+}
+#sun-path-panel .sp-orbit-inset:active { cursor: grabbing; }
+/* Today is a place on the ring like the solstices, and the one people look for first. */
+.sp-orb-stop.today { fill: var(--accent, #d08a2c); }
+.sp-orb-lab.today  { fill: var(--accent, #d08a2c); }
+
+/* Per-pane controls, in the corner of the pane they govern. Tracking means something different
+   in each view, so the switch belongs on the view rather than in a list elsewhere. */
+.sp-pane-tools {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.sp-pane-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    font-size: 0.68rem;
+    color: var(--text);
+    background: rgba(20, 26, 38, 0.55);
+    border: 1px solid rgba(200, 214, 232, 0.35);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.sp-pane-check:hover { background: rgba(20, 26, 38, 0.8); }
+.sp-pane-check input { margin: 0; cursor: pointer; }
+/* The globe's Reset view sits in the same cluster, so it stops positioning itself. */
+.sp-pane-tools .sp-view-reset { position: static; top: auto; right: auto; }
+
+/* The observer's mark on the sunrise-line map, in whichever figure the panel is set to. */
+.sp-map-me-pin { fill: #d05c4a; stroke: #fff; stroke-width: 0.7; }
+.sp-map-me-pinhole { fill: #fff; }
+
+
+/* ==================== CONNECTIONS ====================
+   Sixteen tiles that become four bands as they are solved. The four colours are labels rather
+   than a scale — they say "these belong together", not "this one is better" — so they are four
+   distinct hues at one weight, and they are the same four the bands use. */
+.options-grid.sb-connect { display: flex; flex-direction: column; gap: 8px; }
+.sb-conn-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.sb-conn-tile {
+    font: inherit; font-size: 0.82rem; line-height: 1.15; padding: 0.7rem 0.3rem; cursor: pointer;
+    min-height: 3.4rem; border-radius: 6px; text-align: center;
+    background: var(--surface-2, #efe7d7); color: var(--text, #333);
+    border: 1px solid var(--border, #ccc);
+    display: flex; align-items: center; justify-content: center;
+}
+.sb-conn-tile:hover { border-color: var(--accent, #d08a2c); }
+.sb-conn-tile.picked {
+    background: var(--primary, #284b63); border-color: var(--primary, #284b63); color: #fff;
+}
+.sb-conn-band { border-radius: 6px; padding: 0.5rem 0.7rem; text-align: center; color: #21201c; }
+.sb-conn-band.c0 { background: #e3c968; }
+.sb-conn-band.c1 { background: #9fc47f; }
+.sb-conn-band.c2 { background: #8fb8db; }
+.sb-conn-band.c3 { background: #c69ac8; }
+.sb-conn-band-lab { font-weight: 700; font-size: 0.82rem; }
+.sb-conn-band-names { font-size: 0.78rem; opacity: 0.82; margin-top: 1px; }
+.sb-conn-lives { display: flex; align-items: center; gap: 4px; justify-content: center;
+                 font-size: 0.9rem; letter-spacing: 0.12em; opacity: 0.75; }
+.sb-conn-lives-lab { font-size: 0.7rem; letter-spacing: 0.06em; margin-left: 6px; opacity: 0.8; }
+/* A way into the generator, kept quiet: it sits beside the lives rather than in the controls
+   bar, because it is a question about the puzzle rather than about the round being played. */
+.sb-conn-cats-btn { margin-left: 10px; font: inherit; font-size: 0.7rem; letter-spacing: 0.04em;
+                    background: none; border: 1px solid var(--border); border-radius: 5px;
+                    color: inherit; padding: 1px 7px; cursor: pointer; opacity: 0.7; }
+.sb-conn-cats-btn:hover { opacity: 1; }
+.sb-conn-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+                gap: 3px 12px; margin: 8px 0; text-align: left; }
+.sb-conn-cat { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; }
